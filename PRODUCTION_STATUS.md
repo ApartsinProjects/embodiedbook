@@ -18,6 +18,7 @@ Current date: 2026-06-17
 - Cover, table of contents, front matter, parts, chapters, section pages, and appendices exist.
 - All twelve parts have now received returned 42-agent worker passes under the campaign documented in `ALL_AGENTS_CAMPAIGN.md`.
 - Each part worker applied the `book-skills` agent checklist across its owned chapter indexes and section files.
+- The Illustrator phase has now run from the main context with Gemini batch generation. It produced and embedded 295 module-local raster illustrations, covering all 60 chapters. See `ILLUSTRATOR_REPORT.md`.
 - Current static QA is clean after all-agent integration.
 
 ## Audit Gates
