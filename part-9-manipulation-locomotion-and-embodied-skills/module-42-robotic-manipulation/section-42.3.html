@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="Section 42.3 of Building Embodied AI: From Perception to Autonomous Action: Contact-rich interaction." name="description"/>
+<title>Section 42.3: Contact-rich interaction | Building Embodied AI: From Perception to Autonomous Action</title>
+<link href="../../styles/book.css" rel="stylesheet"/>
+<link href="../../styles/pygments.css" rel="stylesheet"/>
+<link href="../../vendor/prism/prism-theme.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/prism/prism-bundle.min.js"></script>
+<link href="../../vendor/katex/katex.min.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/katex/katex.min.js"></script>
+<script defer="" onload="renderMathInElement(document.body, {
+  delimiters: [
+  {left: '$$', right: '$$', display: true},
+  {left: '$', right: '$', display: false}
+  ],
+  throwOnError: false
+  });" src="../../vendor/katex/contrib/auto-render.min.js"></script>
+<script defer="" src="../../scripts/book.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+<a class="book-title-link" href="../../index.html">Building Embodied AI: From Perception to Autonomous Action</a>
+<a class="toc-link" href="../../toc.html" title="Table of Contents"><span class="toc-icon">&#9776;</span> Contents</a>
+</nav>
+<div class="header-search"><div id="search"></div></div>
+<div class="part-label"><a href="../index.html">Part IX: Manipulation, Locomotion, and Embodied Skills</a></div>
+<div class="chapter-label"><a href="index.html">Chapter 42: Robotic Manipulation</a></div>
+<h1>Section 42.3: Contact-rich interaction</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p><strong>Contact-rich interaction</strong> is a concrete robotic manipulation skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
+</div>
+
+
+<h2>What This Section Develops</h2>
+<p>This section develops contact-rich interaction as a concrete embodied AI skill rather than a label. The core contract is: observe force, torque, slip, joint effort, and object motion, modulate impedance or policy action while contact is active, and judge the result with stable contact, force limits, and task progress.</p>
+<p>The reader should connect this contract to earlier material on <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/index.html">coordinate frames</a>, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">control foundations</a>, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">simulation stack</a>. Those links matter because Part IX skills fail at interfaces: a good model with the wrong frame, timing budget, or evaluation panel still produces a fragile robot.</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>Manipulation is not just moving an end effector. It is the closed-loop control of object state through geometry, force, friction, and recovery. For Contact-rich interaction, the decisive question is whether the loop can recover from the policy treats contact as a collision to avoid rather than a signal to regulate.</p>
+</div>
+
+<p>Figure 42.3.1 makes the section contract explicit: each box is an artifact the reader can inspect instead of a vague promise that the agent "understands" the task.</p>
+<figure class="illustration" id="fig-42-3-contract">
+<svg role="img" aria-labelledby="fig-42-3-title" viewBox="0 0 760 230" width="100%" height="230">
+<title id="fig-42-3-title">Closed-loop contract for Contact-rich interaction</title>
+<rect x="24" y="34" width="150" height="84" rx="8" fill="#e8f3ff" stroke="#1f5f99"/>
+<text x="99" y="66" text-anchor="middle" font-size="15" font-weight="700">Observe</text>
+<text x="99" y="94" text-anchor="middle" font-size="12">force, torque, slip, joint effort,</text>
+<rect x="218" y="34" width="150" height="84" rx="8" fill="#eef9f0" stroke="#2e7d32"/>
+<text x="293" y="66" text-anchor="middle" font-size="15" font-weight="700">Decide</text>
+<text x="293" y="94" text-anchor="middle" font-size="12">state and constraint check</text>
+<rect x="412" y="34" width="150" height="84" rx="8" fill="#fff5e5" stroke="#a85d00"/>
+<text x="487" y="66" text-anchor="middle" font-size="15" font-weight="700">Act</text>
+<text x="487" y="94" text-anchor="middle" font-size="12">modulate impedance or policy actio</text>
+<rect x="606" y="34" width="130" height="84" rx="8" fill="#f8ecff" stroke="#6a1b9a"/>
+<text x="671" y="66" text-anchor="middle" font-size="15" font-weight="700">Verify</text>
+<text x="671" y="94" text-anchor="middle" font-size="12">stable contact, force limits</text>
+<path d="M176 76 L214 76" stroke="#333" stroke-width="2" marker-end="url(#arrow-42-3)"/>
+<path d="M370 76 L408 76" stroke="#333" stroke-width="2" marker-end="url(#arrow-42-3)"/>
+<path d="M564 76 L602 76" stroke="#333" stroke-width="2" marker-end="url(#arrow-42-3)"/>
+<path d="M671 121 C671 184 100 184 100 122" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow-42-3)"/>
+<defs><marker id="arrow-42-3" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#333"/></marker></defs>
+</svg>
+<figcaption>Figure 42.3.1 maps Contact-rich interaction in Robotic Manipulation to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
+</figure>
+
+
+<h2>Theory</h2>
+<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Contact-rich interaction, the important state variables are force, torque, slip, joint effort, and object motion, while the action interface is to modulate impedance or policy action while contact is active.</p>
+<p>The method is useful only if it improves a construct-matched measurement: stable contact, force limits, and task progress. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<div class="callout under-the-hood">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism is not a black box. It is a chain of observation encoding, state estimation, constraint checking, action selection, execution, and verification. Each link should emit a log record so a failure can be traced to perception, state, planning, control, timing, data coverage, or evaluation.</p>
+</div>
+
+<h2>Worked Example</h2>
+<p>Use the evidence record in Code Fragment 42.3.1 before implementing a model. It forces the section to state what is measured, which maintained tool can reproduce the experiment, and which failure deserves a deliberate test case.</p>
+<pre><code class="language-python"># Record one evidence artifact for Contact-rich interaction.
+# Use the same schema for the hand-built baseline and the library route.
+from dataclasses import dataclass, asdict
+
+@dataclass
+class SkillEvidence:
+    section: str
+    observable: str
+    action_interface: str
+    metric: str
+    tool_route: str
+    expected_failure: str
+
+record = SkillEvidence(
+    section=&quot;42.3&quot;,
+    observable=&quot;force, torque, slip, joint effort, and object motion&quot;,
+    action_interface=&quot;modulate impedance or policy action while contact is active&quot;,
+    metric=&quot;stable contact, force limits, and task progress&quot;,
+    tool_route=&quot;MuJoCo, Drake, and ManiSkill&quot;,
+    expected_failure=&quot;the policy treats contact as a collision to avoid rather than a signal to regulate&quot;,
+)
+print(asdict(record))</code></pre>
+<div class="code-caption">Code Fragment 42.3.1 creates a reproducible evidence record for Contact-rich interaction, including the observation, action interface, metric, library route, and expected failure.</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The hand-built evidence record is about 25 lines. In practice, use MoveIt 2, Drake, MuJoCo, ManiSkill, and LeRobot to handle interfaces, physics or datasets, logging, batching, and repeatable evaluation. The hand-built version remains useful because it states the contract that the library route must preserve.</p>
+</div>
+
+
+<h2>Practical Recipe</h2>
+<ol>
+<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
+<li>Build the smallest baseline that can fail in an interpretable way.</li>
+<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
+<li>Add one perturbation aimed at the expected failure: the policy treats contact as a collision to avoid rather than a signal to regulate.</li>
+<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+</div>
+
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A robotics team using contact-rich interaction should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+</div>
+
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for contact-rich interaction? If not, the system boundary is still too vague.</p>
+</div>
+
+
+
+<section class="production-depth-expansion">
+<h2>Builder's Deep Dive</h2>
+<p>Contact-rich interaction becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
+<p>For Robotic Manipulation, the important habit is to keep physics in the loop. Geometry, contact, timing, energy, and safety constraints should appear in the artifact, not in a later explanation after the experiment has already failed.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>MuJoCo, Drake, and ManiSkill</td><td>Main practical route for Contact-rich interaction</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
+<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
+<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section connects to <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/index.html">coordinate frames</a>, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">control foundations</a>, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">simulation stack</a>. It also prepares the evaluation and safety framing used in later deployment chapters.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for Contact-rich interaction, run the baseline and the MuJoCo, Drake, and ManiSkill route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
+<h2>Failure Analysis Pattern</h2>
+<p>When Contact-rich interaction fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
+</section>
+
+
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Contact-rich interaction is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+</div>
+
+<div class="callout exercise">
+<div class="callout-title">Exercise 42.3.1</div>
+<p>Design a same-panel experiment for Contact-rich interaction. Specify the scenario set, the baseline, the MuJoCo, Drake, and ManiSkill library route, the metric computation, and one perturbation that targets this failure: the policy treats contact as a collision to avoid rather than a signal to regulate.</p>
+</div>
+<nav class="chapter-nav"><a class="prev" href="section-42.2.html">&#8592; Section 42.2</a><a href="index.html">Chapter 42</a><a class="next" href="section-42.4.html">Section 42.4 &#8594;</a></nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p>&#169; 2026 Alexander Apartsin &amp; Yehudit Aperstein &#183; <a href="../../toc.html">Contents</a></p>
+<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}))</script></p>
+</footer>
+</main>
+</body>
+</html>
