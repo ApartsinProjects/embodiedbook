@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="Section 47.6 of Building Embodied AI: From Perception to Autonomous Action: Quadrotor dynamics and flight control." name="description"/>
+<title>Section 47.6: Quadrotor dynamics and flight control | Building Embodied AI: From Perception to Autonomous Action</title>
+<link href="../../styles/book.css" rel="stylesheet"/>
+<link href="../../styles/pygments.css" rel="stylesheet"/>
+<link href="../../vendor/prism/prism-theme.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/prism/prism-bundle.min.js"></script>
+<link href="../../vendor/katex/katex.min.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/katex/katex.min.js"></script>
+<script defer="" onload="renderMathInElement(document.body, {
+  delimiters: [
+  {left: '$$', right: '$$', display: true},
+  {left: '$', right: '$', display: false}
+  ],
+  throwOnError: false
+  });" src="../../vendor/katex/contrib/auto-render.min.js"></script>
+<script defer="" src="../../scripts/book.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+<a class="book-title-link" href="../../index.html">Building Embodied AI: From Perception to Autonomous Action</a>
+<a class="toc-link" href="../../toc.html" title="Table of Contents"><span class="toc-icon">☰</span> Contents</a>
+</nav>
+<div class="header-search"><div id="search"></div></div>
+<div class="part-label"><a href="../index.html">Part IX: Manipulation, Locomotion, and Embodied Skills</a></div>
+<div class="chapter-label"><a href="index.html">Chapter 47: Drones and Aerial Embodied AI</a></div>
+<h1>Section 47.6: Quadrotor dynamics and flight control</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"A robot earns trust one recovered disturbance at a time."</p><cite>A Field-Tested Control Loop</cite></blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>Drone autonomy begins with a harsh fact: the vehicle is underactuated, fast, energy-limited, and usually unable to stop safely in mid-failure. A serious drone chapter must therefore connect AI decisions to flight dynamics and flight-control interfaces.</p>
+</div>
+<figure class="illustration">
+<img src="images/chapter-47-illustration-06.png" alt="Cartoon quadrotor drone following a smooth route through wind while nested control rings stabilize it." loading="lazy"/>
+<figcaption><strong>Figure 47.6A</strong>: The drone survives because inner control loops stabilize attitude and rates while the outer autonomy stack chooses feasible motion.</figcaption>
+</figure>
+<h2>Quadrotor State And Forces</h2>
+<p>A quadrotor state can be written as position $p$, velocity $v$, attitude $R$, body angular velocity $\omega$, and rotor speeds $\Omega_i$. The translational and rotational dynamics are commonly summarized as:</p>
+<p>$$m\dot v = mg e_3 - f R e_3 + d, \qquad J\dot\omega = \tau - \omega \times J\omega.$$</p>
+<p>The total thrust $f$ and body torque $\tau$ come from rotor thrusts. That mapping is the control allocation problem. If the planner asks for a force or moment outside the rotor envelope, the mission is already infeasible.</p>
+<div class="callout key-insight">
+<div class="callout-title">Autonomy Rides On Inner Loops</div>
+<p>A learned planner may choose waypoints or velocities, but the vehicle survives because fast attitude and rate loops stabilize the body. High-level AI should respect the timing and authority of the low-level flight controller.</p>
+</div>
+<h2>Cascaded Flight Control</h2>
+<p>Most practical quadrotor stacks use cascaded control: position control produces velocity or acceleration targets, velocity control produces attitude and thrust targets, attitude control produces body-rate targets, and rate control produces motor commands. The outer loops can be slower. The inner loops must be fast, stable, and well tuned.</p>
+<p>PX4 makes this hierarchy visible in its controller diagrams: multicopter position, attitude, and rate controllers are separate contracts with clear setpoints and saturation points. For a learning system, those boundaries are not implementation trivia. They decide whether the policy should command a waypoint, velocity, attitude, body rate, or direct actuator target.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Drone Control Stack</div>
+<table>
+<thead><tr><th>Loop</th><th>Typical Input</th><th>Typical Output</th><th>Failure To Log</th></tr></thead>
+<tbody>
+<tr><td>Mission</td><td>inspection goal, geofence, battery budget</td><td>waypoints or coverage path</td><td>route infeasible</td></tr>
+<tr><td>Position</td><td>pose estimate, waypoint</td><td>desired velocity or acceleration</td><td>tracking drift</td></tr>
+<tr><td>Attitude</td><td>desired thrust direction</td><td>body-rate target</td><td>tilt or saturation</td></tr>
+<tr><td>Rate</td><td>body-rate target</td><td>motor commands</td><td>oscillation or actuator limit</td></tr>
+<tr><td>Safety</td><td>geofence, failsafe, health state</td><td>land, hold, return, abort</td><td>late intervention</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Geometric Control And MPC</h2>
+<p>Geometric control treats attitude directly on $SO(3)$, avoiding Euler-angle singularities. Nonlinear MPC adds constraints for thrust, tilt, obstacle clearance, geofences, and energy. The practical question is not which controller sounds more advanced, but which one meets the update deadline while keeping enough safety margin.</p>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Flight-Ready Evaluation</div>
+<ol>
+<li>Define mission goals, geofence, wind envelope, sensing mode, and emergency behaviors.</li>
+<li>Run a transparent cascaded PID or LQR baseline.</li>
+<li>Add a geometric or MPC controller on the same waypoint panel.</li>
+<li>Inject wind, latency, battery drop, sensor dropout, and obstacle perturbations.</li>
+<li>Compare tracking error, control saturation, near-collision margin, energy, and failsafe events.</li>
+</ol>
+</div>
+<pre><code class="language-python"># Drone control evidence record.
+from dataclasses import dataclass
+
+@dataclass
+class DroneMissionMetric:
+    controller: str
+    wind_mps: float
+    mean_tracking_error_m: float
+    max_tilt_deg: float
+    failsafe_events: int
+
+metric = DroneMissionMetric("geometric_controller", 6.0, 0.21, 24.0, 0)
+print(metric)</code></pre>
+<div class="code-caption">Code Fragment 47.6.1 records wind, tracking error, tilt, and failsafe events for a drone controller comparison.</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use PX4 for the flight stack, ROS 2 and MAVLink for companion-computer integration, uXRCE-DDS for current PX4 to ROS 2 middleware routing, gym-pybullet-drones and safe-control-gym for controlled learning tests, and Aerial Gym or Isaac Sim when parallel aerial simulation matters.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A high-level policy can command a trajectory that looks smooth but exceeds thrust, tilt, body-rate, or battery limits. Check actuator saturation before blaming the learning algorithm.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a wind-disturbed inspection route, compare position error, body-rate saturation, return-to-land triggers, and geofence margin for each controller on the same waypoint panel.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Aerial robot learning is moving toward parallel simulation, constraint-aware control, and learned perception under aggressive motion, but flight-stack integration remains the gate between a paper result and a safe aircraft.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you state which layer receives the learned command: waypoint, velocity, attitude, body rate, or actuator target?</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 47.6.1</div>
+<p>Compare cascaded PID, geometric control, and MPC on the same square inspection route with wind, latency, and thrust saturation. Report tracking error, energy, saturation, and failsafe interventions.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Drone autonomy is credible when the mission planner, trajectory generator, flight controller, estimator, and failsafe behavior are evaluated as one physical stack.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">PX4 Autopilot documentation. <a href="https://docs.px4.io/main/en/" rel="noopener" target="_blank">https://docs.px4.io/main/en/</a></p><p class="bib-annotation">Official open flight-stack documentation.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">PX4 ROS 2 guide. <a href="https://docs.px4.io/main/en/ros2/" rel="noopener" target="_blank">https://docs.px4.io/main/en/ros2/</a></p><p class="bib-annotation">Official guide for ROS 2 integration with PX4.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">gym-pybullet-drones. <a href="https://github.com/utiasDSL/gym-pybullet-drones" rel="noopener" target="_blank">https://github.com/utiasDSL/gym-pybullet-drones</a></p><p class="bib-annotation">Gymnasium-style quadrotor learning environment.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Lee, Leok, and McClamroch. "Geometric Tracking Control of a Quadrotor UAV on SE(3)." <a href="https://arxiv.org/abs/1003.2005" rel="noopener" target="_blank">https://arxiv.org/abs/1003.2005</a></p><p class="bib-annotation">Foundational reference for geometric quadrotor control on SE(3).</p></div>
+<div class="bib-entry-card"><p class="bib-ref">PX4 controller diagrams. <a href="https://docs.px4.io/main/en/flight_stack/controller_diagrams" rel="noopener" target="_blank">https://docs.px4.io/main/en/flight_stack/controller_diagrams</a></p><p class="bib-annotation">Official PX4 reference for multicopter controller interfaces and loop structure.</p></div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="section-47.5.html">Section 47.5: Safety, regulation, and simulation for aerial agents</a>
+<a class="up" href="index.html">Chapter 47: Drones and Aerial Embodied AI</a>
+<a class="next" href="section-47.7.html">Section 47.7: Trajectory generation and GPS-denied missions</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · <a href="../../toc.html">Contents</a></p>
+<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}))</script></p>
+</footer>
+</main>
+</body>
+</html>

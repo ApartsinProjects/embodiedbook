@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="Section 47.7 of Building Embodied AI: From Perception to Autonomous Action: Trajectory generation and GPS-denied missions." name="description"/>
+<title>Section 47.7: Trajectory generation and GPS-denied missions | Building Embodied AI: From Perception to Autonomous Action</title>
+<link href="../../styles/book.css" rel="stylesheet"/>
+<link href="../../styles/pygments.css" rel="stylesheet"/>
+<link href="../../vendor/prism/prism-theme.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/prism/prism-bundle.min.js"></script>
+<link href="../../vendor/katex/katex.min.css" rel="stylesheet"/>
+<script defer="" src="../../vendor/katex/katex.min.js"></script>
+<script defer="" onload="renderMathInElement(document.body, {
+  delimiters: [
+  {left: '$$', right: '$$', display: true},
+  {left: '$', right: '$', display: false}
+  ],
+  throwOnError: false
+  });" src="../../vendor/katex/contrib/auto-render.min.js"></script>
+<script defer="" src="../../scripts/book.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+<a class="book-title-link" href="../../index.html">Building Embodied AI: From Perception to Autonomous Action</a>
+<a class="toc-link" href="../../toc.html" title="Table of Contents"><span class="toc-icon">☰</span> Contents</a>
+</nav>
+<div class="header-search"><div id="search"></div></div>
+<div class="part-label"><a href="../index.html">Part IX: Manipulation, Locomotion, and Embodied Skills</a></div>
+<div class="chapter-label"><a href="index.html">Chapter 47: Drones and Aerial Embodied AI</a></div>
+<h1>Section 47.7: Trajectory generation and GPS-denied missions</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"A robot earns trust one recovered disturbance at a time."</p><cite>A Field-Tested Control Loop</cite></blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A drone mission is a route-planning problem, a trajectory-generation problem, a perception problem, and a safety problem at the same time. The right abstraction depends on whether the drone is choosing where to inspect, how to fly there, or how to recover when the state estimate degrades.</p>
+</div>
+<figure class="illustration">
+<img src="images/chapter-47-illustration-07.png" alt="Cartoon drone inspecting an indoor warehouse using visual and inertial sensing breadcrumbs without GPS." loading="lazy"/>
+<figcaption><strong>Figure 47.7A</strong>: GPS-denied flight turns localization confidence, trajectory smoothness, mission coverage, and emergency behavior into one planning problem.</figcaption>
+</figure>
+<h2>Routes, Trajectories, And Commands</h2>
+<p>A route is an ordered set of mission goals. A trajectory is a time-parameterized path with position, velocity, acceleration, yaw, and sometimes snap. A command is what the flight stack can actually accept at the current interface: position setpoint, velocity setpoint, attitude target, body rate, or actuator command.</p>
+<p>Minimum-snap trajectory generation is useful because quadrotors can track smooth high-order trajectories. For polynomial segment $p(t)$, the optimizer often minimizes an integral such as $\int \lVert p^{(4)}(t) \rVert^2 dt$ subject to waypoint, velocity, acceleration, and continuity constraints.</p>
+<div class="callout key-insight">
+<div class="callout-title">The Interface Chooses The Risk</div>
+<p>Sending waypoints to PX4 is safer and less expressive than sending body-rate commands. Sending body-rate commands gives the autonomy stack more authority, but also more ways to violate assumptions.</p>
+</div>
+<h2>GPS-Denied Autonomy</h2>
+<p>Indoor inspection, tunnels, warehouses, forests, and disaster sites often require autonomy without reliable GPS. The stack then depends on visual-inertial odometry, lidar odometry, SLAM, loop closure, obstacle avoidance, and health monitoring. The mission planner must know when localization confidence is too weak for continued flight.</p>
+<p>The fragile details are frame convention, timestamp alignment, estimator fusion, relocalization, and failsafe behavior. A camera plus IMU pose estimate that is delayed, expressed in the wrong frame, or fused without covariance discipline can look smooth in a plot while pushing the drone into a wall.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Drone Autonomy Interfaces</div>
+<table>
+<thead><tr><th>Interface</th><th>Use When</th><th>Main Risk</th></tr></thead>
+<tbody>
+<tr><td>Mission waypoints</td><td>The environment is known and safety envelope is simple</td><td>Poor local obstacle response</td></tr>
+<tr><td>Offboard velocity</td><td>The companion computer handles local planning</td><td>Latency and estimator drift</td></tr>
+<tr><td>Trajectory setpoints</td><td>The route requires smooth aggressive motion</td><td>Infeasible timing or thrust</td></tr>
+<tr><td>Body-rate targets</td><td>Research needs direct agile control</td><td>Thin safety margin</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Inspection And Coverage Planning</h2>
+<p>Inspection planning adds coverage constraints: each surface, asset, or viewpoint should be observed with sufficient angle, distance, resolution, and overlap. Multi-drone planning adds communication, collision avoidance, task allocation, and battery-aware return-to-home constraints.</p>
+<pre><code class="language-python"># Inspection route scoring sketch.
+viewpoints = [
+    {"id": "roof_edge", "coverage": 0.22, "risk": 0.10, "energy": 0.18},
+    {"id": "north_wall", "coverage": 0.31, "risk": 0.18, "energy": 0.25},
+    {"id": "antenna", "coverage": 0.19, "risk": 0.32, "energy": 0.22},
+]
+score = sum(v["coverage"] - 0.5 * v["risk"] - 0.2 * v["energy"] for v in viewpoints)
+print(round(score, 3))</code></pre>
+<div class="code-caption">Code Fragment 47.7.1 scores an inspection route by balancing coverage, risk, and energy in one inspectable expression.</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For bridge inspection, require each candidate path to specify camera distance, viewing angle, overlap, battery reserve, wind limit, geofence margin, and emergency landing zones.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use PX4 offboard mode, ROS 2, MAVLink, QGroundControl, VIO or lidar SLAM packages, and simulation-first evaluation. Avoid deprecated trajectory interfaces and verify current flight-stack support before teaching an API.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Regulatory Reality Check</div>
+<p>For United States operations, Remote ID, visual-line-of-sight rules, geofencing, emergency landing, return-to-land behavior, and staged SITL-to-hardware testing belong in the mission design. For non-US deployment, replace this with the local aviation authority and operational risk framework.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>The hard frontier for drone missions is not only better path search. It is combining semantic inspection goals, uncertain localization, wind-aware trajectory generation, and multi-agent deconfliction without losing real-time safety guarantees.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you separate the mission route, smooth trajectory, flight-stack command interface, localization source, and emergency behavior for a GPS-denied inspection task?</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 47.7.1</div>
+<p>Design a GPS-denied warehouse inspection mission. Specify localization, map representation, trajectory interface, geofence, battery reserve, emergency behaviors, and the scenario panel used before hardware flight.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>A route is not enough. A flyable drone mission needs localization confidence, smooth feasible trajectories, current flight-stack interfaces, and explicitly tested failsafes.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">MAVLink developer guide. <a href="https://mavlink.io/en/" rel="noopener" target="_blank">https://mavlink.io/en/</a></p><p class="bib-annotation">Protocol reference for drone messaging and companion-computer integration.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">MAVLink trajectory interface. <a href="https://mavlink.io/en/services/trajectory.html" rel="noopener" target="_blank">https://mavlink.io/en/services/trajectory.html</a></p><p class="bib-annotation">Reference that notes older trajectory interface deprecation and reinforces current API verification.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Aerial Gym Simulator. <a href="https://ntnu-arl.github.io/aerial_gym_simulator/" rel="noopener" target="_blank">https://ntnu-arl.github.io/aerial_gym_simulator/</a></p><p class="bib-annotation">Parallel aerial robot simulation reference.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Mellinger and Kumar. "Minimum snap trajectory generation and control for quadrotors." <a href="https://doi.org/10.1109/ICRA.2011.5980409" rel="noopener" target="_blank">https://doi.org/10.1109/ICRA.2011.5980409</a></p><p class="bib-annotation">Classic trajectory-generation reference for smooth quadrotor waypoint flight.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">PX4 visual inertial odometry. <a href="https://docs.px4.io/main/en/computer_vision/visual_inertial_odometry" rel="noopener" target="_blank">https://docs.px4.io/main/en/computer_vision/visual_inertial_odometry</a></p><p class="bib-annotation">Official PX4 reference for VIO integration and GPS-denied flight context.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">FAA Remote ID, 14 CFR Part 89. <a href="https://www.ecfr.gov/current/title-14/chapter-I/subchapter-F/part-89" rel="noopener" target="_blank">https://www.ecfr.gov/current/title-14/chapter-I/subchapter-F/part-89</a></p><p class="bib-annotation">United States regulatory reference for Remote ID requirements.</p></div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="section-47.6.html">Section 47.6: Quadrotor dynamics and flight control</a>
+<a class="up" href="index.html">Chapter 47: Drones and Aerial Embodied AI</a>
+<a class="next" href="section-47.8.html">Section 47.8: PX4 To Hardware: SITL, HITL, Logs, And Flight-Test Evidence</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · <a href="../../toc.html">Contents</a></p>
+<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}))</script></p>
+</footer>
+</main>
+</body>
+</html>

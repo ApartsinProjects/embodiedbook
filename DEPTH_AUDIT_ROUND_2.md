@@ -76,20 +76,16 @@ This audit reads every section HTML file and applies the book-writers depth rubr
 | Score | Verdict | Section | Issues | Recommendation |
 |---:|---|---|---|---|
 | 42 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.8.html` | none | Keep. Spot-check only during publication QA. |
-| 42 | COURSE-READY | `part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.6.html` | none | Keep. Spot-check only during publication QA. |
 | 43 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.5.html` | none | Keep. Spot-check only during publication QA. |
 | 43 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.1.html` | none | Keep. Spot-check only during publication QA. |
-| 43 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.4.html` | none | Keep. Spot-check only during publication QA. |
 | 43 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.5.html` | none | Keep. Spot-check only during publication QA. |
-| 43 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.6.html` | none | Keep. Spot-check only during publication QA. |
 | 43 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.7.html` | none | Keep. Spot-check only during publication QA. |
+| 43 | COURSE-READY | `part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.6.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.8.html` | none | Keep. Spot-check only during publication QA. |
-| 44 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.6.html` | none | Keep. Spot-check only during publication QA. |
-| 44 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.1.html` | none | Keep. Spot-check only during publication QA. |
-| 44 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.3.html` | none | Keep. Spot-check only during publication QA. |
+| 44 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.4.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.4.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.6.html` | none | Keep. Spot-check only during publication QA. |
-| 44 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.4.html` | none | Keep. Spot-check only during publication QA. |
+| 44 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.6.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.8.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-7-language-vision-and-action/module-34-vision-language-action-models/section-34.2.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.3.html` | none | Keep. Spot-check only during publication QA. |
@@ -110,11 +106,15 @@ This audit reads every section HTML file and applies the book-writers depth rubr
 | 44 | COURSE-READY | `part-9-manipulation-locomotion-and-embodied-skills/module-48-autonomous-driving-as-embodied-ai/section-48.4.html` | none | Keep. Spot-check only during publication QA. |
 | 44 | COURSE-READY | `part-9-manipulation-locomotion-and-embodied-skills/module-48-autonomous-driving-as-embodied-ai/section-48.5.html` | none | Keep. Spot-check only during publication QA. |
 | 45 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.4.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.6.html` | none | Keep. Spot-check only during publication QA. |
 | 45 | COURSE-READY | `part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.6.html` | none | Keep. Spot-check only during publication QA. |
 | 45 | COURSE-READY | `part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.7.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.1.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.3.html` | none | Keep. Spot-check only during publication QA. |
 | 45 | COURSE-READY | `part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.5.html` | none | Keep. Spot-check only during publication QA. |
-| 45 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.1.html` | none | Keep. Spot-check only during publication QA. |
-| 45 | COURSE-READY | `part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/section-35.6.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.4.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/section-35.7.html` | none | Keep. Spot-check only during publication QA. |
+| 45 | COURSE-READY | `part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.7.html` | none | Keep. Spot-check only during publication QA. |
 ## Agent Rubric Notes
 - Deep explanation gate: a section must answer what, why, how, and when it fails, not only define the topic.
 - Code pedagogy gate: runnable fragments need a reason to exist, named inputs and outputs, and expected-output interpretation when output is nontrivial.
