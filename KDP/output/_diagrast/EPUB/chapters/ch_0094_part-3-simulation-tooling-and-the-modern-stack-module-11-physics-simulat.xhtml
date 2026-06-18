@@ -1,0 +1,114 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 11.1: What Physics Simulators Model</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">Building Embodied AI: From Perception to Autonomous Action<span class="toc-icon">☰</span> Contents</nav>
+
+<div class="part-label"><a href="ch_0078_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a></div>
+<div class="chapter-label"><a href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac Lab, Genesis</a></div>
+<h1>Section 11.1: What Physics Simulators Model</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"The first bug in a robot simulator is usually a promise nobody wrote down."</p>
+<figure class="illustration">
+<img alt="Cartoon educational scene for Section 11.1: What Physics Simulators Model, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/72b4c74020_chapter-11-illustration-01.jpg" />
+<figcaption><strong>Figure 11.1A</strong>: Section 11.1: What Physics Simulators Model is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+</figure>
+<cite>A Constraint-Checking AI Agent</cite></blockquote>
+<div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Before choosing MuJoCo, Isaac Lab, Genesis, or any other simulator, we need to know what a physics simulator actually promises. It updates a state through time by applying forces, constraints, contacts, and actuator commands, then exposes part of that state as observations for the agent loop introduced in <a href="ch_0018_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">Chapter 2</a>.</p>
+<p>This section applies the dynamics background from <a class="cross-ref" href="ch_0054_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">Chapter 6: Dynamics and Simulation Math</a> to the simulator stack introduced in <a class="cross-ref" href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">Chapter 9: Why Simulation Is Central</a>. It also prepares the GPU training workflows in <a class="cross-ref" href="ch_0136_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a> and the randomization workflow in <a class="cross-ref" href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a> by tying tool choice to measurable task risk.</p>
+</div>
+<h2>The Physics Contract</h2>
+<p>A simulator answers a question: given the current state $s_t$, an action $a_t$, and a time step $\Delta t$, what state should come next? For rigid-body robotics, the state usually includes body poses, velocities, joint positions, joint velocities, actuator states, and contacts. The update can be summarized as:</p>
+<p><img src="../math/m_346496e754696da4.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /></p>
+<p>The parameters $\theta$ contain masses, inertias, joint limits, friction coefficients, damping, solver tolerances, sensor noise, and contact settings. This equation looks compact, but each term is a modeling choice that can decide whether a learned policy transfers to reality.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">What The Simulator Models</div>
+<table>
+<thead><tr><th>Component</th><th>What it means</th><th>Why it matters for action</th><th>Common failure</th></tr></thead>
+<tbody>
+<tr><td>Bodies</td><td>Rigid or deformable objects with mass and inertia</td><td>Determines acceleration, impact, and balance</td><td>Incorrect inertia makes policies learn unrealistic motion</td></tr>
+<tr><td>Joints</td><td>Allowed motion between bodies</td><td>Defines the action space and robot kinematics</td><td>Wrong axis or limit creates impossible behaviors</td></tr>
+<tr><td>Contacts</td><td>Collision points and constraint forces</td><td>Controls grasping, walking, pushing, and sliding</td><td>Contact jitter hides real failure modes</td></tr>
+<tr><td>Friction</td><td>Resistance to sliding or rolling</td><td>Decides whether a grasp holds or a foot slips</td><td>Over-tuned friction makes sim easier than reality</td></tr>
+<tr><td>Sensors</td><td>Observed signals derived from state or rendering</td><td>Creates the partial observability seen by the agent</td><td>Perfect sensors inflate evaluation scores</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout key-insight"><div class="callout-title">Model The Error Budget</div><p>The most useful simulator is not the one with the longest feature list. It is the one whose simplifications you can name, measure, and include in the evaluation plan. This is the bridge from <a href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">Chapter 9</a> to the transfer work in <a href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13</a>.</p></div>
+<h2>A Minimal Contact Stepper</h2>
+<p>Code Fragment 1 below implements a tiny one-dimensional contact model with NumPy. It is not a replacement for a simulator. Its purpose is to make the contract visible: integration, gravity, floor contact, and friction are separate modeling decisions.</p>
+<pre><code class="language-python"><span class="c1"># Minimal physics stepper: integrate a falling block with floor contact.</span>
+<span class="c1"># NumPy is used only for clear scalar math and reproducible arrays.</span>
+<span class="c1"># The output shows how contact and friction change state over time.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">height</span> <span class="o">=</span> <span class="mf">0.20</span>
+<span class="n">velocity</span> <span class="o">=</span> <span class="o">-</span><span class="mf">0.10</span>
+<span class="n">dt</span> <span class="o">=</span> <span class="mf">0.02</span>
+<span class="n">gravity</span> <span class="o">=</span> <span class="o">-</span><span class="mf">9.81</span>
+<span class="n">restitution</span> <span class="o">=</span> <span class="mf">0.25</span>
+<span class="n">floor_height</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">trajectory</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">8</span><span class="p">):</span>
+<span class="n">velocity</span> <span class="o">=</span> <span class="n">velocity</span> <span class="o">+</span> <span class="n">gravity</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="n">height</span> <span class="o">=</span> <span class="n">height</span> <span class="o">+</span> <span class="n">velocity</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="k">if</span> <span class="n">height</span> <span class="o">&lt;</span> <span class="n">floor_height</span><span class="p">:</span>
+<span class="n">height</span> <span class="o">=</span> <span class="n">floor_height</span>
+<span class="n">velocity</span> <span class="o">=</span> <span class="o">-</span><span class="n">restitution</span> <span class="o">*</span> <span class="n">velocity</span>
+<span class="n">trajectory</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">step</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">height</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="nb">round</span><span class="p">(</span><span class="n">velocity</span><span class="p">,</span> <span class="mi">4</span><span class="p">)))</span>
+<span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">trajectory</span><span class="p">:</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">row</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>(0, 0.1941, -0.2962)
+(1, 0.1842, -0.4924)
+(2, 0.1705, -0.6886)
+(3, 0.1528, -0.8848)
+(4, 0.1312, -1.081)
+(5, 0.1057, -1.2772)
+(6, 0.0762, -1.4734)
+(7, 0.0428, -1.6696)</pre></div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> This compact stepper exposes the contract hidden inside a full simulator: update velocity, update height, detect contact, then apply restitution. The numbers show gravity accumulating before the block reaches the floor, which lets the reader inspect the integration rule directly.</div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Code Fragment 1 uses about 20 lines to teach the state update. In practice, MuJoCo reduces the same rigid-body stepping pattern to a model load plus repeated <code>mj_step</code> calls, while handling articulated bodies, constraints, contacts, actuator dynamics, sensors, and solver settings internally. The hand-built stepper remains useful because it teaches what to inspect when a full simulator behaves strangely.</p></div>
+<h2>Contacts Are The Hard Part</h2>
+<p>Free-space motion is usually not where robot simulation becomes surprising. Contact is harder because the simulator must prevent interpenetration, estimate collision points, solve constraint forces, approximate friction cones, and remain numerically stable. A grasp that succeeds in simulation because friction is too generous is not a robot skill. It is a measurement error.</p>
+<div class="callout tip"><div class="callout-title">Simulator Choice Evidence Rule</div><p>Choose a simulator by task contract, not reputation. Record the dominant physical risk, required sensor model, throughput target, asset format, and integration boundary, then run the same task panel before comparing tools.</p></div>
+<div class="callout warning"><div class="callout-title">Reality Gap Trap</div><p>If a policy only works when contact parameters are tuned to a narrow value, the simulator is not validating the policy. It is training the policy to exploit the simulator. This is why later chapters treat domain randomization, system identification, and real-world evaluation as part of one workflow.</p></div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Write down the state variables the simulator owns and the observations the agent receives.</li>
+<li>Identify the contacts that decide success: gripper-object, foot-ground, wheel-floor, drone-air, or tool-surface.</li>
+<li>Record friction, restitution, damping, and solver tolerances in the experiment config.</li>
+<li>Run one perturbation per critical parameter before trusting a result.</li>
+<li>Keep logs that separate physics failure, perception failure, policy failure, and evaluation failure.</li>
+</ol>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>For a tabletop pushing task, do not start by asking whether Isaac Lab or MuJoCo is faster. Start by asking whether object mass, table friction, contact geometry, camera pose, and action frequency match the task. Once those are written down, speed becomes meaningful because you know what the simulator is accelerating.</p></div>
+<p><strong>Expected output:</strong> Section 11.1 should leave a reproducible evidence trace with configuration, metric, and failure label.</p>
+<div class="callout self-check"><div class="callout-title">Self Check</div><p>Pick a task from your own work. Can you name the three physical parameters that would most change the outcome? If the answer is no, the simulator choice is premature.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 11.1</div><p>Modify Code Fragment 1 so the block starts with a horizontal velocity and loses 10 percent of that velocity every time it touches the floor. Explain which line represents a friction approximation and which line represents a contact approximation.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Current robot-learning systems increasingly combine fast simulation with measured uncertainty about the simulator itself. The open question is not only how to make simulation faster, but how to make simulator error visible enough that training, evaluation, and transfer can reason about it.</p></div>
+<div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>A physics simulator is a state-transition model plus a sensor model plus an error budget. If you cannot describe all three, you are not ready to interpret the result.</p></div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0095_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.2</a> turns this physics contract into concrete MuJoCo models written in MJCF or imported from URDF.</p></div>
+<section class="bibliography">
+<div class="bibliography-title">Bibliography and Further Reading</div>
+<div class="bib-category">Foundational Papers</div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.org/" rel="noopener" target="_blank">Todorov, E., Erez, T., and Tassa, Y. (2012). "MuJoCo: A physics engine for model-based control." IROS.</a></p><p class="bib-annotation">This paper explains the simulator design that made MuJoCo important for model-based control and robot learning. It is the best starting point for readers who want the mechanics behind constraints, contact, and control-oriented simulation.</p><span class="bib-meta">Paper</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://underactuated.mit.edu/" rel="noopener" target="_blank">Tedrake, R. (2024). <em>Underactuated Robotics</em>.</a></p><p class="bib-annotation">This open textbook gives the dynamics and control background needed to reason about simulated bodies and contacts. Readers who want deeper mathematical treatment of Chapter 6 and this section should keep it nearby.</p><span class="bib-meta">Book</span></div>
+<div class="bib-category">Tools &amp; Libraries</div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/computation/" rel="noopener" target="_blank">Google DeepMind. "MuJoCo Computation Documentation."</a></p><p class="bib-annotation">The computation docs describe the pipeline from model data to constraints, sensors, and stepping. They are directly relevant when a reader wants to connect this section's simplified stepper to a production simulator.</p><span class="bib-meta">Tool</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://drake.mit.edu/" rel="noopener" target="_blank">Drake Development Team. "Drake Documentation."</a></p><p class="bib-annotation">Drake provides a rigorous systems view of dynamics, simulation, planning, and control. It is useful for readers who want to see physics simulation embedded inside a larger model-based design workflow.</p><span class="bib-meta">Tool</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://gazebosim.org/docs/latest/" rel="noopener" target="_blank">Open Robotics. "Gazebo Documentation."</a></p><p class="bib-annotation">Gazebo documentation is relevant when the simulator must connect to robot middleware and sensor plugins. Readers focused on ROS 2 integration should compare these docs with the lower-level physics view in this section.</p><span class="bib-meta">Tool</span></div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac L...</a>
+<a class="up" href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac L...</a>
+<a class="next" href="ch_0095_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.2: MuJoCo and the MJCF or URDF Model Formats</a>
+</nav>
+<footer><p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p><p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p><p class="footer-updated">Last updated: </p></footer>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,121 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 11.2: MuJoCo and the MJCF or URDF Model Formats</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">Building Embodied AI: From Perception to Autonomous Action<span class="toc-icon">☰</span> Contents</nav>
+
+<div class="part-label"><a href="ch_0078_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a></div>
+<div class="chapter-label"><a href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac Lab, Genesis</a></div>
+<h1>Section 11.2: MuJoCo and the MJCF or URDF Model Formats</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"Readable robot models are debugging tools disguised as XML."</p>
+<figure class="illustration">
+<img alt="Cartoon educational scene for Section 11.2: MuJoCo and the MJCF or URDF Model Formats, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/cf7ab9a7bd_chapter-11-illustration-02.jpg"/>
+<figcaption><strong>Figure 11.2A</strong>: Section 11.2: MuJoCo and the MJCF or URDF Model Formats is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+</figure>
+<cite>A Patient Simulator Builder</cite></blockquote>
+<div class="callout big-picture"><div class="callout-title">Big Picture</div><p>MuJoCo is a compact, open, control-oriented simulator for rigid-body dynamics. Its native model language, MJCF, makes simulator assumptions visible: bodies, joints, geometries, actuators, sensors, defaults, and solver settings live in one readable file. URDF remains important because many robot descriptions start in ROS ecosystems, but converting URDF to a simulation-ready model is an engineering step, not a formality.</p></div>
+<div class="callout key-insight"><div class="callout-title">State Is The Interface</div><p>The simulator state is not just an implementation detail. It is the contract that links dynamics, observations, logging, replay, and controller debugging.</p>
+<p>This section applies the dynamics background from <a class="cross-ref" href="ch_0054_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">Chapter 6: Dynamics and Simulation Math</a> to the simulator stack introduced in <a class="cross-ref" href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">Chapter 9: Why Simulation Is Central</a>. It also prepares the GPU training workflows in <a class="cross-ref" href="ch_0136_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a> and the randomization workflow in <a class="cross-ref" href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a> by tying tool choice to measurable task risk.</p>
+</div>
+<h2>Why MuJoCo Still Matters</h2>
+<p>MuJoCo became a standard in robot learning because it is fast, scriptable, and unusually good at contact-rich rigid-body simulation for its size. It does not try to be a full robot operating environment. Instead, it gives researchers a tight loop: define a model, step dynamics, read state and sensors, apply actions, repeat. That tight loop is why MuJoCo remains useful even as larger stacks such as Isaac Lab and Genesis grow.</p>
+<div class="callout under-the-hood"><div class="callout-title">MJCF Versus URDF</div><p>MJCF is MuJoCo's native modeling format, designed for simulation. URDF is a robot description format common in ROS workflows, designed around links, joints, visual geometry, collision geometry, and transmissions. MuJoCo can load URDF, but production-quality simulation often requires checking mesh paths, inertias, collision simplification, actuator mapping, and contact parameters after import.</p></div>
+<div class="comparison-table">
+<div class="comparison-table-title">Model Format Tradeoffs</div>
+<table>
+<thead><tr><th>Format</th><th>Best use</th><th>Strength</th><th>Risk</th></tr></thead>
+<tbody>
+<tr><td>MJCF</td><td>MuJoCo-native simulation and robot-learning experiments</td><td>Readable defaults, contacts, actuators, sensors, and solver options</td><td>Less universal across ROS and CAD pipelines</td></tr>
+<tr><td>URDF</td><td>Robot descriptions shared with ROS 2, MoveIt, and hardware stacks</td><td>Common ecosystem format for links, joints, and meshes</td><td>Often underspecifies simulation details such as friction and contact quality</td></tr>
+<tr><td>MJB</td><td>Fast loading of compiled MuJoCo models</td><td>Useful for repeated runs after model compilation</td><td>Not a human-editable source of truth</td></tr>
+</tbody>
+</table>
+</div>
+<h2>A Minimal MJCF Model</h2>
+<p>Code Fragment 1 shows a complete MuJoCo model as a Python string. It defines a floor, a falling body, a joint, and a spherical geometry. The example is intentionally small so the physical assumptions are visible before MuJoCo compiles them.</p>
+<pre><code class="language-python"><span class="c1"># Build a tiny MJCF model string and inspect its key modeling choices.</span>
+<span class="c1"># MuJoCo will handle compilation, constraints, collision, and stepping.</span>
+<span class="c1"># Install with: pip install mujoco</span>
+<span class="n">mjcf</span> <span class="o">=</span> <span class="s2">"""</span>
+<span class="s2">&lt;mujoco model="falling_sphere"&gt;</span>
+<span class="s2">  &lt;option timestep="0.01" gravity="0 0 -9.81"/&gt;</span>
+<span class="s2">  &lt;worldbody&gt;</span>
+<span class="s2">    &lt;geom name="floor" type="plane" size="1 1 0.02" friction="1.0 0.005 0.0001"/&gt;</span>
+<span class="s2">    &lt;body name="ball" pos="0 0 0.25"&gt;</span>
+<span class="s2">      &lt;freejoint/&gt;</span>
+<span class="s2">      &lt;geom name="ball_geom" type="sphere" size="0.05" mass="0.2"/&gt;</span>
+<span class="s2">    &lt;/body&gt;</span>
+<span class="s2">  &lt;/worldbody&gt;</span>
+<span class="s2">&lt;/mujoco&gt;</span>
+<span class="s2">"""</span>
+<span class="k">for</span> <span class="n">phrase</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"timestep"</span><span class="p">,</span> <span class="s2">"gravity"</span><span class="p">,</span> <span class="s2">"friction"</span><span class="p">,</span> <span class="s2">"freejoint"</span><span class="p">,</span> <span class="s2">"mass"</span><span class="p">]:</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">phrase</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">phrase</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">mjcf</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>timestep: True
+gravity: True
+friction: True
+freejoint: True
+mass: True</pre></div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> This MJCF snippet names the simulator assumptions directly: timestep, gravity, friction, joint type, and mass. The printed checks are not a physics run, they are a quick audit showing which assumptions are present in the model source.</div>
+<p>After the model exists, MuJoCo reduces the manual stepper from <a href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.1</a> to a standard load, data allocation, and stepping loop. Code Fragment 2 shows the practical route, using MuJoCo's Python API to compile XML and advance the model.</p>
+<pre><code class="language-python"><span class="c1"># Load the MJCF string with MuJoCo and advance the simulation.</span>
+<span class="c1"># The library owns collision detection, constraint solving, and integration.</span>
+<span class="c1"># This is the production shortcut for the manual stepper from Section 11.1.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">mujoco</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">mujoco</span><span class="o">.</span><span class="n">MjModel</span><span class="o">.</span><span class="n">from_xml_string</span><span class="p">(</span><span class="n">mjcf</span><span class="p">)</span>
+<span class="n">data</span> <span class="o">=</span> <span class="n">mujoco</span><span class="o">.</span><span class="n">MjData</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">25</span><span class="p">):</span>
+<span class="n">mujoco</span><span class="o">.</span><span class="n">mj_step</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">data</span><span class="o">.</span><span class="n">qpos</span><span class="p">[</span><span class="mi">2</span><span class="p">]),</span> <span class="mi">4</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">nbody</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">ngeom</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">njnt</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>0.2151
+2 2 1</pre></div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> MuJoCo replaces the hand-written update loop with <code>MjModel</code>, <code>MjData</code>, and <code>mj_step</code>. The final line reports the compiled body, geometry, and joint counts, which are useful sanity checks after loading a model.</div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The from-scratch stepper in Section 11.1 used about 20 lines and modeled one vertical coordinate. MuJoCo uses a few API calls to step a compiled articulated model with contacts, constraints, sensors, and actuators. The library handles the solver and data layout, while you still own the modeling assumptions.</p></div>
+<h2>URDF Import Is Not The Finish Line</h2>
+<p>URDF is often where a robot model starts, especially in ROS 2 workflows. The problem is that a robot description that is good enough for visualization is not automatically good enough for contact-rich control. Meshes may be too detailed for collision, inertias may be missing or approximate, joint limits may differ from hardware, and transmission tags may not map cleanly to the simulator's actuator model.</p>
+<div class="callout tip"><div class="callout-title">Simulator Choice Evidence Rule</div><p>Choose a simulator by task contract, not reputation. Record the dominant physical risk, required sensor model, throughput target, asset format, and integration boundary, then run the same task panel before comparing tools.</p></div>
+<div class="callout warning"><div class="callout-title">Import Audit</div><p>After importing URDF into MuJoCo, inspect the compiled model rather than trusting the file extension. Check mass totals, joint axes, limits, collision geometry, mesh scale, actuator mapping, and whether contacts appear where the task needs them.</p></div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Use MJCF as the source of truth when the experiment is MuJoCo-native.</li>
+<li>Use URDF when the model must also serve ROS 2, MoveIt, or hardware integration.</li>
+<li>Simplify collision geometry separately from visual meshes.</li>
+<li>Keep physical parameters in version control, not in notebook cells.</li>
+<li>Run a model audit that prints body counts, joint counts, actuator ranges, masses, and contact pairs.</li>
+</ol>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A team prototyping a two-finger gripper can write a clean MJCF model in a day and test grasp contacts immediately. A team deploying the same gripper through ROS 2 may start from URDF, then maintain a MuJoCo-specific MJCF conversion for learning experiments. Both choices are valid if the ownership boundary is explicit.</p></div>
+<p><strong>Expected output:</strong> Section 11.2 should leave a reproducible evidence trace with configuration, metric, and failure label.</p>
+<div class="callout self-check"><div class="callout-title">Self Check</div><p>Which parts of a robot model are for visualization, which parts are for collision, and which parts affect dynamics? If those are mixed together in your file, debugging will be slower than it needs to be.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 11.2</div><p>Add a hinge joint and a motor actuator to the MJCF string in Code Fragment 1. State which line defines geometry, which line defines allowed motion, and which line defines how the agent can act.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>The frontier for robot model formats is moving toward richer scene interchange, especially USD, while preserving fast task-level models for learning. A durable workflow may combine URDF for robot identity, MJCF for compact control experiments, and USD for large scenes and synthetic sensors.</p></div>
+<div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>MuJoCo is strongest when you want a small, inspectable, fast dynamics loop. MJCF makes simulator assumptions readable, while URDF import should be treated as a conversion that requires auditing.</p></div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0096_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.3</a> keeps the MuJoCo mental model but changes the execution target: JAX for MJX and NVIDIA Warp for MuJoCo Warp.</p></div>
+<section class="bibliography">
+<div class="bibliography-title">Bibliography and Further Reading</div>
+<div class="bib-category">Foundational Papers</div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.org/" rel="noopener" target="_blank">Todorov, E., Erez, T., and Tassa, Y. (2012). "MuJoCo: A physics engine for model-based control." IROS.</a></p><p class="bib-annotation">This source explains why MuJoCo was designed around fast, accurate simulation for control. It is essential for readers who want to understand the design choices behind MJCF and MuJoCo's solver pipeline.</p><span class="bib-meta">Paper</span></div>
+<div class="bib-category">Tools &amp; Libraries</div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/modeling.html" rel="noopener" target="_blank">Google DeepMind. "MuJoCo Modeling Documentation."</a></p><p class="bib-annotation">The modeling docs describe MJCF, URDF loading, compilation, and model structure. Practitioners should use it when turning the examples in this section into real robot models.</p><span class="bib-meta">Tool</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/XMLreference.html" rel="noopener" target="_blank">Google DeepMind. "MuJoCo XML Reference."</a></p><p class="bib-annotation">The XML reference is the authoritative guide to MJCF tags and attributes. It is best read while editing a concrete model because each attribute controls a physical or numerical assumption.</p><span class="bib-meta">Tool</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://github.com/google-deepmind/mujoco_menagerie" rel="noopener" target="_blank">Google DeepMind. "MuJoCo Menagerie."</a></p><p class="bib-annotation">MuJoCo Menagerie provides curated robot models in MJCF. Readers building their first robot-learning experiments can study these files to see realistic modeling patterns.</p><span class="bib-meta">Tool</span></div>
+<div class="bib-entry-card"><p class="bib-ref"><a href="https://docs.ros.org/en/rolling/Tutorials/Intermediate/URDF/URDF-Main.html" rel="noopener" target="_blank">Open Robotics. "URDF Tutorials."</a></p><p class="bib-annotation">The ROS URDF tutorials explain the robot description format used across many hardware and middleware workflows. They complement this section by showing why URDF is common even when MJCF is better for MuJoCo-native simulation.</p><span class="bib-meta">Tutorial</span></div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.1: What Physics Simulators Model</a>
+<a class="up" href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac L...</a>
+<a class="next" href="ch_0096_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Section 11.3: MuJoCo MJX and MuJoCo Warp</a>
+</nav>
+<footer><p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p><p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p><p class="footer-updated">Last updated: </p></footer>
+</main>
+
+</body>
+</html>
