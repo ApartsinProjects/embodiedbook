@@ -18,13 +18,15 @@ Archived prior plan: `archive/building_embodied_ai_book_plan_v1_ARCHIVED.md`
 
 ## Series Promise
 
-This book belongs to **Hands-On AI Science**, the series pattern used by **Building Vision AI**. The series promise is:
+This book belongs to **Hands-On AI Science**. As of the 2026-06 streamline, the book is **retargeted to practitioners and researchers** (the Boston Dynamics engineer and the embodied-AI research scientist), not to broad undergraduate self-study. The series promise, in this retargeted form, is:
 
-1. Serious scientific depth, from first principles to the research frontier.
-2. Serious building, with runnable code, labs, recipes, and production tools.
-3. Self-contained teaching, suitable for advanced undergraduate study, graduate study, self-study, and focused seminars.
-4. A paired teaching rhythm: from-scratch mechanism first, library shortcut second.
+1. Serious scientific depth, from first principles to the research frontier, at a density a researcher will respect.
+2. Serious building, with runnable, topic-specific code, real labs, recipes, and maintained production tools.
+3. One authoritative voice: each concept is stated once, well, and cross-referenced rather than repeated.
+4. A paired rhythm where it earns its place: from-scratch mechanism, then the maintained library path.
 5. Current practice, with maintained tools, version caveats, and deprecated tools marked clearly.
+
+Audience note: the prior promise of self-contained undergraduate teaching is retired. Prerequisite material is pushed to the appendices and assumed, not re-taught inline.
 
 ## Source Of Truth For Visual Format
 
@@ -118,22 +120,26 @@ Core callouts:
 
 Every callout needs a `.callout-title` unless the VisionAI pattern for that class explicitly omits it.
 
-## Required Teaching Pattern
+## Lean Section Contract (replaces the old 12-step teaching pattern)
 
-Every chapter follows:
+The old 12-step uniform pattern was the duplication engine: instantiated 379 times with the topic name slotted in, it produced ~70-80% scaffold per section. It is retired. The governing rule now:
 
-1. Motivation anchored in a real embodied system.
-2. Concept map on the perception-action loop.
-3. Theory and formalism.
-4. Worked miniature example.
-5. From-scratch implementation.
-6. Library shortcut using a maintained tool.
-7. Practical recipe and default settings.
-8. Failure modes and debugging.
-9. Hands-on lab.
-10. Conceptual exercises, derivation exercises, coding exercises, and project extension.
-11. Bibliography and further reading.
-12. What is next.
+> **Non-substitutability.** If swapping the topic name would leave a passage unchanged, the passage is boilerplate and is cut. Each idea is stated once; repetition is replaced by a `cross-ref`.
+
+A section contains only what earns its place, in roughly this order:
+
+1. **One-paragraph frame.** Why this matters and where it sits in the loop, in the topic's own words. No template epigraph, no "Reader Pathway," no "What This Section Develops."
+2. **Theory / mechanism at depth.** The real equations, derivation sketch, assumptions, and regime of validity. This is the center of gravity (the former optional "Technical Core," now mandatory).
+3. **One real worked example or algorithm** with correct, topic-specific, runnable code. No filler snippets, no `plan = [skill for skill in skills]`, no `EvidenceRecord` bookkeeping.
+4. **Specific practice:** the named, versioned maintained-tool path; default settings that actually work; the 2-4 failure modes that actually occur for this topic.
+5. **Research grounding:** the key papers and the open problem, stated precisely.
+6. **At most one** compact exercise or lab, and only if it is real and topic-true.
+
+Banned section furniture (removed in the de-scaffold sweep): "Reader Pathway," generic "Builder's Deep Dive," generic "Implementation Recipe," generic "Failure Analysis Pattern," "Practical Tool Choices For Section," "Production Notes For Readers," "Instructor And Builder Notes," the "evidence artifact" toy labs, fabricated metric tables, and duplicate code blocks.
+
+## Quality Gate
+
+A section passes only if: (1) non-substitutable; (2) a real derivation/algorithm with assumptions is present; (3) code is topic-true and runs; (4) failure modes are specific; (5) tooling is named, versioned, and current; (6) research grounding is precise; (7) no content duplicates material stated elsewhere. Enforced by `scripts/audit_boilerplate.py` (repetition is a defect) alongside the structural audit.
 
 ## Right Tool Principle
 

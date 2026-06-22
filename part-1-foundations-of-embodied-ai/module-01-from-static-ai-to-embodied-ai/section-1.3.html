@@ -37,16 +37,12 @@
 <blockquote class="epigraph"><p>"Interfaces matter because the agent can only act on what the experiment lets it see and do."</p>
 <figure class="illustration">
 <img alt="Technical illustration for Section 1.3: Agents, environments, observations, actions, rewards, constraints." loading="lazy" src="images/chapter-01-illustration-03.png"/>
-<figcaption><strong>Figure 1.3A</strong>: Section 1.3: Agents, environments, observations, actions, rewards, constraints is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<figcaption><strong>Figure 1.3A</strong>: The task contract made physical: what the agent senses (observation), what it commands (action), what the world does in response (transition), what it is graded on (reward), and the boundary it must not cross (constraint).</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Agents, environments, observations, actions, rewards, and constraints</strong> are the interface words that keep embodied AI experiments honest. They separate what the agent can see, what it can change, what the evaluator rewards, and what the system is not allowed to violate.</p>
-</div>
-<div class="callout pathway">
-<div class="callout-title">Reader Pathway</div>
-<p>Read this section as an interface manifest. First separate state from observation, then separate action authority from reward, then add constraints that remain visible even when the reward looks good.</p>
+<p>Six words, agent, environment, observation, action, reward, constraint, are not vocabulary; they are a contract that pins down exactly what an embodied learning problem <em>is</em> before any algorithm touches it. The contract is a tuple. Write the tuple down and the hard questions become explicit: is the state observed or only partially sensed, is the action a discrete menu or a torque vector, is the objective a single reward or a reward subject to a cost budget. Get the tuple wrong and every downstream result is measuring a different problem than the one you meant. This section gives the formal contract at full precision: the MDP, its partially observed extension that almost every embodied task actually inhabits, and the constrained variant that captures the safety and resource limits real robots cannot ignore.</p>
 </div>
 <figure aria-labelledby="fig-1-3-title" class="concept-diagram">
 <svg aria-labelledby="fig-1-3-title fig-1-3-desc" role="img" viewbox="0 0 760 250" xmlns="http://www.w3.org/2000/svg">
@@ -73,144 +69,143 @@
 <text fill="#37474f" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" text-anchor="middle" x="642" y="104">what the next step inherits</text>
 <text fill="#6a1b9a" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" text-anchor="middle" x="380" y="221">Closed-loop feedback makes the next input depend on the last action.</text>
 </svg>
-<figcaption>Figure 1.3. Agents, environments, observations, actions, rewards, constraints is easiest to reason about as a closed-loop evidence, decision, consequence pattern: interface terms separate what the agent sees from what the evaluator knows.</figcaption>
+<figcaption>Figure 1.3. The contract as a closed loop: the agent receives an observation (a lossy view of state), chooses an action, and inherits the consequence as the next observation. Reward grades preference along the loop; cost is accounted separately against a budget.</figcaption>
 </figure>
-<h2>What This Section Develops</h2>
-<p>This section turns six familiar reinforcement-learning terms into a practical contract for embodied systems. The contract prevents a common mistake: treating the reward as the whole task while leaving observations, action limits, and safety constraints implicit.</p>
-<p>The key question is practical: what does the evaluator know, what does the agent actually observe, what actions are physically available, and which constraints must remain separate from reward?</p>
+<h2>The task contract is a tuple</h2>
+<p>The base contract for a fully observed embodied task is a Markov decision process, the tuple $(\mathcal{S},\mathcal{A},P,r,\gamma,\rho_0)$. Here $\mathcal{S}$ is the state space (every configuration the world can be in: joint angles, object poses, contact state), $\mathcal{A}$ is the action space, $P(s' \mid s,a)$ is the transition kernel giving the probability of landing in state $s'$ after taking action $a$ in state $s$, $r(s,a)$ is the scalar reward, $\gamma \in [0,1)$ is the discount factor, and $\rho_0$ is the initial-state distribution. A policy $\pi(a \mid s)$ closes the loop. The Markov property is the load-bearing assumption: $s_t$ summarizes all history relevant to the future, so $P$ and $r$ may condition on $s_t$ alone.</p>
+<p>The objective is the discounted return, and the policy is graded by its expected value:</p>
+<p>$$G_t = \sum_{k=0}^{\infty} \gamma^{k} r_{t+k}, \qquad J(\pi) = \mathbb{E}_{s_0 \sim \rho_0,\, a_t \sim \pi,\, s_{t+1}\sim P}\!\left[\sum_{t=0}^{\infty} \gamma^{t} r(s_t,a_t)\right].$$</p>
+<p>Two distinctions in this objective are routinely conflated and cost teams weeks. <em>Reward</em> $r_t$ is a per-step quantity; <em>return</em> $G_t$ is the discounted sum the policy actually optimizes. A reward that looks correct step by step can induce a return that rewards stalling, oscillating, or any behavior the discount happens to favor. And the expectation is taken over the policy-induced trajectory distribution, so changing $\pi$ changes the states on which $r$ is sampled, the coupling developed in Section 1.1.</p>
+<h2>Why embodied tasks are partially observed</h2>
+<p>The MDP assumes the agent sees $s_t$. A robot never does. It sees pixels, joint encoders, force readings, and a language instruction, none of which recover full object pose, mass, friction, or another agent's intent. The honest contract is therefore a partially observable MDP (POMDP), the tuple $(\mathcal{S},\mathcal{A},\mathcal{O},P,Z,r,\gamma)$, which adds an observation space $\mathcal{O}$ and an observation function</p>
+<p>$$Z(o \mid s',a) = \Pr(o_{t+1}=o \mid s_{t+1}=s',\, a_t=a),$$</p>
+<p>the probability of receiving observation $o$ after action $a$ lands the world in state $s'$. Because $Z$ is generally many-to-one and noisy, the observation $o_t$ is a lossy projection of the state, not the state. A POMDP policy cannot be Markov in $o_t$; it must act on a sufficient statistic of history, the belief state $b_t(s) = \Pr(s_t = s \mid o_{0:t}, a_{0:t-1})$, which is itself updated by Bayes' rule through $Z$ and $P$. The belief MDP over $b_t$ is the formally correct object, and it is why memory, filtering, and recurrent or transformer policies appear the moment a task is genuinely partially observed.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A reward names preference. A constraint names a boundary. If those are merged into one scalar too early, a policy can appear strong while learning to trade safety, recoverability, or hardware limits for short-term score.</p>
+<div class="callout-title">Observation is not state</div>
+<p>The single most common modeling error in embodied AI is writing a policy $\pi(a \mid o_t)$ and reasoning about it as if $o_t = s_t$. Under partial observation, two distinct states can emit the same observation, so any reactive policy on $o_t$ is provably suboptimal for tasks that require disambiguating them. The fix is not a better network on $o_t$ alone; it is giving the policy access to history, $\pi(a \mid o_{0:t}, a_{0:t-1})$, so it can carry the belief the single observation cannot.</p>
 </div>
-<h2>Theory</h2>
-<p>A useful formal model is the constrained partially observed decision process $\mathcal{M}=(\mathcal{S},\mathcal{O},\mathcal{A},T,O,r,c,\gamma)$. The environment state $s_t$ lives in $\mathcal{S}$, the agent receives observation $o_t$ from $\mathcal{O}$, chooses action $a_t$ from $\mathcal{A}$, and the transition model $T$ determines what can happen next. The reward $r$ measures task progress, while the cost or constraint signal $c$ records violations such as collision, force, workspace, energy, or latency limits.</p>
-<p>The important separation is epistemic. The evaluator may know the simulator state, the full object pose, or the collision margin. The agent often sees only an image, a proprioceptive vector, a tactile event, or a language instruction. A reproducible experiment states both views instead of pretending they are the same.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is an interface boundary. Observations constrain belief, actions constrain authority, rewards shape optimization, and constraints bound acceptable behavior. Debugging becomes possible when each boundary has a logged field and unit.</p>
+<h2>Action spaces are a design decision, not a given</h2>
+<p>The set $\mathcal{A}$ is chosen, and the choice determines what can be learned. Common forms: a <em>discrete</em> menu ($\mathcal{A}=\{1,\dots,n\}$, e.g. a fixed set of grasp primitives); a <em>continuous</em> motor space ($\mathcal{A}\subseteq\mathbb{R}^d$, e.g. joint torques or end-effector velocities, almost always box-bounded by actuator limits); and a <em>hierarchical</em> space, where a high-level policy emits a subgoal or skill index and a low-level policy emits the motor command that realizes it, factoring $\pi = \pi_{\text{hi}} \circ \pi_{\text{lo}}$. The same physical robot can be posed as a discrete-action problem (pick which skill) or a continuous-control problem (emit the torque), and these are not the same learning problem: they differ in exploration cost, sample complexity, and which failures are even representable.</p>
+<h2>Embodied tasks are almost always constrained</h2>
+<p>An unconstrained objective lets the optimizer spend anything to gain reward, including force, energy, and collision risk a real platform cannot afford. The contract that captures hard limits is the constrained MDP (CMDP) of Altman: an MDP augmented with one or more cost functions $c_i(s,a)\ge 0$ and budgets $d_i$. The agent maximizes return subject to a bound on expected discounted cost,</p>
+<p>$$\max_{\pi}\; J(\pi) \quad \text{subject to} \quad J_{c_i}(\pi) = \mathbb{E}_{\tau\sim\pi}\!\left[\sum_{t=0}^{\infty}\gamma^{t} c_i(s_t,a_t)\right] \le d_i \quad \text{for each } i.$$</p>
+<p>The distinction from a reward penalty is structural, not cosmetic. Folding cost into reward as $r - \lambda c$ commits to a single exchange rate $\lambda$ chosen before training; the optimizer is then free to buy back any amount of safety violation whenever $\lambda c$ is cheaper than the reward gained. The CMDP keeps $c$ as a separate accounting line with its own budget $d$, so "collide less than $d$ times in expectation" is a commitment the optimizer must respect rather than a price it may pay. This is why later chapters reach for Lagrangian methods (which adapt $\lambda$ to enforce the budget) and constrained policy optimization rather than a hand-tuned penalty.</p>
+<div class="callout key-insight">
+<div class="callout-title">Reward names preference; cost names a boundary</div>
+<p>A reward says "more of this is better." A cost with a budget says "you may not cross this line, regardless of how much reward lies beyond it." Merging them into one scalar too early throws away exactly the structure that lets you certify a policy as safe, because once the line is a price, a sufficiently large reward will always pay it.</p>
 </div>
-<h2>Worked Example</h2>
-<p>Code Fragment 1.3.1 makes the boundary explicit for a tabletop pick. The agent sees a noisy pose estimate and a short action menu, while the evaluator records reward and constraint status from the same transition.</p>
-<pre><code class="language-python"># Separate the agent&#x27;s local view from the evaluator&#x27;s full transition record.
-# Keep reward and constraint labels distinct so success cannot hide a violation.
-transition = {
-    "true_block_pose": (0.42, 0.18),
-    "observed_block_pose": (0.40, 0.21),
-    "available_actions": ["approach", "grasp", "relocalize"],
-    "chosen_action": "grasp",
-    "reward": 1.0,
-    "constraint_violation": "force_limit",
-}
-def split_views(payload: dict[str, object]) -&gt; tuple[dict[str, object], dict[str, object]]:
-    agent_view = {
-        "observation": payload["observed_block_pose"],
-        "actions": payload["available_actions"],
-    }
-    evaluator_view = {
-        "state": payload["true_block_pose"],
-        "action": payload["chosen_action"],
-        "reward": payload["reward"],
-        "constraint": payload["constraint_violation"],
-    }
-    return agent_view, evaluator_view
+<h2>The contract as runnable code</h2>
+<p>The environment below instantiates the full contract for a deliberately small embodied task: a point effector on a line must reach a goal while a wall it cannot pass through sits between some states and that goal. State is the true effector position; the agent never sees it directly, it receives a noisy position reading, making the task a POMDP. The action is a bounded continuous velocity command. Reward is shaped progress toward the goal; collision with the wall is logged as a separate cost, not subtracted from reward, making the task a CMDP. The episode terminates on reaching the goal and truncates at a step limit.</p>
+<pre><code class="language-python"># A minimal embodied task contract as a Gymnasium-style environment:
+# 1D reach-to-goal under partial observation (noisy position) with a separate collision cost.
+# obs != state (POMDP); reward and cost are distinct fields (CMDP).
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
 
-agent_view, evaluator_view = split_views(transition)
-print("agent_view:", agent_view)
-print("evaluator_view:", evaluator_view)</code></pre>
-<div class="code-output">agent_view: {'observation': (0.4, 0.21), 'actions': ['approach', 'grasp', 'relocalize']}
-evaluator_view: {'state': (0.42, 0.18), 'action': 'grasp', 'reward': 1.0, 'constraint': 'force_limit'}</div>
-<div class="code-caption">Code Fragment 1.3.1 separates the noisy observation available to the policy from the fuller transition record used by the evaluator. The example also keeps <code>reward</code> and <code>constraint_violation</code> as different fields, which prevents a successful grasp from hiding an unsafe force event.</div>
-<p><strong>Expected output:</strong> the two printed views should differ. If the agent view and evaluator view are identical, the experiment is probably leaking state information into the policy.</p>
+
+class Reach1D(gym.Env):
+    metadata = {"render_modes": []}
+
+    def __init__(self, obs_noise=0.02, wall_x=0.5, max_steps=100):
+        super().__init__()
+        self.obs_noise = obs_noise      # std of the position sensor; obs is a lossy view of state
+        self.wall_x = wall_x            # impassable wall the effector must not push through
+        self.max_steps = max_steps
+        self.goal = 0.9
+        # Continuous, box-bounded action: a velocity command clipped to actuator limits.
+        self.action_space = spaces.Box(low=-0.1, high=0.1, shape=(1,), dtype=np.float32)
+        # Observation is the noisy reading plus the goal; it is NOT the true state x.
+        self.observation_space = spaces.Box(
+            low=np.array([0.0, 0.0], dtype=np.float32),
+            high=np.array([1.0, 1.0], dtype=np.float32),
+        )
+
+    def _obs(self):
+        noisy = self.x + self.np_random.normal(0.0, self.obs_noise)
+        return np.array([np.clip(noisy, 0.0, 1.0), self.goal], dtype=np.float32)
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.x = 0.1                    # true state, hidden from the agent
+        self.steps = 0
+        return self._obs(), {"true_x": self.x}
+
+    def step(self, action):
+        a = float(np.clip(action, self.action_space.low, self.action_space.high)[0])
+        prev_x = self.x
+        proposed = np.clip(self.x + a, 0.0, 1.0)
+        # The wall is impassable: a move that would cross it is blocked and incurs a cost.
+        crossed = (prev_x - self.wall_x) * (proposed - self.wall_x) < 0
+        cost = 1.0 if crossed else 0.0
+        self.x = prev_x if crossed else proposed
+
+        dist = abs(self.goal - self.x)
+        reward = (abs(self.goal - prev_x) - dist)   # shaped progress; cost is NOT folded in
+        terminated = dist < 0.02
+        if terminated:
+            reward += 1.0
+        self.steps += 1
+        truncated = self.steps >= self.max_steps
+        info = {"cost": cost, "true_x": self.x}      # cost kept on its own accounting line
+        return self._obs(), float(reward), terminated, truncated, info
+
+
+if __name__ == "__main__":
+    env = Reach1D()
+    obs, info = env.reset(seed=0)
+    total_reward, total_cost = 0.0, 0.0
+    for _ in range(env.max_steps):
+        action = env.action_space.high           # naive: always push toward the goal
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
+        total_cost += info["cost"]
+        if terminated or truncated:
+            break
+    print(f"return={total_reward:.3f}  collision_cost={total_cost:.0f}  reached={terminated}")</code></pre>
+<div class="code-caption">Code 1.3.1. The contract in executable form. The agent's <code>observation_space</code> exposes a noisy reading, never the true state <code>x</code> (POMDP); the <code>action_space</code> is a box-bounded velocity (continuous control); and collision is returned in <code>info["cost"]</code> as a separate line, never subtracted from reward (CMDP). A naive always-forward policy reaches the goal but logs a nonzero collision cost, exactly the trade a reward-only formulation would hide.</div>
 <div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut: Spaces And Wrappers</div>
-<p>Gymnasium turns the same contract into declared observation spaces, action spaces, rewards, termination flags, truncation flags, and wrapper-managed logs. PettingZoo extends the contract when multiple agents alter the transition dynamics. These tools do not choose the right abstraction for you, but they make the chosen abstraction inspectable.</p>
+<div class="callout-title">Library shortcut: Gymnasium and PettingZoo</div>
+<p>Gymnasium standardizes precisely the tuple above: typed <code>observation_space</code> and <code>action_space</code> (so $\mathcal{O}$ and $\mathcal{A}$ are declared, not implied), the <code>reset()</code>/<code>step()</code> protocol, and the five-value return that separates <code>terminated</code> (the task ended) from <code>truncated</code> (a time limit cut it off), with everything else, including costs, carried in <code>info</code>. PettingZoo extends the same protocol to multiple agents, where each agent has its own observation and action space and the others are part of the environment dynamics. For the constrained case, Safety-Gymnasium adds a first-class cost channel so $J_c(\pi)\le d$ is enforced rather than buried. These libraries do not choose your abstraction; they make the abstraction you chose explicit and inspectable.</p>
 </div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the hidden state fields the evaluator may use, then write the smaller observation fields the agent receives.</li>
-<li>Declare the action space with units, rate limits, and invalid-action handling.</li>
-<li>Keep reward and constraint logs separate until final reporting.</li>
-<li>Record termination, truncation, recovery, and safety fields in every episode artifact.</li>
-<li>Run one ablation where reward is unchanged but a constraint changes, then inspect whether the policy behavior changes.</li>
-</ol>
 <div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>Reward hacking often begins as interface ambiguity. If collision, time, energy, and intervention are folded into one opaque score, a policy can improve the score by exploiting the measurement rather than solving the task.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example: Bin Picking Contract</div>
-<p>For a bin-picking arm, the environment state may include every object pose and contact force, but the agent may see only an RGB-D crop and gripper opening. The action might be a 6D grasp pose plus gripper command. Reward can credit a successful pick, while constraints separately record table collision, excessive force, dropped objects, and human intervention.</p>
-</div>
-<div class="callout fun-note">
-<div class="callout-title">Fun Note</div>
-<p>Rewards are the applause, constraints are the building inspector, and both arrive after the agent has already touched the world.</p>
+<div class="callout-title">Three pitfalls that look like algorithm bugs</div>
+<p><strong>Conflating observation with state.</strong> Treating $o_t$ as $s_t$ silently assumes the task is an MDP. If two states share an observation, no policy on $o_t$ can be optimal, and the symptom (a policy that plateaus and thrashes near ambiguous states) looks like a training failure when it is a modeling failure. <strong>Reward leakage.</strong> If the reward can be computed from a quantity correlated with success but not caused by it, the policy will exploit the correlate. <strong>Folding constraints into reward.</strong> Writing $r - \lambda c$ converts a hard boundary into a price; with enough downstream reward the optimizer learns to pay it, and you have built a reward-hacking incentive in the name of safety. Keep $c$ on its own budgeted line.</p>
 </div>
 <div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>A major open problem is how much structure to keep around learned policies. End-to-end policies can absorb observation and action conventions, but explicit constraints, safety filters, and calibrated uncertainty remain easier to audit when they are represented outside the policy head.</p>
+<div class="callout-title">Research frontier: specifying reward and learning constraints</div>
+<p>The contract assumes $r$ and $c$ are given. In practice neither is. Reward specification is a known failure surface: hand-written rewards are routinely game-able, which motivates reward learning from preferences, demonstrations, and language. Constraints are harder still, because the costs that matter (do not crush the object, do not startle the human, do not exceed thermal limits) are often unstated and must be inferred from demonstrations or interaction. Inverse constrained reinforcement learning and safe exploration, which must respect a budget <em>during</em> training and not only at convergence, are active and unsettled. The open question is how to acquire $r$ and the $c_i$ themselves with the same rigor the CMDP applies once they exist.</p>
 </div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>For a robot crossing a cluttered room, list one hidden state variable, one observation, one action, one reward, and one constraint. Which of those may the evaluator know even when the agent does not?</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>An interface manifest is the compact artifact that makes this section teachable. It states $\mathcal{S}$ for evaluator-only state, $\mathcal{O}$ for policy-visible observations, $\mathcal{A}$ for allowed actions, $r$ for preferences, and $c$ for constraints. When those fields are explicit, a reader can tell whether a method improved perception, changed the action space, relaxed a constraint, or benefited from privileged information.</p>
-<p>The serious habit is to ask which variable moved. If success rises because the observation included ground-truth pose, that is not the same claim as success rising because the policy learned better visual grounding. Keeping those claims separate prevents leakage and makes construct-matched comparison possible.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 1.3</div>
-<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Gymnasium spaces</td><td>declares observation and action bounds, dtypes, shapes, and invalid-action behavior</td><td>Use spaces as executable documentation for what the policy can see and do.</td></tr><tr><td>PettingZoo</td><td>extends the contract to multi-agent environments where each agent has a distinct observation and action authority</td><td>Use it when another robot, person, or traffic participant changes the transition dynamics.</td></tr><tr><td>Safety Gymnasium</td><td>keeps reward and cost signals separate in constrained-control experiments</td><td>Use it when success must not be allowed to hide collisions, energy overuse, or rule violations.</td></tr></tbody></table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>Turn the interface vocabulary into a leak test. A leak test checks whether the policy-visible observation contains evaluator-only state, whether the action exposes impossible authority, and whether reward has silently absorbed a constraint.</p>
-<ol><li>Write separate dictionaries for evaluator state, policy observation, allowed action, reward, and cost.</li><li>Check that no evaluator-only key appears in the policy observation unless the deployment sensor can provide it.</li><li>Check that every action has units, bounds, and invalid-action handling.</li><li>Check that each safety constraint remains a separate field until the final report.</li><li>Store the manifest next to every result table so readers can interpret what changed.</li></ol>
-<pre><code class="language-python"># Detect privileged-state leakage and reward-cost mixing in an embodied interface.
-manifest = {
-    "evaluator_state": {"true_pose", "contact_force", "object_id", "collision_margin"},
-    "policy_observation": {"rgbd_crop", "gripper_width", "true_pose"},
-    "action_fields": {"dx_m", "dy_m", "dz_m", "yaw_rad", "gripper_command"},
-    "reward_fields": {"picked_target"},
-    "cost_fields": {"collision_margin", "force_limit_violation"},
-}
-
-def interface_warnings(manifest: dict[str, set[str]]) -&gt; list[str]:
-    warnings = []
-    privileged = manifest["evaluator_state"] &amp; manifest["policy_observation"]
-    if privileged:
-        warnings.append(f"privileged observation fields: {sorted(privileged)}")
-    mixed = manifest["reward_fields"] &amp; manifest["cost_fields"]
-    if mixed:
-        warnings.append(f"reward-cost mixing: {sorted(mixed)}")
-    if not {"dx_m", "dy_m", "dz_m"} &lt;= manifest["action_fields"]:
-        warnings.append("cartesian action lacks complete translational units")
-    return warnings
-
-print(interface_warnings(manifest))</code></pre>
-<div class="code-caption">Code Fragment 1.3.2 checks for privileged observation leakage and reward-cost mixing before a policy result is trusted.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Give students a published result table and ask them to reconstruct the manifest that would make the result interpretable. Missing observation, action, or cost fields are usually where comparison claims become fragile.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When this interface fails, first ask whether the agent lacked information, lacked authority, pursued the wrong reward, or violated a constraint. Then rerun one controlled perturbation that changes only that field. This turns a disappointing rollout into evidence about the boundary that failed.</p>
-</section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>The agent-environment vocabulary is useful because it prevents hidden state, action authority, reward, and constraint from being confused. Strong embodied evaluations make each one visible in the same artifact.</p>
+<p>An embodied task is defined by a tuple before it is touched by an algorithm. Real tasks are partially observed, so the honest contract is the POMDP $(\mathcal{S},\mathcal{A},\mathcal{O},P,Z,r,\gamma)$ in which observation is a lossy view of state, and they are resource- and safety-limited, so the honest objective is the CMDP's constrained one, $\max_\pi J(\pi)$ s.t. $J_{c_i}(\pi)\le d_i$. Writing the tuple down, keeping observation distinct from state and cost distinct from reward, is the cheapest reliability investment in the entire pipeline.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 1.3.1</div><p>Write an interface manifest for a delivery robot at a curb. Include evaluator-only state, policy-visible observation, action bounds with units, reward fields, cost fields, and one privileged variable that must not leak into the policy.</p></div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 1.3.1</div>
+<p>In <code>Reach1D</code> the wall makes the task partially observed in a second way: the agent's noisy reading cannot tell it which side of the wall it is on near $x=0.5$. Add a second action dimension that toggles a "probe" (zero motion, halved observation noise for that step) and modify the observation to include the last probe result. Does a policy that can probe achieve lower collision cost at equal return than one that cannot? Explain the result in terms of belief states.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 1.3.2</div>
+<p>Reformulate <code>Reach1D</code> two ways: once as a reward-penalty MDP with objective $r - \lambda\,c$, and once as the CMDP it already is with budget $d$ on expected collision cost. For the penalty version, find a value of $\lambda$ for which the optimal policy still collides because the goal bonus outweighs the penalty. Then argue why no single $\lambda$ enforces "at most $d$ collisions in expectation" across all initial conditions, and connect this to why Lagrangian methods adapt $\lambda$ during training.</p>
+</div>
 <div class="whats-next"><h3>What's Next?</h3><p>Section 1.4 separates physical embodiment from simulated embodiment and explains why both matter.</p></div>
 <section class="bibliography">
-<h2>Bibliography &amp; Further Reading</h2>
-<h3>Foundational References For This Section</h3>
+<h2>Section References</h2>
 <div class="bib-entry-card">
-<p class="bib-ref">Sutton, R. S., and Barto, A. G.. "Reinforcement Learning: An Introduction." (2018). <a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener" target="_blank">http://incompleteideas.net/book/the-book-2nd.html</a></p>
-<p class="bib-annotation">The durable reference for interaction, return, policies, and episode-level evaluation.</p>
+<p class="bib-ref">Sutton, R. S., and Barto, A. G. "Reinforcement Learning: An Introduction." 2nd ed. (2018). <a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener" target="_blank">http://incompleteideas.net/book/the-book-2nd.html</a></p>
+<p class="bib-annotation">The standard reference for the MDP tuple, returns, policies, value functions, and the trajectory-level objective used throughout this section.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref">Brohan, A. et al.. "RT-1: Robotics Transformer for real-world control at scale." (2022). <a href="https://arxiv.org/abs/2212.06817" rel="noopener" target="_blank">https://arxiv.org/abs/2212.06817</a></p>
-<p class="bib-annotation">A useful anchor for large-scale robot policy learning from real interaction data.</p>
+<p class="bib-ref">Puterman, M. L. "Markov Decision Processes: Discrete Stochastic Dynamic Programming." Wiley (1994).</p>
+<p class="bib-annotation">The rigorous treatment of MDPs: transition kernels, the Markov property, discounting, and existence of optimal policies. The formal backbone for the $(\mathcal{S},\mathcal{A},P,r,\gamma,\rho_0)$ contract.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref">Open X-Embodiment Collaboration. "Open X-Embodiment: Robotic Learning Datasets and RT-X Models." (2023). <a href="https://arxiv.org/abs/2310.08864" rel="noopener" target="_blank">https://arxiv.org/abs/2310.08864</a></p>
-<p class="bib-annotation">Shows why cross-embodiment data matters for the Physical AI framing.</p>
+<p class="bib-ref">Altman, E. "Constrained Markov Decision Processes." Chapman &amp; Hall/CRC (1999). <a href="https://www-sop.inria.fr/members/Eitan.Altman/PAPERS/h.pdf" rel="noopener" target="_blank">https://www-sop.inria.fr/members/Eitan.Altman/PAPERS/h.pdf</a></p>
+<p class="bib-annotation">The definitive reference for the CMDP: cost functions, budget constraints $J_c(\pi)\le d$, and the Lagrangian and linear-program formulations that enforce them. Source for the constraint-versus-penalty distinction.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref">Kaelbling, L. P., Littman, M. L., and Cassandra, A. R. "Planning and Acting in Partially Observable Stochastic Domains." Artificial Intelligence 101 (1998): 99-134. <a href="https://www.sciencedirect.com/science/article/pii/S000437029800023X" rel="noopener" target="_blank">https://www.sciencedirect.com/science/article/pii/S000437029800023X</a></p>
+<p class="bib-annotation">The canonical POMDP reference: the observation function $Z$, belief states, and the belief-MDP reduction that justifies history-dependent policies under partial observation.</p>
 </div>
 </section>
 <nav class="chapter-nav">

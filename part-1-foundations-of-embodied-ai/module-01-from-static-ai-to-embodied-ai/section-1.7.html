@@ -34,14 +34,10 @@
 <h1>Section 1.7: Why embodied AI is hard (partial observability, long horizons, safety, data cost)</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"Embodied difficulty compounds when the agent cannot see enough, cannot wait forever, cannot explore freely, and cannot collect failures cheaply."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"The agent cannot see the whole state, cannot wait out the horizon, cannot explore into failure, and cannot collect mistakes for free. Each of these alone is a hard problem; embodiment serves them together."</p><cite>Section 1.7</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Partial observability, long horizons, safety, and data cost</strong> are not four unrelated annoyances. They multiply. The agent acts with incomplete state, the consequences may appear many steps later, unsafe exploration is limited, and collecting enough real interaction data is expensive.</p>
-</div>
-<div class="callout pathway">
-<div class="callout-title">Reader Pathway</div>
-<p>Read this section as a failure budget. For any embodied task, ask what is hidden, how long errors can compound, what cannot be tried safely, and which data would be too costly to collect by trial and error.</p>
+<p>By now the structural break is established: an embodied agent acts inside a controlled Markov process and generates its own evaluation distribution (Section 1.1). This section states <em>why that is hard</em>, not as a list of inconveniences but as a small set of formal obstacles, each with a precise cause and each addressed somewhere later in the book. The obstacles are not independent. Partial observability lengthens the effective horizon, long horizons raise the variance of the learning signal, high variance forces more interaction, more interaction collides with safety and cost, and the gap between where you can train cheaply (simulation) and where you must deploy (the world) sits underneath all of it. A practitioner who can name which obstacle dominates a given task, and reach for the matching technique, has the entire skill this section teaches.</p>
 </div>
 <figure aria-labelledby="fig-1-7-title" class="concept-diagram">
 <svg aria-labelledby="fig-1-7-title fig-1-7-desc" role="img" viewbox="0 0 760 250" xmlns="http://www.w3.org/2000/svg">
@@ -68,179 +64,111 @@
 <text fill="#37474f" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" text-anchor="middle" x="642" y="104">what the next step inherits</text>
 <text fill="#6a1b9a" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" text-anchor="middle" x="380" y="221">Closed-loop feedback makes the next input depend on the last action.</text>
 </svg>
-<figcaption>Figure 1.7. Why embodied AI is hard (partial observability, long horizons, safety, data cost) is easiest to reason about as a closed-loop evidence, decision, consequence pattern: hidden state, long horizons, safety margins, and data costs compound.</figcaption>
+<figcaption>Figure 1.7. The same closed loop of Section 1.1, now read as a difficulty generator: because the next observation inherits the last action, hidden state, delayed reward, unsafe transitions, and the cost of each real step all compound along the trajectory rather than resetting per example.</figcaption>
 </figure>
-<h2>What This Section Develops</h2>
-<p>This section develops a diagnostic for why otherwise strong AI methods become brittle in embodied settings. The hard part is not only perception, planning, control, or learning. It is the coupling among hidden state, delayed consequences, constrained exploration, and expensive evidence.</p>
-<p>The key question is practical: which hardness term dominates this task, and what measurement would reveal it before a full deployment?</p>
+<h2>The obstacles, stated formally</h2>
+<p>The difficulty of an embodied task is not one quantity. It is a profile across several structural obstacles, each of which has a precise cause in the math of the controlled Markov process and a specific place in this book where it is confronted. The point of stating them formally is leverage: once you can name the dominant obstacle and its cause, the choice of technique is nearly forced.</p>
+<h3>(a) Partial observability: the belief state replaces the state</h3>
+<p>The agent rarely sees the true state $s_t$. It sees an observation $o_t$ drawn from $O(\cdot \mid s_t)$, and the optimal action depends on everything the history implies about the hidden state. The correct sufficient statistic is the <em>belief</em> $b_t(s) = \Pr(s_t = s \mid o_{0:t}, a_{0:t-1})$, updated by the recursive Bayes filter</p>
+<p>$$b_{t+1}(s') \propto O(o_{t+1}\mid s')\sum_{s} P(s'\mid s, a_t)\, b_t(s).$$</p>
+<p>This turns a discrete-state MDP into a planning problem over the continuous belief simplex, and the optimal value function of a finite-horizon POMDP is piecewise-linear and convex in $b_t$ with a number of pieces that can grow exponentially in the horizon. That belief-state explosion is the formal reason a reactive policy on raw observations is not enough: the agent needs <em>memory</em> or explicit state estimation to act on $b_t$ rather than on $o_t$. State estimation and filtering are developed in Chapter 8, recurrent and memory-augmented policies in Chapter 29, and POMDP planning in Chapter 56.</p>
+<h3>(b) Long horizons and credit assignment: variance and sparse reward</h3>
+<p>The learning signal is the return $G_t = \sum_{k=0}^{T-t} \gamma^k r_{t+k}$. When reward is sparse (a single success bit at the end of a long manipulation), almost every step contributes zero, and the agent must decide which of hundreds of earlier actions deserve credit. The statistical cost is variance: for a Monte Carlo return the variance accumulates across the horizon, and for a policy-gradient estimator $\nabla_\theta J = \mathbb{E}\big[\sum_t \nabla_\theta \log \pi_\theta(a_t\mid s_t)\, G_t\big]$ the per-trajectory estimate has variance that grows roughly with $T$, so the number of samples needed to estimate the gradient to fixed precision grows with the horizon. Long horizons therefore tax both the credit-assignment logic and the sample budget at once. The remedies (value bootstrapping, advantage estimation, baselines, eligibility traces, and temporal abstraction that shortens the effective credit path) are the subject of Chapters 15 through 18.</p>
+<h3>(c) Compounding error and distribution shift</h3>
+<p>Section 1.1 derived the central fact: because $\tau \sim \pi$, a per-step error of at most $\epsilon$ under the training distribution drives the expected cost of a behavior-cloned policy to $O(\epsilon T^2)$ rather than the $O(\epsilon T)$ of the supervised analogue (Ross, Gordon, and Bagnell). The extra factor of $T$ is distribution shift made quantitative: a single mistake moves the agent to states the expert never visited, where no guarantee holds. This is why offline accuracy is necessary but not sufficient for closed-loop reliability, and why on-policy correction such as DAgger and its descendants is treated in Chapter 21.</p>
+<h3>(d) Data cost and unsafe exploration</h3>
+<p>In supervised learning a sample is a row in a file. In the world a sample is a physical interaction that takes wall-clock time, wears hardware, often needs a human to reset the scene, and can be <em>irreversible</em>: a dropped fragile object, a collision, a fall. Exploration, the engine of reinforcement learning, is precisely the act of trying actions whose outcome is unknown, which is exactly what is dangerous when some outcomes are catastrophic. Formally this is a constrained MDP, maximize $J(\pi)$ subject to $\mathbb{E}_\pi\big[\sum_t c_t\big] \le d$, where the constraint must hold <em>during</em> learning, not only at convergence. The expensive, slow, partly irreversible nature of real interaction is the reason for sample-efficient and offline RL (Chapter 19) and for safe exploration and constrained policy optimization (Chapters 23 and 24).</p>
+<h3>(e) Real-time constraints: the policy must return inside the control period</h3>
+<p>The loop runs on a clock. A controller at $f$ Hz must emit an action every $1/f$ seconds; a 1 kHz torque loop allows one millisecond per decision. Latency is not merely slow, it is destabilizing: a delay $\tau_d$ inserts a phase lag of $\omega \tau_d$ radians at frequency $\omega$ into the feedback path, eroding phase margin until an otherwise-stable loop oscillates or diverges. A policy that is accurate but occasionally exceeds its budget can be worse than a simpler policy that always answers on time, because the control loop cannot wait. Real-time scheduling, inference budgets, and the stability cost of latency are treated in Chapter 7, and systems-level deployment timing in Chapter 55.</p>
+<h3>(f) The sim-to-real gap</h3>
+<p>Simulation makes interaction cheap, parallel, and safe, which is why most modern embodied learning starts there. But a policy is trained on the simulator's transition model $\hat{P}$ and deployed under the world's $P$, and the discrepancy $\lVert P - \hat{P}\rVert$ in dynamics, contact, friction, sensor noise, and latency is paid back as a performance drop on hardware. The gap is a quantity to measure and close (domain randomization, system identification, real-to-sim calibration, residual learning), not a caveat to footnote. It is developed in Chapter 13 (simulation), Chapter 20 (transfer and domain randomization), and Chapter 43 (sim-to-real for manipulation).</p>
+<h3>(g) Reward and constraint specification: the reward is not the task</h3>
+<p>The objective $J(\pi)$ is only as good as the $r_t$ and $c_t$ inside it. An agent optimizes the reward it is given, not the behavior the designer intended, and any gap between the two becomes a vulnerability: the policy finds the high-reward, low-intent behavior (the boat that loops to collect points instead of finishing the race; the gripper that learns to satisfy a proximity sensor without grasping). This is reward hacking, and it is structural, a consequence of optimizing a proxy. Reward design, shaping, and the failure modes of misspecification are treated in Chapter 18, and value alignment and specification at the system level in Chapter 54.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>The same error is more serious when it is hidden, delayed, unsafe to explore, or expensive to reproduce. Embodied difficulty is often a product of these terms, not a single bad component.</p>
+<div class="callout-title">The obstacles multiply, they do not add</div>
+<p>The same per-step error is cheap on a fully observed, short-horizon, reversible, simulated task and ruinous on a partially observed, long-horizon, irreversible, real one. Partial observability lengthens the effective horizon (the agent must integrate evidence over time), the longer horizon inflates return variance, the variance demands more interaction, and more interaction collides with safety and cost. This coupling, not any single weak component, is what makes embodied AI hard. Naming which term dominates a given task is the first and most useful diagnostic a builder performs.</p>
 </div>
-<h2>Theory</h2>
-<p>A compact way to reason about task difficulty is $D \propto H(S_t\mid o_{0:t}) \cdot T_{\text{credit}} \cdot C_{\text{safety}} \cdot C_{\text{data}}$. The first term measures hidden-state uncertainty after the observation history, the second measures how many steps separate cause from outcome, the third captures the cost of unsafe exploration, and the fourth captures the cost of collecting or labeling new interaction data.</p>
-<p>This is not a universal law. It is a diagnostic checklist. If any term is large, the experiment needs a mitigation: better sensing or memory for hidden state, hierarchical planning for long horizons, shields or conservative controllers for safety, and simulation or demonstration data for sample cost.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is compounding uncertainty. A small pose error can lead to a bad grasp, the bad grasp can move the object, the moved object can occlude the target, and the recovery attempt can consume time or create risk.</p>
+<h2>A map from obstacle to cause to mitigation</h2>
+<p>The table collects the seven obstacles with their formal cause, the technique that addresses each, and where the book develops it. Read a row left to right as a single sentence: this difficulty exists <em>because</em> of this formal fact, and is attacked <em>by</em> this method, developed <em>in</em> this chapter.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">The difficulty profile of embodied AI</div>
+<table>
+<thead><tr><th>Difficulty</th><th>Formal cause</th><th>Mitigation</th><th>Chapters</th></tr></thead>
+<tbody>
+<tr><td>Partial observability</td><td>Optimal action depends on the belief $b_t$; finite-horizon POMDP value function has pieces growing exponentially in the horizon</td><td>State estimation, recurrent or memory-augmented policies, belief-space planning</td><td>8, 29, 56</td></tr>
+<tr><td>Long horizons and credit assignment</td><td>Return variance grows with $T$; sparse reward gives almost no per-step signal</td><td>Value bootstrapping, advantage baselines, eligibility traces, temporal abstraction</td><td>15-18</td></tr>
+<tr><td>Compounding error / distribution shift</td><td>$\tau \sim \pi$ makes behavior-cloning cost $O(\epsilon T^2)$ rather than $O(\epsilon T)$</td><td>On-policy correction (DAgger), closed-loop fine-tuning</td><td>21</td></tr>
+<tr><td>Data cost and unsafe exploration</td><td>Real samples are slow, costly, and sometimes irreversible; constraint must hold during learning</td><td>Sample-efficient and offline RL, safe and constrained exploration</td><td>19, 23-24</td></tr>
+<tr><td>Real-time constraints</td><td>Decision must return within $1/f$; delay $\tau_d$ costs $\omega\tau_d$ of phase margin and destabilizes the loop</td><td>Inference budgets, real-time scheduling, latency-aware control</td><td>7, 55</td></tr>
+<tr><td>Sim-to-real gap</td><td>Trained on $\hat{P}$, deployed under $P$; $\lVert P-\hat{P}\rVert$ paid as a hardware performance drop</td><td>Domain randomization, system identification, residual and real-to-sim calibration</td><td>13, 20, 43</td></tr>
+<tr><td>Reward / constraint specification</td><td>Agent optimizes the proxy $r_t$, not the intent; any gap is exploitable (reward hacking)</td><td>Reward design and shaping, constraint specification, alignment</td><td>18, 54</td></tr>
+</tbody>
+</table>
 </div>
-<h2>Worked Example</h2>
-<p>Code Fragment 1.7.1 builds a simple hardness profile for a shelf-picking task. The numbers are ordinal scores, not physical constants, but they force the builder to name the dominant risk before choosing a method.</p>
-<pre><code class="language-python"># Score four sources of embodied difficulty on the same small scale.
-# The product highlights tasks where several moderate risks compound.
-hardness = {
-    "hidden_state": 4,      # occlusion hides the target pose
-    "credit_horizon": 3,    # early reach choices affect later recovery
-    "safety_cost": 5,       # collisions can damage objects or hardware
-    "data_cost": 4,         # real shelf resets are slow
+<h2>A diagnostic you can run before building</h2>
+<p>Before choosing an algorithm, score how much each obstacle bites on the task at hand and let the largest term, not the most fashionable model, choose the first mitigation. The snippet below keeps the obstacle, its score, the matching mitigation, and the responsible chapters together, so the diagnostic output is also a pointer into the book.</p>
+<pre><code class="language-python"># Rank the structural obstacles for a task and route the first effort to the dominant one.
+# Scores are ordinal judgements (1 = mild, 5 = dominant), not physical constants.
+obstacles = {
+    "partial_observability": dict(score=4, mitigation="memory + state estimation", chapters="8, 29, 56"),
+    "long_horizon_credit":   dict(score=3, mitigation="advantage baselines, temporal abstraction", chapters="15-18"),
+    "compounding_error":     dict(score=3, mitigation="on-policy correction (DAgger)", chapters="21"),
+    "data_cost_and_safety":  dict(score=5, mitigation="offline + constrained/safe RL", chapters="19, 23-24"),
+    "real_time":             dict(score=2, mitigation="inference budget, latency-aware control", chapters="7, 55"),
+    "sim_to_real":           dict(score=4, mitigation="domain randomization, system ID", chapters="13, 20, 43"),
+    "reward_spec":           dict(score=2, mitigation="reward design, constraint spec", chapters="18, 54"),
 }
-combined = 1
-for value in hardness.values():
-    combined *= value
-print("hardness_profile:", hardness)
-print("combined_difficulty:", combined)</code></pre>
-<div class="code-output">hardness_profile: {'hidden_state': 4, 'credit_horizon': 3, 'safety_cost': 5, 'data_cost': 4}
-combined_difficulty: 240</div>
-<div class="code-caption">Code Fragment 1.7.1 turns the four difficulty sources into a small diagnostic profile. The product is intentionally simple: it shows why a task with several moderate risks can be harder than a task with one isolated challenge.</div>
-<p><strong>Expected output:</strong> the profile should show which term deserves the first mitigation. A high safety score points toward conservative testing, while a high hidden-state score points toward sensing, memory, or active perception.</p>
+
+dominant, info = max(obstacles.items(), key=lambda kv: kv[1]["score"])
+print(f"dominant obstacle : {dominant} (score {info['score']})")
+print(f"first mitigation  : {info['mitigation']}")
+print(f"see chapters      : {info['chapters']}")</code></pre>
+<div class="code-output">dominant obstacle : data_cost_and_safety (score 5)
+first mitigation  : offline + constrained/safe RL
+see chapters      : 19, 23-24</div>
+<div class="code-caption">Code 1.7.1. The score is a judgement, not a measurement, but the discipline it enforces is real: a team that cannot name the dominant obstacle is choosing a method by reputation rather than by cause. The output routes the first effort and points at the chapters that develop the matching technique.</div>
 <div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut: Match Tool To Hardness</div>
-<p>Belief-state filters, world models, model predictive control, safety shields, simulation, and demonstration datasets each target a different term in the profile. The right tool is the one that attacks the dominant difficulty source, not the one with the most impressive model name.</p>
+<div class="callout-title">Library shortcut: do not hand-roll the loop you are diagnosing</div>
+<p>The obstacles above are properties of the interaction loop, so measure them on a real one. <code>gymnasium</code> gives reproducible episodes with explicit observation and action spaces, termination, and truncation; its wrappers expose latency, partial observability (frame stacking, observation masking), and reward shaping as composable transforms, which lets you stress one obstacle at a time. Reach for it (Chapter 10) the moment you move from scoring obstacles on paper to measuring them.</p>
 </div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Score hidden state, credit horizon, safety cost, and data cost before selecting an algorithm.</li>
-<li>Choose one mitigation for the largest term and one metric that should improve if the mitigation works.</li>
-<li>Keep safety constraints outside the reward until reporting, so unsafe gains remain visible.</li>
-<li>Use simulation or replay to test long-horizon credit before increasing real-world trials.</li>
-<li>Log failures by root cause and by where the consequence first became visible.</li>
-</ol>
 <div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is treating data cost as an afterthought. If every failure requires a manual reset, a repaired part, or a risky trial, the learning algorithm's nominal sample efficiency may be irrelevant.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example: Occluded Drawer Task</div>
-<p>A mobile manipulator opening a drawer faces all four terms. The handle may be partly hidden, the correct approach angle matters several steps before the pull succeeds, excessive force is unsafe, and failed attempts can require manual reset. A good experiment logs handle visibility, approach pose, force margin, reset time, and whether recovery happened before or after contact.</p>
-</div>
-<div class="callout fun-note">
-<div class="callout-title">Fun Note</div>
-<p>Embodied AI does not just have hard cases. It has hard cases that move while you are still labeling them.</p>
+<div class="callout-title">The most expensive mistake: treating an embodied problem as supervised learning</div>
+<p>A team collects expert demonstrations, trains a policy to minimize action prediction loss, reaches excellent offline accuracy, and is then surprised when the robot drifts, stalls, or collides within seconds of taking control. The error is structural, not a tuning failure. Behavior cloning is scored on the expert's state distribution; the deployed policy is scored on its own, and the $O(\epsilon T^2)$ result (Section 1.1) says the gap between them grows with the horizon. Offline metrics are necessary, never sufficient. Always pair any offline number with at least one closed-loop rollout metric computed on the same checkpoint, and budget for on-policy correction from the start.</p>
 </div>
 <div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Frontier work increasingly combines memory, active perception, learned world models, safety filters, and data reuse because no single technique removes all four hardness terms. The open question is how to allocate compute and data among sensing, planning, control, and recovery under a fixed safety budget.</p>
+<div class="callout-title">Research frontier: which of these is least solved</div>
+<p>The obstacles are not equally tamed. Long-horizon reasoning with sparse reward and safe exploration in the real world remain the least solved. Credit assignment across hundreds of steps, and the temporal abstraction needed to shorten it, still has no general solution that does not lean on hand-designed subgoals or task-specific shaping. Safe real-world exploration is harder still: an agent cannot learn to avoid a catastrophe it is forbidden to ever experience, so guarantees during learning (not just at convergence) remain open, and most progress routes around the problem through simulation, which reopens the sim-to-real gap. Vision-language-action models (Chapter 34) compress perception, memory, and control into one network and inherit every obstacle at once; whether their closed loop stays calibrated under latency, contact, and distribution shift, and how cheaply it can be corrected on-policy, is the live question.</p>
 </div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Pick a task and score the four hardness terms from 1 to 5. Which term would you reduce first, and what evidence would show that the reduction worked?</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>The four terms also explain why benchmark wins can fail to transfer. A benchmark may reduce hidden state, shorten horizon, lower safety cost through simulation, or make data cheap through replay. Those choices are legitimate, but the result should be read as evidence for that regime, not as proof that the full physical problem is solved.</p>
-<p>The serious habit is to write the mitigation next to the term. Memory targets partial observability, temporal abstraction targets long horizons, shields target safety, and simulation or demonstrations target data cost. If the mitigation does not target the dominant term, the experiment may be polished but misdirected.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 1.7</div>
-<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Bayesian filters and factor graphs</td><td>attack partial observability by carrying uncertainty over hidden state</td><td>Use them when failure traces show that the agent acted on stale or underconstrained state.</td></tr><tr><td>Hierarchical planners and options</td><td>attack long horizons by creating temporally extended actions and shorter credit paths</td><td>Use them when the first cause of failure occurs far before the visible failure.</td></tr><tr><td>Control barrier functions, shields, and replay buffers</td><td>attack safety cost and data cost by limiting unsafe exploration and reusing expensive evidence</td><td>Use them when real failures are too costly to collect by trial and error.</td></tr></tbody></table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>Build a hardness ledger, then choose a mitigation that targets the largest term. The ledger should prevent a team from adding a larger policy when the actual bottleneck is hidden state, unsafe exploration, or reset cost.</p>
-<ol><li>Score hidden state, credit horizon, safety cost, and data cost with one sentence of evidence for each score.</li><li>Select the largest term and name the mitigation that directly targets it.</li><li>Name the metric that should change if the mitigation works.</li><li>Run a perturbation that stresses the dominant term while holding the others fixed.</li><li>Record both the first hidden cause and the first visible consequence.</li></ol>
-<pre><code class="language-python"># Choose a mitigation by matching the dominant hardness term to a technical response.
-profile = {
-    "hidden_state": {"score": 4, "mitigation": "active_perception_and_belief_filter"},
-    "credit_horizon": {"score": 2, "mitigation": "temporal_abstraction"},
-    "safety_cost": {"score": 5, "mitigation": "shielded_controller_and_staged_trials"},
-    "data_cost": {"score": 3, "mitigation": "replay_and_demonstrations"},
-}
-
-def dominant_mitigation(profile: dict[str, dict[str, object]]) -&gt; dict[str, object]:
-    term, data = max(profile.items(), key=lambda item: item[1]["score"])
-    return {
-        "dominant_term": term,
-        "score": data["score"],
-        "first_mitigation": data["mitigation"],
-        "evidence_to_watch": "term-specific metric must improve before scaling trials",
-    }
-
-print(dominant_mitigation(profile))</code></pre>
-<div class="code-caption">Code Fragment 1.7.2 maps a hardness profile to the mitigation that should be tested first.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask students to propose a model upgrade, then force them to name which hardness term it reduces. If they cannot name the term, the upgrade is probably a guess rather than an experiment.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When a rollout fails, classify the first hidden cause and the first visible consequence. A planner may fail because the state was hidden, but the visible consequence may appear later as a collision or timeout. Recording both prevents teams from fixing the symptom while leaving the cause untouched.</p>
-</section>
-<section class="lab" id="lab-1-7">
-<h2>Hands-On Lab: Build A Hardness Ledger</h2>
-<div class="lab-meta"><span class="lab-duration">Duration: ~65 minutes</span><span class="lab-difficulty">Difficulty: Intermediate</span></div>
-<div class="lab-objective"><h3>Objective</h3><p>Build a hardness ledger for one embodied task, choose the mitigation that matches the dominant term, and write the failure label that would prove the mitigation is needed.</p></div>
-<div class="lab-skills"><h3>What You'll Practice</h3><ul><li>Score hidden state, credit horizon, safety cost, and data cost</li><li>Build a minimal hardness profile</li><li>Choose a mitigation that targets the dominant term</li><li>Write a failure postmortem that separates hidden cause from visible consequence</li></ul></div>
-<div class="lab-prereqs"><h3>Setup</h3><pre><code class="language-bash">pip install numpy pandas</code></pre><div class="code-caption">Code Fragment 1.7.L1 installs NumPy and pandas for the section lab trace.</div></div>
-<div class="lab-steps"><h3>Steps</h3>
-<div class="lab-step"><h4>Step 1: Score the four terms</h4><p>Assign scores with evidence, not impressions.</p><pre><code class="language-python">def validate_ledger(payload: dict[str, object]) -&gt; dict[str, object]:
-    assert payload, "payload must not be empty"
-    return payload
-
-ledger = {
-    "hidden_state": {"score": 4, "evidence": "handle pose is often occluded"},
-    "credit_horizon": {"score": 3, "evidence": "bad approach angle matters after contact"},
-    "safety_cost": {"score": 5, "evidence": "force spikes can damage the drawer"},
-    "data_cost": {"score": 4, "evidence": "failed pulls require manual reset"},
-}
-print(validate_ledger(ledger))</code></pre><div class="code-caption">Code Fragment 1.7.L1.1 creates a hardness ledger with a score and evidence sentence for each term.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Do not average the terms away. The largest term should drive the first mitigation.</p></div></div></div>
-<div class="lab-step"><h4>Step 2: Select the dominant term</h4><p>Choose the first mitigation by the term that makes the task hardest.</p><pre><code class="language-python">ranked_terms = sorted(ledger.items(), key=lambda item: item[1]["score"], reverse=True)
-dominant = ranked_terms[0]
-margin = dominant[1]["score"] - ranked_terms[1][1]["score"]
-print({"dominant_term": dominant[0], "margin": round(margin, 3), "evidence": dominant[1]["evidence"]})</code></pre><div class="code-caption">Code Fragment 1.7.L1.2 identifies the hardness term that should guide the next experiment.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>If two terms tie, choose the one that would make real-world testing least safe or most expensive.</p></div></div></div>
-<div class="lab-step"><h4>Step 3: Match mitigation to term</h4><p>Pick a technical response that targets the dominant term directly.</p><pre><code class="language-python">mitigations = {
-    "hidden_state": "active perception plus belief filter",
-    "credit_horizon": "temporal abstraction with subgoals",
-    "safety_cost": "shielded controller and force limits",
-    "data_cost": "simulation replay plus demonstrations",
-}
-print({"mitigation": mitigations[dominant[0]]})</code></pre><div class="code-caption">Code Fragment 1.7.L1.3 maps the dominant hardness term to a concrete mitigation.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>A larger neural model is not a mitigation unless you can name which hardness term it reduces.</p></div></div></div>
-<div class="lab-step"><h4>Step 4: Write the stress test</h4><p>Define the perturbation and failure label that should expose the dominant term.</p><pre><code class="language-python">stress_test = {
-    "perturbation": "increase drawer friction and add force limit",
-    "first_hidden_cause": "unmodeled static friction",
-    "first_visible_consequence": "force_limit_abort",
-    "metric": "safe pulls completed without manual reset",
-}
-print(stress_test)</code></pre><div class="code-caption">Code Fragment 1.7.L1.4 defines a stress test that separates hidden cause from visible consequence.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>The visible failure is often not the root cause. Log both.</p></div></div></div>
-</div>
-<div class="lab-expected"><h3>Expected Output</h3><p>The completed lab produces one table with the four hardness scores, the chosen mitigation, and a failure label, plus a short note explaining which term dominated the design.</p></div>
-<div class="lab-stretch"><h3>Stretch Goals</h3><ul><li>Add a second seed and report mean and spread.</li><li>Write a one-paragraph postmortem that separates root cause from symptom.</li></ul></div>
-<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Complete Solution</p><pre><code class="language-python">import pandas as pd
-
-rows = []
-for term, data in ledger.items():
-    rows.append({
-        "term": term,
-        "score": data["score"],
-        "evidence": data["evidence"],
-        "mitigation": mitigations[term],
-        "selected_first": term == dominant[0],
-    })
-print(pd.DataFrame(rows).sort_values("score", ascending=False))</code></pre><div class="code-caption">Code Fragment 1.7.L2 produces a complete hardness ledger ordered by the term that should drive the next experiment.</div></div>
-</section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Embodied AI is hard because hidden state, delayed consequences, safety limits, and data cost compound. Good engineering starts by naming the dominant term before choosing a method.</p>
+<p>Embodied AI is hard for a small number of formal reasons: the agent acts on a belief rather than the state, the learning signal has horizon-scaled variance under sparse reward, its own errors compound at $O(\epsilon T^2)$, real interaction is slow and irreversible so exploration is constrained, decisions must return inside a control period, training and deployment dynamics differ, and the optimized reward is only a proxy for the task. Each maps to a specific technique and a specific chapter. The practitioner's first move on any task is to identify which of these dominates.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 1.7.1</div><p>Choose a task with a costly reset. Score hidden state, credit horizon, safety cost, and data cost. Then name the first mitigation, the perturbation that stresses the dominant term, and the failure label that would prove the term is real.</p></div>
-<div class="whats-next"><h3>What's Next?</h3><p>Section 1.8 maps these difficulties onto the rest of the book so readers know where each problem returns.</p></div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 1.7.1</div>
+<p>Take a task you know with a costly or slow reset (a real or simulated manipulation, a mobile-robot navigation, an autonomous-vehicle maneuver). Score all seven obstacles from 1 to 5 with one sentence of evidence each, run the diagnostic in Code 1.7.1, and name the chapter you would read first. Then change one design choice (move from sim to hardware, lengthen the horizon, sparsify the reward) and re-score: which term overtakes the previous dominant one, and does that change which technique you reach for?</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 1.7.2</div>
+<p>For a single concrete failure (a robot dropping an object mid-trajectory), write the chain that connects two obstacles. Identify the hidden-state error that started it (partial observability), then quantify how the horizon turned that one error into a compounded failure using the $O(\epsilon T^2)$ argument from Section 1.1. State the offline metric that would have looked fine and the closed-loop metric that would have caught it.</p>
+</div>
+<div class="whats-next"><h3>What's Next?</h3><p>Section 1.8 maps these obstacles onto the twelve parts of the book, so each difficulty named here has an explicit address where it is confronted and resolved.</p></div>
 <section class="bibliography">
-<h2>Bibliography &amp; Further Reading</h2>
-<h3>Foundational References For This Section</h3>
+<h2>Section References</h2>
 <div class="bib-entry-card">
-<p class="bib-ref">Sutton, R. S., and Barto, A. G.. "Reinforcement Learning: An Introduction." (2018). <a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener" target="_blank">http://incompleteideas.net/book/the-book-2nd.html</a></p>
-<p class="bib-annotation">The durable reference for interaction, return, policies, and episode-level evaluation.</p>
+<p class="bib-ref">Kaelbling, L. P., Littman, M. L., and Cassandra, A. R. "Planning and Acting in Partially Observable Stochastic Domains." Artificial Intelligence 101 (1998). <a href="https://doi.org/10.1016/S0004-3702(98)00023-X" rel="noopener" target="_blank">https://doi.org/10.1016/S0004-3702(98)00023-X</a></p>
+<p class="bib-annotation">The standard formulation of POMDPs, the belief-state recursion, and the piecewise-linear convex value function whose pieces grow with the horizon: the formal source of obstacle (a).</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref">Brohan, A. et al.. "RT-1: Robotics Transformer for real-world control at scale." (2022). <a href="https://arxiv.org/abs/2212.06817" rel="noopener" target="_blank">https://arxiv.org/abs/2212.06817</a></p>
-<p class="bib-annotation">A useful anchor for large-scale robot policy learning from real interaction data.</p>
+<p class="bib-ref">Ross, S., Gordon, G., and Bagnell, J. A. "A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning." AISTATS (2011). <a href="https://arxiv.org/abs/1011.0686" rel="noopener" target="_blank">https://arxiv.org/abs/1011.0686</a></p>
+<p class="bib-annotation">The DAgger paper. Source of the $O(\epsilon T^2)$ compounding result and the on-policy correction that reduces it, underpinning obstacle (c).</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref">Open X-Embodiment Collaboration. "Open X-Embodiment: Robotic Learning Datasets and RT-X Models." (2023). <a href="https://arxiv.org/abs/2310.08864" rel="noopener" target="_blank">https://arxiv.org/abs/2310.08864</a></p>
-<p class="bib-annotation">Shows why cross-embodiment data matters for the Physical AI framing.</p>
+<p class="bib-ref">Garcia, J., and Fernandez, F. "A Comprehensive Survey on Safe Reinforcement Learning." Journal of Machine Learning Research 16 (2015). <a href="https://jmlr.org/papers/v16/garcia15a.html" rel="noopener" target="_blank">https://jmlr.org/papers/v16/garcia15a.html</a></p>
+<p class="bib-annotation">A survey of safe-RL formulations, including constrained MDPs and risk-sensitive criteria, that frames the safe-exploration and data-cost obstacle (d).</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref">Sutton, R. S., and Barto, A. G. "Reinforcement Learning: An Introduction." (2018). <a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener" target="_blank">http://incompleteideas.net/book/the-book-2nd.html</a></p>
+<p class="bib-annotation">The reference for returns, return variance, policy gradients, and credit assignment behind obstacle (b), and for the controlled-Markov-process vocabulary used throughout.</p>
 </div>
 </section>
 <nav class="chapter-nav">
