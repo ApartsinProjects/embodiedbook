@@ -60,7 +60,42 @@
 <p>The mechanism in Robot arms, joints, the kinematic chain is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Robot arms, joints, the kinematic chain, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>The example builds a 3-link planar chain as an ordered product of per-joint transforms, records every intermediate link frame, then perturbs one joint and verifies the topology invariant: moving joint $k$ must displace link $k$ and all its descendants, and nothing upstream.</p>
+<pre><code class="language-python">import numpy as np
+
+def Tz(theta, length):
+    """Revolute joint about z, then translate 'length' along local x."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0, length*c],
+                     [s,  c, 0, length*s],
+                     [0,  0, 1, 0],
+                     [0,  0, 0, 1]])
+
+lengths = [0.30, 0.25, 0.15]   # link lengths, base -> tool
+
+def chain_frames(q):
+    T = np.eye(4)
+    frames = [T[:3, 3].copy()]          # base origin
+    for qi, Li in zip(q, lengths):
+        T = T @ Tz(qi, Li)
+        frames.append(T[:3, 3].copy())  # each downstream link origin
+    return np.array(frames)
+
+q0 = np.deg2rad([20, -35, 50])
+F0 = chain_frames(q0)
+
+# Perturb ONLY joint index 1 (the middle joint)
+q1 = q0.copy(); q1[1] += np.deg2rad(10)
+F1 = chain_frames(q1)
+
+moved = np.linalg.norm(F1 - F0, axis=1) > 1e-9
+print("frame moved? (base, link0, link1, link2):", moved.tolist())
+print("tool pose:", np.round(F0[-1], 4))
+assert not moved[0] and not moved[1], "upstream frame moved: joint order bug"
+assert moved[2] and moved[3],         "downstream frame frozen: chain broken"
+print("topology invariant holds: only joint-1 descendants moved.")
+</code></pre>
+<p>The assertions are the cheap diagnostic that catches a one-index mismatch between the URDF, the controller joint vector, and the planner: when an upstream frame moves under a downstream perturbation, the chain ordering is wrong even if the tool pose looks plausible.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose joint order, axis, link frame, tool frame, and joint limits. Pinocchio, Drake, and MoveIt 2 provide maintained kinematic trees once the chain convention is audited.</p>

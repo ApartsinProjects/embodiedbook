@@ -39,7 +39,7 @@
 <img alt="Technical illustration for Section 47.1: Why aerial agents are special." loading="lazy" src="images/chapter-47-illustration-01.png"/>
 <figcaption><strong>Figure 47.1A</strong>: Section 47.1: Why aerial agents are special is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>"A quadrotor is four propellers negotiating the laws of physics with no margin for ambiguity."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Why aerial agents are special</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -77,17 +77,48 @@
 <figcaption>Figure 47.1.1 maps Why aerial agents are special in Drones and Aerial Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Why aerial agents are special, the important state variables are six degree of freedom state, thrust limits, wind, battery, and airspace rules, while the action interface is to separate flight stabilization from mission-level autonomy.</p>
-<p>The method is useful only if it improves a construct-matched measurement: tracking error, energy, and safety margins. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<p>A multirotor is a rigid body with six degrees of freedom: three translational ($x, y, z$) and three rotational (roll $\phi$, pitch $\theta$, yaw $\psi$). The Newton-Euler equations split into a translational part in the world frame and a rotational part in the body frame. Each rotor $i$ spinning at $\omega_i$ produces a thrust and a reaction torque that are quadratic in rotor speed:</p>
+<p>$$F_i = k_T\,\omega_i^2, \qquad \tau_i = k_Q\,\omega_i^2.$$</p>
+<p>The translational dynamics sum the four thrusts along the body $z$ axis against gravity. With total thrust $T = \sum_i F_i$ and rotation $R$ from body to world, $m\ddot{\mathbf p} = R\,T\mathbf e_3 - m g\,\mathbf e_3$. The rotational dynamics are written in the body frame with the inertia tensor $I$ and the gyroscopic coupling term:</p>
+<p>$$I\dot{\boldsymbol\omega} + \boldsymbol\omega \times I\boldsymbol\omega = \boldsymbol\tau_{\text{total}}.$$</p>
+<p>The $\boldsymbol\omega \times I\boldsymbol\omega$ term is why a multirotor cannot be treated as four independent integrators: pitching while yawing induces a roll moment that the rate controller must reject. Differential torques between rotor pairs produce roll, pitch, and yaw moments, so the same four control inputs ($\omega_1 \dots \omega_4$) must simultaneously hold altitude and steer attitude. That coupling, four inputs serving six output degrees of freedom, is what makes the vehicle underactuated.</p>
+<p>The defining equilibrium is hover, where net force is zero. With all four rotors equal and the body level, the thrust must exactly cancel weight:</p>
+<p>$$\sum_i F_i = 4 k_T\,\omega_{\text{hover}}^2 = m g \quad\Longrightarrow\quad \omega_{\text{hover}} = \sqrt{\frac{m g}{4 k_T}}.$$</p>
+<p>The hover point sits in the middle of the usable rotor-speed band. Any roll or pitch command must add thrust on one side and subtract on the other; if the hover throttle is already near the rotor's maximum, there is no headroom left to generate attitude moments, and the attitude loop saturates. This single constraint is the root of most of the failure modes below.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Aerial autonomy is a coupled chain of inertial sensing, state estimation, thrust allocation, attitude control, mission logic, and failsafe monitoring. A useful log separates wind disturbance, estimator drift, battery sag, command saturation, geofence breach, and operator intervention rather than reporting only that the drone failed.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record before implementing Why aerial agents are special. The record should name the flight variable, maintained tool or log source, operating envelope, and failure case that deserves a deliberate perturbation test.</p>
+<p>Compute the hover rotor speed for a small quadrotor and then check how much attitude headroom is left. The vehicle is a 500 g quad with four rotors and a thrust coefficient $k_T = 3\times10^{-6}$ N per rpm$^2$. The hover equation gives the per-rotor speed directly; the headroom check tells you whether a roll command can be realized before a motor saturates.</p>
+<pre><code class="language-python"># Hover rotor speed for a 4-rotor quadrotor, plus attitude headroom.
+import math
 
+m = 0.500          # mass, kg
+g = 9.81           # m/s^2
+n_rotors = 4
+k_T = 3e-6         # thrust coefficient, N per rpm^2
+rpm_max = 1100.0   # rotor speed limit for this motor/prop, rpm
 
-<p><strong>Expected output:</strong> the printed trace for Why aerial agents are special should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+# Hover: sum of thrusts = m*g, all rotors equal.
+F_hover = m * g / n_rotors                 # required thrust per rotor, N
+rpm_hover = math.sqrt(F_hover / k_T)       # invert F = k_T * rpm^2
+
+# How much extra thrust can one rotor add before saturating?
+F_max = k_T * rpm_max**2
+headroom_N = F_max - F_hover
+throttle_frac = rpm_hover / rpm_max
+
+print(f"thrust per rotor at hover : {F_hover:.3f} N")
+print(f"hover rotor speed         : {rpm_hover:.0f} rpm")
+print(f"hover throttle fraction   : {throttle_frac:.2%} of rpm_max")
+print(f"per-rotor thrust headroom : {headroom_N:.3f} N")</code></pre>
+<div class="code-output">thrust per rotor at hover : 1.226 N
+hover rotor speed         : 639 rpm
+hover throttle fraction   : 58.13% of rpm_max
+per-rotor thrust headroom : 2.404 N</div>
+<div class="code-caption"><strong>Code Fragment 47.1.1:</strong> Inverting $F = k_T\,\omega^2$ gives a hover speed of about 639 rpm, roughly 58 percent of the motor limit. The remaining headroom is what the attitude loop spends on roll, pitch, and yaw. If the airframe were heavier or the props weaker, the hover throttle would climb toward 100 percent and the headroom would vanish, leaving the controller unable to stabilize.</div>
+<p><strong>Expected output:</strong> a per-rotor hover thrust, a hover rotor speed in rpm, a throttle fraction, and a headroom term. The throttle fraction is the diagnostic field: a healthy design hovers near 50 to 60 percent so that attitude commands have room on both sides. A hover fraction above roughly 80 percent is the early warning that aggressive maneuvers will saturate.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Why aerial agents are special, the hand-built record exposes the flight fields; PX4, ROS 2, MAVLink, gym-pybullet-drones, Aerial Gym, and safe-control-gym should preserve the same schema.</p>
@@ -102,7 +133,7 @@
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Why aerial agents are special is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>Two physical effects break the clean hover model. First, motor saturation at high roll or pitch commands: an aggressive attitude target asks one rotor pair for thrust beyond <code>rpm_max</code>, the mixer clips it, and the realized moment is smaller than commanded, so the vehicle rolls less than expected and the loop diverges. Second, ground effect: within roughly one rotor diameter of the floor, recirculating prop wash raises the effective thrust for the same rpm, so a descent or takeoff near the ground gains unexpected lift and the altitude controller overshoots. Both are model errors, not controller bugs; log throttle saturation and altitude-above-ground before blaming the gains.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

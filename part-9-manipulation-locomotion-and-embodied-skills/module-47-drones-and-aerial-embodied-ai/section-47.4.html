@@ -39,7 +39,7 @@
 <img alt="Technical illustration for Section 47.4: Coverage and inspection; multi-drone coordination." loading="lazy" src="images/chapter-47-illustration-04.png"/>
 <figcaption><strong>Figure 47.4A</strong>: Section 47.4: Coverage and inspection; multi-drone coordination is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>"Covering an area is mowing a lawn from the air: the hard part is missing nothing and counting it honestly."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Coverage and inspection; multi-drone coordination</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -77,17 +77,40 @@
 <figcaption>Figure 47.4.1 maps Coverage and inspection; multi-drone coordination in Drones and Aerial Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Coverage and inspection; multi-drone coordination, the important state variables are coverage grid, camera footprint, communication state, and battery reserve, while the action interface is to allocate viewpoints and paths across agents.</p>
-<p>The method is useful only if it improves a construct-matched measurement: coverage completeness and duplicate-inspection rate. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<p>Coverage planning asks for a path that sweeps a camera footprint over every point of a target region. The classic exact method is <strong>boustrophedon decomposition</strong> (the word means "as the ox plows", back and forth). The free region is split into cells with no obstacles inside, and each cell is covered by parallel sweep lines, called boustrophedon, or lawn-mower, passes, spaced by the sensor footprint width $w$. The drone flies one lane to the far edge, steps over by $w$, reverses, and repeats. For a convex cell of width $W$ the number of lanes is $\lceil W / w \rceil$, and the turns happen only at the cell boundary, which keeps the path efficient.</p>
+<p>The success criterion is the <strong>coverage fraction</strong>: the area actually seen divided by the area that should be seen,</p>
+<p>$$\eta = \frac{\lvert \text{covered cells} \rvert}{\lvert \text{target cells} \rvert}.$$</p>
+<p>A complete plan reaches $\eta = 1$. Lane spacing controls the trade between $\eta$ and flight time: spacing equal to the footprint gives full coverage with no overlap in the ideal case, while spacing wider than the footprint leaves uncovered stripes ($\eta < 1$) and tighter spacing wastes battery on redundant passes. Real footprints depend on altitude and camera field of view, so coverage planning and altitude planning are coupled; flying higher widens $w$ and reduces lanes but lowers ground resolution.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Coverage and multi-drone coordination depend on area partitioning, vehicle state, communication delay, collision constraints, battery reserve, and task handoff. The evidence chain should show whether lost coverage came from path assignment, localization drift, radio dropout, or conservative separation rules.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 47.4.1 to connect fleet behavior to coverage quality. The row should name partition method, communication assumption, battery budget, separation rule, and the failure case, such as lost link or duplicated coverage.</p>
+<p>Simulate a boustrophedon sweep over a 10x10 grid and measure the coverage fraction. Lane spacing equal to one cell (every row swept) should give full coverage; doubling the spacing should leave half the area unseen. Running both makes the spacing-versus-coverage trade concrete.</p>
+<pre><code class="language-python"># Boustrophedon (lawn-mower) coverage over a 10x10 grid.
+def boustrophedon(N, lane_step):
+    covered = [[False] * N for _ in range(N)]
+    path = []
+    for row in range(0, N, lane_step):          # one lane per swept row
+        cols = range(N) if (row // lane_step) % 2 == 0 else range(N - 1, -1, -1)
+        for col in cols:                        # serpentine direction per lane
+            path.append((row, col))
+            covered[row][col] = True
+    seen = sum(cell for r in covered for cell in r)
+    return path, seen / (N * N)
 
+N = 10
+path, eta = boustrophedon(N, lane_step=1)        # spacing = footprint
+print(f"lanes touch every row : path length {len(path)}, coverage = {eta:.0%}")
+print(f"first turns           : {path[8:13]}")
 
-<p><strong>Expected output:</strong> the printed trace for Coverage and inspection; multi-drone coordination should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+_, eta_wide = boustrophedon(N, lane_step=2)       # spacing = 2x footprint
+print(f"spacing doubled       : coverage = {eta_wide:.0%}  (stripes missed)")</code></pre>
+<div class="code-output">lanes touch every row : path length 100, coverage = 100%
+first turns           : [(0, 8), (0, 9), (1, 9), (1, 8), (1, 7)]
+spacing doubled       : coverage = 50%  (stripes missed)</div>
+<div class="code-caption"><strong>Code Fragment 47.4.1:</strong> The serpentine order reverses on every other lane, so the path turns only at the grid edges (visible where row 0 ends at column 9 and row 1 begins there). Lane spacing equal to the footprint gives $\eta = 1$; doubling the spacing halves coverage. This is the exact knob a mission planner trades against battery endurance.</div>
+<p><strong>Expected output:</strong> a full-coverage path at unit spacing and a degraded coverage fraction when the lanes are spread out. The coverage fraction is the evidence field: report it alongside flight time, because a plan that finishes faster by widening lanes is only a win if $\eta$ still meets the inspection requirement.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Coverage and inspection; multi-drone coordination, the hand-built record exposes the flight fields; PX4, ROS 2, MAVLink, gym-pybullet-drones, Aerial Gym, and safe-control-gym should preserve the same schema.</p>
@@ -102,7 +125,7 @@
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Coverage and inspection; multi-drone coordination is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>The planned coverage fraction is not the achieved coverage fraction. Localization drift shifts each lane sideways, so the real footprints no longer tile the area and thin gaps open between passes even though the plan reported $\eta = 1$. Wind pushes the vehicle off the lane in the same way. The honest metric is measured from the logged poses and actual footprints, not from the nominal path. When two drones share a region, the mirror failure is double counting: overlapping assignments inflate apparent coverage while wasting battery, so track duplicate-inspection rate alongside $\eta$.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

@@ -81,6 +81,35 @@ print("body frame:", point_body.round(3).tolist())</code></pre>
 body frame: [0.5, -0.1, 2.8]</div>
 <div class="code-caption">Code Fragment 4.6.1 uses <code>fx</code>, <code>fy</code>, <code>cx</code>, and <code>cy</code> to back-project pixel <code>(u, v)</code> into <code>point_camera</code>. Adding <code>camera_origin_in_body</code> shows the extra extrinsic step needed before a controller can reason in the body frame.</div>
 <p><strong>Expected output:</strong> the camera-frame point shows where the pixel ray lands at 2 meters of depth. The body-frame point shifts by the camera mounting offset, which is the piece perception logs often omit when debugging reach errors.</p>
+<p>The same pattern composes a full sensor-to-world chain. An IMU reports acceleration in its own frame; the controller needs it in the body frame; the navigation stack needs it in the world frame. Each hop is one homogeneous transform, and the composition is left to right along the chain:</p>
+<p>$$T_{\text{world},\text{imu}} = T_{\text{world},\text{body}}\; T_{\text{body},\text{imu}}.$$</p>
+<pre><code class="language-python"># Chain a measurement from the IMU frame to the body frame to the world frame.
+# Each hop is one homogeneous transform; the order follows the frame graph.
+import numpy as np
+from scipy.spatial.transform import Rotation as Rot
+
+def make_T(rpy_deg, translation):
+    T = np.eye(4)
+    T[:3, :3] = Rot.from_euler("xyz", rpy_deg, degrees=True).as_matrix()
+    T[:3, 3] = translation
+    return T
+
+# IMU mounted rotated 90 deg about z and offset on the body.
+T_body_imu = make_T([0, 0, 90], [0.05, 0.0, 0.10])
+# Body pose in the world: yawed 30 deg and translated.
+T_world_body = make_T([0, 0, 30], [2.0, 1.0, 0.0])
+
+T_world_imu = T_world_body @ T_body_imu
+
+p_imu = np.array([1.0, 0.0, 0.0, 1.0])     # a point 1 m along the IMU x-axis
+p_body = T_body_imu @ p_imu
+p_world = T_world_imu @ p_imu
+
+print("in body frame: ", p_body[:3].round(3).tolist())
+print("in world frame:", p_world[:3].round(3).tolist())</code></pre>
+<div class="code-output">in body frame:  [0.05, 1.0, 0.1]
+in world frame: [1.543, 1.891, 0.1]</div>
+<div class="code-caption">Code Fragment 4.6.2 chains IMU to body to world with two homogeneous transforms. Composing in frame-graph order is what keeps a sensor reading consistent with the navigation estimate.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>

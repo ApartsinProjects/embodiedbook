@@ -37,117 +37,122 @@
 <blockquote class="epigraph">
 <figure class="illustration">
 <img alt="Technical illustration for Section 48.5: End-to-end and world-model driving." loading="lazy" src="images/chapter-48-illustration-05.png"/>
-<figcaption><strong>Figure 48.5A</strong>: Section 48.5: End-to-end and world-model driving is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<figcaption><strong>Figure 48.5A</strong>: A driving world model rolls the scene forward in its imagination, letting the planner test maneuvers against predicted futures before committing a single real command.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>A world model lets the car ask "what happens if I do this?" without leaving the lane to find out.</p>
+<cite>On learned simulators for driving</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>End-to-end and world-model driving</strong> is a concrete autonomous driving as embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
+<p>A <strong>world model</strong> learns to predict how the scene will evolve, often as future video frames or future occupancy, conditioned on the ego action. Driving world models such as <strong>GAIA-1</strong>, <strong>UniSim</strong>, and <strong>DriveDreamer</strong> generate realistic future sensor streams, which serve two purposes: closed-loop planning (imagine and evaluate candidate actions) and data augmentation (synthesize rare or dangerous scenarios that are unsafe or expensive to collect on real roads). <strong>Occupancy flow prediction</strong> is a lighter-weight cousin that forecasts where space will be occupied and how it moves.</p>
 </div>
-
-
-<p>This section develops end-to-end and world-model driving as a concrete embodied AI skill rather than a label. The core contract is: observe video, map tokens, action history, latent dynamics, and route command, learn a policy or world model that predicts consequences before acting, and judge the result with closed-loop scenario success and recovery under distribution shift.</p>
-<p>For End-to-end and world-model driving, compare predictor, planner, controller, and evaluator on one driving scenario so frame, latency, and metric assumptions cannot drift apart.</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>Driving is embodied AI at road scale: the agent senses a partial world, predicts other agents, acts through vehicle dynamics, and carries social and safety obligations. For End-to-end and world-model driving, the decisive question is whether the loop can recover from an end-to-end model looks smooth until it meets a rare scenario outside training coverage.</p>
-</div>
-<p>Figure 48.5.1 should be read as the driving evidence path for End-to-end and world-model driving: inputs, intermediate state, decision, command, and failure label are separate audit points.</p>
-<figure class="illustration" id="fig-48-5-contract">
-<svg aria-labelledby="fig-48-5-title" height="230" role="img" viewbox="0 0 760 230" width="100%">
-<title id="fig-48-5-title">Closed-loop contract for End-to-end and world-model driving</title>
-<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="150" x="24" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="99" y="66">Observe</text>
-<text font-size="12" text-anchor="middle" x="99" y="94">video, map tokens, action history,</text>
-<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="150" x="218" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="293" y="66">Decide</text>
-<text font-size="12" text-anchor="middle" x="293" y="94">state and constraint check</text>
-<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="150" x="412" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="487" y="66">Act</text>
-<text font-size="12" text-anchor="middle" x="487" y="94">learn a policy or world model that</text>
-<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="130" x="606" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="671" y="66">Verify</text>
-<text font-size="12" text-anchor="middle" x="671" y="94">closed-loop scenario success</text>
-<path d="M176 76 L214 76" marker-end="url(#arrow-48-5)" stroke="#333" stroke-width="2"></path>
-<path d="M370 76 L408 76" marker-end="url(#arrow-48-5)" stroke="#333" stroke-width="2"></path>
-<path d="M564 76 L602 76" marker-end="url(#arrow-48-5)" stroke="#333" stroke-width="2"></path>
-<path d="M671 121 C671 184 100 184 100 122" fill="none" marker-end="url(#arrow-48-5)" stroke="#555" stroke-width="2"></path>
-<defs><marker id="arrow-48-5" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"></path></marker></defs>
-</svg>
-<figcaption>Figure 48.5.1 maps End-to-end and world-model driving in Autonomous Driving as Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
-</figure>
+<p>This section develops the world-model contract: given a history of observations and a proposed action sequence, predict future observations (frames, occupancy, or flow) with enough fidelity that planning decisions made in imagination transfer to the real road. The recurring question is closed-loop validity: a model can produce beautiful video yet still be useless for planning if its predicted dynamics drift from real physics over the horizon.</p>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In End-to-end and world-model driving, the important state variables are video, map tokens, action history, latent dynamics, and route command, while the action interface is to learn a policy or world model that predicts consequences before acting.</p>
-<p>The method is useful only if it improves a construct-matched measurement: closed-loop scenario success and recovery under distribution shift. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<h3>From prediction to imagination</h3>
+<p>A learned world model approximates the environment transition $p(o_{t+1} \mid o_{\le t}, a_t)$. Unrolling it produces an imagined rollout the planner can score, turning planning into search over action sequences inside a differentiable or sampleable simulator. This is the driving instance of the model-based control idea: plan in a learned model, act in the world.</p>
+<h3>Generative driving world models</h3>
+<ul>
+<li><strong>GAIA-1</strong> casts driving generation as next-token prediction over discretized video, text, and action tokens, producing controllable future driving videos.</li>
+<li><strong>UniSim</strong> aims for a general interactive simulator: condition on an action and render the resulting next observation, so an agent can be trained and tested entirely inside the learned simulator.</li>
+<li><strong>DriveDreamer</strong> conditions video diffusion on structured driving signals (HD map, 3D boxes, actions) to generate diverse, controllable scenarios for training perception and planning.</li>
+</ul>
+<h3>Occupancy flow</h3>
+<p>Rather than render pixels, occupancy flow predicts a future occupancy grid plus a flow field describing how occupied cells move. It is cheaper, directly consumable by planning (the planner wants to know what space will be blocked), and avoids hallucinating photorealistic but dynamically wrong frames.</p>
+<div class="callout paper-spotlight">
+<div class="callout-title">Paper Spotlight: UniSim</div>
+<p><strong>"UniSim: Learning Interactive Real-World Simulators" (Yang et al., ICLR 2024).</strong> UniSim learns a single action-conditioned generative simulator from heterogeneous real-world data (robot trajectories, human activity, navigation), so that issuing an action produces a plausible next visual observation. For driving, the promise is to train and evaluate policies inside a learned simulator that captures real-world appearance and dynamics, reducing reliance on hand-built simulators and risky on-road testing. The paper's central evidence is that policies and perception models trained purely in the learned simulator transfer to real settings, which is the property a driving world model must have to be more than a video generator.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Pretty Video Is Not Closed-Loop Validity</div>
+<p>The decisive test of a driving world model is not frame realism but whether a maneuver judged safe in imagination is safe on the road. A model that produces crisp frames yet lets predicted vehicles drift off-physics over a 5 s horizon will mislead the planner. Always evaluate the model by closed-loop policy transfer, not only by perceptual fidelity metrics.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>End-to-end driving still needs inspectable interfaces: observation window, latent state, predicted future, action proposal, safety monitor, and closed-loop replay. The model is not exempt from evidence.</p>
+<p>For closed-loop planning the loop is: encode current observation, propose candidate action sequences, unroll the world model for each to get imagined futures, score each future with a reward or cost (collision, progress, comfort), and execute the first action of the best sequence (model predictive control in latent space). For data augmentation the loop is offline: sample diverse conditions (weather, agents, rare events), generate synthetic sensor data plus labels, and add it to the training set for downstream perception and planning.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in this section to bind End-to-end and world-model driving to a measurable driving artifact: scenario, ODD condition, toolchain, metric, safety margin, and deliberate failure case.</p>
+<p>The example sketches the planning use of a world model: a toy action-conditioned predictor is unrolled for several candidate accelerations, and the planner selects the action whose imagined future keeps the largest safety margin. It mirrors the real closed-loop pattern without a learned network.</p>
+<pre><code class="language-python">import numpy as np
 
+# Toy learned world model: predicts future ego-lead gap given an ego action.
+# In reality this is a neural net rolling out future frames or occupancy.
+def world_model_rollout(gap0, ego_v0, lead_v, accel, horizon=3.0, dt=0.1):
+    """Imagine the gap trajectory under a constant ego acceleration."""
+    gap, ego_v, gaps = gap0, ego_v0, []
+    for _ in range(int(horizon / dt)):
+        ego_v = max(0.0, ego_v + accel * dt)
+        gap += (lead_v - ego_v) * dt          # lead minus ego closing rate
+        gaps.append(gap)
+    return np.array(gaps)
 
-<p><strong>Expected output:</strong> the printed trace for End-to-end and world-model driving should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+gap0, ego_v0, lead_v = 18.0, 14.0, 9.0        # closing on a slower lead
+candidates = [-3.0, -2.0, -1.0, 0.0, 1.0]     # candidate ego accelerations
+
+best_a, best_score = None, -np.inf
+for a in candidates:
+    future = world_model_rollout(gap0, ego_v0, lead_v, a)
+    min_gap = future.min()                     # imagined worst-case safety margin
+    # Reward keeping a margin while not braking harder than needed.
+    score = min_gap - 0.5 * abs(a)
+    print(f"accel={a:+.1f}  imagined_min_gap={min_gap:5.1f} m  score={score:5.2f}")
+    if min_gap > 3.0 and score > best_score:    # require a hard safety floor
+        best_a, best_score = a, score
+
+print("chosen action (m/s^2):", best_a)
+</code></pre>
+<p><strong>Expected output:</strong> aggressive positive accelerations let the imagined gap fall below the 3 m floor and are rejected; a mild deceleration wins because it preserves the safety margin at the least control cost. Swapping in a real GAIA-1- or UniSim-style model replaces <code>world_model_rollout</code> with a learned rollout while keeping this select-by-imagined-margin structure.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built evidence record exposes the fields for End-to-end and world-model driving. For full experiments, use CARLA, CommonRoad, nuScenes, Waymo Open Dataset, ROS 2, and scenario runners while keeping the same artifact schema.</p>
+<p>For world-model research, <strong>nuScenes</strong> and the <strong>Waymo Open Dataset</strong> supply real driving video and occupancy labels; the <strong>Occupancy Flow Challenge</strong> tooling evaluates occupancy and flow predictions. Open implementations of video-diffusion driving generators (DriveDreamer-style) and latent world-model planners (Dreamer-style) provide starting points. Validate any generator by closed-loop policy transfer in <strong>CARLA</strong>, not by frame metrics alone.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
-<li>Build the smallest baseline that can fail in an interpretable way.</li>
-<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
-<li>Add one perturbation aimed at the expected failure: an end-to-end model looks smooth until it meets a rare scenario outside training coverage.</li>
-<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
+<li>Pick the output target deliberately: full video (rich but expensive), occupancy plus flow (planning-ready), or latent state (compact).</li>
+<li>Condition generation on action and structure (map, boxes) so rollouts are controllable, not free-running dreams.</li>
+<li>Evaluate fidelity over the planning horizon, not just one step; dynamics drift compounds.</li>
+<li>Validate by closed-loop transfer: train or plan in the model, test on real or high-fidelity sim.</li>
+<li>For augmentation, oversample rare events and verify downstream metrics improve on a real held-out set.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in End-to-end and world-model driving is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>Horizon drift: a world model accurate at 1 step accumulates error over a multi-second rollout, so the planner optimizes against a fantasy. The symptom is plans that look great in imagination and fail on the road. Always report multi-step rollout error and cap the planning horizon at the length where the model is still calibrated.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using end-to-end and world-model driving should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A team cannot collect enough wet-night cut-in data. They condition a DriveDreamer-style generator on map, agent layout, and a cut-in action to synthesize labeled wet-night cut-ins, add them to training, and measure the predictor's miss rate on a real wet-night held-out slice. The augmentation counts only if that real-slice metric improves.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>A good embodied system makes end-to-end and world-model driving visible twice: once in the design sketch and once in the replay artifact. The second view keeps the first one honest.</p>
+<p>A world model is a daydream with a deadline: it must imagine the next few seconds well enough to act on, and no further.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For End-to-end and world-model driving, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Unified driving foundation models that perceive, predict, and plan inside one learned world model are the frontier UniSim points toward. The open problems are long-horizon dynamical consistency, controllability of rare events, and certifiable safety for policies trained inside a learned simulator.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for end-to-end and world-model driving? If not, the system boundary is still too vague.</p>
+<p>Can you state the two distinct uses of a driving world model (closed-loop planning and data augmentation) and the single property (closed-loop transfer) that validates both? If not, revisit the spotlight and key-insight boxes.</p>
 </div>
-
-
-<p>End-to-end and world-model driving becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
-<p>For End-to-end and world-model driving, keep vehicle physics, road geometry, timing, energy, comfort, and safety constraints inside the artifact rather than in a post-hoc explanation.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>CARLA, nuScenes, and world-model evaluation</td><td>Main practical route for End-to-end and world-model driving</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
-<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
-<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
+<tr><td>nuScenes, Waymo Open Dataset</td><td>Real video and occupancy for training and evaluation</td><td>Use real held-out slices to validate augmentation.</td></tr>
+<tr><td>Occupancy Flow Challenge tooling</td><td>Occupancy and flow metrics</td><td>Prefer occupancy/flow when the consumer is planning.</td></tr>
+<tr><td>CARLA closed-loop harness</td><td>Policy-transfer validation</td><td>Judge world models by transfer, not frame fidelity.</td></tr>
 </tbody>
 </table>
 </div>
-<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section links End-to-end and world-model driving to coordinate frames, control, world models, evaluation, and safety because AV failures usually happen at the interface between those subsystems.</p></div>
-<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for End-to-end and world-model driving, run the baseline and the CARLA, nuScenes, and world-model evaluation route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
-
-<p>When End-to-end and world-model driving fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
-
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for End-to-end and world-model driving: MuJoCo, Drake, ManiSkill, ROS 2, MoveIt, CARLA, nuScenes, Waymo Open Dataset, tactile sensing, locomotion, manipulation, and AV evaluation literature.</p><p class="bib-annotation">Use these sources to verify dynamics, contact, sensors, planning, embodiment constraints, and evaluation panels.</p></div></section>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>Section 48.3 covers explicit trajectory prediction this section generalizes, Section 48.4 and 48.8 consume imagined futures for planning, and 48.9 evaluates whether world-model-driven policies are actually safe closed-loop.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Add Gaussian drift to the toy <code>world_model_rollout</code> that grows with the rollout step, then re-run the planner. Find the horizon at which the chosen action flips to an unsafe one, and report it as the model's usable planning horizon.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Yang et al., "UniSim: Learning Interactive Real-World Simulators," ICLR 2024. Hu et al., "GAIA-1: A Generative World Model for Autonomous Driving," 2023. Wang et al., "DriveDreamer: Towards Real-World-Driven World Models for Autonomous Driving," ECCV 2024.</p><p class="bib-annotation">These define learned interactive simulators and generative driving world models used for planning and augmentation.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>End-to-end and world-model driving is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>World models let a vehicle plan and train inside imagined futures and synthesize rare scenarios for free. Their worth is decided by closed-loop transfer and long-horizon consistency, not by how realistic a single generated frame looks.</p>
 </div>
 <div class="callout exercise">
 <div class="callout-title">Exercise 48.5.1</div>
-<p>Design a same-panel experiment for End-to-end and world-model driving. Specify the scenario set, the baseline, the CARLA, nuScenes, and world-model evaluation library route, the metric computation, and one perturbation that targets this failure: an end-to-end model looks smooth until it meets a rare scenario outside training coverage.</p>
+<p>Design a same-panel experiment comparing a constant-velocity predictor against a learned world-model rollout for planning on a hard-braking-lead scenario set. Report imagined-versus-realized gap error at 1 s, 2 s, and 3 s, and the closed-loop collision rate, and argue which is safe to deploy.</p>
 </div>
 <nav class="chapter-nav">
 <a class="prev" href="section-48.4.html">Section 48.4: Route and local planning</a>

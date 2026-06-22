@@ -34,7 +34,7 @@
 <h1>Section 48.8: Route, behavior, and scenario-based planning</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"A robot earns trust one recovered disturbance at a time."</p><cite>A Field-Tested Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>Driving is a stack of commitments at different time scales: which roads to take over minutes, which gap to take over seconds, and which steering angle to take right now.</p><cite>On layered planning and the HD map</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Autonomous driving planning is layered because the problem has layered commitments: where to go, how to interact, which lane or gap to choose, and which trajectory the vehicle can safely execute.</p>
@@ -50,6 +50,38 @@
 <div class="callout-title">Prediction And Planning Are Coupled</div>
 <p>The planner does not react to one fixed future. It plans against uncertain futures from other agents, then updates as those agents respond. That makes driving an interactive embodied system, not a static path search.</p>
 </div>
+<h2>HD Maps And Localization</h2>
+<p>Route and behavior planning both stand on a high-definition map. Unlike a navigation map, an HD map encodes lane geometry, traffic signs, crosswalks, and stop lines to roughly 10 cm precision, organized as layers: lane centerlines and boundaries, regulatory elements (signs, signals, speed limits), and topology (which lane connects to which). The vehicle locates itself in this map by scan matching, aligning live LiDAR or camera features against the stored map, which yields a lane-relative pose far more precise than raw GNSS. Crowdsourced map updates, where the fleet reports discrepancies, keep the map fresh.</p>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode: Map Staleness</div>
+<p>Construction zones are the canonical HD-map hazard. The map shows a lane that is now coned off, so a planner that trusts the map will route into a closed lane. The mitigation is online perception that detects cones, barriers, and lane closures and lets live evidence override the stored map; the residual risk is the set of construction layouts the detector still mishandles.</p>
+</div>
+<p>The most basic map query a planner makes is "which lane am I in, and where is its center?" The example below performs a nearest-centerline lookup: given the ego position, it returns the closest lane-centerline point, the seed of lane-relative localization and of the Frenet reference path from Section 48.4.</p>
+<pre><code class="language-python">import numpy as np
+
+# A tiny HD-map fragment: two lane centerlines as polylines of (x, y) points.
+lanes = {
+    "lane_L": np.array([[0, 1.8], [10, 1.8], [20, 1.9], [30, 2.2]], dtype=float),
+    "lane_R": np.array([[0, -1.8], [10, -1.8], [20, -1.7], [30, -1.4]], dtype=float),
+}
+
+def nearest_centerline(ego_xy, lanes):
+    """Return (lane_id, nearest centerline point, lateral distance) for the ego."""
+    best = (None, None, np.inf)
+    p = np.asarray(ego_xy, dtype=float)
+    for lane_id, pts in lanes.items():
+        d2 = np.sum((pts - p) ** 2, axis=1)   # squared distance to each map point
+        i = int(np.argmin(d2))
+        dist = float(np.sqrt(d2[i]))
+        if dist < best[2]:
+            best = (lane_id, pts[i], dist)
+    return best
+
+ego = (12.0, -1.2)                            # ego pose near the right lane
+lane_id, cpt, lateral = nearest_centerline(ego, lanes)
+print(f"ego in {lane_id}: nearest center {tuple(cpt)}, lateral offset {lateral:.2f} m")
+</code></pre>
+<p><strong>Expected output:</strong> the ego at <code>(12.0, -1.2)</code> is assigned to <code>lane_R</code> with a nearest centerline vertex at <code>(10.0, -1.8)</code> and a distance of about 2.09 m (dominated by the 10 m vertex spacing of this coarse polyline; a real HD map is sampled far more densely). The lane assignment is the lane-relative localization a behavior planner needs before it can reason about gaps and maneuvers, and in a real stack the snap is refined by scan matching against the full HD map layers.</p>
 <h2>Scenario-Based Validation</h2>
 <p>Scenario testing is the bridge from impressive driving clips to engineering evidence. A scenario names the road layout, actors, initial states, behavior scripts, weather, sensor configuration, success criteria, and termination rules. OpenSCENARIO, ScenarioRunner, CommonRoad, and CARLA-style tooling make those assumptions explicit.</p>
 <p>A useful scenario program separates functional scenarios, logical scenarios, and concrete scenarios. The functional scenario says "occluded pedestrian after parked van." The logical scenario defines parameter ranges for speed, distance, visibility, and pedestrian timing. The concrete scenario fixes one reproducible test instance with exact values.</p>

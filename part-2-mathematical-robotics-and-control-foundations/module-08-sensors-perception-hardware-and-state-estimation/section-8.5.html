@@ -57,17 +57,33 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Sensor noise and uncertainty models is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Sensor noise and uncertainty models, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<pre><code class="language-python"># Sensor noise and uncertainty models: keep the section idea tied to observable evidence.
-# Run this diagnostic probe before trusting the maintained library path.
+<h2>Worked Example: Projecting a Point and Propagating Its Uncertainty</h2>
+<p>The right way to model a measurement is as a value plus a covariance. A 3D position estimate is a mean $X_w$ with a covariance $\Sigma_X$, and any function applied to that estimate transforms the covariance too. The pinhole camera is the canonical example. A world point projects to a pixel through the intrinsic matrix $K$ and the extrinsic pose $[R\,|\,t]$:</p>
+$$\lambda \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K\,[R \mid t]\, X_w$$
+<p>where $K$ holds the focal lengths and principal point, $[R\,|\,t]$ maps the world frame into the camera frame, and the scalar $\lambda$ is the point depth that is divided out to land on the image plane. Calibration is the process of recovering $K$ and the lens distortion from images of a known target. Because projection is nonlinear (the divide by depth), a 3D position uncertainty does not map to a simple fixed pixel uncertainty: depth error, in particular, blurs the pixel location more for nearby points. The example below projects one point and then propagates its 3D covariance to a pixel covariance by Monte Carlo, the same idea an extended Kalman filter would handle with a Jacobian.</p>
+<pre><code class="language-python"># Project a 3D point to a pixel, then propagate its uncertainty to image space.
 import numpy as np
 
-points_world = np.array([[0.0, 0.0, 1.0], [0.5, 0.2, 1.0]])
-camera_offset = np.array([0.1, 0.0, 0.0])
-points_camera = points_world - camera_offset
-print(points_camera)</code></pre>
-<div class="code-caption">Code Fragment 8.5.1 computes points_camera from points_world and camera_offset, exposing how sensor placement changes the state estimate.</div>
+K = np.array([[700.0,   0.0, 320.0],
+              [  0.0, 700.0, 240.0],
+              [  0.0,   0.0,   1.0]])
+R = np.eye(3)                       # camera aligned with world axes
+t = np.array([0.0, 0.0, 0.0])       # camera at the world origin
+X_w = np.array([0.2, -0.1, 2.0])    # a 3D point, meters
+
+Xc = R @ X_w + t                    # world -> camera frame
+uvw = K @ Xc                        # apply intrinsics
+u, v = uvw[0] / uvw[2], uvw[1] / uvw[2]   # divide by depth (lambda)
+print(f"pixel = ({u:.1f}, {v:.1f})")
+
+# 3D position uncertainty (depth noisier than lateral), propagated by sampling.
+rng = np.random.default_rng(3)
+Sigma_X = np.diag([0.01, 0.01, 0.04])     # variances in m^2
+samples = rng.multivariate_normal(X_w, Sigma_X, size=5000)
+proj = K @ samples.T
+pix = (proj[:2] / proj[2]).T
+print("pixel std (u, v):", np.round(pix.std(axis=0), 2))</code></pre>
+<div class="code-caption">Code Fragment 8.5.1 projects a point to pixel (390, 205) and propagates a 3D position covariance into the image, yielding a pixel spread of about 36 pixels in each axis. Modeling uncertainty as a covariance, rather than a single number, is the contract every downstream filter in this chapter depends on.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should compute one noise model, one residual, and one confidence interval. FilterPy, SciPy, and robot_localization scale that idea into maintained filters and diagnostics.</p>

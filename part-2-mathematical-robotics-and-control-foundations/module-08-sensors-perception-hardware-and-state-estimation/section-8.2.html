@@ -57,18 +57,32 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Cameras, depth (stereo/structured light/ToF), LiDAR is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Cameras, depth (stereo/structured light/ToF), LiDAR, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<pre><code class="language-python"># Cameras, depth (stereo/structured light/ToF), LiDAR: keep the section idea tied to observable
-# evidence.
-# Run this diagnostic probe before trusting the maintained library path.
+<h2>Worked Example: Stereo Depth and the Point Cloud</h2>
+<p>A stereo pair recovers depth from disparity. The same world point projects to slightly different horizontal pixels in the left and right images, and that shift in pixels is the disparity $d$. With baseline $b$ (the distance between the two camera centers) and focal length $f$ in pixels, the depth is</p>
+$$z = \frac{b\,f}{d}$$
+<p>This relation carries two practical consequences. First, depth resolution degrades with the square of distance: since $z \propto 1/d$, a one-pixel disparity error causes a depth error that grows like $z^2/(bf)$, which is why stereo rigs are accurate up close and vague far away, and why a wider baseline buys range. Second, zero disparity means infinite depth, so distant or textureless regions where disparity cannot be measured produce holes. LiDAR sidesteps disparity entirely by timing a laser pulse, giving direct metric range with near-uniform accuracy across distance, at the cost of sparser angular sampling and moving parts. Once depth per pixel is known, back-projection through the intrinsics turns the depth image into a 3D point cloud.</p>
+<pre><code class="language-python"># Stereo depth z = b*f/d, then back-project a depth image to a 3D point cloud.
 import numpy as np
 
-points_world = np.array([[0.0, 0.0, 1.0], [0.5, 0.2, 1.0]])
-camera_offset = np.array([0.1, 0.0, 0.0])
-points_camera = points_world - camera_offset
-print(points_camera)</code></pre>
-<div class="code-caption">Code Fragment 8.2.1 computes points_camera from points_world and camera_offset, exposing how sensor placement changes the state estimate.</div>
+b = 0.12      # baseline between the two cameras, meters
+f = 700.0     # focal length, pixels
+cx, cy = 320.0, 240.0   # principal point, pixels
+
+# A tiny 2x3 disparity map (pixels). Larger disparity => nearer surface.
+disparity = np.array([[40.0, 35.0, 30.0],
+                      [50.0, 45.0, 20.0]])
+H, W = disparity.shape
+us, vs = np.meshgrid(np.arange(W), np.arange(H))
+
+z = b * f / disparity            # metric depth per pixel
+x = (us - cx) * z / f            # back-project to the camera frame
+y = (vs - cy) * z / f
+cloud = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+
+print("depth range (m):", round(z.min(), 3), "to", round(z.max(), 3))
+print("first 3 points (m):")
+print(np.round(cloud[:3], 3))</code></pre>
+<div class="code-caption">Code Fragment 8.2.1 turns a disparity map into a metric point cloud. The nearest pixel (disparity 50) sits at 1.68 m and the farthest (disparity 20) at 4.2 m, making the inverse $z \propto 1/d$ relationship concrete: halving the disparity doubles the depth and roughly quadruples the depth uncertainty.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should keep modality-specific noise visible: pixel ray, depth sample, point coordinate, timestamp, and confidence. OpenCV and point-cloud tools scale the workflow once the geometry is correct.</p>

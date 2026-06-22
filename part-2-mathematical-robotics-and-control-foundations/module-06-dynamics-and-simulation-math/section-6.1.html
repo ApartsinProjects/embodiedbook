@@ -57,8 +57,81 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in From kinematics to dynamics: forces, torques, inertia is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For From kinematics to dynamics: forces, torques, inertia, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>Worked Example: Recursive Newton-Euler Wrench Propagation</h2>
+<p>The cleanest way to turn kinematics into dynamics is the recursive Newton-Euler algorithm (RNEA). It runs in two sweeps. The <strong>forward sweep</strong> propagates velocity and acceleration from the base out to the end-effector. The <strong>backward sweep</strong> propagates wrenches (the stacked force-torque pairs $\mathcal{F} = (n, f)$) from the end-effector back to the base, and at each joint it reads off the torque the actuator must supply.</p>
+<p>For link $i$ with mass $m_i$, center-of-mass acceleration $a_{c,i}$, angular velocity $\omega_i$, and angular acceleration $\alpha_i$, the Newton and Euler balance laws are:</p>
+<p>$$f_i = f_{i+1} + m_i\, a_{c,i}, \qquad n_i = n_{i+1} + I_i\alpha_i + \omega_i \times (I_i\omega_i) + r_{i,c}\times(m_i a_{c,i}) + r_{i,i+1}\times f_{i+1}$$</p>
+<p>The joint torque is then the projection of the link wrench onto the joint axis $z_i$: for a revolute joint, $\tau_i = n_i^\top z_i$. The example below implements both sweeps for the same 2-link planar arm used in Section 6.2, then confirms that the torques RNEA produces match the manipulator-equation torques $M\ddot{q}+C\dot{q}+g$ computed independently.</p>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+m1, m2 = 1.5, 1.0      # link masses (kg)
+l1, l2 = 0.5, 0.4      # link lengths (m), masses at link tips
+g_acc  = 9.81
+
+def rnea_planar_2link(q, dq, ddq):
+    """Recursive Newton-Euler for a 2R planar arm, point masses at tips.
+    Returns joint torques tau = [tau1, tau2]."""
+    q1, q2 = q
+    # Absolute link angles in the plane.
+    th1 = q1
+    th2 = q1 + q2
+    w1  = dq[0]                 # absolute angular velocities (scalar, planar)
+    w2  = dq[0] + dq[1]
+    a1  = ddq[0]               # absolute angular accelerations
+    a2  = ddq[0] + ddq[1]
+
+    # Position of each point mass relative to its joint.
+    p1 = l1 * np.array([np.cos(th1), np.sin(th1)])
+    p2 = l2 * np.array([np.cos(th2), np.sin(th2)])
+
+    def acc(joint_pos_accel, w, a, p):
+        # Linear accel of a tip mass = joint accel + tangential + centripetal.
+        perp = np.array([-p[1], p[0]])       # z x p
+        return joint_pos_accel + a * perp - (w**2) * p
+
+    def cross2(r, f):                         # scalar z-component of r x f
+        return r[0] * f[1] - r[1] * f[0]
+
+    # Forward sweep: accel of joint 1 origin includes gravity as a fictitious accel.
+    grav = np.array([0.0, g_acc])            # subtract gravity => add to base accel
+    a_base = grav                            # base origin "accelerates" up at g
+    ac1 = acc(a_base, w1, a1, p1)            # accel of mass 1
+    a_j2 = acc(a_base, w1, a1, p1)           # accel of joint-2 origin (= tip of link1)
+    ac2 = acc(a_j2, w2, a2, p2)              # accel of mass 2
+
+    # Backward sweep: forces (planar, 2D) and torques (scalar z-component).
+    f2 = m2 * ac2
+    n2 = cross2(p2, f2)                      # torque about joint 2
+    f1 = m1 * ac1 + f2
+    n1 = cross2(p1, m1 * ac1) + cross2(p1, f2) + n2
+
+    return np.array([n1, n2])
+
+def manipulator_torque(q, dq, ddq):
+    """Independent manipulator-equation torque for cross-checking."""
+    q2 = q[1]; c2, s2 = np.cos(q2), np.sin(q2)
+    M = np.array([[m1*l1**2 + m2*(l1**2 + l2**2 + 2*l1*l2*c2), m2*(l2**2 + l1*l2*c2)],
+                  [m2*(l2**2 + l1*l2*c2),                       m2*l2**2]])
+    h = -m2*l1*l2*s2
+    C = np.array([[h*dq[1], h*(dq[0]+dq[1])],
+                  [-h*dq[0], 0.0]])
+    c1, c12 = np.cos(q[0]), np.cos(q[0]+q[1])
+    g = np.array([(m1+m2)*g_acc*l1*c1 + m2*g_acc*l2*c12, m2*g_acc*l2*c12])
+    return M @ ddq + C @ dq + g
+
+q   = np.array([0.4, -0.7])
+dq  = np.array([1.2,  0.9])
+ddq = np.array([0.3, -0.5])
+
+tau_rnea = rnea_planar_2link(q, dq, ddq)
+tau_eq   = manipulator_torque(q, dq, ddq)
+print("RNEA torque            :", tau_rnea)
+print("manipulator-eq torque  :", tau_eq)
+print("agree:", np.allclose(tau_rnea, tau_eq, atol=1e-9))
+</code></pre>
+</div>
+<p>The forward sweep carries kinematic quantities outward and the backward sweep carries wrenches inward, so RNEA computes inverse dynamics in $O(n)$ time without ever forming $M$, $C$, or $g$ explicitly. The cross-check against the closed-form manipulator equation is the evidence that the two-sweep bookkeeping is correct before scaling to a 7-DOF arm where no closed form is available.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For From kinematics to dynamics: forces, torques, inertia, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

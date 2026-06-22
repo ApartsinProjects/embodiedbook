@@ -34,54 +34,70 @@
 <h1>Section 41.4: Generating scenes and synthetic experience</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>For Generating scenes and synthetic experience, predicted futures must be checked against the next observed state before the planner trusts a longer horizon.</p>
+<blockquote class="epigraph"><p>Generate the whole future as one object, then bend it toward high reward with a guidance gradient; the plan and the optimizer become the same forward pass.</p>
 <figure class="illustration">
 <img alt="Technical illustration for Section 41.4: Generating scenes and synthetic experience." loading="lazy" src="images/chapter-41-illustration-04.png"/>
 <figcaption><strong>Figure 41.4A</strong>: Section 41.4: Generating scenes and synthetic experience becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
-<cite>A Denoising Planner</cite></blockquote>
+<cite>A Trajectory-Level Planner</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Generating Scenes And Synthetic Experience</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Generated scenes can help robot learning in at least three ways: augment perception pretraining, expand task coverage in simulators, and provide candidate futures for planners to evaluate. The catch is that all three uses fail if the generated data drifts away from the real control regime.</p>
-<p>This section focuses on synthetic experience as a support-expansion tool, not a drop-in replacement for real interaction. The right use is targeted supplementation where real data is scarce or costly, such as rare failures, long-horizon resets, or unusual clutter configurations.</p>
+<p>Planning with generative models reframes the planner as a sampler. Diffuser (Janner et al., 2022) generates a full trajectory at once by diffusion, then steers that generation toward high reward with classifier guidance, so the act of planning and the act of optimizing collapse into the same denoising forward pass. Decision Diffuser instead conditions on a desired return-to-go for offline reinforcement learning, sampling trajectories that the dataset suggests will achieve that return. The same generative machinery also produces candidate futures and synthetic scenes that planners and learners can consume.</p>
+<p>The catch is shared across all of these uses: generated trajectories and scenes help only when they stay near the real control regime, and the guidance that makes them high-reward can also pull them off the data manifold. The right framing is generation as a proposal engine whose proposals must survive a feasibility check, whether the proposal is a planned trajectory or a synthetic training scene.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Generating Scenes And Synthetic Experience, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>Suppose a dataset mixes real trajectories $\mathcal{D}_r$ with generated trajectories $\mathcal{D}_g$. A simple weighting view is</p>
+<p>Diffuser denoises an entire trajectory $\tau$ and biases sampling toward high reward using classifier (or classifier-free) guidance. At each reverse step the unconditional noise prediction is combined with a conditional one to form a guided estimate</p>
 <p>$$
-\mathcal{L}(\theta)=\mathbb{E}_{(s,a)\sim \mathcal{D}_r}[\ell_\theta(s,a)] + \alpha \, \mathbb{E}_{(s,a)\sim \mathcal{D}_g}[\ell_\theta(s,a)],
+\tilde\epsilon_\theta = (1+w)\,\epsilon_\theta(\tau_t, t, c) - w\,\epsilon_\theta(\tau_t, t),
 $$</p>
-<p>where $\alpha$ controls how much synthetic experience influences the learner. The hard part is not writing the mixture. It is ensuring $\mathcal{D}_g$ adds coverage near task-relevant but underrepresented states rather than injecting trajectories that violate real embodiment dynamics.</p>
+<p>where $c$ is the conditioning (a goal or a high-return signal) and $w$ is the guidance weight. With $w=0$ the sample is unconditional; larger $w$ pushes harder toward the conditioned objective. The trade-off is direct: strong guidance shapes more goal-directed plans but can drag samples off the data manifold into dynamically infeasible trajectories, which is why a feasibility filter still sits downstream. <strong>Decision Diffuser</strong> uses this same conditioning mechanism with the return-to-go as $c$, turning offline reinforcement learning into conditional trajectory generation.</p>
+<p>A practical cost note frames the rest of the chapter: generative planning pays 20 to 50 denoising steps at inference for every plan, against a single forward pass for a deterministic policy. That latency is the price of multimodality and guidance, and it is exactly what the speedup work in Section 41.5 attacks.</p>
+<p>When generated trajectories are reused as training data, a dataset mixes real trajectories $\mathcal{D}_r$ with generated ones $\mathcal{D}_g$ under a weight $\alpha$, $\mathcal{L}(\theta)=\mathbb{E}_{\mathcal{D}_r}[\ell_\theta] + \alpha\,\mathbb{E}_{\mathcal{D}_g}[\ell_\theta]$. The hard part is not the mixture; it is ensuring $\mathcal{D}_g$ adds coverage near task-relevant but underrepresented states rather than injecting trajectories that violate real embodiment dynamics.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>For Generating scenes and synthetic experience, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
+<p>Classifier-free guidance trains one network to produce both conditional and unconditional noise predictions (by randomly dropping the condition during training), then combines them at sampling time with weight $w$. No separate classifier is needed, and $w$ becomes a single inference-time dial that trades goal adherence against on-manifold realism.</p>
 </div>
 <h2>Worked Example</h2>
-<p>The probe below treats synthetic data as a targeted supplement. It measures whether adding generated rare-failure scenes improves coverage without overwhelming the real dataset.</p>
-<pre><code class="language-python"># Refine noisy action trajectories toward a goal-conditioned plan.
-# Mix real and generated samples and inspect coverage gain.
+<p>The probe below shows classifier-(free)-guidance trajectory planning and the guidance-weight trade-off Diffuser depends on. From the same noisy start it runs a guided denoising loop at three values of $w$, combining a conditional denoiser (pulls the endpoint to the goal) with an unconditional one (pulls toward an on-manifold prior). We report the endpoint, its distance to the goal, and whether it stays inside a feasible reach radius.</p>
+<pre><code class="language-python"># Guided trajectory denoising (Diffuser-style).
+# eps_tilde = (1 + w) eps_cond - w eps_uncond ; w trades goal-pull vs on-manifold pull.
 import numpy as np
 
-real_rare_failures = 12
-generated_rare_failures = 30
-alpha = 0.35
+H = 5
+goal = np.array([1.0, 0.0])
+feasible_radius = 1.15           # endpoints beyond this are dynamically infeasible
 
-effective_support = real_rare_failures + alpha * generated_rare_failures
-synthetic_fraction = alpha * generated_rare_failures / effective_support
+def eps_uncond(tau):             # stand-in: pull toward a smooth on-manifold prior
+    prior = np.stack([np.linspace(0.0, 0.6, H), np.zeros(H)], axis=1)
+    return tau - prior
 
-print({
-    "effective_support": round(float(effective_support), 2),
-    "synthetic_fraction": round(float(synthetic_fraction), 2),
-})</code></pre>
-<div class="code-output"><code>{'effective_support': 22.5, 'synthetic_fraction': 0.47}</code></div>
-<div class="code-caption">Code Fragment 41.4.1 implements diffusion_planner_probe for Generating scenes and synthetic experience and prints the diagnostic quantity the controller or evaluator should inspect.</div>
-<p>The expected output should show that generated data expands support without dominating it. If the synthetic fraction becomes too large, the learner can start optimizing for the generator's biases rather than the robot's real operating regime.</p>
+def eps_cond(tau, c):            # stand-in: pull the trajectory toward the goal c
+    target = np.stack([np.linspace(0.0, c[0], H), np.linspace(0.0, c[1], H)], axis=1)
+    return tau - target
+
+for w in [0.0, 1.0, 4.0]:
+    rng = np.random.default_rng(4)        # same start for every w
+    tau = rng.normal(size=(H, 2)) * 0.3
+    for _ in range(8):                     # guided reverse steps
+        eps_tilde = (1 + w) * eps_cond(tau, goal) - w * eps_uncond(tau)
+        tau = tau - 0.2 * eps_tilde
+    endpoint = tau[-1]
+    dist = float(np.linalg.norm(endpoint - goal))
+    feasible = float(np.linalg.norm(endpoint)) <= feasible_radius
+    print(f"w={w:>3}: endpoint={endpoint.round(3).tolist()} "
+          f"dist_to_goal={dist:.3f} feasible={feasible}")</code></pre>
+<div class="code-output"><code>w=0.0: endpoint=[0.751, 0.012] dist_to_goal=0.249 feasible=True
+w=1.0: endpoint=[1.084, 0.012] dist_to_goal=0.085 feasible=True
+w=4.0: endpoint=[2.083, 0.012] dist_to_goal=1.083 feasible=False</code></div>
+<div class="code-caption">Code Fragment 41.4.1 runs guided trajectory denoising at three guidance weights and reports goal distance and feasibility for each.</div>
+<p>The three rows are the whole story of guidance. At $w=0$ the plan stays comfortably feasible but stops short of the goal; at $w=1$ it reaches the goal and is still feasible; at $w=4$ it overshoots far past the feasible reach radius. This is why Diffuser pairs guidance with a feasibility check: turning $w$ up makes plans more goal-directed right up to the point where they leave the manifold of trajectories the robot can actually execute. Decision Diffuser swaps the goal condition for a return-to-go target, but the same dial and the same risk apply.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Generating scenes and synthetic experience, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>

@@ -57,8 +57,96 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Rigid-body dynamics; the manipulator equation is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Rigid-body dynamics; the manipulator equation, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>The Manipulator Equation</h2>
+<p>Every rigid robot arm with $n$ independent joints obeys one compact second-order law. It is the single most important equation in this chapter, and almost every controller, simulator, and learning method in later chapters is built on top of it:</p>
+<p>$$M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau$$</p>
+<p>The terms are:</p>
+<ul>
+<li>$q \in \mathbb{R}^n$: the joint configuration (angles for revolute joints, displacements for prismatic joints), with $\dot{q}$ and $\ddot{q}$ the joint velocities and accelerations.</li>
+<li>$M(q) \in \mathbb{R}^{n \times n}$: the <strong>inertia matrix</strong> (also called the mass matrix). It is symmetric and positive definite for every reachable configuration. It maps joint acceleration to the inertial part of the required torque.</li>
+<li>$C(q,\dot{q}) \in \mathbb{R}^{n \times n}$: the <strong>Coriolis and centrifugal matrix</strong>. The product $C(q,\dot{q})\dot{q}$ collects the velocity-dependent coupling forces that appear when several joints move at once.</li>
+<li>$g(q) \in \mathbb{R}^n$: the <strong>gravity vector</strong>, the torque each joint must supply to hold the arm against gravity at configuration $q$.</li>
+<li>$\tau \in \mathbb{R}^n$: the vector of joint torques (or forces) commanded by the actuators.</li>
+</ul>
+<div class="callout key-insight">
+<div class="callout-title">Three Structural Properties That Controllers Rely On</div>
+<p><strong>(1) $M(q)$ is symmetric positive definite.</strong> This guarantees $M(q)^{-1}$ exists, so forward dynamics $\ddot{q} = M^{-1}(\tau - C\dot{q} - g)$ always has a unique solution, and the kinetic energy $\tfrac{1}{2}\dot{q}^\top M(q)\dot{q}$ is strictly positive for any nonzero motion.</p>
+<p><strong>(2) $\dot{M}(q) - 2C(q,\dot{q})$ is skew-symmetric</strong> under the standard Christoffel-symbol choice for $C$. This passivity property is what makes energy-based and Lyapunov controllers provably stable: the Coriolis term does no net work, $\dot{q}^\top(\dot{M} - 2C)\dot{q} = 0$.</p>
+<p><strong>(3) At rest, $\tau = g(q)$.</strong> When $\dot{q} = 0$ and $\ddot{q} = 0$ the equation collapses to gravity compensation: the torque needed simply to hold a pose is exactly $g(q)$. This is the first term any real arm controller computes.</p>
+</div>
+<p>The worked example below builds $M$, $C$, and $g$ in closed form for a 2-DOF planar arm (two revolute joints in the vertical plane, masses concentrated at the link tips), then verifies all three structural properties numerically with NumPy.</p>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+# 2-DOF planar arm in a vertical plane, point masses at link tips.
+m1, m2 = 1.5, 1.0       # link masses (kg)
+l1, l2 = 0.5, 0.4       # link lengths (m)
+g_acc  = 9.81           # gravity (m/s^2)
+
+def manipulator_matrices(q, dq):
+    """Return M(q), C(q,dq), g(q) for the 2-link planar arm."""
+    q1, q2 = q
+    dq1, dq2 = dq
+    c2, s2 = np.cos(q2), np.sin(q2)
+
+    # --- Inertia matrix M(q) (symmetric, configuration dependent) ---
+    a = m1 * l1**2 + m2 * (l1**2 + l2**2 + 2 * l1 * l2 * c2)
+    b = m2 * (l2**2 + l1 * l2 * c2)
+    d = m2 * l2**2
+    M = np.array([[a, b],
+                  [b, d]])
+
+    # --- Coriolis / centrifugal matrix C(q,dq) (Christoffel form) ---
+    h = -m2 * l1 * l2 * s2
+    C = np.array([[h * dq2, h * (dq1 + dq2)],
+                  [-h * dq1, 0.0]])
+
+    # --- Gravity vector g(q) ---
+    c1   = np.cos(q1)
+    c12  = np.cos(q1 + q2)
+    g1 = (m1 + m2) * g_acc * l1 * c1 + m2 * g_acc * l2 * c12
+    g2 = m2 * g_acc * l2 * c12
+    g = np.array([g1, g2])
+    return M, C, g
+
+# Pick an arbitrary configuration and velocity.
+q  = np.array([0.4, -0.7])
+dq = np.array([1.2,  0.9])
+M, C, g = manipulator_matrices(q, dq)
+
+# Property 1: M is symmetric positive definite.
+print("M symmetric :", np.allclose(M, M.T))
+print("M eigvals   :", np.linalg.eigvals(M))   # all strictly > 0
+
+# Property 3: torque to simply hold this pose equals g(q).
+tau_hold = g
+print("gravity hold torque tau = g(q):", tau_hold)
+
+# Forward dynamics: given a torque, solve for joint acceleration.
+tau   = np.array([2.0, 0.5])
+ddq   = np.linalg.solve(M, tau - C @ dq - g)
+print("forward-dynamics ddq        :", ddq)
+
+# Inverse dynamics round-trip recovers the same torque.
+tau_back = M @ ddq + C @ dq + g
+print("inverse-dynamics tau        :", tau_back, "(matches input)")
+
+# Property 2: dM/dt - 2C is skew-symmetric.
+# dM/dt = (dM/dq2) * dq2 here, since M depends only on q2.
+dMdq2 = np.array([[-2 * m2 * l1 * l2 * np.sin(q[1]),
+                   -m2 * l1 * l2 * np.sin(q[1])],
+                  [-m2 * l1 * l2 * np.sin(q[1]), 0.0]])
+Mdot  = dMdq2 * dq[1]
+S = Mdot - 2 * C
+print("skew-symmetric (S = -S^T)  :", np.allclose(S, -S.T))
+print("passivity dq^T S dq ~ 0    :", float(dq @ S @ dq))
+</code></pre>
+</div>
+<p>Running this prints that $M$ is symmetric with positive eigenvalues, the hold torque equals $g(q)$, the inverse-dynamics round-trip recovers the commanded torque, and $\dot{M} - 2C$ is skew-symmetric so $\dot{q}^\top(\dot{M}-2C)\dot{q}$ is numerically zero. Those four checks are the minimum acceptance test before trusting any dynamics code, hand-built or from a library.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Cross-Check</div>
+<p>In production, build the same arm in Pinocchio and call <code>pinocchio.crba</code> for $M$, <code>pinocchio.computeCoriolisMatrix</code> for $C$, and <code>pinocchio.computeGeneralizedGravity</code> for $g$, or read them from MuJoCo's <code>mjData.qM</code> and bias terms. The hand-built closed form above is the oracle you compare those library outputs against on the same $(q,\dot{q})$ before you trust a 7-DOF model you cannot verify by hand.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Rigid-body dynamics; the manipulator equation, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

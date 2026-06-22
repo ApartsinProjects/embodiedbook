@@ -34,49 +34,95 @@
 <h1>Section 41.1: Diffusion models as planners</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>For Diffusion models as planners, predicted futures must be checked against the next observed state before the planner trusts a longer horizon.</p>
+<blockquote class="epigraph"><p>A policy that cannot represent uncertainty about where to put the gripper will put it in the average place, which is often wrong in a bimodal world.</p>
 <figure class="illustration">
 <img alt="Technical illustration for Section 41.1: Diffusion models as planners." loading="lazy" src="images/chapter-41-illustration-01.png"/>
 <figcaption><strong>Figure 41.1A</strong>: Section 41.1: Diffusion models as planners becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
-<cite>A Denoising Planner</cite></blockquote>
+<cite>A Multimodal Planner</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Diffusion Models As Planners</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>This section turns Diffusion Models As Planners into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
+<p>Action trajectories are multimodal. Faced with a mug on a table, a competent agent has several valid grasps: top handle, side rim, two-finger pinch on the body. A regression policy trained to minimize mean squared error against demonstrations averages those modes, and the average of a left grasp and a right grasp is a collision with the mug. This is the core reason diffusion models entered embodied AI: their iterative denoising naturally represents a multimodal distribution over trajectories rather than a single conditional mean.</p>
+<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop. For multimodal action spaces, the answer is that the policy stops committing to the average place and starts committing to one coherent mode.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Diffusion Models As Planners, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. Diffusion Models As Planners changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
+<p>A diffusion planner treats a trajectory $\tau_0$ (a sequence of actions, states, or both) as a sample from a data distribution it must learn to generate. Training defines a fixed <em>forward</em> process that gradually corrupts a clean trajectory into Gaussian noise, and learning fits a <em>reverse</em> process that walks noise back to a plausible trajectory conditioned on context $c$ (the observation, the goal, or a return target).</p>
+<p>The forward process adds noise according to a variance schedule $\beta_1,\dots,\beta_T$. Writing $\alpha_t = 1-\beta_t$ and $\bar\alpha_t = \prod_{s\le t}\alpha_s$, the closed form for the noised trajectory at step $t$ is</p>
+<p>$$
+q(\tau_t \mid \tau_0) = \mathcal{N}\!\left(\tau_t;\ \sqrt{\bar\alpha_t}\,\tau_0,\ (1-\bar\alpha_t) I\right).
+$$</p>
+<p>As $t$ grows, $\bar\alpha_t \to 0$ and the trajectory dissolves into standard normal noise. The reverse process is also Gaussian and is the object we train:</p>
+<p>$$
+p_\theta(\tau_{t-1} \mid \tau_t, c) = \mathcal{N}\!\left(\tau_{t-1};\ \mu_\theta(\tau_t, t, c),\ \sigma_t^2 I\right).
+$$</p>
+<p>The network learns the mean $\mu_\theta$ (equivalently, the noise that was added), and sampling chains these reverse steps from $t=T$ down to $t=0$. Because each reverse step is stochastic and conditioned on $c$, repeated sampling from the same observation yields different valid trajectories: this is exactly the multimodal behavior a regression policy cannot produce.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>For Diffusion models as planners, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
+<p>The forward schedule is fixed and parameter-free; all learning lives in the reverse denoiser. Given $\tau_0$ and a sampled $\bar\alpha_t$, you can jump directly to $\tau_t$ in one step (no need to simulate the chain), which is what makes training cheap: sample a timestep, noise the trajectory, ask the network to predict the noise.</p>
 </div>
 <h2>Worked Example</h2>
-<p>The following compact probe makes Diffusion models as planners concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"># Refine noisy action trajectories toward a goal-conditioned plan.
-# This toy denoising loop exposes the planning idea without a large model.
+<p>The probe below makes the forward and reverse processes concrete on a tiny 2D trajectory that should reach the goal at $(1, 0)$. We apply five steps of forward noising under a schedule $\bar\alpha_t$, then run five reverse steps with a deliberately simple linear denoiser that estimates $\tau_0$ and takes a DDIM-style update. The diagnostic to watch is the endpoint distance to the goal: it should grow during noising and shrink back toward zero during denoising.</p>
+<pre><code class="language-python"># Forward noising then reverse denoising of a 2D action trajectory.
+# Forward:  q(tau_t | tau_0) = N(sqrt(abar_t) tau_0, (1 - abar_t) I)
+# Reverse:  estimate tau_0 from tau_t, then take a deterministic step toward tau_{t-1}.
 import numpy as np
 
-rng = np.random.default_rng(3)
-trajectory = rng.normal(size=(6, 2))
+H = 6                                   # waypoints in the trajectory
 goal = np.array([1.0, 0.0])
-for denoise_step in range(5):
-    direction = goal - trajectory[-1]
-    trajectory += 0.18 * direction / len(trajectory)
+tau0 = np.stack([np.linspace(0.0, 1.0, H), np.zeros(H)], axis=1)   # clean plan
 
-score = -float(np.linalg.norm(trajectory[-1] - goal))
-print({"final_point": trajectory[-1].round(3).tolist(), "score": round(score, 3)})</code></pre>
-<div class="code-output"><code>{'final_point': [0.128, 0.274], 'score': -0.915}</code></div>
-<div class="code-caption">Code Fragment 41.1.1 implements diffusion_planner_probe for Diffusion models as planners and prints the diagnostic quantity the controller or evaluator should inspect.</div>
-<p>The expected output is a final waypoint and a score. What you should read from it is not "the model solved planning," but whether iterative denoising moved the trajectory onto a better task-conditioned manifold than the noisy initialization.</p>
+T = 5
+abar = np.array([0.85, 0.65, 0.45, 0.25, 0.08])   # signal retained at each step
+rng = np.random.default_rng(7)
+noise = rng.normal(size=tau0.shape)               # one fixed noise draw
+
+def endpoint_dist(tau):
+    return float(np.linalg.norm(tau[-1] - goal))
+
+print("Forward noising q(tau_t | tau_0):")
+forward = []
+for t in range(T):
+    tau_t = np.sqrt(abar[t]) * tau0 + np.sqrt(1.0 - abar[t]) * noise
+    forward.append(tau_t)
+    print(f"  t={t+1}  abar={abar[t]:.2f}  dist_to_goal={endpoint_dist(tau_t):.3f}")
+
+def denoise_to_tau0(tau_t):
+    # Stand-in for the trained denoiser: pull waypoints back onto the y=0 line to (1,0).
+    x = np.clip(tau_t[:, 0], 0.0, 1.0)
+    return np.stack([np.linspace(x.min(), 1.0, H), tau_t[:, 1] * 0.1], axis=1)
+
+print("\nReverse denoising p_theta(tau_{t-1} | tau_t, goal):")
+tau = forward[-1].copy()
+for t in reversed(range(T)):
+    tau0_hat = denoise_to_tau0(tau)
+    if t > 0:                                       # DDIM-style deterministic step
+        eps_hat = (tau - np.sqrt(abar[t]) * tau0_hat) / np.sqrt(1.0 - abar[t])
+        tau = np.sqrt(abar[t-1]) * tau0_hat + np.sqrt(1.0 - abar[t-1]) * eps_hat
+    else:
+        tau = tau0_hat
+    print(f"  t={t}  dist_to_goal={endpoint_dist(tau):.3f}")</code></pre>
+<div class="code-output"><code>Forward noising q(tau_t | tau_0):
+  t=1  abar=0.85  dist_to_goal=0.178
+  t=2  abar=0.65  dist_to_goal=0.232
+  t=3  abar=0.45  dist_to_goal=0.267
+  t=4  abar=0.25  dist_to_goal=0.318
+  t=5  abar=0.08  dist_to_goal=0.422
+
+Reverse denoising p_theta(tau_{t-1} | tau_t, goal):
+  t=4  dist_to_goal=0.326
+  t=3  dist_to_goal=0.282
+  t=2  dist_to_goal=0.250
+  t=1  dist_to_goal=0.195
+  t=0  dist_to_goal=0.016</code></div>
+<div class="code-caption">Code Fragment 41.1.1 runs the forward and reverse diffusion processes on a 2D trajectory and prints the endpoint distance to the goal at every step.</div>
+<p>Read the two columns together. Forward noising monotonically drives the endpoint away from the goal as $\bar\alpha_t$ shrinks; reverse denoising walks it back to $0.016$, essentially the goal. A real planner replaces <code>denoise_to_tau0</code> with a trained network $\epsilon_\theta(\tau_t, t, c)$, and replaces the single noise draw with fresh Gaussian samples so that repeated runs produce different valid plans. The point is not that this toy "solved planning"; it is that the same forward and reverse machinery scales from this 6-point line to a 16-step manipulation action chunk conditioned on a camera observation.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Diffusion models as planners, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>

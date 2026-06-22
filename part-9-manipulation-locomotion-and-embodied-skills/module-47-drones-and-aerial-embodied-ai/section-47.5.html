@@ -39,7 +39,7 @@
 <img alt="Technical illustration for Section 47.5: Safety, regulation, and simulation for aerial agents." loading="lazy" src="images/chapter-47-illustration-05.png"/>
 <figcaption><strong>Figure 47.5A</strong>: Section 47.5: Safety, regulation, and simulation for aerial agents is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>"A failsafe you have never triggered is a hypothesis, not a guarantee."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Safety, regulation, and simulation for aerial agents</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -77,17 +77,41 @@
 <figcaption>Figure 47.5.1 maps Safety, regulation, and simulation for aerial agents in Drones and Aerial Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Safety, regulation, and simulation for aerial agents, the important state variables are geofence, altitude, failsafe, airspace constraints, and weather, while the action interface is to test autonomy inside operational limits before hardware flight.</p>
-<p>The method is useful only if it improves a construct-matched measurement: violation count and emergency recovery success. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<p>Safety for an autonomous drone is enforced by hard constraints that sit underneath the autonomy stack and cannot be overridden by a confident policy. The most common is the <strong>geofence</strong>, a permitted region of space. A convex geofence is naturally written as a polytope, an intersection of half-spaces:</p>
+<p>$$\mathcal F = \{\, \mathbf x \in \mathbb R^3 : A\mathbf x \le \mathbf b \,\}.$$</p>
+<p>Each row of $A\mathbf x \le \mathbf b$ is one boundary plane (north, south, floor, ceiling, and so on), so a candidate position is legal exactly when every row holds. Checking membership is a single matrix-vector compare, which is cheap enough to run every control tick.</p>
+<p>A geofence only tells you whether you are inside; it does not stop you from flying out at speed. A <strong>control barrier function</strong> (CBF) makes safety dynamic. Define a scalar $h(\mathbf x)$ that is positive inside the safe set and zero on its boundary. Safety is forward-invariant if the control keeps</p>
+<p>$$\dot h(\mathbf x) + \alpha\,h(\mathbf x) \ge 0,$$</p>
+<p>for some $\alpha > 0$. As $h \to 0$ (approaching the boundary) the inequality forces $\dot h \ge 0$, so the system is pushed back before it crosses. In practice this becomes a constraint in a small quadratic program that minimally adjusts the autonomy command, letting the policy do what it wants whenever it is safe and intervening only at the margin. Above these two layers sit discrete <strong>return-to-home (RTH) triggers</strong>: low battery, lost data link, GPS or estimator failure, or geofence breach each map to a fallback (hold, land, or return), with priority so the most urgent fault wins.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Aerial safety combines regulation, geofencing, detect-and-avoid, flight termination, simulation evidence, and pilot override. A release log should identify which monitor acted, what state it observed, how long intervention took, and whether the final vehicle state was actually safe.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 47.5.1 to connect a safety claim to flight-test or simulation evidence. The row should name the regulation or hazard, monitor, intervention path, stopping or landing metric, and residual risk.</p>
+<p>Encode a rectangular geofence as a polytope $A\mathbf x \le \mathbf b$ and test candidate waypoints against it. The box allows 0 to 50 m in $x$ and $y$ and 0 to 30 m in altitude. Beyond a simple inside/outside flag, we also report the signed margin, the distance to the nearest boundary, which is the quantity a CBF would drive to stay non-negative.</p>
+<pre><code class="language-python"># Rectangular geofence membership test via a convex polytope A x &lt;= b.
+import numpy as np
 
+# Box: 0 &lt;= x &lt;= 50, 0 &lt;= y &lt;= 50, 0 &lt;= z &lt;= 30  (meters).
+A = np.array([[ 1, 0, 0], [-1, 0, 0],
+              [ 0, 1, 0], [ 0,-1, 0],
+              [ 0, 0, 1], [ 0, 0,-1]], dtype=float)
+b = np.array([50, 0, 50, 0, 30, 0], dtype=float)
 
-<p><strong>Expected output:</strong> the printed trace for Safety, regulation, and simulation for aerial agents should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+def check(x):
+    slack = b - A @ np.asarray(x, dtype=float)   # &gt;= 0 on every row means inside
+    return bool(np.all(slack &gt;= 0)), float(slack.min())  # (inside?, margin to nearest wall)
+
+for wp in [(25, 25, 15), (55, 25, 15), (25, 25, 32), (2, 2, 1)]:
+    ok, margin = check(wp)
+    flag = "OK" if ok else "VIOLATION"
+    print(f"waypoint {wp!s:>14} -> {flag:9s} margin = {margin:+.1f} m")</code></pre>
+<div class="code-output">waypoint  (25, 25, 15) -> OK        margin = +15.0 m
+waypoint  (55, 25, 15) -> VIOLATION margin = -5.0 m
+waypoint  (25, 25, 32) -> VIOLATION margin = -2.0 m
+waypoint     (2, 2, 1) -> OK        margin = +1.0 m</div>
+<div class="code-caption"><strong>Code Fragment 47.5.1:</strong> The first waypoint is comfortably inside (15 m of slack). The second breaches the east wall by 5 m and the third exceeds the ceiling by 2 m, both flagged as violations with a negative margin. The fourth is legal but only 1 m from a corner, the kind of low-margin state that should already be tightening the CBF constraint before the policy gets any closer.</div>
+<p><strong>Expected output:</strong> a pass or fail per waypoint plus a signed margin. The margin is the evidence field that matters: a binary inside/outside test fires too late, while the continuous margin lets the safety layer slow the vehicle as it approaches a wall instead of slamming a hard stop at the boundary.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Safety, regulation, and simulation for aerial agents, the hand-built record exposes the flight fields; PX4, ROS 2, MAVLink, gym-pybullet-drones, Aerial Gym, and safe-control-gym should preserve the same schema.</p>
@@ -102,7 +126,7 @@
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Safety, regulation, and simulation for aerial agents is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>Failsafes interact, and the dangerous case is a conflict. Low battery triggers return-to-home, but the home direction crosses the geofence wall, or RTH climbs to a transit altitude that breaches the ceiling. If the triggers are not prioritized and mutually consistent, two safety behaviors fight and the vehicle ends up in a worse state than either alone. The second classic failure is a geofence checked against a drifted state estimate: the math says inside, the aircraft is outside. Validate failsafes in simulation by actually firing every trigger, including combinations, and measure recovery success, not just whether the monitor flagged the event.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

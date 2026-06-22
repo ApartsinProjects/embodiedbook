@@ -52,18 +52,66 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Bayesian filtering: Kalman, EKF, particle filters is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Bayesian filtering: Kalman, EKF, particle filters, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<pre><code class="language-python"># Bayesian filtering: Kalman, EKF, particle filters: keep the section idea tied to observable
-# evidence.
-# Run this diagnostic probe before trusting the maintained library path.
+<h2>The Kalman Filter</h2>
+<p>The Kalman filter is the exact recursive solution to state estimation when the dynamics and the measurement are linear and all noise is Gaussian. It keeps a belief about the state as a mean vector $\hat{x}$ and a covariance matrix $P$, and it alternates two steps every time step: a <strong>predict</strong> step that pushes the belief forward through the motion model, and an <strong>update</strong> step that pulls it back toward a fresh measurement.</p>
+<p>Let the state evolve as $x_k = A_k x_{k-1} + B_k u_k + w_k$ with process noise $w_k \sim \mathcal{N}(0, Q_k)$, and let the sensor report $z_k = H_k x_k + v_k$ with measurement noise $v_k \sim \mathcal{N}(0, R_k)$. The predict step is</p>
+$$\hat{x}^-_k = A_k \hat{x}_{k-1} + B_k u_k$$
+$$P^-_k = A_k P_{k-1} A_k^T + Q_k$$
+<p>The superscript minus marks the prior belief, before the measurement is seen. Notice that $P$ always grows in the predict step: pushing the belief through an imperfect model can only add uncertainty. The update step then incorporates the measurement $z_k$:</p>
+$$K_k = P^-_k H_k^T (H_k P^-_k H_k^T + R_k)^{-1}$$
+$$\hat{x}_k = \hat{x}^-_k + K_k (z_k - H_k \hat{x}^-_k)$$
+$$P_k = (I - K_k H_k) P^-_k$$
+<p>The matrix $K_k$ is the <strong>Kalman gain</strong>, and it is the heart of the filter. Read it as a trust dial. When $K_k \to 0$ the filter ignores the measurement and rides on the prediction; when $K_k \to I$ (in the scalar sense) it throws away the prediction and snaps to the sensor. The gain is computed automatically from the relative sizes of the prior covariance $P^-_k$ and the measurement noise $R_k$: a confident prediction or a noisy sensor lowers the gain, and a vague prediction or a sharp sensor raises it.</p>
+<p>The term $z_k - H_k \hat{x}^-_k$ is the <strong>innovation</strong>, the difference between what the sensor actually reported and what the prediction expected it to report. A filter that is working well produces an innovation that looks like zero-mean white noise; a biased or growing innovation is the clearest signal that the model or the noise settings are wrong.</p>
+<div class="callout key-insight">
+<div class="callout-title">Q And R Are The Two Knobs</div>
+<p>$Q_k$ is the process noise: raise it to tell the filter to trust the motion model less and the sensor more. $R_k$ is the measurement noise: raise it to tell the filter to trust the sensor less and the model more. Almost all hand tuning of a Kalman filter is choosing the ratio between these two.</p>
+</div>
+<h2>Worked Example: a 1D Constant-Velocity Tracker</h2>
+<p>The cleanest way to feel the predict-update loop is to track a target that moves at roughly constant velocity while measuring only its position. The state is $x = [\text{position}, \text{velocity}]^T$. The motion model says position advances by velocity times $\Delta t$ and velocity stays put, so $A = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}$. The sensor sees position only, so $H = [1\ \ 0]$. Velocity is never measured directly; the filter infers it from how position changes, which is exactly what makes the example instructive.</p>
+<pre><code class="language-python"># 1D constant-velocity Kalman filter.
+# State x = [position, velocity]^T. We measure noisy position only.
 import numpy as np
 
-points_world = np.array([[0.0, 0.0, 1.0], [0.5, 0.2, 1.0]])
-camera_offset = np.array([0.1, 0.0, 0.0])
-points_camera = points_world - camera_offset
-print(points_camera)</code></pre>
-<div class="code-caption">Code Fragment 8.6.1 computes points_camera from points_world and camera_offset, exposing how sensor placement changes the state estimate.</div>
+dt = 1.0
+A = np.array([[1.0, dt],      # position += velocity * dt
+              [0.0, 1.0]])    # velocity constant
+H = np.array([[1.0, 0.0]])    # measure position only
+Q = np.array([[0.01, 0.0],    # process noise: the model is not perfect
+              [0.0, 0.01]])
+R = np.array([[1.0]])         # measurement noise variance (sigma^2 = 1)
+
+# Ground truth: starts at 0, moves at 1.0 unit/step.
+rng = np.random.default_rng(7)
+steps = 20
+true_pos = np.arange(steps) * 1.0
+meas = true_pos + rng.normal(0.0, 1.0, size=steps)
+
+x = np.array([[0.0], [0.0]])  # initial state guess
+P = np.eye(2) * 5.0           # initial uncertainty (deliberately high)
+
+print(" k  meas   est_pos  est_vel   P_pos")
+for k in range(steps):
+    # Predict
+    x = A @ x
+    P = A @ P @ A.T + Q
+    # Update
+    z = np.array([[meas[k]]])
+    S = H @ P @ H.T + R
+    Kk = P @ H.T @ np.linalg.inv(S)        # Kalman gain
+    x = x + Kk @ (z - H @ x)               # innovation correction
+    P = (np.eye(2) - Kk @ H) @ P
+    print(f"{k:2d} {meas[k]:6.2f}  {x[0,0]:7.2f}  {x[1,0]:6.2f}  {P[0,0]:6.3f}")
+
+print(f"\nfinal velocity estimate = {x[1,0]:.3f} (truth = 1.000)")
+print(f"final position variance = {P[0,0]:.3f} (started at 5.0)")</code></pre>
+<div class="code-caption">Code Fragment 8.6.1: a complete 1D constant-velocity Kalman tracker. Over 20 steps the velocity estimate converges toward the true 1.0 unit/step even though velocity is never measured, and the position variance $P_{00}$ contracts from 5.0 to about 0.37 as the filter accumulates evidence.</div>
+<p>Running this prints a converging trace. The velocity estimate climbs from the initial guess of 0 toward roughly 0.8 to 1.0 within a handful of steps, and the position variance shrinks monotonically as repeated measurements add information. The filter recovers an unmeasured quantity (velocity) purely from the structure of the motion model and the time-correlation of position measurements.</p>
+<h2>Nonlinear Beliefs: EKF and Particle Filters</h2>
+<p>Real robots rarely have linear dynamics. A differential-drive robot turning by a heading angle, a range-bearing landmark measurement, and a camera projection are all nonlinear. The <strong>extended Kalman filter</strong> (EKF) handles this by linearizing the nonlinear functions around the current estimate. If the motion model is $x_k = f(x_{k-1}, u_k)$, the EKF replaces $A_k$ with the Jacobian</p>
+$$F_k = \frac{\partial f}{\partial x}\Big|_{\hat{x}_{k-1}}$$
+<p>evaluated at the current estimate, and similarly replaces $H_k$ with the Jacobian of the measurement function. The covariance equations then run exactly as before but with these local linear approximations. The EKF is the workhorse of classical robot localization and SLAM, but it inherits one weakness: if the function is strongly curved near the estimate, or if the estimate is far from the truth, the linearization point is poor and the filter can diverge while still reporting a confident covariance.</p>
+<p>When the belief itself is non-Gaussian (multimodal, sharply bounded, or shaped by discrete hypotheses), no single mean-and-covariance pair describes it. The <strong>particle filter</strong> abandons the Gaussian assumption entirely and represents the belief as a cloud of weighted samples (particles). Each particle is a hypothesis about the state; the predict step pushes every particle through the (possibly nonlinear) motion model with sampled noise, the update step reweights each particle by how well it explains the measurement, and a resampling step concentrates particles in high-probability regions. This Monte Carlo approach is the basis of AMCL, the standard ROS localization stack, and it shines exactly where the Kalman family struggles: the kidnapped-robot problem, ambiguous symmetric environments, and heavy-tailed sensor noise. The cost is compute, which grows with the number of particles, and the risk is particle impoverishment, where resampling discards the rare particle that happened to be correct.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose prediction, innovation, gain or weights, covariance, and accepted measurements. FilterPy is useful for teaching; robot_localization and AMCL carry the pattern into ROS systems.</p>

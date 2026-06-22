@@ -34,59 +34,71 @@
 <h1>Section 41.3: Generative trajectory planning and scoring</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>For Generative trajectory planning and scoring, predicted futures must be checked against the next observed state before the planner trusts a longer horizon.</p>
+<blockquote class="epigraph"><p>Stop learning to reverse a thousand noising steps; learn the straight-line velocity that carries noise to an action in one smooth flow.</p>
 <figure class="illustration">
 <img alt="Technical illustration for Section 41.3: Generative trajectory planning and scoring." loading="lazy" src="images/chapter-41-illustration-03.png"/>
 <figcaption><strong>Figure 41.3A</strong>: Section 41.3: Generative trajectory planning and scoring becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
-<cite>A Denoising Planner</cite></blockquote>
+<cite>A Flow-Matching Action Expert</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Generative Trajectory Planning And Scoring</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Generative planning is not just "sample many trajectories and keep the best one." In robotics, scoring must combine task reward, dynamics feasibility, collision risk, latency budget, and recovery margin.</p>
-<p>This section turns that idea into a concrete planner pattern that fits receding-horizon execution, where scoring is repeated at every observation refresh rather than once at episode start.</p>
+<p>Diffusion learns to reverse a noising process step by step. Flow matching learns something simpler and often faster: a velocity field that transports a noise sample to a data sample along a smooth path, sampled by integrating an ordinary differential equation (ODE). For action generation this matters because the ODE can be integrated in a handful of steps, and the training target is a clean regression on velocity rather than on noise across a long schedule.</p>
+<p>This section connects flow matching for action generation to the scoring problem that any generative planner must still solve. A flow-matching expert proposes actions cheaply; receding-horizon execution then scores and filters those proposals at every observation refresh rather than once at episode start.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Generative Trajectory Planning And Scoring, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>Let $\tau^{(k)}_{t:t+H}$ be the $k$-th sampled candidate trajectory. A practical scoring rule is</p>
+<p>Flow matching defines a time-indexed path $x_t$ for $t\in[0,1]$ that starts at a noise sample $x_0\sim\mathcal{N}(0,I)$ and ends at a data sample $x_1$ (an action or action chunk). A learned velocity field $v(x_t, t, c)$ generates the sample by integrating the ODE</p>
 <p>$$
-S(\tau^{(k)}) = \lambda_r R(\tau^{(k)}) - \lambda_c C(\tau^{(k)}) - \lambda_d D(\tau^{(k)}) - \lambda_\ell L(\tau^{(k)}),
+dx_t = v(x_t, t, c)\,dt,
 $$</p>
-<p>where $R$ is task reward, $C$ is a collision or constraint penalty, $D$ is a dynamics mismatch penalty, and $L$ is latency or control-effort cost. The planner chooses the candidate with highest score among those that also pass a hard feasibility filter.</p>
+<p>from $t=0$ (noise) to $t=1$ (action), conditioned on context $c$. <strong>Conditional Flow Matching</strong> chooses the simplest possible path: a straight line between a paired noise sample and data sample, $x_t = (1-t)\,x_0 + t\,x_1$. Differentiating gives a constant target velocity $x_1 - x_0$, so the training objective is the regression</p>
+<p>$$
+\mathcal{L}_{\text{CFM}} = \mathbb{E}_{t, x_0, x_1}\left[\left\lVert v_\theta(x_t, t, c) - (x_1 - x_0)\right\rVert^2\right].
+$$</p>
+<p>This is markedly simpler than DDPM training: no noise schedule to tune, no variance terms, and straight-line paths that integrate accurately in few Euler steps. Once an expert proposes actions this cheaply, the planner still faces the scoring problem. For $k$ candidate trajectories a practical scoring rule is $S(\tau^{(k)}) = \lambda_r R - \lambda_c C - \lambda_d D - \lambda_\ell L$, combining task reward $R$, collision or constraint penalty $C$, dynamics mismatch $D$, and latency or effort $L$; the planner keeps the highest-scoring candidate that also passes a hard feasibility filter.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>For Generative trajectory planning and scoring, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
+<p>At inference, draw $x_0$ from a Gaussian, then take a few Euler steps $x \mathrel{+}= v_\theta(x, t, c)\,\Delta t$ from $t=0$ to $t=1$. Because the trained path is nearly straight, even 4 to 10 steps land close to a valid action, which is why flow-matching action experts can hit higher control rates than long DDPM chains.</p>
 </div>
 <h2>Worked Example</h2>
-<p>The probe below makes the scoring stack explicit. The same sampled plan can look good under goal distance alone and still lose once safety and smoothness enter the score.</p>
-<pre><code class="language-python"># Refine noisy action trajectories toward a goal-conditioned plan.
-# Rank candidate trajectories by task reward, constraint penalty, and smoothness.
+<p>The probe below shows a flow-matching forward pass and a few-step ODE integration. We interpolate linearly between a noise sample $x_0$ and a target action $x_1$, read off the constant target velocity $x_1 - x_0$, then integrate the ODE from noise to action with a handful of Euler steps. In a trained system the constant velocity is replaced by the learned field $v_\theta(x_t, t, c)$, but the path geometry and the integration loop are identical.</p>
+<pre><code class="language-python"># Conditional flow matching: straight-line path from noise to action.
+# x_t = (1 - t) x0 + t x1 ;  target velocity v = x1 - x0  (constant along the line).
 import numpy as np
 
-goal = np.array([1.0, 0.0])
-candidates = {
-    "fast_but_sharp": np.array([[0.42, 0.18], [0.37, -0.10], [0.25, -0.12]]),
-    "safe_and_smooth": np.array([[0.28, 0.05], [0.30, -0.01], [0.31, -0.02]]),
-}
+rng = np.random.default_rng(2)
+x1 = np.array([1.0, 0.0])               # target action (data sample)
+x0 = rng.normal(size=2)                 # noise sample
 
-rows = {}
-for name, plan in candidates.items():
-    endpoint = plan.sum(axis=0)
-    goal_reward = -float(np.linalg.norm(endpoint - goal))
-    smoothness = float(np.abs(np.diff(plan[:, 0])).sum())
-    collision_penalty = 0.5 if name == "fast_but_sharp" else 0.0
-    total = goal_reward - 0.4 * smoothness - collision_penalty
-    rows[name] = round(total, 3)
+print("forward path and target velocity:")
+for t in np.linspace(0.0, 1.0, 6):
+    x_t = (1.0 - t) * x0 + t * x1       # point on the path at time t
+    v = x1 - x0                         # CFM regression target
+    print(f"  t={t:.1f}  x_t={x_t.round(3).tolist()}  v={v.round(3).tolist()}")
 
-print(rows)</code></pre>
-<div class="code-output"><code>{'fast_but_sharp': -1.099, 'safe_and_smooth': -0.11}</code></div>
-<div class="code-caption">Code Fragment 41.3.1 implements diffusion_planner_probe for Generative trajectory planning and scoring and prints the diagnostic quantity the controller or evaluator should inspect.</div>
-<p>The expected output should rank the smooth, feasible plan above the sharper plan even if the sharper plan reaches the goal slightly faster. That is the right behavior for an embodied planner: raw task proximity is not enough once execution risk enters.</p>
+# Inference: integrate dx = v dt from t=0 (noise) to t=1 (action) with Euler steps.
+x = x0.copy()
+dt = 0.2
+for _ in range(5):
+    v_theta = x1 - x0                   # a trained v_theta(x, t, c) would go here
+    x = x + v_theta * dt
+print("integrated endpoint:", x.round(3).tolist(), " target:", x1.tolist())</code></pre>
+<div class="code-output"><code>forward path and target velocity:
+  t=0.0  x_t=[0.189, -0.523]  v=[0.811, 0.523]
+  t=0.2  x_t=[0.351, -0.418]  v=[0.811, 0.523]
+  t=0.4  x_t=[0.513, -0.314]  v=[0.811, 0.523]
+  t=0.6  x_t=[0.676, -0.209]  v=[0.811, 0.523]
+  t=0.8  x_t=[0.838, -0.105]  v=[0.811, 0.523]
+  t=1.0  x_t=[1.0, 0.0]  v=[0.811, 0.523]
+integrated endpoint: [1.0, -0.0]  target: [1.0, 0.0]</code></div>
+<div class="code-caption">Code Fragment 41.3.1 shows a conditional flow-matching forward pass (linear path, constant target velocity) and a five-step Euler integration from noise to action.</div>
+<p>The velocity is constant along the straight path, which is the whole appeal: the network only has to regress a stable target, and five Euler steps reach the action exactly. Replace the constant velocity with $v_\theta(x_t, t, c)$ and the same loop becomes a real action sampler. The proposed action still enters the scoring stack, so raw proximity to a target is never the final word: an embodied planner only commits once feasibility and effort penalties agree.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Generative trajectory planning and scoring, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>
@@ -111,9 +123,13 @@ print(rows)</code></pre>
 <div class="callout-title">Memory Hook</div>
 <p>Sampling proposes the future, scoring negotiates with reality.</p>
 </div>
+<div class="callout paper-spotlight">
+<div class="callout-title">Paper Spotlight: pi_0</div>
+<p><strong>Black et al., "pi_0: A Vision-Language-Action Flow Model for General Robot Control" (2024).</strong> pi_0 pairs a vision-language model (VLM) backbone with a flow-matching action expert, so high-level perception and instruction-following come from the VLM while continuous actions are generated by integrating a learned velocity field. A single model is trained across many manipulation embodiments and tasks, then fine-tuned to specific robots. The design point worth absorbing: flow matching is the action decoder that makes high-rate continuous control compatible with a large pretrained semantic backbone, because few-step ODE integration is cheap enough to run in the control loop.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>The frontier is moving toward planners that combine generative diversity with explicit search, differentiable collision penalties, and learned value guidance. The hard part is keeping guidance strong enough to shape good plans without collapsing the generator into one brittle mode.</p>
+<p>The frontier is moving toward action experts that combine flow-matching speed with explicit search, differentiable collision penalties, and learned value guidance, all behind a shared semantic backbone. The hard part is keeping guidance strong enough to shape good plans without collapsing the generator into one brittle mode, and keeping integration step counts low enough for real-time control.</p>
 </div>
 <div class="callout cross-ref">
 <div class="callout-title">Cross-Reference Thread</div>
@@ -170,6 +186,14 @@ print(rows)</code></pre>
 <div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Chi, C. et al.. "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion." (2023). <a href="https://arxiv.org/abs/2303.04137" rel="noopener" target="_blank">https://arxiv.org/abs/2303.04137</a></p>
 <p class="bib-annotation">Diffusion Policy is the practical robotics anchor for action diffusion. It helps readers connect planning-style denoising with continuous robot control from visual observations.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Lipman, Y. et al.. "Flow Matching for Generative Modeling." (2022). <a href="https://arxiv.org/abs/2210.02747" rel="noopener" target="_blank">https://arxiv.org/abs/2210.02747</a></p>
+<p class="bib-annotation">Introduces conditional flow matching and straight-line probability paths. It is the methodological basis for treating action generation as ODE integration of a learned velocity field.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Black, K. et al.. "pi_0: A Vision-Language-Action Flow Model for General Robot Control." (2024). <a href="https://arxiv.org/abs/2410.24164" rel="noopener" target="_blank">https://arxiv.org/abs/2410.24164</a></p>
+<p class="bib-annotation">pi_0 combines a VLM backbone with a flow-matching action expert across manipulation embodiments. It is the anchor for flow-matching action generation at the scale of general-purpose robot control.</p>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Huang, Z. et al.. "DiffuserLite: Towards Real-Time Diffusion Planning." (2024). <a href="https://arxiv.org/abs/2401.15443" rel="noopener" target="_blank">https://arxiv.org/abs/2401.15443</a></p>

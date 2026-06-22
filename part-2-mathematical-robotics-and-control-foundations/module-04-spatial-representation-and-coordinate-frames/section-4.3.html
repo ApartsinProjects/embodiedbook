@@ -53,28 +53,59 @@
 <p>A valid rotation matrix satisfies $R^TR=I$ and $\det(R)=1$. A valid quaternion has unit norm. These checks are cheap, and they catch many failures before a gripper points the wrong way.</p>
 </div>
 <h2>Theory</h2>
-<p>Rotation matrices are direct operators on vectors and compose by multiplication. Euler angles are compact and readable, but their meaning depends on axis order and intrinsic or extrinsic convention. Axis-angle describes a rotation by an axis and magnitude. Quaternions are compact and well suited for interpolation, but the component order differs across libraries.</p>
+<p>Rotation matrices are direct operators on vectors and compose by multiplication. Every valid rotation $R \in SO(3)$ satisfies two invariants that double as runtime checks:</p>
+<p>$$R^\top R = I, \qquad \det(R) = +1.$$</p>
+<p>The first says the columns are orthonormal; the second rules out reflections (a determinant of $-1$ is a left-handed mirror, not a rotation). Euler angles build a rotation from three elementary rotations about the coordinate axes. Under the ZYX convention with yaw $\psi$, pitch $\theta$, and roll $\phi$,</p>
+<p>$$R = R_z(\psi)\,R_y(\theta)\,R_x(\phi).$$</p>
+<p>This factorization is compact and readable, but it has a singularity: when $\theta = \pm 90^\circ$ the first and third axes align and one rotational degree of freedom is lost. This is gimbal lock, and it is why controllers and estimators store orientation as a quaternion. A unit quaternion $q = [w, x, y, z]$ with $\lVert q \rVert = 1$ represents a rotation, its conjugate $q^{*} = [w, -x, -y, -z]$ represents the inverse rotation, and quaternions interpolate smoothly along the shortest arc via SLERP:</p>
+<p>$$\text{slerp}(q_0, q_1; u) = \frac{\sin((1-u)\Omega)}{\sin\Omega}\,q_0 + \frac{\sin(u\Omega)}{\sin\Omega}\,q_1, \qquad \cos\Omega = q_0 \cdot q_1.$$</p>
+<p>The danger is rarely that a rotation representation is mathematically invalid. The danger is that it is valid under a different convention: xyzw instead of wxyz, degrees instead of radians, zyx instead of xyz, active instead of passive, or camera optical axes instead of body axes.</p>
 <p>In robotics, the danger is rarely that a rotation representation is mathematically invalid. The danger is that it is valid under a different convention: xyzw instead of wxyz, degrees instead of radians, zyx instead of xyz, active instead of passive, or camera optical axes instead of body axes.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Use matrices for applying rotations, quaternions for storage and interpolation, rotation vectors for small optimization updates, and Euler angles for user-facing display. Convert at boundaries with one tested library and one documented convention.</p>
 </div>
 <h2>Worked Example</h2>
-<p>A robot log records a wrist orientation as yaw, pitch, and roll. Before that orientation feeds a controller, convert it to a rotation object and check the matrix invariant.</p>
-<pre><code class="language-python"># Rotations: matrices, Euler angles, axis-angle, quaternions; pitfalls: keep the section idea tied
-# to observable evidence.
-# Run this diagnostic probe before trusting the maintained library path.
+<p>This fragment walks the whole representation chain. It builds a composed rotation $R_z(45^\circ)R_y(30^\circ)R_x(0^\circ)$ from elementary matrices and verifies the two invariants, demonstrates gimbal lock at pitch $\theta = 90^\circ$, forms a quaternion and its conjugate, and SLERPs between two orientations.</p>
+<pre><code class="language-python"># Rotation representations end to end: matrices, invariants, gimbal lock,
+# quaternion conjugate, and SLERP. All angles in degrees unless noted.
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as Rot, Slerp
 
-rot = R.from_euler("zyx", [30.0, 10.0, 0.0], degrees=True)
-quat_xyzw = rot.as_quat()
-R_matrix = rot.as_matrix()
-orthogonality = R_matrix.T @ R_matrix
-print(np.round(quat_xyzw, 4))
-print(np.round(orthogonality, 3))</code></pre>
-<div class="code-output">Expected output: an xyzw quaternion and an identity-like matrix product.</div>
-<div class="code-caption">Code Fragment 4.3.1 uses scipy.spatial.transform to convert yaw-pitch-roll into a quaternion and verify the rotation matrix invariant.</div>
+def Rx(d): c,s=np.cos(np.radians(d)),np.sin(np.radians(d)); return np.array([[1,0,0],[0,c,-s],[0,s,c]])
+def Ry(d): c,s=np.cos(np.radians(d)),np.sin(np.radians(d)); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
+def Rz(d): c,s=np.cos(np.radians(d)),np.sin(np.radians(d)); return np.array([[c,-s,0],[s,c,0],[0,0,1]])
+
+# 1. Composed rotation and its invariants.
+R = Rz(45) @ Ry(30) @ Rx(0)
+print("R.T @ R = I? ", np.allclose(R.T @ R, np.eye(3)))
+print("det(R) =     ", round(float(np.linalg.det(R)), 6))
+
+# 2. Gimbal lock: at pitch = 90 deg, yaw and roll act on the same axis.
+locked = Rot.from_euler("ZYX", [40.0, 90.0,  0.0], degrees=True)
+same   = Rot.from_euler("ZYX", [ 0.0, 90.0, -40.0], degrees=True)  # different angles
+print("gimbal lock (two angle sets, one rotation)?",
+      np.allclose(locked.as_matrix(), same.as_matrix()))
+
+# 3. Quaternion [w,x,y,z] and its conjugate (inverse rotation).
+q = Rot.from_matrix(R).as_quat()                 # scipy returns [x,y,z,w]
+q_wxyz = np.array([q[3], q[0], q[1], q[2]])
+q_conj = np.array([q_wxyz[0], -q_wxyz[1], -q_wxyz[2], -q_wxyz[3]])
+print("q      [w,x,y,z]:", q_wxyz.round(4).tolist())
+print("q_conj [w,x,y,z]:", q_conj.round(4).tolist())
+
+# 4. SLERP halfway between two orientations.
+key = Rot.from_euler("ZYX", [[0,0,0],[90,0,0]], degrees=True)
+mid = Slerp([0.0, 1.0], key)([0.5])
+print("SLERP midpoint yaw (deg):",
+      round(float(mid.as_euler("ZYX", degrees=True)[0,0]), 3))</code></pre>
+<div class="code-output">R.T @ R = I?  True
+det(R) =      1.0
+gimbal lock (two angle sets, one rotation)? True
+q      [w,x,y,z]: [0.8924, -0.099, 0.2391, 0.3696]
+q_conj [w,x,y,z]: [0.8924, 0.099, -0.2391, -0.3696]
+SLERP midpoint yaw (deg): 45.0</div>
+<div class="code-caption">Code Fragment 4.3.1 verifies the SO(3) invariants on a composed rotation, exhibits gimbal lock at pitch 90 degrees (two distinct angle sets yield one rotation), forms a quaternion conjugate, and SLERPs to the 45-degree midpoint between two yaw orientations.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The teaching fragment is about 9 lines. scipy.spatial.transform.Rotation reduces conversion, composition, inversion, and interpolation to named operations. spatialmath and ROS 2 tf2 provide pose-level wrappers when the rotation must travel with translation, frame_id, and timestamp.</p>
