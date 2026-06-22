@@ -37,117 +37,120 @@
 <blockquote class="epigraph">
 <figure class="illustration">
 <img alt="Technical illustration for Section 48.3: Detection, lane and behavior prediction." loading="lazy" src="images/chapter-48-illustration-03.png"/>
-<figcaption><strong>Figure 48.3A</strong>: Section 48.3: Detection, lane and behavior prediction is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<figcaption><strong>Figure 48.3A</strong>: Prediction is fundamentally multi-modal: the same observed history is consistent with several plausible futures, and a good predictor keeps all of them alive until the evidence picks one.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>To predict a driver is to admit you do not know what they will do, and then to be ready for every reasonable thing they might.</p>
+<cite>On trajectory forecasting</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Detection, lane and behavior prediction</strong> is a concrete autonomous driving as embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
+<p>Once perception delivers tracked actors, <strong>prediction</strong> forecasts where each one will go over the next few seconds. The defining property is multi-modality: a car approaching an intersection might go straight, turn, or stop, and the predictor must represent several distinct futures with calibrated probabilities. This section defines the standard error metrics (minADE and minFDE), shows how to compute them, and introduces lane-graph-conditioned models that ground predictions in the road structure.</p>
 </div>
-
-
-<p>This section develops detection and behavior prediction as a concrete embodied AI skill rather than a label. The core contract is: observe objects, lanes, intents, trajectories, and uncertainty, predict likely motions for agents that react to the ego vehicle, and judge the result with miss rate, prediction error, and closed-loop regret.</p>
-<p>For Detection, lane and behavior prediction, compare predictor, planner, controller, and evaluator on one driving scenario so frame, latency, and metric assumptions cannot drift apart.</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>Driving is embodied AI at road scale: the agent senses a partial world, predicts other agents, acts through vehicle dynamics, and carries social and safety obligations. For Detection, lane and behavior prediction, the decisive question is whether the loop can recover from a low prediction error hides rare but safety-critical maneuvers.</p>
-</div>
-<p>Figure 48.3.1 should be read as the driving evidence path for Detection, lane and behavior prediction: inputs, intermediate state, decision, command, and failure label are separate audit points.</p>
-<figure class="illustration" id="fig-48-3-contract">
-<svg aria-labelledby="fig-48-3-title" height="230" role="img" viewbox="0 0 760 230" width="100%">
-<title id="fig-48-3-title">Closed-loop contract for Detection, lane and behavior prediction</title>
-<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="150" x="24" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="99" y="66">Observe</text>
-<text font-size="12" text-anchor="middle" x="99" y="94">objects, lanes, intents, trajector</text>
-<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="150" x="218" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="293" y="66">Decide</text>
-<text font-size="12" text-anchor="middle" x="293" y="94">state and constraint check</text>
-<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="150" x="412" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="487" y="66">Act</text>
-<text font-size="12" text-anchor="middle" x="487" y="94">predict likely motions for agents </text>
-<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="130" x="606" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="671" y="66">Verify</text>
-<text font-size="12" text-anchor="middle" x="671" y="94">miss rate, prediction error,</text>
-<path d="M176 76 L214 76" marker-end="url(#arrow-48-3)" stroke="#333" stroke-width="2"></path>
-<path d="M370 76 L408 76" marker-end="url(#arrow-48-3)" stroke="#333" stroke-width="2"></path>
-<path d="M564 76 L602 76" marker-end="url(#arrow-48-3)" stroke="#333" stroke-width="2"></path>
-<path d="M671 121 C671 184 100 184 100 122" fill="none" marker-end="url(#arrow-48-3)" stroke="#555" stroke-width="2"></path>
-<defs><marker id="arrow-48-3" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"></path></marker></defs>
-</svg>
-<figcaption>Figure 48.3.1 maps Detection, lane and behavior prediction in Autonomous Driving as Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
-</figure>
+<p>This section develops behavior prediction as a measurable contract: ingest agent histories and a vectorized map, output $K$ candidate future trajectories per agent with probabilities, and score them against the realized future. Because the future is uncertain, the standard metrics evaluate the best of $K$ samples rather than a single guess, which rewards covering the true mode without penalizing diversity.</p>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Detection, lane and behavior prediction, the important state variables are objects, lanes, intents, trajectories, and uncertainty, while the action interface is to predict likely motions for agents that react to the ego vehicle.</p>
-<p>The method is useful only if it improves a construct-matched measurement: miss rate, prediction error, and closed-loop regret. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<h3>The displacement metrics</h3>
+<p>Let an agent have ground-truth future positions $y_1, \dots, y_T$ and $K$ predicted trajectories, the $k$-th being $\hat y_1^{(k)}, \dots, \hat y_T^{(k)}$. The minimum average displacement error over $K$ samples is</p>
+<p>$$\text{minADE}_K = \frac{1}{T}\,\min_{k=1}^{K}\sum_{t=1}^{T}\big\lVert \hat y_t^{(k)} - y_t \big\rVert_2.$$</p>
+<p>The minimum final displacement error keeps only the last timestep,</p>
+<p>$$\text{minFDE}_K = \min_{k=1}^{K}\big\lVert \hat y_T^{(k)} - y_T \big\rVert_2.$$</p>
+<p>Both take the best of $K$ predictions: the model is credited if any one of its samples is close to the truth. A related metric, the miss rate, counts the fraction of agents for which even the best sample's final point exceeds a threshold (commonly 2 m).</p>
+<h3>Lane-graph-conditioned models</h3>
+<p><strong>VectorNet</strong> represents both agent histories and map elements (lane centerlines, crosswalks, boundaries) as polylines of vectors, then reasons over them with a graph network so predictions respect road geometry. <strong>MTR</strong> (Motion Transformer) uses a set of learnable motion-mode queries with a transformer to produce diverse, map-consistent trajectories and led the Waymo motion-prediction benchmark. The shared idea is conditioning on the lane graph so that a predicted path follows drivable lanes rather than cutting across medians.</p>
+<div class="callout key-insight">
+<div class="callout-title">Best-Of-K Rewards Coverage, Not Confidence</div>
+<p>Because minADE and minFDE take the minimum over samples, a predictor is scored on whether it covered the true future, not on whether its top sample was right. This is intentional: downstream planning must be safe against every plausible mode, so a predictor that keeps the correct mode alive (even at low probability) is more useful than one that commits confidently to the wrong single path.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>Detection and prediction failures should be traceable through actor state, lane graph, intent hypothesis, predicted trajectory, and planner response. A false future is dangerous only when planning trusts it.</p>
+<p>The danger of best-of-K is <strong>mode collapse</strong>: a model that minimizes average error tends to predict $K$ near-identical trajectories down the most common mode (going straight). It then scores well on routine data but misses exactly the rare, safety-critical maneuvers (a sudden lane change). Diversity-promoting losses, anchor trajectories, and mode-specific queries (as in MTR) exist precisely to prevent this collapse.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in this section to bind Detection, lane and behavior prediction to a measurable driving artifact: scenario, ODD condition, toolchain, metric, safety margin, and deliberate failure case.</p>
+<p>The example computes $\text{minADE}_6$ given six predicted trajectory samples and one ground-truth future.</p>
+<pre><code class="language-python">import numpy as np
 
+# Ground truth: T=5 future (x, y) positions of one agent.
+gt = np.array([[1.0, 0.0], [2.0, 0.1], [3.0, 0.3], [4.0, 0.6], [5.0, 1.0]])
 
-<p><strong>Expected output:</strong> the printed trace for Detection, lane and behavior prediction should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+# Six predicted trajectories, shape (K=6, T=5, 2).
+# Sample 0 hugs the truth; the rest are alternative modes (lane changes, stops).
+rng = np.random.default_rng(0)
+preds = np.stack([
+    gt + rng.normal(0, 0.05, gt.shape),          # near-correct mode
+    gt + np.array([0, 1.5]),                      # left lane change
+    gt + np.array([0, -1.5]),                     # right lane change
+    gt * np.array([0.6, 1.0]),                    # braking / slowing
+    gt + rng.normal(0, 1.0, gt.shape),            # noisy
+    gt + np.array([0.0, 3.0]),                    # far-off mode
+])
+
+def min_ade_k(preds, gt):
+    """minADE_K: best-of-K mean per-timestep L2 displacement."""
+    # Per-sample, per-timestep L2 distance: shape (K, T).
+    disp = np.linalg.norm(preds - gt[None, :, :], axis=2)
+    ade_per_sample = disp.mean(axis=1)            # average over T -> (K,)
+    return float(ade_per_sample.min())            # best of K
+
+def min_fde_k(preds, gt):
+    """minFDE_K: best-of-K final-timestep L2 displacement."""
+    final = np.linalg.norm(preds[:, -1, :] - gt[-1], axis=1)  # (K,)
+    return float(final.min())
+
+print("minADE_6:", round(min_ade_k(preds, gt), 3), "m")
+print("minFDE_6:", round(min_fde_k(preds, gt), 3), "m")
+</code></pre>
+<p><strong>Expected output:</strong> a small minADE_6 (roughly 0.04 m) and minFDE_6, because sample 0 closely tracks the truth. Remove sample 0 from the stack and both metrics jump, demonstrating that the score depends entirely on whether the correct mode was among the $K$ candidates.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built evidence record exposes the fields for Detection, lane and behavior prediction. For full experiments, use CARLA, CommonRoad, nuScenes, Waymo Open Dataset, ROS 2, and scenario runners while keeping the same artifact schema.</p>
+<p>The <strong>Argoverse 2</strong> and <strong>Waymo Open Motion Dataset</strong> evaluation kits compute minADE, minFDE, miss rate, and probabilistic metrics with the official protocol. Use <strong>nuScenes prediction</strong> challenge tooling for the lane-graph map API. Reference models: VectorNet, LaneGCN, and MTR are available in open implementations. Always score with the dataset's own kit so your numbers are comparable.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
-<li>Build the smallest baseline that can fail in an interpretable way.</li>
-<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
-<li>Add one perturbation aimed at the expected failure: a low prediction error hides rare but safety-critical maneuvers.</li>
-<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
+<li>Define the horizon $T$, the number of modes $K$, and the miss threshold up front; they make numbers comparable.</li>
+<li>Condition on the vectorized lane graph, not just agent history, so predictions stay on the road.</li>
+<li>Report minADE_K, minFDE_K, miss rate, and a mode-coverage check together; one metric alone hides collapse.</li>
+<li>Stress-test on rare maneuvers (cut-ins, sudden stops), not just the routine straight-ahead majority.</li>
+<li>Save one artifact: per-agent predictions, probabilities, the realized future, and the four metrics.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Detection, lane and behavior prediction is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>Mode collapse on a high-speed lane change. A model trained to minimize average error predicts six near-parallel straight paths; when a fast vehicle suddenly changes lanes, none of the six samples covers the new lane, minFDE spikes, and the planner gets no warning. Good aggregate minADE on routine data can hide this, so always evaluate the rare-maneuver slice separately.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using detection, lane and behavior prediction should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A prediction team sees collisions concentrated at merges. Logs show the predictor assigned 95 percent probability to "stay in lane" and 5 percent to "merge," but the planner used only the top mode. The fix is twofold: planning must consume the full multi-modal set, and the predictor needs a diversity loss so the merge mode is geometrically distinct, not a near-copy of the lane-keep mode.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>For detection, lane and behavior prediction, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
+<p>ADE is how wrong you were on average; FDE is how wrong you were at the end. The "min" in front of both means: out of your guesses, your best one counts.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For Detection, lane and behavior prediction, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Joint multi-agent prediction (forecasting interacting agents together rather than independently) and goal-conditioned models that reason about intent are the active frontier. The hard part is calibration: producing probabilities a planner can trust, not just diverse trajectories that game best-of-K.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for detection, lane and behavior prediction? If not, the system boundary is still too vague.</p>
+<p>Can you explain why minADE_6 can look excellent while the predictor is unsafe, and what additional measurement would expose the problem? If not, revisit the mode-collapse mechanism.</p>
 </div>
-
-
-<p>Detection, lane and behavior prediction becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
-<p>For Detection, lane and behavior prediction, keep vehicle physics, road geometry, timing, energy, comfort, and safety constraints inside the artifact rather than in a post-hoc explanation.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>nuScenes, Waymo Open Motion, and scenario replay</td><td>Main practical route for Detection, lane and behavior prediction</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
-<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
-<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
+<tr><td>Argoverse 2, Waymo Open Motion Dataset</td><td>Benchmarks with official prediction metrics</td><td>Score with their kits for comparable minADE / minFDE.</td></tr>
+<tr><td>VectorNet, LaneGCN, MTR</td><td>Lane-graph-conditioned predictor families</td><td>Reproduce a benchmark number before customizing.</td></tr>
+<tr><td>Rare-maneuver evaluation slice</td><td>Mode-collapse detection</td><td>Always report it alongside aggregate metrics.</td></tr>
 </tbody>
 </table>
 </div>
-<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section links Detection, lane and behavior prediction to coordinate frames, control, world models, evaluation, and safety because AV failures usually happen at the interface between those subsystems.</p></div>
-<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for Detection, lane and behavior prediction, run the baseline and the nuScenes, Waymo Open Motion, and scenario replay route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
-
-<p>When Detection, lane and behavior prediction fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
-
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Detection, lane and behavior prediction: MuJoCo, Drake, ManiSkill, ROS 2, MoveIt, CARLA, nuScenes, Waymo Open Dataset, tactile sensing, locomotion, manipulation, and AV evaluation literature.</p><p class="bib-annotation">Use these sources to verify dynamics, contact, sensors, planning, embodiment constraints, and evaluation panels.</p></div></section>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>Section 48.2 provides the tracked actors this section forecasts, Section 48.4 and 48.8 consume the multi-modal predictions for planning, and 48.5 explores world models that predict scene evolution directly.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Start from the worked example, delete the near-correct sample, and replace it with a sixth near-straight path. Recompute minADE_6 and minFDE_6 and confirm that engineered mode collapse inflates error exactly when the truth is an off-mode maneuver.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Gao et al., "VectorNet: Encoding HD Maps and Agent Dynamics from Vectorized Representation," CVPR 2020. Shi et al., "Motion Transformer with Global Intention Localization and Local Movement Refinement" (MTR), NeurIPS 2022. Wilson et al., "Argoverse 2: Next Generation Datasets for Self-Driving Perception and Forecasting," NeurIPS 2021.</p><p class="bib-annotation">These define lane-graph prediction models and the benchmarks whose metrics this section computes.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Detection, lane and behavior prediction is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Prediction is multi-modal forecasting scored by best-of-K displacement. Strong minADE_K means the right future was among your samples; guarding against mode collapse on rare maneuvers, and feeding all modes to the planner, is what turns that score into safety.</p>
 </div>
 <div class="callout exercise">
 <div class="callout-title">Exercise 48.3.1</div>
-<p>Design a same-panel experiment for Detection, lane and behavior prediction. Specify the scenario set, the baseline, the nuScenes, Waymo Open Motion, and scenario replay library route, the metric computation, and one perturbation that targets this failure: a low prediction error hides rare but safety-critical maneuvers.</p>
+<p>Implement the miss rate (fraction of agents whose best final point exceeds 2 m) and add it to the worked example. Then design a same-panel comparison of two predictors on a cut-in scenario set, reporting minADE_6, minFDE_6, and miss rate, and argue which predictor a planner should prefer.</p>
 </div>
 <nav class="chapter-nav">
 <a class="prev" href="section-48.2.html">Section 48.2: Sensors and sensor fusion in AVs</a>

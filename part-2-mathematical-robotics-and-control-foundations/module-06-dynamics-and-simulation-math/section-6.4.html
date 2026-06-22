@@ -57,8 +57,61 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Numerical integration and stability is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Numerical integration and stability, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>Worked Example: Euler vs RK4 vs Symplectic Euler on a Pendulum</h2>
+<p>The cleanest stress test for an integrator is an undamped pendulum, because its true total energy is conserved exactly. Any energy the integrator gains or loses is pure numerical artifact. The pendulum equation of motion comes from the Lagrangian $L = T - V$ with $T = \tfrac{1}{2}m\ell^2\dot{\theta}^2$ and $V = -mg\ell\cos\theta$. Applying the Euler-Lagrange equation $\tfrac{d}{dt}\tfrac{\partial L}{\partial\dot{\theta}} - \tfrac{\partial L}{\partial\theta} = 0$ gives $\ddot{\theta} = -\tfrac{g}{\ell}\sin\theta$.</p>
+<p>Three integrators handle the same dynamics very differently:</p>
+<ul>
+<li><strong>Explicit (forward) Euler</strong> uses the old velocity for both updates. It systematically injects energy and the orbit spirals outward: it <em>drifts</em>.</li>
+<li><strong>Symplectic (semi-implicit) Euler</strong> updates velocity first, then uses the <em>new</em> velocity to update position. It does not conserve energy exactly but the error stays bounded for all time, so it is <em>energy-stable</em>. This is why MuJoCo and most game physics engines use it.</li>
+<li><strong>RK4</strong> takes four stage evaluations per step. Its local truncation error is $O(\Delta t^5)$, so for smooth motion it is far more <em>accurate</em>, though over very long horizons it still slowly dissipates energy.</li>
+</ul>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+g, L = 9.81, 1.0
+def accel(theta):
+    return -(g / L) * np.sin(theta)
+
+def energy(theta, omega):
+    return 0.5 * L**2 * omega**2 + g * L * (1 - np.cos(theta))
+
+def integrate(method, theta0, omega0, dt, steps):
+    theta, omega = theta0, omega0
+    E = [energy(theta, omega)]
+    for _ in range(steps):
+        if method == "euler":                 # explicit Euler
+            theta_new = theta + dt * omega
+            omega_new = omega + dt * accel(theta)
+            theta, omega = theta_new, omega_new
+        elif method == "symplectic":          # semi-implicit Euler
+            omega = omega + dt * accel(theta)
+            theta = theta + dt * omega
+        elif method == "rk4":
+            def f(s):
+                th, om = s
+                return np.array([om, accel(th)])
+            s = np.array([theta, omega])
+            k1 = f(s)
+            k2 = f(s + 0.5 * dt * k1)
+            k3 = f(s + 0.5 * dt * k2)
+            k4 = f(s + dt * k3)
+            s = s + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+            theta, omega = s
+        E.append(energy(theta, omega))
+    return np.array(E)
+
+theta0, omega0 = 0.5, 0.0       # release from 0.5 rad at rest
+dt, steps = 0.05, 4000          # 200 s of simulated time
+E0 = energy(theta0, omega0)
+
+for method in ["euler", "symplectic", "rk4"]:
+    E = integrate(method, theta0, omega0, dt, steps)
+    drift = (E[-1] - E0) / E0 * 100
+    print(f"{method:<11} energy drift over 200 s: {drift:+8.2f}%   "
+          f"(min={E.min():.4f}, max={E.max():.4f})")
+</code></pre>
+</div>
+<p>The printed drift makes the contrast concrete: explicit Euler gains a large positive percentage (the pendulum swings ever higher, which is physically impossible), symplectic Euler keeps the energy oscillating within a small bounded band around $E_0$, and RK4 holds energy to within a tiny fraction of a percent. The lesson for embodied AI: choose the integrator for the property the task needs. Use symplectic methods for long-horizon stability in a learning loop, and a high-order method like RK4 when short-horizon trajectory accuracy matters more than energy bookkeeping. Always log $\Delta t$ and the integrator, because the policy learns the discrete system you actually simulate, not the continuous one you intended.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Numerical integration and stability, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

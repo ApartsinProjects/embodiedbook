@@ -58,7 +58,39 @@
 <p>The mechanism in Controllers vs. policies; when learning helps and when it makes control unsafe is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Controllers vs. policies; when learning helps and when it makes control unsafe, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>The safest place for learning in a control loop is as a residual on top of a classical controller, wrapped by a safety filter. The command is \(u = u_\text{base}(x) + \pi_\theta(x)\): the base controller owns the nominal behavior, and the learned residual nudges it. A control barrier function (CBF) then enforces a hard safety set. For a barrier \(h(x)\ge 0\) (here, staying left of a wall), the filter requires \(\dot h(x) + \alpha h(x) \ge 0\) and projects the requested command onto the closest admissible one. Code Fragment 7.7.1 runs the same residual policy with and without the filter.</p>
+<pre><code class="language-python">import numpy as np
+
+# u = u_base(x) + pi_theta(x), guarded by a control barrier function.
+# Plant: 1D mass. Barrier h(x) = x_wall - x >= 0  (stay left of the wall).
+m, dt, x_wall, alpha = 1.0, 0.05, 1.0, 4.0
+
+def u_base(x, v):   return 8.0 * (0.9 - x) - 4.0 * v   # nominal PD toward x=0.9
+def pi_theta(x, v): return 5.0                          # learned residual (unsafe alone)
+
+def cbf_filter(u, x, v):
+    # h = x_wall - x, hdot = -v.  Enforce hddot + 2*alpha*hdot + alpha^2*h >= 0
+    # with acceleration a = u/m affecting hddot = -a.
+    h, hdot, a = (x_wall - x), -v, u / m
+    margin = (-a) + 2 * alpha * hdot + alpha ** 2 * h
+    if margin >= 0:
+        return u, False
+    u_safe = m * (2 * alpha * hdot + alpha ** 2 * h)    # minimal correction: margin -> 0
+    return u_safe, True
+
+for label, use_filter in [("no safety filter", False), ("with CBF filter", True)]:
+    x = v = 0.0; interventions = 0; xmax = -9.0
+    for _ in range(200):
+        u = u_base(x, v) + pi_theta(x, v)
+        if use_filter:
+            u, did = cbf_filter(u, x, v); interventions += int(did)
+        x += v * dt; v += (u / m) * dt
+        xmax = max(xmax, x)
+    breached = "BREACHED" if xmax > x_wall + 1e-3 else "safe"
+    print(f"{label:>17}: max x={xmax:.3f} wall={x_wall} -> {breached}  interventions={interventions}")</code></pre>
+<div class="code-output"> no safety filter: max x=1.616 wall=1.0 -> BREACHED  interventions=0
+  with CBF filter: max x=1.000 wall=1.0 -> safe  interventions=198</div>
+<div class="code-caption">Code Fragment 7.7.1: the residual policy alone drives the mass through the wall. The CBF filter holds it exactly at the barrier, but it had to override nearly every command. That intervention rate is the key diagnostic: a filter that rewrites almost every action is a signal that the learned policy is not ready for the robot, even if its task reward looks high. Learning should improve perception or task selection, not be the layer that quietly removes a safety constraint.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose where a learned policy enters the feedback loop, what monitor bounds it, and which controller owns recovery. ROS 2 control and safety filters should log authority transitions.</p>

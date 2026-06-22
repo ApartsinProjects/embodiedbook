@@ -39,7 +39,7 @@
 <img alt="Technical illustration for Section 47.2: Flight dynamics intuition." loading="lazy" src="images/chapter-47-illustration-02.png"/>
 <figcaption><strong>Figure 47.2A</strong>: Section 47.2: Flight dynamics intuition is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>"An IMU never lies about acceleration and never tells the truth about position; estimation is the art of reconciling the two."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Flight dynamics intuition</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -77,17 +77,43 @@
 <figcaption>Figure 47.2.1 maps Flight dynamics intuition in Drones and Aerial Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Flight dynamics intuition, the important state variables are attitude, angular rates, thrust, drag, and inertia, while the action interface is to command attitude or velocity through a stabilized controller.</p>
-<p>The method is useful only if it improves a construct-matched measurement: settling time, overshoot, and saturation. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<p>A drone has no direct sensor for position. It carries an inertial measurement unit (IMU) that reports body-frame acceleration $\mathbf a_m$ and angular rate $\boldsymbol\omega_m$ at high rate (200 Hz to 1 kHz), plus a camera that observes the world at a lower rate (20 to 60 Hz). Visual-inertial odometry (VIO) fuses the two. The estimated state is</p>
+<p>$$\mathbf x = [\,\mathbf p,\; \mathbf v,\; \mathbf q,\; \mathbf b_a,\; \mathbf b_g\,],$$</p>
+<p>that is, position, velocity, orientation (as a quaternion $\mathbf q$), and the accelerometer and gyroscope biases $\mathbf b_a, \mathbf b_g$. The biases are part of the state because they drift slowly with temperature and time, and an uncorrected bias integrates into runaway position error.</p>
+<p>The IMU measurement model removes bias and noise before integration: $\mathbf a = \mathbf a_m - \mathbf b_a - \mathbf n_a$ and $\boldsymbol\omega = \boldsymbol\omega_m - \mathbf b_g - \mathbf n_g$. Integrating once gives velocity, twice gives position. Doing this naively between every camera frame is wasteful, so modern VIO uses <strong>IMU preintegration</strong>: the relative motion between two camera frames is precomputed as a single pseudo-measurement (a delta in position, velocity, and rotation) that does not have to be recomputed when the linearization point changes. This is the trick that makes tightly coupled visual-inertial optimization run in real time.</p>
+<p>There are two dominant architectures. Optimization-based VIO (VINS-Mono, ORB-SLAM3) keeps a sliding window of recent frames and solves a bundle-adjustment problem that jointly refines poses and landmark positions; it is accurate but heavier. The <strong>MSCKF</strong> (Multi-State Constraint Kalman Filter, used in OpenVINS) keeps a window of past camera poses in the filter state and marginalizes each landmark after it leaves the field of view, giving filter-like constant-time updates with good accuracy. The choice is a compute-versus-accuracy trade, not a correctness one.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Flight dynamics failures should be traceable through motor command, thrust model, attitude estimate, angular-rate error, position error, and controller saturation. That chain distinguishes a weak controller from a bad mass estimate, poor motor calibration, delayed IMU stream, or impossible trajectory.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 47.2.1 to name the measured flight variable, controller or simulator tool, operating envelope, and perturbation case. For flight dynamics, the perturbation should usually be mass, wind, delay, actuator saturation, or battery voltage.</p>
+<p>The reason VIO needs the camera at all becomes obvious once you integrate the IMU alone. Here a stationary drone reads a tiny constant accelerometer bias of 0.05 m/s$^2$. We dead-reckon over 0.1 s at 100 Hz: integrate acceleration to velocity, then velocity to position, and watch the position error grow quadratically even though the vehicle never moved.</p>
+<pre><code class="language-python"># IMU dead reckoning: integrate acceleration -> velocity -> position.
+# A small uncorrected bias makes pure inertial position drift fast.
+dt = 0.01          # 100 Hz IMU
+steps = 10         # 0.1 s total
+a_true = 0.0       # drone is stationary
+a_bias = 0.05      # m/s^2, unmodeled accelerometer bias
 
+pos, vel = 0.0, 0.0
+for k in range(steps):
+    a_meas = a_true + a_bias       # what the IMU reports
+    vel += a_meas * dt             # integrate accel -> velocity
+    pos += vel * dt                # integrate velocity -> position
 
-<p><strong>Expected output:</strong> the printed trace for Flight dynamics intuition should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+print(f"after {steps*dt:.2f} s of dead reckoning:")
+print(f"  velocity error : {vel:.4f} m/s")
+print(f"  position error : {pos:.6f} m")
+# Extrapolate the quadratic drift to 1 s and 10 s.
+for T in (1.0, 10.0):
+    print(f"  projected position drift at {T:>4.0f} s : {0.5*a_bias*T**2:.3f} m")</code></pre>
+<div class="code-output">after 0.10 s of dead reckoning:
+  velocity error : 0.0050 m/s
+  position error : 0.000275 m
+  projected position drift at    1 s : 0.025 m
+  projected position drift at   10 s : 2.500 m</div>
+<div class="code-caption"><strong>Code Fragment 47.2.1:</strong> A 0.05 m/s$^2$ bias is barely above sensor noise, yet position error follows $\tfrac{1}{2} a_{\text{bias}} t^2$: 2.5 cm after one second, 2.5 m after ten. This quadratic blow-up is exactly what camera observations correct, and it is why the bias terms $\mathbf b_a, \mathbf b_g$ live inside the estimator state rather than being assumed zero.</div>
+<p><strong>Expected output:</strong> a velocity error that grows linearly and a position error that grows quadratically with time. The projected drift is the evidence field that matters: if your VIO loses camera tracking for even a few seconds, this is how far the estimate can wander before visual updates resume.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Flight dynamics intuition, the hand-built record exposes the flight fields; PX4, ROS 2, MAVLink, gym-pybullet-drones, Aerial Gym, and safe-control-gym should preserve the same schema.</p>
@@ -102,7 +128,7 @@
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Flight dynamics intuition is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>VIO drift in feature-poor environments is the dominant failure. White walls, fog, darkness, water surfaces, and fast rotations all starve the camera of trackable features, so the estimator falls back toward pure IMU dead reckoning and the position drifts exactly as the worked example shows. The plot can still look smooth because the filter keeps reporting a confident pose; the tell is rising estimator covariance and shrinking feature count, not a visible jump. Monitor tracked-feature count and innovation magnitude, and trigger a hover-and-hold or descend-to-known-mat behavior before the drift accumulates into a wall.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

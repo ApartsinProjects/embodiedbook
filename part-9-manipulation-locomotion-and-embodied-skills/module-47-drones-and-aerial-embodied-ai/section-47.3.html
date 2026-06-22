@@ -39,7 +39,7 @@
 <img alt="Technical illustration for Section 47.3: Perception, navigation, and obstacle avoidance." loading="lazy" src="images/chapter-47-illustration-03.png"/>
 <figcaption><strong>Figure 47.3A</strong>: Section 47.3: Perception, navigation, and obstacle avoidance is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>"A smooth trajectory is not a luxury; it is the only kind a quadrotor can actually fly."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Perception, navigation, and obstacle avoidance</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -77,17 +77,53 @@
 <figcaption>Figure 47.3.1 maps Perception, navigation, and obstacle avoidance in Drones and Aerial Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Perception, navigation, and obstacle avoidance, the important state variables are depth, optical flow, map uncertainty, and free-space estimate, while the action interface is to choose safe velocity or waypoint commands under limited sensing.</p>
-<p>The method is useful only if it improves a construct-matched measurement: collision rate and clearance margin. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<p>Once obstacle-free waypoints are chosen, the planner must connect them with a path the vehicle can physically fly. The key structural fact is <strong>differential flatness</strong> (Mellinger and Kumar, 2011): a quadrotor's full state and the four motor inputs can be written as algebraic functions of four flat outputs and their derivatives,</p>
+<p>$$\sigma = [\,x,\; y,\; z,\; \psi\,],$$</p>
+<p>the three positions and the yaw angle. This means you can plan entirely in the smooth $(x, y, z, \psi)$ space, and any sufficiently smooth trajectory there maps back to feasible thrust and attitude commands. Roll and pitch are not planned directly; they fall out of the acceleration profile.</p>
+<p>Because rotor thrust is proportional to acceleration and the body moments depend on the third and fourth derivatives of position, the natural cost to minimize is the <strong>snap</strong>, the fourth derivative of position:</p>
+<p>$$\min \int_0^T \left\lVert \frac{d^4 \mathbf p(t)}{dt^4} \right\rVert^2 dt.$$</p>
+<p>Minimizing snap minimizes the aggressiveness of the motor commands, so the trajectory stays inside the actuator envelope and the angular accelerations stay small. Each segment between waypoints is represented as a polynomial in $t$; for a snap objective the minimizing polynomial per segment is degree 7 (eight coefficients), constrained so that position passes through the waypoints and velocity, acceleration, and jerk stay continuous at the joins. The result is a piecewise-polynomial trajectory whose every derivative is well behaved, which is exactly what the cascaded flight controller of Section 47.6 needs as a reference.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Aerial perception and navigation couple camera exposure, visual-inertial odometry, depth or obstacle estimates, local trajectory generation, and collision checking. The log needs timestamps and frames at each link so a near miss can be traced to sensing latency, map aging, planner horizon, or control lag.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 47.3.1 to bind obstacle perception to a navigation decision. The row should name the sensor stream, map representation, planner horizon, avoidance metric, and the near-miss or false-clearance case being tested.</p>
+<p>Generate a minimum-snap trajectory through three waypoints in one axis. We fit a degree-6 polynomial that passes through positions 0, 2, 1 at times 0, 1, 2 s, with zero velocity and zero acceleration at both ends (a rest-to-rest segment). Minimizing snap with these endpoint constraints yields a unique polynomial, so we can solve the constraint system directly with <code>numpy.linalg.solve</code> rather than running a full quadratic program.</p>
+<pre><code class="language-python"># Minimum-snap polynomial through 3 waypoints (single axis), rest to rest.
+import numpy as np
 
+t_wp = np.array([0.0, 1.0, 2.0])   # waypoint times
+p_wp = np.array([0.0, 2.0, 1.0])   # waypoint positions
+T, deg = 2.0, 6                    # degree-6 poly: 7 coefficients
 
-<p><strong>Expected output:</strong> the printed trace for Perception, navigation, and obstacle avoidance should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+def basis(t, d):
+    """Row of the d-th derivative of [1, t, t^2, ..., t^6] at time t."""
+    r = np.zeros(deg + 1)
+    for i in range(deg + 1):
+        if i >= d:
+            coef = 1
+            for k in range(d):
+                coef *= (i - k)
+            r[i] = coef * t ** (i - d)
+    return r
+
+A, b = [], []
+for tw, pw in zip(t_wp, p_wp):     # pass through every waypoint
+    A.append(basis(tw, 0)); b.append(pw)
+for tw in (0.0, T):                # zero velocity and acceleration at the ends
+    A.append(basis(tw, 1)); b.append(0.0)
+    A.append(basis(tw, 2)); b.append(0.0)
+
+c = np.linalg.solve(np.array(A), np.array(b))   # 7 constraints, 7 unknowns
+print("polynomial coefficients:", np.round(c, 3))
+print("position at waypoints  :", [round(float(basis(t, 0) @ c), 3) for t in t_wp])
+print("end velocities         :", round(float(basis(0, 1) @ c), 4),
+                                   round(float(basis(T, 1) @ c), 4))</code></pre>
+<div class="code-output">polynomial coefficients: [  0.     0.     0.    13.25 -18.937   9.187  -1.5  ]
+position at waypoints  : [0.0, 2.0, 1.0]
+end velocities         : 0.0 -0.0</div>
+<div class="code-caption"><strong>Code Fragment 47.3.1:</strong> The solved polynomial hits all three waypoints exactly and starts and stops at rest. The leading three coefficients are zero, which is the signature of the rest-to-rest boundary conditions. Extending to three axes is just three independent solves with shared timing; chaining many segments turns this into the banded quadratic program that Mellinger's method solves at scale.</div>
+<p><strong>Expected output:</strong> coefficients that reproduce the waypoint positions and zero endpoint velocities. The diagnostic field is the waypoint check: if a position is off, the time allocation or the constraint matrix is wrong, and no amount of controller tuning downstream will fix a reference the planner never actually passes through.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Perception, navigation, and obstacle avoidance, the hand-built record exposes the flight fields; PX4, ROS 2, MAVLink, gym-pybullet-drones, Aerial Gym, and safe-control-gym should preserve the same schema.</p>
@@ -102,7 +138,7 @@
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Perception, navigation, and obstacle avoidance is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>Trajectory feasibility near obstacles with thrust limits is the trap. Minimum-snap will happily route a smooth curve through a tight gap, but if the time allocation is too short the required acceleration exceeds the thrust the rotors can deliver, so the vehicle cannot stay on the reference and clips the obstacle. The fix is to couple the smoothness objective to the actuator envelope: check that peak acceleration along every segment stays below $T_{\max}/m - g$, and if it does not, lengthen the segment time or relax the corridor. A trajectory that is geometrically collision-free but dynamically infeasible is more dangerous than a slow one, because it looks safe in the plot.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

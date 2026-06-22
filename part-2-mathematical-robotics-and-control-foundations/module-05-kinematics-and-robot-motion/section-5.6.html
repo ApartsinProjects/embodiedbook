@@ -55,7 +55,44 @@
 <p>The mechanism in Inverse kinematics: analytic, numerical (Jacobian), and learned is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Inverse kinematics: analytic, numerical (Jacobian), and learned, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>The example solves position IK for the planar two-link arm from Section 5.5 with the damped least-squares update $\Delta q=J^\top(JJ^\top+\lambda^2 I)^{-1}\Delta x$, then replays the solution through forward kinematics to confirm the reached pose. Damping keeps the step bounded when the arm stretches toward a near-singular reach.</p>
+<pre><code class="language-python">import numpy as np
+
+l1, l2 = 0.5, 0.4
+
+def fk(q):
+    x = l1*np.cos(q[0]) + l2*np.cos(q[0]+q[1])
+    y = l1*np.sin(q[0]) + l2*np.sin(q[0]+q[1])
+    return np.array([x, y])
+
+def jacobian(q):
+    s1, s12 = np.sin(q[0]), np.sin(q[0]+q[1])
+    c1, c12 = np.cos(q[0]), np.cos(q[0]+q[1])
+    return np.array([[-l1*s1 - l2*s12, -l2*s12],
+                     [ l1*c1 + l2*c12,  l2*c12]])
+
+def ik_dls(target, q0, lam=0.05, iters=200, tol=1e-6):
+    q = q0.astype(float).copy()
+    for k in range(iters):
+        dx = target - fk(q)
+        if np.linalg.norm(dx) < tol:
+            return q, k, np.linalg.norm(dx), True
+        J = jacobian(q)
+        dq = J.T @ np.linalg.solve(J @ J.T + lam**2*np.eye(2), dx)
+        q += np.clip(dq, -0.2, 0.2)          # clamp per-step joint increment
+    return q, iters, np.linalg.norm(target - fk(q)), False
+
+target = np.array([0.6, 0.3])
+q_sol, iters, res, ok = ik_dls(target, q0=np.deg2rad([10.0, 10.0]))
+print("converged:", ok, "iters:", iters, "residual:", f"{res:.2e}")
+print("solution (deg):", np.round(np.rad2deg(q_sol), 3))
+print("FK replay      :", np.round(fk(q_sol), 6), "target:", target)
+
+# Unreachable target (beyond l1+l2 = 0.9 m): solver must NOT report success
+_, _, res_far, ok_far = ik_dls(np.array([1.5, 0.0]), q0=np.deg2rad([10.0, 10.0]))
+print("far target -> converged:", ok_far, "residual:", f"{res_far:.3f} m")
+</code></pre>
+<p>The FK replay closes the loop: a solver that returns its last iterate without checking the residual would silently pass the unreachable target. Reporting convergence flag, residual, and an FK replay together is what separates a usable IK result from a stopped optimizer.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The inverse-kinematics fragment should expose residual, seed, joint limits, damping, convergence status, and unreachable targets. MoveIt 2, Drake, and Pinocchio are production tools, but the small solve explains failure.</p>

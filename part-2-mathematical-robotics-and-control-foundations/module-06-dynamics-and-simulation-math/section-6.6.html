@@ -52,8 +52,47 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Why GPU-parallel simulation changed robot learning is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Why GPU-parallel simulation changed robot learning, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>Worked Example: Vectorized Batch Rollout and the Coordinate Choice</h2>
+<p>The change GPU simulation brought is that one stepped environment becomes $N$ stepped environments under a single kernel call: $x_{k+1}^{(i)} = f_\Delta(x_k^{(i)}, u_k^{(i)}, \theta^{(i)})$ for $i = 1,\dots,N$. The example below shows the mechanism with NumPy as a stand-in for the GPU: the same physics step applied to a batch of pendulums with different initial conditions, stepped with fixed-shape arrays. On a GPU (MJX, Isaac, Brax) the identical code runs across thousands of environments in parallel because every environment does the same arithmetic with no data-dependent branching.</p>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+g, L, dt = 9.81, 1.0, 0.02
+N, steps = 4096, 500          # 4096 environments, 10 s each
+
+rng = np.random.default_rng(0)
+theta = rng.uniform(-1.0, 1.0, size=N)   # batched state: shape (N,)
+omega = np.zeros(N)
+
+# One vectorized symplectic-Euler step over the whole batch.
+for _ in range(steps):
+    omega = omega - dt * (g / L) * np.sin(theta)   # shape (N,) elementwise
+    theta = theta + dt * omega
+
+# Co-compute a validity check alongside the rollout: energy stays bounded.
+E = 0.5 * L**2 * omega**2 + g * L * (1 - np.cos(theta))
+print(f"stepped {N} envs x {steps} steps = {N*steps:,} transitions")
+print(f"final energy  mean={E.mean():.4f}  std={E.std():.4f}  max={E.max():.4f}")
+# Throughput is meaningful ONLY beside this bounded-energy check.
+</code></pre>
+</div>
+<p>The single-line update stepping all $N$ environments is the whole idea: homogeneous, branch-free work that a GPU executes as one batched kernel. The energy check co-computed in the same pass is the discipline the section insists on, throughput without a validity check is not evidence.</p>
+<h3>Maximal vs Minimal Coordinates: When to Use Each</h3>
+<p>The other axis that decides simulator behavior is how state is represented. MuJoCo (and MJX, Isaac) lean toward <strong>maximal coordinates</strong> with constraints, while Pinocchio uses <strong>minimal (generalized) coordinates</strong>. The two are duals, and the right choice depends on the workload.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Maximal-Coordinate vs Minimal-Coordinate Simulation</div>
+<table>
+<thead><tr><th>Aspect</th><th>Maximal coordinates (MuJoCo, Isaac)</th><th>Minimal coordinates (Pinocchio)</th></tr></thead>
+<tbody>
+<tr><td>State</td><td>Full pose of every body, joints enforced as constraints.</td><td>Only the independent joint variables $q$.</td></tr>
+<tr><td>Contact</td><td>Native: contacts are just more constraints in the same solver.</td><td>Added on top; the library focuses on articulated-body dynamics.</td></tr>
+<tr><td>Cost per step</td><td>Larger system, but uniform, GPU-batches well.</td><td>$O(n)$ recursive dynamics (RNEA, ABA), very cheap per call.</td></tr>
+<tr><td>Best for</td><td>Contact-rich RL at massive parallelism (locomotion, manipulation).</td><td>Model-based control, fast analytical $M,C,g$ and derivatives.</td></tr>
+<tr><td>Drift</td><td>Constraints can be violated slightly; needs stabilization.</td><td>No constraint drift; joints are exact by construction.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The practical rule: reach for a maximal-coordinate GPU simulator when the task is contact-rich and the bottleneck is sample throughput for learning; reach for minimal-coordinate Pinocchio when you need fast, exact $M$, $C$, $g$ and their analytic derivatives for a model-based controller or optimizer. Many production stacks use both, Pinocchio inside the controller and MJX or Isaac for the training loop, and validate that they agree on the same model before trusting either.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Why GPU-parallel simulation changed robot learning, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

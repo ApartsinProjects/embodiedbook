@@ -87,8 +87,49 @@
 <p>The mechanism in Hybrid and hierarchical architectures is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Hybrid and hierarchical architectures, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<p><strong>Expected output:</strong> the printed trace for Hybrid and hierarchical architectures should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>The option triple $\omega = (I_\omega, \pi_\omega, \beta_\omega)$ becomes concrete when each part is a function. The example runs a two-level controller on a reach-then-grasp task: a high-level policy picks an option, the option's low-level policy emits millisecond actions, and the option's termination function decides when control returns upward. The trace logs every boundary, which is exactly the evidence a hierarchy needs to be debuggable.</p>
+<pre><code class="language-python">import numpy as np
+
+# State: (gripper_x, gripper_closed). Goal: reach object at x*=1.0 then grasp.
+X_TARGET, REACH_TOL, STEP = 1.0, 0.05, 0.25   # STEP = move per low-level tick
+
+class Option:
+    def __init__(self, name, can_start, low_policy, done):
+        self.name, self.can_start = name, can_start
+        self.low_policy, self.done = low_policy, done
+
+reach = Option(
+    "reach",
+    can_start=lambda s: abs(s[0] - X_TARGET) > REACH_TOL,   # I_omega
+    low_policy=lambda s: (np.sign(X_TARGET - s[0]) * STEP, 0),  # pi_omega
+    done=lambda s: abs(s[0] - X_TARGET) <= REACH_TOL)        # beta_omega
+
+grasp = Option(
+    "grasp",
+    can_start=lambda s: abs(s[0] - X_TARGET) <= REACH_TOL,   # precondition!
+    low_policy=lambda s: (0.0, 1),
+    done=lambda s: s[1] == 1)
+
+def high_level(s, options):
+    for opt in options:
+        if opt.can_start(s):
+            return opt
+    return None
+
+s = np.array([0.0, 0.0])
+for t in range(20):
+    opt = high_level(s, [grasp, reach])      # try grasp first, fall back to reach
+    if opt is None:
+        print("no applicable option"); break
+    dx, close = opt.low_policy(s)
+    s = np.array([s[0] + dx, max(s[1], close)])
+    print(f"t={t:2d} option={opt.name:5s} x={s[0]:.2f} "
+          f"closed={s[1]} terminate={opt.done(s)}")
+    if opt.name == "grasp" and opt.done(s):
+        print("task complete"); break
+</code></pre>
+<div class="code-caption">Code Fragment 3.4.1 implements the options framework explicitly. The high-level policy selects an option only when its initiation set holds, and each option reports when it terminates, so every level boundary is visible in the trace.</div>
+<p><strong>Expected output:</strong> the controller runs <code>reach</code> until the gripper is within tolerance, the high level then switches to <code>grasp</code> because its precondition is finally satisfied, and the task completes. The characteristic hierarchy bug is a precondition violation: delete the <code>can_start</code> guard on <code>grasp</code> and it will try to close on empty space at <code>x=0</code>. The logged precondition and termination fields are what let you assign that failure to the right level instead of blaming the whole stack.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Hybrid and hierarchical architectures, the hand-built fragment is a visibility tool. Production work should move to maintained stacks such as Hugging Face Transformers, open VLMs, OpenVLA, openpi, LeRobot, and tool-calling planners once the section has made the interface, logging contract, and failure recovery path explicit.</p>

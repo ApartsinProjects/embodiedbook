@@ -87,8 +87,42 @@
 <p>The mechanism in Classical modular robotics pipeline is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Classical modular robotics pipeline, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<p><strong>Expected output:</strong> the printed trace for Classical modular robotics pipeline should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>The point of the modular pipeline is that a message is a contract, not a number. The example below defines a perception message that carries <code>(pose, covariance, frame, stamp, confidence)</code>, and a planner that <em>refuses</em> any message whose uncertainty is too high or whose timestamp is too old. This is the difference between a pipeline that fails loudly at the interface and one that silently consumes stale evidence.</p>
+<pre><code class="language-python">from dataclasses import dataclass
+
+NOW = 10.00          # current planner clock (seconds)
+MAX_STALE = 0.20     # reject evidence older than 200 ms
+MAX_SIGMA = 0.05     # reject pose with std-dev above 5 cm
+
+@dataclass
+class PerceptMsg:
+    pose: float       # x in the map frame (m)
+    sigma: float      # pose std-dev (m)
+    frame: str        # coordinate frame id
+    stamp: float      # time the percept was valid (s)
+    confidence: float # detector score in [0, 1]
+
+def planner_accepts(m: PerceptMsg):
+    if m.frame != "map":
+        return False, f"wrong frame: {m.frame}"
+    if NOW - m.stamp > MAX_STALE:
+        return False, f"stale by {NOW - m.stamp:.2f}s"
+    if m.sigma > MAX_SIGMA:
+        return False, f"uncertain: sigma={m.sigma:.3f}m"
+    return True, "accepted"
+
+inbox = [
+    PerceptMsg(0.42, 0.02, "map",      9.95, 0.91),  # good
+    PerceptMsg(0.42, 0.02, "base_link", 9.98, 0.91), # wrong frame
+    PerceptMsg(0.42, 0.02, "map",      9.40, 0.91),  # stale
+    PerceptMsg(0.42, 0.11, "map",      9.96, 0.55),  # too uncertain
+]
+for m in inbox:
+    ok, why = planner_accepts(m)
+    print(f"{'PLAN' if ok else 'DROP'}: {why}")
+</code></pre>
+<div class="code-caption">Code Fragment 3.2.1 shows a modular handoff as an enforced contract. The same pose value is accepted or rejected depending on its frame, timestamp, and covariance, which is exactly the metadata a bare float would have thrown away.</div>
+<p><strong>Expected output:</strong> only the first message reaches the planner; the other three are dropped with a specific reason. This is "interface optimism" caught at the boundary: each upstream module believed its pose was correct, but the contract reveals that frame, age, and uncertainty disqualify three of the four. Change <code>MAX_STALE</code> or <code>MAX_SIGMA</code> and watch which messages flip, which is the calibration question every real pipeline must answer.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Classical modular robotics pipeline, the hand-built fragment is a visibility tool. Production work should move to maintained stacks such as Hugging Face Transformers, open VLMs, OpenVLA, openpi, LeRobot, and tool-calling planners once the section has made the interface, logging contract, and failure recovery path explicit.</p>

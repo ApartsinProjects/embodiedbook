@@ -37,120 +37,129 @@
 <blockquote class="epigraph">
 <figure class="illustration">
 <img alt="Technical illustration for Section 48.2: Sensors and sensor fusion in AVs." loading="lazy" src="images/chapter-48-illustration-02.png"/>
-<figcaption><strong>Figure 48.2A</strong>: Section 48.2: Sensors and sensor fusion in AVs is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<figcaption><strong>Figure 48.2A</strong>: Camera, LiDAR, and radar each measure a different physical quantity; fusion is the art of making their disagreements informative rather than dangerous.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<p>An autonomous vehicle sees the world through three sensors that disagree and one fusion algorithm that must not.</p>
+<cite>On the perception stack</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Sensors and sensor fusion in AVs</strong> is a concrete autonomous driving as embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
+<p>The AV perception stack rests on three complementary modalities. <strong>Cameras</strong> give dense color and texture but no direct range. <strong>LiDAR</strong> gives precise 3D geometry but is sparse and weather-sensitive. <strong>Radar</strong> gives direct Doppler velocity and works in rain and fog but is angularly coarse. Sensor fusion combines them so that the weakness of one is covered by the strength of another, and 3D object detectors turn the fused evidence into tracked actors.</p>
 </div>
-
-
-<p>This section develops sensors and sensor fusion as a concrete embodied AI skill rather than a label. The core contract is: observe camera, lidar, radar, GPS, IMU, calibration, and time sync, fuse measurements into tracked road users and ego state, and judge the result with tracking error, calibration drift, and dropped-frame robustness.</p>
-<p>For Sensors and sensor fusion in AVs, compare predictor, planner, controller, and evaluator on one driving scenario so frame, latency, and metric assumptions cannot drift apart.</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>Driving is embodied AI at road scale: the agent senses a partial world, predicts other agents, acts through vehicle dynamics, and carries social and safety obligations. For Sensors and sensor fusion in AVs, the decisive question is whether the loop can recover from the fused state is accurate on average but delayed enough to make control unsafe.</p>
-</div>
-<p>Figure 48.2.1 should be read as the driving evidence path for Sensors and sensor fusion in AVs: inputs, intermediate state, decision, command, and failure label are separate audit points.</p>
-<figure class="illustration" id="fig-48-2-contract">
-<svg aria-labelledby="fig-48-2-title" height="230" role="img" viewbox="0 0 760 230" width="100%">
-<title id="fig-48-2-title">Closed-loop contract for Sensors and sensor fusion in AVs</title>
-<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="150" x="24" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="99" y="66">Observe</text>
-<text font-size="12" text-anchor="middle" x="99" y="94">camera, lidar, radar, GPS, IMU, ca</text>
-<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="150" x="218" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="293" y="66">Decide</text>
-<text font-size="12" text-anchor="middle" x="293" y="94">state and constraint check</text>
-<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="150" x="412" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="487" y="66">Act</text>
-<text font-size="12" text-anchor="middle" x="487" y="94">fuse measurements into tracked roa</text>
-<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="130" x="606" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="671" y="66">Verify</text>
-<text font-size="12" text-anchor="middle" x="671" y="94">tracking error, calibration </text>
-<path d="M176 76 L214 76" marker-end="url(#arrow-48-2)" stroke="#333" stroke-width="2"></path>
-<path d="M370 76 L408 76" marker-end="url(#arrow-48-2)" stroke="#333" stroke-width="2"></path>
-<path d="M564 76 L602 76" marker-end="url(#arrow-48-2)" stroke="#333" stroke-width="2"></path>
-<path d="M671 121 C671 184 100 184 100 122" fill="none" marker-end="url(#arrow-48-2)" stroke="#555" stroke-width="2"></path>
-<defs><marker id="arrow-48-2" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"></path></marker></defs>
-</svg>
-<figcaption>Figure 48.2.1 maps Sensors and sensor fusion in AVs in Autonomous Driving as Embodied AI to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
-</figure>
+<p>This section develops the perception stack as a concrete contract: ingest synchronized and calibrated sensor streams, produce 3D objects with class, pose, extent, and velocity, and quantify the result against a labeled benchmark. The recurring discipline is calibration. Fusion is only meaningful when every sensor's measurement can be expressed in a shared coordinate frame, and the worked example projects a LiDAR point into the camera image to make that frame transformation explicit.</p>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Sensors and sensor fusion in AVs, the important state variables are camera, lidar, radar, GPS, IMU, calibration, and time sync, while the action interface is to fuse measurements into tracked road users and ego state.</p>
-<p>The method is useful only if it improves a construct-matched measurement: tracking error, calibration drift, and dropped-frame robustness. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
+<h3>Sensor modalities</h3>
+<table>
+<thead><tr><th>Modality</th><th>Variants and parameters</th><th>Strengths</th><th>Weaknesses</th></tr></thead>
+<tbody>
+<tr><td>Camera</td><td>monocular, stereo (depth from disparity), fisheye (wide FOV, strong distortion)</td><td>dense texture, color, sign and lane reading</td><td>no direct range (mono), poor in low light, glare</td></tr>
+<tr><td>LiDAR</td><td>64 to 128 beams, 10 to 20 Hz, mechanical or solid-state</td><td>accurate 3D geometry, range to ~200 m</td><td>sparse at distance, degraded by rain, snow, dust</td></tr>
+<tr><td>Radar</td><td>77 GHz automotive, FMCW, direct Doppler</td><td>direct radial velocity, robust to weather and lighting</td><td>coarse angular resolution, clutter, multipath</td></tr>
+</tbody>
+</table>
+<h3>Fusion levels</h3>
+<p>Fusion is categorized by where in the pipeline modalities are combined.</p>
+<ul>
+<li><strong>Sensor-level (low-level) fusion</strong> combines raw measurements, for example painting LiDAR points with camera pixels before detection. Maximum information, maximum calibration and synchronization sensitivity.</li>
+<li><strong>Early (feature-level) fusion</strong> combines learned features from each modality inside a single network, as in bird's-eye-view fusion.</li>
+<li><strong>Late (object-level) fusion</strong> runs an independent detector per modality and merges the resulting object lists. Robust and modular, but discards cross-modal cues that only exist before detection.</li>
+</ul>
+<h3>3D object detection</h3>
+<p>Given fused inputs, a detector outputs oriented 3D boxes. Representative families: <strong>PointPillars</strong> voxelizes the LiDAR point cloud into vertical pillars and runs a 2D backbone for speed; <strong>CenterPoint</strong> detects object centers in a bird's-eye-view heatmap and regresses box and velocity; <strong>BEVFormer</strong> lifts multi-camera features into a shared bird's-eye-view grid using spatial and temporal attention, enabling camera-only or camera-LiDAR detection in one frame.</p>
+<div class="callout key-insight">
+<div class="callout-title">Calibration Is The Real Subject</div>
+<p>Every fusion method assumes the extrinsic transform between sensors and the camera intrinsics are known and stable. A 1-degree extrinsic error at 50 m is roughly a 0.9 m lateral error: enough to place a LiDAR return for a pedestrian onto the empty road beside them. Most "fusion failures" are calibration or time-synchronization failures in disguise.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>AV sensor fusion is a chain of camera, lidar, radar, map, ego-motion, object tracks, and uncertainty. The log must reveal whether a failure began as missed detection, bad association, or stale fusion.</p>
+<p>To express a LiDAR point in the camera image you chain three transforms. The extrinsic matrix $T_{\text{cam}\leftarrow\text{lidar}}$ (a 4x4 rotation plus translation) moves the point from the LiDAR frame to the camera frame; the intrinsic matrix $K$ (focal lengths $f_x, f_y$ and principal point $c_x, c_y$) projects the 3D camera-frame point to pixel coordinates; finally you divide by depth (the perspective division). Points behind the camera ($z \le 0$) must be discarded before division.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in this section to bind Sensors and sensor fusion in AVs to a measurable driving artifact: scenario, ODD condition, toolchain, metric, safety margin, and deliberate failure case.</p>
+<p>The example projects a LiDAR point $(x, y, z)$ into a camera image using the calibration matrices, the single most common operation in any fusion pipeline.</p>
+<pre><code class="language-python">import numpy as np
 
+# Camera intrinsics K (3x3): focal lengths and principal point in pixels.
+K = np.array([[1200.0,    0.0, 960.0],
+              [   0.0, 1200.0, 540.0],
+              [   0.0,    0.0,   1.0]])
 
-<p><strong>Expected output:</strong> the printed trace for Sensors and sensor fusion in AVs should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+# Extrinsic: rotation R (3x3) and translation t (3,) mapping LiDAR -> camera frame.
+# Here the camera looks forward; LiDAR is mounted 0.3 m above and 1.6 m behind it.
+R = np.array([[ 0.0, -1.0,  0.0],   # LiDAR x (forward) -> camera z
+              [ 0.0,  0.0, -1.0],   # LiDAR z (up)      -> -camera y
+              [ 1.0,  0.0,  0.0]])  # LiDAR y (left)    -> camera x
+t = np.array([0.0, 0.3, -1.6])
+
+def project_lidar_to_image(point_lidar, R, t, K):
+    """Project a LiDAR point (x, y, z) to pixel (u, v); return None if behind camera."""
+    p_cam = R @ np.asarray(point_lidar, dtype=float) + t   # camera-frame 3D point
+    if p_cam[2] <= 1e-6:                                    # behind the image plane
+        return None
+    uvw = K @ p_cam                                         # apply intrinsics
+    u, v = uvw[0] / uvw[2], uvw[1] / uvw[2]                 # perspective division
+    return float(u), float(v)
+
+# A LiDAR return 20 m ahead, 1 m to the left, at ground-ish height.
+pt = (20.0, 1.0, -0.5)
+pix = project_lidar_to_image(pt, R, t, K)
+print("pixel (u, v):", None if pix is None else (round(pix[0], 1), round(pix[1], 1)))
+</code></pre>
+<p><strong>Expected output:</strong> a pixel coordinate near the image center-left, around <code>(u, v) = (894.8, 592.2)</code>. Swap in a point with LiDAR-forward distance set negative and the function returns <code>None</code>, the guard that prevents projecting points behind the camera onto the image.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built evidence record exposes the fields for Sensors and sensor fusion in AVs. For full experiments, use CARLA, CommonRoad, nuScenes, Waymo Open Dataset, ROS 2, and scenario runners while keeping the same artifact schema.</p>
+<p>In practice use the dataset SDKs that ship calibrated transforms: the <strong>nuScenes devkit</strong> and the <strong>Waymo Open Dataset</strong> tools expose per-sensor intrinsics and extrinsics and handle ego-motion compensation. For detectors, <strong>MMDetection3D</strong> and <strong>OpenPCDet</strong> provide reference PointPillars, CenterPoint, and BEVFormer implementations. Keep the same projection convention (frame order, distortion model) across your pipeline.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
-<li>Build the smallest baseline that can fail in an interpretable way.</li>
-<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
-<li>Add one perturbation aimed at the expected failure: the fused state is accurate on average but delayed enough to make control unsafe.</li>
-<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
+<li>Establish a shared coordinate frame and verify extrinsics by projecting LiDAR onto camera images for known objects.</li>
+<li>Time-synchronize streams (hardware trigger or timestamp interpolation); record the residual time skew.</li>
+<li>Choose a fusion level deliberately: late fusion to start (modular, debuggable), early or sensor-level once calibration is trusted.</li>
+<li>Run a reference 3D detector and report mAP and velocity error against the benchmark.</li>
+<li>Save one artifact: calibration, sync residuals, detector config, and overlaid projection images for visual audit.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Sensors and sensor fusion in AVs is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>A small clock skew between camera and LiDAR makes a fast crossing pedestrian appear smeared or doubled after fusion. The detector confidence drops, the tracker stutters, and the planner over-brakes. Always log the per-frame time skew; it is the first thing to check when fused detections degrade only for fast objects.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using sensors and sensor fusion in avs should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A team adding radar to a camera-LiDAR stack should fuse radar Doppler at the object level first: associate radar tracks to detected boxes and use radial velocity to disambiguate stopped versus creeping vehicles. This recovers velocity in heavy rain where LiDAR returns thin out, without rebuilding the detector.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>When sensors and sensor fusion in avs feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+<p>Camera knows what, LiDAR knows where, radar knows how fast. Fusion's job is to keep all three answers about the same object.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For Sensors and sensor fusion in AVs, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Bird's-eye-view fusion (BEVFormer and successors) and occupancy networks are pushing toward a unified scene representation that detection, prediction, and planning can all read. The frontier question is robustness: do these dense representations degrade gracefully under sensor dropout and calibration drift, or do they fail silently?</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for sensors and sensor fusion in avs? If not, the system boundary is still too vague.</p>
+<p>Can you state, for a single LiDAR point, the two matrices and the one division needed to place it in the image, and the condition under which the projection is invalid? If not, revisit the mechanism box before fusing modalities.</p>
 </div>
-
-
-<p>Sensors and sensor fusion in avs becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
-<p>For Sensors and sensor fusion in AVs, keep vehicle physics, road geometry, timing, energy, comfort, and safety constraints inside the artifact rather than in a post-hoc explanation.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>nuScenes, Waymo Open Dataset, and ROS 2 bags</td><td>Main practical route for Sensors and sensor fusion in AVs</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
-<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
-<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
+<tr><td>nuScenes devkit, Waymo Open Dataset tools</td><td>Calibrated multi-sensor data and transforms</td><td>Use their extrinsics rather than re-deriving frames by hand.</td></tr>
+<tr><td>MMDetection3D, OpenPCDet</td><td>Reference 3D detectors (PointPillars, CenterPoint, BEVFormer)</td><td>Reproduce a published number before customizing.</td></tr>
+<tr><td>Projection overlay script</td><td>Visual calibration audit</td><td>Overlay LiDAR on camera every release to catch extrinsic drift.</td></tr>
 </tbody>
 </table>
 </div>
-<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section links Sensors and sensor fusion in AVs to coordinate frames, control, world models, evaluation, and safety because AV failures usually happen at the interface between those subsystems.</p></div>
-<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for Sensors and sensor fusion in AVs, run the baseline and the nuScenes, Waymo Open Dataset, and ROS 2 bags route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
-
-<p>When Sensors and sensor fusion in AVs fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
-
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Sensors and sensor fusion in AVs: MuJoCo, Drake, ManiSkill, ROS 2, MoveIt, CARLA, nuScenes, Waymo Open Dataset, tactile sensing, locomotion, manipulation, and AV evaluation literature.</p><p class="bib-annotation">Use these sources to verify dynamics, contact, sensors, planning, embodiment constraints, and evaluation panels.</p></div></section>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>Section 48.1 frames perception inside the full loop, 48.3 consumes these detections for tracking and prediction, and 48.5 explores learned representations that fuse and predict jointly.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Perturb the extrinsic rotation in the worked example by 1 degree and re-project a point at 50 m. Measure the pixel shift, convert it back to a ground-plane lateral error, and label whether it would move a pedestrian off the sidewalk.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Lang et al., "PointPillars: Fast Encoders for Object Detection from Point Clouds," CVPR 2019. Yin et al., "Center-based 3D Object Detection and Tracking" (CenterPoint), CVPR 2021. Li et al., "BEVFormer: Learning Bird's-Eye-View Representation from Multi-Camera Images," ECCV 2022.</p><p class="bib-annotation">These define the detector families and the bird's-eye-view fusion paradigm referenced above.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Sensors and sensor fusion in AVs is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Three modalities disagree by design; fusion turns that disagreement into a more complete and robust scene, but only when calibration and time synchronization are correct. Master the LiDAR-to-camera projection first, because every fusion method depends on it.</p>
 </div>
 <div class="callout exercise">
 <div class="callout-title">Exercise 48.2.1</div>
-<p>Design a same-panel experiment for Sensors and sensor fusion in AVs. Specify the scenario set, the baseline, the nuScenes, Waymo Open Dataset, and ROS 2 bags library route, the metric computation, and one perturbation that targets this failure: the fused state is accurate on average but delayed enough to make control unsafe.</p>
+<p>Extend the projection function to handle a batch of LiDAR points and to color each surviving pixel by depth. Then design a same-panel experiment comparing late fusion (merge two detector outputs) against the painted-point sensor-level approach on identical frames, measuring mAP and the false-negative rate for pedestrians.</p>
 </div>
 <nav class="chapter-nav">
-<a class="prev" href="section-48.1.html">Section 48.1: Driving as perception, prediction, pla...</a>
+<a class="prev" href="section-48.1.html">Section 48.1: Driving as perception, prediction, planning, control</a>
 <a class="up" href="index.html">Chapter 48: Autonomous Driving as Embodied AI</a>
 <a class="next" href="section-48.3.html">Section 48.3: Detection, lane and behavior prediction</a>
 </nav>

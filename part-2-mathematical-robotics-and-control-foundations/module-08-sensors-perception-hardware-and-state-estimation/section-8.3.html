@@ -57,18 +57,31 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in IMU, wheel odometry, joint encoders, proprioception is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For IMU, wheel odometry, joint encoders, proprioception, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<pre><code class="language-python"># IMU, wheel odometry, joint encoders, proprioception: keep the section idea tied to observable
-# evidence.
-# Run this diagnostic probe before trusting the maintained library path.
+<h2>Worked Example: Dead Reckoning and IMU Drift</h2>
+<p>An inertial measurement unit reports linear acceleration and angular rate, never position directly. To get position you integrate acceleration twice (velocity, then position), a process called dead reckoning. The trouble is that integration also accumulates error. A real accelerometer reading is $a_{\text{meas}} = a_{\text{true}} + b + n$, where $b$ is a slowly varying bias and $n$ is white noise. The bias is the killer: a constant bias $b$ double-integrates into a position error that grows like $\tfrac{1}{2} b t^2$, quadratically in time. Gyroscope bias behaves the same way for heading, and a wrong heading then steers the whole position estimate sideways. This is exactly why an IMU alone cannot localize for long, and why it must be fused with an absolute reference such as a camera, wheel odometry, or GPS.</p>
+<pre><code class="language-python"># 1D dead reckoning: integrate a noisy, biased accelerometer to position.
+# Truth: the body sits still, so true accel, velocity, position are all 0.
 import numpy as np
 
-points_world = np.array([[0.0, 0.0, 1.0], [0.5, 0.2, 1.0]])
-camera_offset = np.array([0.1, 0.0, 0.0])
-points_camera = points_world - camera_offset
-print(points_camera)</code></pre>
-<div class="code-caption">Code Fragment 8.3.1 computes points_camera from points_world and camera_offset, exposing how sensor placement changes the state estimate.</div>
+dt = 0.01                       # 100 Hz IMU
+steps = 2000                    # 20 seconds
+rng = np.random.default_rng(1)
+
+accel_bias = 0.05               # m/s^2 constant bias (uncalibrated)
+accel_noise = 0.02              # m/s^2 white noise (1 sigma)
+a_meas = accel_bias + rng.normal(0.0, accel_noise, size=steps)
+
+vel = np.zeros(steps + 1)
+pos = np.zeros(steps + 1)
+for k in range(steps):
+    vel[k+1] = vel[k] + a_meas[k] * dt   # integrate accel -> velocity
+    pos[k+1] = pos[k] + vel[k+1] * dt    # integrate velocity -> position
+
+t = steps * dt
+print(f"after {t:.0f} s: velocity drift = {vel[-1]:.2f} m/s")
+print(f"after {t:.0f} s: position drift = {pos[-1]:.2f} m")
+print(f"closed-form bias term 0.5*b*t^2 = {0.5*accel_bias*t**2:.2f} m")</code></pre>
+<div class="code-caption">Code Fragment 8.3.1 integrates a perfectly still IMU that has only a tiny 0.05 m/s^2 bias. After 20 seconds the velocity has drifted to about 1 m/s and the position to nearly 10 m, matching the closed-form $\tfrac{1}{2} b t^2 = 10$ m. The simulation shows why proprioceptive dead reckoning needs frequent correction from an absolute sensor.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose one inertial or encoder update and its covariance. robot_localization, tf2, and ROS 2 bag replay then provide the maintained path for fusing motion streams.</p>

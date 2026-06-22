@@ -57,8 +57,61 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Contact, friction, and why contact-rich sim is hard is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Contact, friction, and why contact-rich sim is hard, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>Worked Example: Impulse-Based Contact With Restitution and a Friction Cone</h2>
+<p>Hard contact is hard because it is a constrained, set-valued problem. An impulse-based resolution sidesteps stiff penalty forces by directly computing the impulse $J = (J_n, J_t)$ that corrects the relative velocity at the contact point in a single step. Two physical laws bound that impulse:</p>
+<ul>
+<li><strong>Normal restitution.</strong> The post-impact normal velocity reverses by a factor of the coefficient of restitution $e \in [0,1]$: $v_n^{+} = -e\, v_n^{-}$. With $e=1$ the bounce is perfectly elastic; with $e=0$ the contact is fully plastic.</li>
+<li><strong>Coulomb friction cone.</strong> The tangential impulse is limited by $\lVert J_t \rVert \le \mu J_n$. Inside the cone the contact sticks (relative tangential velocity is driven to zero); on the cone boundary it slides and friction opposes the slip direction.</li>
+</ul>
+<p>The example resolves a point mass striking the ground at an angle. It computes the normal impulse from restitution, then clamps the sticking tangential impulse to the friction cone, which is exactly the projection a contact solver performs at every active contact.</p>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+def resolve_contact(v_in, m, normal, e, mu):
+    """Impulse-based resolution of a point mass hitting a surface.
+    v_in   : incoming velocity (2D)
+    normal : unit surface normal pointing away from the surface
+    e      : coefficient of restitution in [0,1]
+    mu     : Coulomb friction coefficient
+    Returns post-impact velocity and the applied impulse."""
+    n = normal / np.linalg.norm(normal)
+    t = np.array([-n[1], n[0]])            # tangent direction
+
+    vn = v_in @ n                          # normal component (negative if approaching)
+    vt = v_in @ t                          # tangential component
+
+    if vn >= 0:                            # separating, no contact impulse
+        return v_in, np.zeros(2)
+
+    # Normal impulse enforces v_n^+ = -e * v_n^-.
+    Jn = -(1 + e) * vn * m                 # >= 0
+
+    # Sticking tangential impulse would cancel all tangential velocity.
+    Jt_stick = -vt * m
+    Jt_max   = mu * Jn                     # friction-cone limit
+    if abs(Jt_stick) <= Jt_max:
+        Jt = Jt_stick                      # inside cone: stick
+        mode = "stick"
+    else:
+        Jt = -np.sign(vt) * Jt_max         # on cone: slide, oppose slip
+        mode = "slide"
+
+    J = Jn * n + Jt * t
+    v_out = v_in + J / m
+    return v_out, J, mode
+
+m = 0.5
+v_in = np.array([3.0, -2.0])               # moving right and down
+normal = np.array([0.0, 1.0])              # floor normal points up
+
+for e, mu in [(0.0, 2.0), (0.8, 0.5), (0.8, 0.05)]:
+    v_out, J, mode = resolve_contact(v_in, m, normal, e, mu)
+    vn_out = v_out @ normal
+    print(f"e={e} mu={mu:<4} -> v_out={np.round(v_out,3)} "
+          f"vn_out={vn_out:+.3f} mode={mode}")
+</code></pre>
+</div>
+<p>The output shows the three regimes a contact-rich simulator must get right: with $e=0$ the normal velocity is killed and high friction makes the contact stick; with $e=0.8$ the mass bounces, $v_n^{+}=0.8\,|v_n^{-}|$; and with low $\mu$ the tangential impulse saturates on the cone and the mass slides instead of sticking. The set-valued switch between stick and slide is precisely the active-set decision that makes contact-rich simulation non-smooth and timestep sensitive.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Contact, friction, and why contact-rich sim is hard, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

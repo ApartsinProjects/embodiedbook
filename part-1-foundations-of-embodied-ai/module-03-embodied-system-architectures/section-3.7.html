@@ -86,8 +86,42 @@
 <p>The mechanism in Where LLMs, VLMs, and VLAs sit in the stack is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Where LLMs, VLMs, and VLAs sit in the stack, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<p><strong>Expected output:</strong> the printed trace for Where LLMs, VLMs, and VLAs sit in the stack should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>The three model families compose into one pipeline: an LLM decomposes the goal, a VLM grounds each subgoal in the image, and a VLA turns a grounded subgoal into an action. The example uses stand-in functions for each model so the structure is visible, then runs the section's key diagnostic, oracle substitution, to locate which interface caused a failure. This is the executable form of the Fun Note: the plan and the pointing only matter if the action survives contact.</p>
+<pre><code class="language-python"># Stand-ins for the three model families. Swap in real models later;
+# the contract (what enters, what leaves) is what we are testing.
+def llm_plan(goal):                       # language -> ordered subgoals
+    return {"put apple in bowl": ["grasp apple", "place in bowl"]}[goal]
+
+def vlm_ground(subgoal, scene):           # image+text -> object + pose
+    obj = subgoal.split()[-1]             # "grasp apple" / "place in bowl"
+    return scene.get(obj)                 # None if not visible -> grounding gap
+
+def vla_act(grounded):                    # state+goal -> action token
+    if grounded is None:
+        return None
+    return f"move_to({grounded['x']:.2f},{grounded['y']:.2f}) + close"
+
+def run(goal, scene):
+    for sub in llm_plan(goal):
+        g = vlm_ground(sub, scene)
+        a = vla_act(g)
+        print(f"  {sub:16s} ground={g} action={a}")
+        if a is None:
+            return f"FAIL at grounding: {sub}"
+    return "ok"
+
+scene_ok  = {"apple": {"x": 0.4, "y": 0.1}, "bowl": {"x": 0.7, "y": 0.0}}
+scene_bad = {"bowl": {"x": 0.7, "y": 0.0}}            # apple occluded
+
+print("scene_ok :", run("put apple in bowl", scene_ok))
+print("scene_bad:", run("put apple in bowl", scene_bad))
+# Oracle substitution: inject the apple pose to confirm the VLM, not the
+# LLM or VLA, was the first cause in scene_bad.
+scene_fixed = dict(scene_bad, apple={"x": 0.4, "y": 0.1})
+print("oracle   :", run("put apple in bowl", scene_fixed))
+</code></pre>
+<div class="code-caption">Code Fragment 3.7.1 composes an LLM planner, a VLM grounder, and a VLA actor, then uses oracle substitution to attribute a failure to the grounding interface rather than to the plan or the controller.</div>
+<p><strong>Expected output:</strong> the good scene runs end to end; the bad scene fails at grounding because the apple is not visible, and the VLA correctly produces no action rather than reaching for nothing; the oracle run succeeds once the missing pose is injected, which proves the VLM grounding was the first cause. The lesson matches the section's diagnostic: replace one model output with a verified value and see whether the system recovers, instead of swapping the whole foundation model on a hunch.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Where LLMs, VLMs, and VLAs sit in the stack, the hand-built fragment is a visibility tool. Production work should move to maintained stacks such as Hugging Face Transformers, open VLMs, OpenVLA, openpi, LeRobot, and tool-calling planners once the section has made the interface, logging contract, and failure recovery path explicit.</p>

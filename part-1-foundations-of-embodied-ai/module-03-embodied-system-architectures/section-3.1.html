@@ -88,8 +88,44 @@
 <p>The mechanism in The canonical stack: sense, perceive, estimate, predict, plan, control, act is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For The canonical stack: sense, perceive, estimate, predict, plan, control, act, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<p><strong>Expected output:</strong> the printed trace for The canonical stack: sense, perceive, estimate, predict, plan, control, act should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>The cleanest way to make the canonical stack concrete is to give every arrow its own function and run one observation through all seven. The toy world below is a 1-D reaching task: the body is at position $x$, a target sits at $x^\star$, and the only actuator is a bounded velocity command. Each stage does its single job and hands a typed value to the next.</p>
+<pre><code class="language-python">import numpy as np
+
+rng = np.random.default_rng(0)
+TARGET = 1.00          # x* the agent must reach (meters)
+STEP_MAX = 0.20        # actuator saturation (max move per step, meters)
+
+def sense(true_x):                       # o_t: noisy raw reading
+    return true_x + rng.normal(0, 0.02)
+def perceive(o):                         # x_t: calibrated, de-biased
+    return o - 0.01                      # known sensor bias
+def estimate(x_meas, x_prev, alpha=0.7): # s_hat: low-pass state filter
+    return alpha * x_meas + (1 - alpha) * x_prev
+def predict(s_hat, a_prev, H=3):         # roll the model forward H steps
+    return s_hat + H * a_prev
+def plan(s_hat):                         # tau_t: desired displacement to goal
+    return TARGET - s_hat
+def control(tau):                        # a_t: saturate to actuator limit
+    return float(np.clip(tau, -STEP_MAX, STEP_MAX))
+def act(true_x, a):                      # world transition -> o_{t+1}
+    return true_x + a
+
+true_x, s_hat, a = 0.0, 0.0, 0.0
+for t in range(12):
+    o      = sense(true_x)
+    x      = perceive(o)
+    s_hat  = estimate(x, s_hat)
+    s_pred = predict(s_hat, a)
+    tau    = plan(s_hat)
+    a      = control(tau)
+    true_x = act(true_x, a)
+    print(f"t={t:2d} o={o:+.3f} s_hat={s_hat:+.3f} "
+          f"pred={s_pred:+.3f} a={a:+.3f} x={true_x:+.3f}")
+
+print(f"final error = {TARGET - true_x:+.3f} m")
+</code></pre>
+<div class="code-caption">Code Fragment 3.1.1 runs one rollout through all seven stages of the canonical stack. Each line of the trace is a typed handoff: observation, estimate, prediction, command, and the new world state.</div>
+<p><strong>Expected output:</strong> the agent drives the error toward zero in under ten steps, with the command $a$ saturating at $\text{STEP\_MAX}=0.20$ on the first moves and then shrinking as $\hat{s}$ approaches the target. The value of the trace is that each column is one arrow in the equation above: if the robot misses, you can read off which stage first reported a wrong number. Try injecting a stale estimate (skip the <code>estimate</code> update for one step) and watch the error grow even though every other stage is correct.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For The canonical stack: sense, perceive, estimate, predict, plan, control, act, the hand-built fragment is a visibility tool. Production work should move to maintained stacks such as Hugging Face Transformers, open VLMs, OpenVLA, openpi, LeRobot, and tool-calling planners once the section has made the interface, logging contract, and failure recovery path explicit.</p>

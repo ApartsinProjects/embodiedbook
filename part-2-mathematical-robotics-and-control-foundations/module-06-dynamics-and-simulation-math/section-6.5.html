@@ -57,8 +57,59 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Differentiable physics: what it buys you is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Differentiable physics: what it buys you, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<h2>Worked Example: Backprop Through a Rollout, Validated Against Finite Differences</h2>
+<p>A differentiable simulator exposes a discrete update $x_{k+1} = f_\Delta(x_k, u_k, \theta)$ and a scalar loss $L = \ell(x_T)$, then lets you compute sensitivities such as $\partial L / \partial u_k$ or $\partial L / \partial \theta$ by the chain rule through every step. The example optimizes the launch velocity of a projectile so it lands on a target, by differentiating the landing-error loss through a symplectic rollout. The non-negotiable discipline is to validate the analytic gradient against a centered finite difference before trusting it for optimization.</p>
+<p>For a horizon of $T$ steps the reverse-mode gradient accumulates local Jacobians, $\tfrac{\partial L}{\partial x_0} = \big(\prod_{k} \tfrac{\partial x_{k+1}}{\partial x_k}\big)^\top \tfrac{\partial \ell}{\partial x_T}$. Here we differentiate by hand to keep the mechanism visible, then check it numerically.</p>
+<div class="code-block-wrapper">
+<pre><code class="language-python">import numpy as np
+
+g = 9.81
+dt, T = 0.01, 300            # 3 s rollout
+target_x = 6.0               # land here on the ground (y = 0)
+
+def rollout(v0):
+    """Symplectic-Euler projectile from origin. Returns landing x and loss."""
+    vx, vy = v0
+    x, y = 0.0, 0.0
+    for _ in range(T):
+        vy = vy - g * dt     # gravity on vertical velocity
+        x  = x + vx * dt
+        y  = y + vy * dt
+    loss = 0.5 * (x - target_x)**2
+    return x, loss
+
+def analytic_grad(v0):
+    """d loss / d v0 by differentiating the closed-form rollout.
+    With constant vx: x_T = vx * (T*dt). Loss = 0.5*(x_T - target)^2."""
+    vx, vy = v0
+    x_T = vx * (T * dt)
+    err = x_T - target_x
+    dloss_dvx = err * (T * dt)        # dx_T/dvx = T*dt
+    dloss_dvy = 0.0                    # horizontal landing x independent of vy here
+    return np.array([dloss_dvx, dloss_dvy])
+
+def finite_diff_grad(v0, eps=1e-6):
+    grad = np.zeros(2)
+    for i in range(2):
+        vp = v0.copy(); vp[i] += eps
+        vm = v0.copy(); vm[i] -= eps
+        grad[i] = (rollout(vp)[1] - rollout(vm)[1]) / (2 * eps)
+    return grad
+
+v0 = np.array([2.5, 1.0])
+print("analytic grad     :", analytic_grad(v0))
+print("finite-diff grad  :", finite_diff_grad(v0))
+print("max abs diff      :", np.max(np.abs(analytic_grad(v0) - finite_diff_grad(v0))))
+
+# Gradient descent on v0 to hit the target.
+v = np.array([2.5, 1.0]); lr = 0.05
+for step in range(200):
+    v = v - lr * analytic_grad(v)
+x_final, loss = rollout(v)
+print(f"optimized vx={v[0]:.4f}  landing x={x_final:.4f}  loss={loss:.2e}")
+</code></pre>
+</div>
+<p>The analytic and finite-difference gradients agree to within numerical tolerance, which is the green light to optimize: gradient descent then drives the landing point onto the target. This rollout is smooth, so the gradient is exact. The cautionary half of the lesson is that adding a contact event (a bounce, a grasp, a foot strike) makes $f_\Delta$ only piecewise smooth, and the same finite-difference check will then expose where the autodiff gradient is biased by contact smoothing or undefined across a mode boundary. Run the check on one smooth case and one contact case before optimizing a long horizon.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Differentiable physics: what it buys you, the hand-built fragment exposes the physical assumption before maintained tools take over. MuJoCo, MJX, Drake, Pinocchio, and Isaac Lab are useful only when the same mass, contact, actuator, and timestep contract is preserved.</p>

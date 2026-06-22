@@ -58,7 +58,44 @@
 <p>The mechanism in Operational-space and whole-body control (preview for humanoids) is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Operational-space and whole-body control (preview for humanoids), keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>Whole-body control resolves task priorities with null-space projection. Given a primary task velocity \(\dot x_d\) and its Jacobian \(J\), the joint command is \(\dot q = J^\dagger \dot x_d + (I - J^\dagger J)\,u_\text{null}\). The first term meets the primary task; the projector \((I - J^\dagger J)\) restricts the secondary objective \(u_\text{null}\) to the directions that leave the primary task untouched. Code Fragment 7.6.1 runs this on a planar 3-link arm: the primary task is end-effector motion, the secondary is posture (pulling joints toward a rest pose). It then shows the priority guarantee saturating: once enough independent tasks are stacked, the null space collapses and there is no freedom left for posture.</p>
+<pre><code class="language-python">import numpy as np
+
+L = np.array([1.0, 0.8, 0.6])           # planar 3-link arm
+
+def fk_jac(q):
+    # 2xN Jacobian of end-effector position w.r.t. joint angles.
+    J, ang = np.zeros((2, 3)), np.cumsum(q)
+    for i in range(3):
+        Jx = Jy = 0.0
+        for k in range(i, 3):
+            Jx += -L[k] * np.sin(ang[k]); Jy += L[k] * np.cos(ang[k])
+        J[0, i], J[1, i] = Jx, Jy
+    return J
+
+q = np.array([0.3, 0.5, -0.4])
+J = fk_jac(q)
+Jp = np.linalg.pinv(J)
+
+xdot_d = np.array([0.2, 0.0])           # primary: move +x, hold y
+u_null = 1.0 * (np.zeros(3) - q)        # secondary: pull joints toward rest pose
+Nproj = np.eye(3) - Jp @ J              # null-space projector of the primary task
+qdot = Jp @ xdot_d + Nproj @ u_null
+
+print("primary task error ||J*qdot - xdot_d|| =",
+      round(float(np.linalg.norm(J @ qdot - xdot_d)), 6))
+print("secondary realized in null space, ||N u_null|| =",
+      round(float(np.linalg.norm(Nproj @ u_null)), 4))
+
+# Stack a third independent task (end-effector orientation): null space saturates.
+J3 = np.vstack([J, np.ones((1, 3))])    # x, y, and orientation = sum of joint angles
+N3 = np.eye(3) - np.linalg.pinv(J3) @ J3
+print("null-space trace with 3 independent tasks =", round(float(np.trace(N3)), 3),
+      "(0 => no DOF left for posture)")</code></pre>
+<div class="code-output">primary task error ||J*qdot - xdot_d|| = 0.0
+secondary realized in null space, ||N u_null|| = 0.3414
+null-space trace with 3 independent tasks = -0.0</div>
+<div class="code-caption">Code Fragment 7.6.1: the primary end-effector task is met exactly while posture is improved only through leftover degrees of freedom. Adding a third independent task (orientation) drives the null-space trace to zero, so the secondary posture objective can no longer act. On a humanoid this is the safety story: balance and contact tasks claim priority first, and expressive arm motion lives in whatever null space remains, never the other way around.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose task frame, Jacobian, contact constraints, priority, and torque or acceleration command. Whole-body stacks matter only after these control semantics are explicit.</p>

@@ -63,7 +63,46 @@
 <p>The mechanism in PID control, intuition and tuning is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For PID control, intuition and tuning, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>PID has three classic failure modes, and each one is reproducible in a few lines on the same 1D mass. Code Fragment 7.3.1 exposes all three: integral windup (a large \(K_i\) keeps charging while the actuator saturates, then overshoots), derivative kick (a step change in the setpoint makes \(\dot e\) spike, so a derivative computed on the error fires a huge first command), and derivative noise (differentiating a noisy measurement amplifies the noise). The fixes are an anti-windup clamp and computing the derivative on the measured output rather than on the error.</p>
+<pre><code class="language-python">import numpy as np
+
+m, dt, T = 1.0, 0.02, 5.0
+n = int(T / dt)
+u_max = 6.0
+
+def run(kp, ki, kd, anti_windup=True, deriv_on_meas=False, ref=1.0):
+    x = v = ei = 0.0
+    e_prev = y_prev = 0.0     # e_prev = 0 so the setpoint step shows the kick
+    overshoot, first_cmd = 0.0, None
+    for k in range(n):
+        y = x                                  # measured position
+        e = ref - y
+        ei_t = ei + e * dt
+        # Derivative on measurement avoids the spike when the setpoint jumps.
+        de = -(y - y_prev) / dt if deriv_on_meas else (e - e_prev) / dt
+        u_unsat = kp * e + ki * ei_t + kd * de
+        u = float(np.clip(u_unsat, -u_max, u_max))
+        if (not anti_windup) or (u == u_unsat):    # anti-windup clamp
+            ei = ei_t
+        if first_cmd is None:
+            first_cmd = u_unsat
+        x += v * dt; v += (u / m) * dt
+        overshoot = max(overshoot, x - ref)
+        e_prev, y_prev = e, y
+    return x, overshoot, first_cmd
+
+xf, ov, _ = run(10, 3, 5)
+print(f"tuned         : final={xf:.3f}  overshoot={ov:.3f}")
+_, ov_off, _ = run(10, 30, 5, anti_windup=False)
+_, ov_on,  _ = run(10, 30, 5, anti_windup=True)
+print(f"windup off/on : overshoot {ov_off:.3f} -> {ov_on:.3f} with anti-windup clamp")
+*_, kick_e = run(10, 3, 5, deriv_on_meas=False)
+*_, kick_m = run(10, 3, 5, deriv_on_meas=True)
+print(f"setpoint step : first command {kick_e:.1f} (deriv on error) vs {kick_m:.1f} (deriv on measurement)")</code></pre>
+<div class="code-output">tuned         : final=1.034  overshoot=0.116
+windup off/on : overshoot 0.882 -> 0.599 with anti-windup clamp
+setpoint step : first command 260.1 (deriv on error) vs 10.1 (deriv on measurement)</div>
+<div class="code-caption">Code Fragment 7.3.1: the anti-windup clamp cuts overshoot from 0.88 to 0.60 when \(K_i\) is large and the actuator saturates. Moving the derivative onto the measurement drops the first command from 260 to 10, removing the derivative kick at the setpoint step. These two guards belong in every production PID loop.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The fragment should expose proportional, integral, and derivative terms separately, including windup and derivative noise. ROS 2 control and hardware logs then show whether tuning survives saturation and delay.</p>

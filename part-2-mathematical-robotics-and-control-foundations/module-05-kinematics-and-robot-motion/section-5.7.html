@@ -55,7 +55,45 @@
 <p>The mechanism in Jacobians, singularities, manipulability is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Jacobians, singularities, manipulability, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p>The example computes the Jacobian of the planar two-link arm two ways, by finite differences of forward kinematics and analytically, confirms they agree, then sweeps the elbow toward full extension to watch the manipulability $w=\sqrt{\det(JJ^\top)}$ and smallest singular value collapse at the singularity.</p>
+<pre><code class="language-python">import numpy as np
+
+l1, l2 = 0.5, 0.4
+
+def fk(q):
+    x = l1*np.cos(q[0]) + l2*np.cos(q[0]+q[1])
+    y = l1*np.sin(q[0]) + l2*np.sin(q[0]+q[1])
+    return np.array([x, y])
+
+def jac_analytic(q):
+    s1, s12 = np.sin(q[0]), np.sin(q[0]+q[1])
+    c1, c12 = np.cos(q[0]), np.cos(q[0]+q[1])
+    return np.array([[-l1*s1 - l2*s12, -l2*s12],
+                     [ l1*c1 + l2*c12,  l2*c12]])
+
+def jac_finite_diff(q, eps=1e-6):
+    J = np.zeros((2, 2))
+    for i in range(2):
+        dq = np.zeros(2); dq[i] = eps
+        J[:, i] = (fk(q + dq) - fk(q - dq)) / (2*eps)
+    return J
+
+q = np.deg2rad([35.0, 60.0])
+print("max |analytic - finite diff|:",
+      f"{np.max(np.abs(jac_analytic(q) - jac_finite_diff(q))):.2e}")
+
+def manipulability(q):
+    J = jac_analytic(q)
+    return np.sqrt(max(np.linalg.det(J @ J.T), 0.0))
+
+print(" elbow(deg)  w=sqrt(det(JJ^T))  sigma_min")
+for q2_deg in [90, 30, 10, 2, 0]:
+    q = np.deg2rad([35.0, q2_deg])
+    sigma = np.linalg.svd(jac_analytic(q), compute_uv=False)
+    print(f"   {q2_deg:4d}        {manipulability(q):.5f}        {sigma.min():.5f}")
+# As the elbow straightens (q2 -> 0), w and sigma_min -> 0: a singularity.
+</code></pre>
+<p>The finite-difference cross-check certifies the analytic Jacobian on one posture; the sweep shows why manipulability is a usable early-warning signal. A controller that asks for fast Cartesian motion at $q_2\approx 0$ demands near-infinite joint velocity, so damping or task relaxation must engage before the singular value reaches the configured margin.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The Jacobian fragment should show how joint velocity becomes task-space velocity and how singular values warn about lost authority. Pinocchio and Drake compute derivatives at scale; the hand check keeps units and frames honest.</p>

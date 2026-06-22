@@ -34,58 +34,70 @@
 <h1>Section 41.2: Diffuser and Decision Diffuser</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>For Diffuser and Decision Diffuser, predicted futures must be checked against the next observed state before the planner trusts a longer horizon.</p>
+<blockquote class="epigraph"><p>Do not predict the next action; predict the next chunk of actions, then denoise the whole chunk until it is consistent with what the camera just saw.</p>
 <figure class="illustration">
 <img alt="Technical illustration for Section 41.2: Diffuser and Decision Diffuser." loading="lazy" src="images/chapter-41-illustration-02.png"/>
 <figcaption><strong>Figure 41.2A</strong>: Section 41.2: Diffuser and Decision Diffuser becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
-<cite>A Denoising Planner</cite></blockquote>
+<cite>An Action-Diffusion Policy</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Diffuser And Decision Diffuser</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Diffuser and Decision Diffuser solve related but different planning problems. Diffuser samples trajectories that satisfy start-state and goal constraints, while Decision Diffuser samples trajectories that are also conditioned on desired return or value targets.</p>
-<p>For robotics, that difference matters whenever the task objective is richer than "reach the goal." Return conditioning can favor high-reward but risky plans unless it is paired with explicit feasibility or safety filtering.</p>
+<p>Diffuser and Decision Diffuser solve related but different planning problems. Diffuser samples trajectories that satisfy start-state and goal constraints, while Decision Diffuser samples trajectories that are also conditioned on desired return or value targets. Both belong to a broader family of action-diffusion methods whose practical robotics workhorse is Diffusion Policy: instead of denoising a full offline trajectory, it denoises a short chunk of future actions conditioned on the latest visual observation, then executes part of that chunk before replanning.</p>
+<p>For robotics, the difference between these methods matters whenever the task objective is richer than "reach the goal." Return conditioning can favor high-reward but risky plans unless it is paired with explicit feasibility or safety filtering, and observation-conditioned action chunking trades a longer planning horizon for tight, reactive control at execution time.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Diffuser And Decision Diffuser, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>Diffuser models the distribution over trajectories $\tau=(s_0,a_0,\dots,s_H,a_H)$ and learns a denoising process that maps Gaussian noise to plausible plans. In simplified form, the training loss is</p>
+<p>Action-diffusion methods are trained with the denoising score-matching loss. Given a clean action sequence $\tau_0$ conditioned on observation $o$, sample a timestep $t$ and Gaussian noise $\epsilon$, form the noised sample using the forward closed form, and ask the network to predict the noise it sees:</p>
 <p>$$
-\mathcal{L}_{\text{diffuser}}=\mathbb{E}_{\tau,\epsilon,t}\left[\left\lVert \epsilon-\epsilon_\theta(\tau_t, c, t)\right\rVert_2^2\right],
+\mathcal{L} = \mathbb{E}_{t,\tau_0,\epsilon}\left[\left\lVert \epsilon - \epsilon_\theta\!\left(\sqrt{\bar\alpha_t}\,\tau_0 + \sqrt{1-\bar\alpha_t}\,\epsilon,\ t,\ o\right)\right\rVert^2\right].
 $$</p>
-<p>where $c$ is a conditioning signal such as the current state or goal. Decision Diffuser extends the conditioning to include a return target $\hat R$, which changes the planner from "sample a plausible future" to "sample a plausible future likely to achieve this return."</p>
+<p>This is a regression on noise, not on actions, which is what lets the model represent a multimodal action distribution: many distinct $\tau_0$ values are consistent with the same observation, and the noise objective does not collapse them to an average. Diffuser uses the same loss over full trajectories $\tau=(s_0,a_0,\dots,s_H,a_H)$ conditioned on state or goal; Decision Diffuser adds a return target $\hat R$ to the conditioning $c$, turning "sample a plausible future" into "sample a plausible future likely to achieve this return."</p>
+<p><strong>Sampling: DDPM vs DDIM.</strong> The trained denoiser can be sampled two ways. DDPM runs the full stochastic reverse chain, typically hundreds to a thousand steps, and injects fresh noise at each step. DDIM reinterprets the same model as a deterministic (non-Markovian) trajectory from noise to data, letting you skip steps and sample in roughly 10 to 50 iterations with little quality loss. DDPM gives more sample diversity; DDIM gives the speed a control loop needs.</p>
+<p><strong>Action chunking.</strong> Rather than denoising one action, Diffusion Policy predicts a horizon of $H$ future actions in a single denoising pass, executes the first $k < H$ of them open-loop, then re-observes and replans. Predicting a chunk gives temporal consistency (no jitter between consecutive single-step predictions); executing only $k$ and replanning every $k$ keeps the policy reactive to disturbances. The choice of $H$ and $k$ is the main knob trading smoothness against responsiveness.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>For Diffuser and Decision Diffuser, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
+<p>Inference starts from pure Gaussian noise shaped like the action chunk, then iterates the reverse denoiser $T$ times, conditioning every step on the same fixed observation embedding. Only the noise tensor changes between steps; the observation is computed once. After the final step the chunk is in action space and the first $k$ entries are sent to the controller.</p>
 </div>
 <h2>Worked Example</h2>
-<p>The compact probe below makes the distinction concrete. One score reads only goal distance; the other also adds a return-style preference for shorter, smoother plans.</p>
-<pre><code class="language-python"># Refine noisy action trajectories toward a goal-conditioned plan.
-# Compare a plain goal-conditioned score with a return-conditioned score.
+<p>The probe below shows how to structure a Diffusion Policy inference loop. It denoises an action chunk of shape $(H, A)$ from Gaussian noise over $T$ DDIM steps, conditioning every step on a fixed observation embedding, then executes the first $k$ actions. The denoiser here is a stand-in; in a real system it is a trained U-Net or transformer. The control logic around it, start from noise, iterate the reverse step, condition on the observation, slice the first $k$, is exactly what production code does.</p>
+<pre><code class="language-python"># Diffusion Policy inference: denoise an action chunk conditioned on an observation.
+# Loop structure is the point; eps_theta stands in for a trained noise predictor.
 import numpy as np
 
-goal = np.array([1.0, 0.2])
-plans = [
-    np.array([[0.2, 0.0], [0.25, 0.05], [0.28, 0.07]]),
-    np.array([[0.3, 0.25], [0.18, -0.05], [0.45, 0.02]]),
-]
+H, A = 8, 2                              # predict H future actions of dim A
+T = 10                                   # DDIM denoising steps
+k = 2                                    # execute the first k, then replan
+abar = np.linspace(0.95, 0.02, T)[::-1]  # signal retention, clean -> noisy
+obs = np.array([0.6, -0.2])             # observation embedding (stand-in)
+rng = np.random.default_rng(1)
 
-rows = []
-for idx, plan in enumerate(plans):
-    final_point = plan.sum(axis=0)
-    goal_cost = float(np.linalg.norm(final_point - goal))
-    smoothness_cost = float(np.abs(np.diff(plan[:, 0])).sum())
-    return_score = -(goal_cost + 0.3 * smoothness_cost)
-    rows.append((idx, final_point.round(3).tolist(), round(goal_cost, 3), round(return_score, 3)))
+def eps_theta(a_t, t, o):
+    # Trained model would go here. Stand-in: actions track the observation.
+    target = np.tile(o, (H, 1))
+    return (a_t - np.sqrt(abar[t]) * target) / np.sqrt(1.0 - abar[t] + 1e-8)
 
-print(rows)</code></pre>
-<div class="code-output"><code>[(0, [0.73, 0.12], 0.282, -0.306), (1, [0.93, 0.22], 0.073, -0.241)]</code></div>
-<div class="code-caption">Code Fragment 41.2.1 implements diffusion_planner_probe for Diffuser and Decision Diffuser and prints the diagnostic quantity the controller or evaluator should inspect.</div>
-<p>The expected output is a list where the plan with the best goal cost is not always the one with the best return-conditioned score. That gap is the whole point of Decision Diffuser: scoring can favor futures that are slightly longer in state space but better under the task objective.</p>
+a_t = rng.normal(size=(H, A))           # start from pure Gaussian noise
+for t in reversed(range(T)):            # reverse chain: t = T-1 ... 0
+    eps = eps_theta(a_t, t, obs)        # predict the noise, conditioned on obs
+    a0_hat = (a_t - np.sqrt(1.0 - abar[t]) * eps) / np.sqrt(abar[t])
+    if t > 0:                           # DDIM deterministic step toward a_{t-1}
+        a_t = np.sqrt(abar[t-1]) * a0_hat + np.sqrt(1.0 - abar[t-1]) * eps
+    else:
+        a_t = a0_hat                    # final step lands in action space
+
+action_chunk = a_t
+print("predicted chunk (first 3 of H):", action_chunk[:3].round(3).tolist())
+print("execute first k =", k, "actions:", action_chunk[:k].round(3).tolist())</code></pre>
+<div class="code-output"><code>predicted chunk (first 3 of H): [[0.6, -0.2], [0.6, -0.2], [0.6, -0.2]]
+execute first k = 2 actions: [[0.6, -0.2], [0.6, -0.2]]</code></div>
+<div class="code-caption">Code Fragment 41.2.1 structures a Diffusion Policy inference loop: denoise from noise over T steps conditioned on the observation embedding, then slice the first k actions to execute.</div>
+<p>The chunk converges to the observation-consistent target because the stand-in denoiser drives it there; a trained $\epsilon_\theta$ would instead produce a multimodal, observation-appropriate action sequence. The structural takeaways carry over unchanged: the observation is embedded once and reused across all $T$ steps, DDIM lets $T$ be small enough for control rates, and only $k$ of the $H$ predicted actions are executed before the loop re-observes and runs again.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Diffuser and Decision Diffuser, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>
@@ -110,9 +122,13 @@ print(rows)</code></pre>
 <div class="callout-title">Memory Hook</div>
 <p>Diffuser asks, "what futures look plausible here?" Decision Diffuser adds, "which plausible futures are worth preferring?"</p>
 </div>
+<div class="callout paper-spotlight">
+<div class="callout-title">Paper Spotlight: Diffusion Policy</div>
+<p><strong>Chi et al., "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion" (CoRL 2023).</strong> This paper is the reason action diffusion became a default choice for manipulation. It generates the robot action as a denoising process conditioned on visual observations, predicting an action chunk and executing it with receding-horizon control. Across 12 real and simulated manipulation tasks it outperforms behavior cloning and Implicit Behavioral Cloning (IBC), with the multimodal action distribution and action chunking identified as the decisive ingredients. The practical lesson for builders: the gains come not from a bigger backbone but from representing action uncertainty correctly and committing to a coherent chunk instead of a per-step average.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>The frontier question is how to keep return conditioning useful without letting the model exploit reward quirks or dataset bias. Current work on guidance schedules, hybrid search, and real-time denoising is really about making those conditioning signals robust enough for receding-horizon control.</p>
+<p>The frontier question is how to keep return conditioning useful without letting the model exploit reward quirks or dataset bias, and how to push DDIM step counts low enough for high-rate control. Current work on guidance schedules, hybrid search, consistency-model distillation, and real-time denoising is really about making both the conditioning signals and the sampler robust enough for receding-horizon control.</p>
 </div>
 <div class="callout cross-ref">
 <div class="callout-title">Cross-Reference Thread</div>
