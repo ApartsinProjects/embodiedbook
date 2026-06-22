@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 15.4A</strong>: Trust-region thinking keeps a promising update close enough to the behavior that generated the evidence.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the advantage function and generalized advantage estimation (GAE) introduced in section 15.3, since the probability ratio and clipped objective both multiply the advantage estimate computed there. The implementation details that make PPO reliable in practice, including value-function normalization, learning-rate schedules, and epoch budgets, are covered in section 15.5. The trust-region instinct developed here recurs in Part IV alongside constrained RL and sim-to-real transfer in section 20.3, where distribution shift between simulator and hardware motivates the same bounded-update thinking.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Trust regions</strong> constrain how far a policy update may move from the behavior that produced the rollout data. TRPO enforces this idea with an explicit KL constraint; PPO keeps the same instinct but uses a simpler clipped objective and KL diagnostics.</p>
@@ -61,6 +65,23 @@
 <p>$$L^{\mathrm{CLIP}}(\theta)=\mathbb{E}_t\left[\min\left(r_t(\theta)\hat A_t,\operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t\right)\right].$$</p>
 <p>If the advantage is positive, PPO stops rewarding the update once the new policy makes the action much more likely than the old policy did. If the advantage is negative, PPO stops rewarding the update once the new policy makes the action much less likely. The clip does not enforce a hard KL limit, but it removes incentive for many destructive updates.</p>
 <p>The TRPO-to-PPO move is short to state. TRPO maximizes $\mathbb{E}\left[\frac{\pi_\theta}{\pi_{\mathrm{old}}}\hat A\right]$ subject to $D_{\mathrm{KL}} \le \delta$, solved with a conjugate-gradient step and a line search on a second-order trust-region model. PPO keeps the same surrogate ratio but replaces the hard constraint with the clipped objective above, so the same trust-region instinct now fits inside ordinary minibatch stochastic gradient descent.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: PPO Clipped Policy Update</h4>
+<p><strong>Input:</strong> Old policy parameters $\theta_{\mathrm{old}}$, rollout buffer $\mathcal{D} = \{(s_t, a_t, \hat{A}_t, \log \pi_{\theta_{\mathrm{old}}}(a_t \mid s_t))\}$, clip range $\epsilon$, step size $\alpha$, KL target $\delta_{\mathrm{KL}}$, epoch count $K$</p>
+<p><strong>Output:</strong> Updated policy parameters $\theta$ with trust-region constraint approximately enforced</p>
+<ol>
+<li>Initialize $\theta \leftarrow \theta_{\mathrm{old}}$ before the first epoch.</li>
+<li>For each epoch $k = 1, \ldots, K$: sample a minibatch from $\mathcal{D}$ and compute new log probabilities $\log \pi_\theta(a_t \mid s_t)$.</li>
+<li>Compute the probability ratio $r_t(\theta) = \exp\!\bigl(\log \pi_\theta(a_t \mid s_t) - \log \pi_{\theta_{\mathrm{old}}}(a_t \mid s_t)\bigr)$ for each sample.</li>
+<li>Compute the clipped surrogate: $L^{\mathrm{CLIP}}(\theta) = \mathbb{E}_t\!\left[\min\!\left(r_t(\theta)\hat{A}_t,\, \operatorname{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$.</li>
+<li>Compute approximate KL: $\hat{D}_{\mathrm{KL}} = \mathbb{E}_t\!\left[(r_t(\theta) - 1) - \log r_t(\theta)\right]$.</li>
+<li>If $\hat{D}_{\mathrm{KL}} &gt; \delta_{\mathrm{KL}}$, exit the epoch loop early to prevent distribution over-shift.</li>
+<li>Compute the gradient $\nabla_\theta L^{\mathrm{CLIP}}(\theta)$ and apply the update $\theta \leftarrow \theta + \alpha \nabla_\theta L^{\mathrm{CLIP}}(\theta)$.</li>
+<li>After all epochs, record clip fraction $= \mathbb{E}_t\!\left[\mathbf{1}[|r_t(\theta) - 1| &gt; \epsilon]\right]$, entropy $H[\pi_\theta]$, and $\hat{D}_{\mathrm{KL}}$ as diagnostics.</li>
+<li>Set $\theta_{\mathrm{old}} \leftarrow \theta$ and collect a new rollout with the updated policy.</li>
+</ol>
+</div>
 <div class="callout paper-spotlight">
 <div class="callout-title">Paper Spotlight</div>
 <p><strong>Proximal Policy Optimization Algorithms</strong> (Schulman et al., arXiv 2017) — the clip-ratio objective $\min(r_t \hat A_t, \operatorname{clip}(r_t, 1-\epsilon, 1+\epsilon)\hat A_t)$ keeps updates inside a trust region without second-order optimization. PPO is the default on-policy algorithm for robot locomotion in Isaac Lab, MJX, and Brax.</p>
@@ -105,6 +126,9 @@ for ratio, advantage in zip(ratios, advantages):
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
 <p>Clipping is not a safety guarantee. A policy can keep each sampled ratio inside the clip band while the unsampled parts of the action distribution move enough to harm the next rollout. This failure is most common when the number of PPO epochs per rollout is too high: the first epoch stays inside the clip band, but repeated passes over the same batch gradually shift the distribution until the KL grows large. In practice, Schulman et al. reported that more than 3 to 10 epochs on a single rollout batch often triggers this silent drift, and Isaac Lab locomotion experiments show that going from 5 to 20 epochs with the same learning rate can collapse a walking gait in fewer than 50 update steps even when the clipped loss looks stable throughout.</p>
+</div>
+<div class="callout tip">
+<p>In CleanRL's <code>ppo_continuous_action.py</code> and RSL-RL's <code>PPO</code> class, the <code>target_kl</code> parameter (typically set to 0.01 to 0.02) triggers early exit from the epoch loop as soon as approximate KL exceeds that threshold. Setting <code>target_kl=None</code> (the default in some configs) disables this guard entirely, which is a common source of gait collapse when epoch count is raised above 5. Always set an explicit <code>target_kl</code> before increasing <code>n_epochs</code>, and log the epoch at which early exit fires: if it consistently fires on epoch 2, your learning rate or advantage scale is too large even before the clip limit is reached.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

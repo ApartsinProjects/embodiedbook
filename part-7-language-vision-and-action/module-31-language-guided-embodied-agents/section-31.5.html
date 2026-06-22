@@ -39,6 +39,10 @@
 <figcaption>Figure 31.5A: Task planning under language ambiguity: a clarification-request module estimates instruction entropy, asks the user one targeted question when uncertainty is high, and re-plans with the resolved intent.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with belief-state representations introduced in section 2.7 (partially observable MDPs and belief states), since ambiguity over instruction meaning is modeled as a distribution over latent task interpretations. The clarification strategy developed here feeds directly into section 31.6 (human-agent interaction), where the agent must maintain an ongoing dialogue model rather than issuing a single clarification request. The value-of-information framing also recurs in Part 6 alongside active perception in section 27.6, which applies the same expected-information-gain criterion to visual queries.</p>
+</div>
+
 <p>For Task planning from language; ambiguity and clarification, read the figure as an interface check: identify the language input, grounding evidence, action representation, safety gate, and logged result before accepting the agent behavior described below.</p>
 <figure class="diagram" id="fig-31-5">
 <svg aria-labelledby="fig-31-5-title fig-31-5-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -80,10 +84,10 @@
 </div>
 <h2>Theory</h2>
 <p>Let $m \in \mathcal M$ be a latent meaning of the instruction, and let $V(\pi, m)$ be the value of executing plan $\pi$ under that meaning. If the agent can ask a question $q$ with cost $c(q)$, the value of clarification is $$\operatorname{VoI}(q) = \mathbb E_{y \sim p(y \mid q)}\left[\max_\pi \mathbb E_{m \mid y, q} V(\pi, m)\right] - \max_\pi \mathbb E_m V(\pi, m) - c(q).$$ Ask when this quantity is positive.</p>
-<p>In practice, the agent approximates this computation with confidence gaps, risk heuristics, or plan disagreement. The deeper lesson is that ambiguity should be represented in the planner's state rather than hidden inside the prompt. Otherwise the robot executes one interpretation while the human assumes another.</p>
+<p>In practice, the agent approximates this computation with confidence gaps, risk heuristics, or plan disagreement. The deeper lesson is that ambiguity should be represented in the <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">planner's belief state</a> rather than hidden inside the prompt. Otherwise the robot executes one interpretation while the human assumes another.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>A clean clarification loop has four steps: detect multiple plausible task objects, estimate how much the best plan changes across them, ask the smallest question that splits the candidate set, then replan under the updated belief. This is active perception applied to language.</p>
+<p>A clean clarification loop has four steps: detect multiple plausible task objects, estimate how much the best plan changes across them, ask the smallest question that splits the candidate set, then replan under the updated belief. This is <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.6.html">active perception</a> applied to language.</p>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 computes a tiny expected-value test for whether to ask before acting. The numbers are synthetic, but the control logic is the same in household dialogue, warehouse dispatch, and mobile manipulation.</p>
@@ -108,14 +112,32 @@ ask</div>
 <div class="callout-title">Library Shortcut</div>
 <p>Dialogue managers, LangGraph state machines, and tool-calling APIs implement the same loop with a few nodes: detect ambiguity, ask, validate the reply, and replan. They hide the bookkeeping around state transitions and logging so the engineer can focus on the ambiguity test itself.</p>
 </div>
+<div class="callout tip">
+<p>When implementing the clarification loop in LangGraph, declare <code>candidate_meanings</code> as an explicit field in your <code>TypedDict</code> state schema rather than storing it in a local Python variable inside a node function. If the field is absent from the schema, LangGraph discards it at the state checkpoint between the "ask" and "replan" nodes, so the replanning node receives an empty candidate set and reverts to the top-1 parse as if no question was ever asked. Set the field's reducer to <code>operator.add</code> only if you want to accumulate meanings across turns; for single-shot disambiguation, a plain list replacement is correct.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Maintain more than one candidate task object whenever the parse is not decisive.</li>
 <li>Measure plan disagreement, risk difference, or verifier difference across those candidates.</li>
 <li>Ask the smallest clarification question that collapses the uncertainty the most.</li>
-<li>Treat the user's reply as a state update, then rerun grounding and planning.</li>
+<li>Treat the user's reply as a state update, then rerun <a href="../../part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.3.html">grounding</a> and planning.</li>
 <li>Log the pre-question and post-question plan so ambiguity handling is auditable.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Language-Guided Clarification and Replan</h4>
+<p><strong>Input:</strong> natural-language instruction $u$, world state $s$, prior belief $p(m)$ over latent meanings $m \in \mathcal{M}$, asking cost $c(q)$, risk threshold $\delta$</p>
+<p><strong>Output:</strong> executed plan $\pi^*$ together with an audit record $(u, \{m_i\}, q, y, \pi^*)$</p>
+<ol>
+<li><strong>Parse.</strong> Use the language model to produce a ranked set of candidate meanings $\{m_1, \dots, m_K\}$ with posterior weights $p(m_k \mid u)$.</li>
+<li><strong>Ground each candidate.</strong> For each $m_k$, run the grounding module to obtain task object $o_k$ and compute the best plan $\pi_k = \arg\max_\pi \mathbb{E}_{m \mid m_k} V(\pi, m)$.</li>
+<li><strong>Estimate plan disagreement.</strong> Compute $\Delta V = \max_k V(\pi_k, m_k) - \min_k V(\pi_k, m_k)$. If $\Delta V < \delta$, skip to step 7.</li>
+<li><strong>Select clarification question.</strong> Choose $q^* = \arg\max_q \operatorname{VoI}(q)$ where $\operatorname{VoI}(q) = \mathbb{E}_{y \sim p(y \mid q)}\bigl[\max_\pi \mathbb{E}_{m \mid y, q} V(\pi, m)\bigr] - \max_\pi \mathbb{E}_m V(\pi, m) - c(q)$. Proceed only if $\operatorname{VoI}(q^*) > 0$.</li>
+<li><strong>Ask and receive reply.</strong> Issue $q^*$ to the user and receive response $y$. If $y$ is underspecified, fall back to the lowest-risk plan $\pi_{\min\text{-risk}}$ and go to step 7.</li>
+<li><strong>Update belief and replan.</strong> Set $p(m \mid y, q^*) \propto p(y \mid m, q^*)\, p(m \mid u)$ and recompute $\pi^* = \arg\max_\pi \mathbb{E}_{m \mid y, q^*} V(\pi, m)$.</li>
+<li><strong>Gate on safety.</strong> Verify $\pi^*$ against the safety constraints for state $s$. If the check fails, return to step 4 with the violating candidates removed.</li>
+<li><strong>Execute and log.</strong> Execute $\pi^*$ and record the tuple $(u, \{m_k, p(m_k)\}, q^*, y, \pi^*)$ as the audit artifact for this episode.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>A common failure mode is to ask too late, after the robot has already committed to a costly motion. Another is to ask too vaguely, which forces the human to restate the whole task instead of resolving the one missing variable.</p>
@@ -130,7 +152,7 @@ ask</div>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Research is shifting from one-shot instruction following toward mixed-initiative systems that decide when to ask, point, move for a better view, or request confirmation. The hard open problem is calibrating these interventions so they improve task success without becoming annoying or slow. The TEACh benchmark (Padmakumar et al., 2022) quantified this directly: agents that never ask complete only 11% of dialogue-driven household tasks, while agents with access to a human partner who can answer one targeted question per subtask reach roughly 37% completion on the same episodes, showing that a single well-placed question can more than triple success rate on ambiguous multi-step instructions.</p>
+<p>Research is shifting from one-shot instruction following toward <a href="../../part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.6.html">mixed-initiative systems</a> that decide when to ask, point, move for a better view, or request confirmation. The hard open problem is calibrating these interventions so they improve task success without becoming annoying or slow. The TEACh benchmark (Padmakumar et al., 2022) quantified this directly: agents that never ask complete only 11% of dialogue-driven household tasks, while agents with access to a human partner who can answer one targeted question per subtask reach roughly 37% completion on the same episodes, showing that a single well-placed question can more than triple success rate on ambiguous multi-step instructions.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -138,7 +160,7 @@ ask</div>
 </div>
 
 
-<p>Clarification is best understood as a control action that changes the information state. It belongs in the same conceptual family as camera motion for better visibility or probing contact to reduce pose uncertainty. The agent spends time now to improve policy value later.</p>
+<p>Clarification is best understood as a control action that changes the information state. It belongs in the same conceptual family as camera motion for better visibility or probing contact to reduce pose uncertainty. The agent spends time now to improve <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.2.html">policy value</a> later.</p>
 <p>This framing also clarifies evaluation. A system that asks more questions is not automatically worse. It is worse only if those questions do not buy enough downstream value, such as safer execution, lower path length, or fewer catastrophic failures.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices For Clarification and Replanning</div>

@@ -39,6 +39,10 @@
 <figcaption>Figure 33.5A: ReKep relational keypoint constraints: an LLM specifies constraints between pairs of keypoints (gripper tip within 2 cm of bottle cap), a 6-DOF optimization satisfies the constraint set, and the resulting pose is tracked by a low-level controller.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with keypoint detection and visual correspondence from section 27.5. The geometric-constraint interface introduced here is extended in section 33.6, which covers tool-use APIs and plan verification that wrap around the optimization loop. The bimanual manipulation experiments that benchmark relational-keypoint planning appear in section 42.3.</p>
+</div>
+
 <p>Read the figure as a relational-constraint contract. ReKep-style keypoints help when relations such as near, above, aligned, and graspable are grounded to tracked 3D points that survive motion and occlusion.</p>
 <figure class="diagram" id="fig-33-5">
 <svg aria-labelledby="fig-33-5-title fig-33-5-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -80,11 +84,30 @@
 </div>
 <h2>Theory</h2>
 <p>Let keypoints be $k_1, \ldots, k_n$ and let a task be encoded by costs over relations among them. A trajectory optimizer can solve $$\tau^* = \arg\min_\tau \sum_j w_j c_j\bigl(k_{a_j}(\tau), k_{b_j}(\tau)\bigr),$$ where each $c_j$ measures a relation such as distance, alignment, or ordering implied by the language command.</p>
-<p>This representation is attractive because it compresses a task into a few geometric relations that classical optimizers handle well. It is risky because errors in keypoint detection or object identity propagate directly into the objective, which can yield confident but wrong trajectories.</p>
+<p>This representation is attractive because it compresses a task into a few geometric relations that classical optimizers handle well. It is risky because errors in <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.5.html">keypoint detection</a> or object identity propagate directly into the objective, which can yield confident but wrong trajectories.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>A good mental model is language to geometric predicates. The LLM or VLM identifies which relations matter, the vision system instantiates the keypoints, and the optimizer pushes the robot toward states that satisfy those relations.</p>
+<p>A good mental model is language to geometric predicates. The LLM or <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.1.html">VLM</a> identifies which relations matter, the vision system instantiates the keypoints, and the optimizer pushes the robot toward states that satisfy those relations.</p>
 </div>
+
+<div class="callout algorithm">
+<h4>Algorithm: ReKep Relational Keypoint Constraint Planning</h4>
+<p><strong>Input:</strong> natural-language task command $l$, RGB-D observation $\mathcal{O}$, robot kinematic model with parameters $\theta$, learning rate $\alpha$</p>
+<p><strong>Output:</strong> optimized trajectory $\tau^*$ satisfying the relational constraint set $\mathcal{C}$</p>
+<ol>
+<li>Prompt the VLM with command $l$ and observation $\mathcal{O}$ to identify semantically meaningful keypoint candidates $\{k_1, \ldots, k_n\}$ on task-relevant object parts (handles, rims, contact patches).</li>
+<li>Project each candidate $k_i$ into 3D using depth and camera intrinsics $K$; reject any keypoint whose reprojection residual $\|K \hat{k}_i - \pi(k_i)\|_2$ exceeds the confidence threshold $\epsilon$.</li>
+<li>Ask the VLM to enumerate relational constraints $\mathcal{C} = \{(a_j, b_j, c_j, w_j)\}$, where $c_j$ is a scalar cost (distance, alignment, ordering) between keypoints $k_{a_j}$ and $k_{b_j}$ with weight $w_j$.</li>
+<li>Construct the trajectory optimization objective: $\mathcal{L}(\tau) = \sum_j w_j \, c_j\!\bigl(k_{a_j}(\tau), k_{b_j}(\tau)\bigr)$.</li>
+<li>Initialize robot configuration $q_0$ from the current joint state and set trajectory $\tau = \{q_0\}$.</li>
+<li>Iteratively update $\tau$ by gradient descent: $\tau \leftarrow \tau - \alpha \nabla_\tau \mathcal{L}(\tau)$, subject to joint limits and collision constraints encoded in $\theta$.</li>
+<li>At each iteration, re-detect keypoints from the current observation $\mathcal{O}_t$ and update coordinates $k_i$; if any keypoint confidence drops below $\epsilon$, pause and request a clarification or fall back to a denser representation.</li>
+<li>Terminate when $\mathcal{L}(\tau) \leq \delta$ (constraint satisfaction threshold) or the iteration budget is exhausted; set $\tau^* = \tau$.</li>
+<li>Execute $\tau^*$ on the robot and record the per-constraint residuals, keypoint coordinates, and final cost as the evidence artifact for debugging.</li>
+<li>If execution fails (task verifier returns $\pi = 0$), log the failure mode (perception error, mis-specified relation, or optimizer divergence) and re-enter from step 1 with updated context.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>Code Fragment 1 evaluates a tiny relational cost between two keypoints. The specific numbers are simple, but they show how the language-derived objective becomes a concrete quantity an optimizer can minimize.</p>
 <pre><code class="language-python"># Compute a simple relational keypoint cost for a grasp target.
@@ -114,6 +137,9 @@ print({"l1_alignment_cost": cost})</code></pre>
 <div class="callout-title">Common Failure Mode</div>
 <p>Relational keypoints can look elegant in sparse scenes and fragile in clutter. If the wrong point is chosen or a keypoint disappears under occlusion, the optimizer may happily satisfy the wrong relation.</p>
 </div>
+<div class="callout tip">
+<p>Before passing keypoints to the optimizer, gate each one on a reprojection-error threshold: in Open3D, project the detected 3D keypoint back to the image plane with <code>o3d.camera.PinholeCameraIntrinsic</code> and reject any point whose pixel-space residual exceeds 3 pixels. This single guard catches the most common silent failure, where a keypoint detector returns a plausible-looking coordinate that is actually a sliding occlusion boundary rather than the intended object part. Set the threshold conservatively (2 to 5 pixels depending on camera resolution) and route rejected keypoints to a clarification branch rather than letting the optimizer proceed with a corrupt objective.</p>
+</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For 'open the drawer by the handle,' a keypoint formulation can attach one point to the drawer handle and another to the gripper target, then optimize the relative pose. This is often far lighter than maintaining a dense 3D objective over the entire scene.</p>
@@ -126,16 +152,16 @@ print({"l1_alignment_cost": cost})</code></pre>
 <div class="callout-title">Research Frontier</div>
 <p>Recent relational-manipulation work explores stronger keypoint discovery, temporally stable correspondences, and hybrid systems that switch between keypoints and denser scene maps when clutter or contact demands it.</p>
 </div>
-<div class="callout key-insight"><div class="callout-title">Concrete Results From the ReKep Paper</div><p>Huang et al. (2024) evaluated ReKep on a suite of long-horizon bimanual tasks including pouring, stacking, and pick-and-place in tabletop settings. Using GPT-4V to propose keypoints and relational constraints from a single RGB-D observation, the system achieved substantially higher task-completion rates than free-text plan baselines that lacked the geometric grounding step. The critical finding is directional: the keypoint-constraint abstraction reduced planning-to-execution errors because the optimizer received a numerically precise objective rather than a sentence it had to re-interpret at execution time. Specificity of the geometric contract, not the sophistication of the LLM, was the dominant factor in success.</p></div>
+<div class="callout key-insight"><div class="callout-title">Concrete Results From the ReKep Paper</div><p>Huang et al. (2024) evaluated ReKep on a suite of long-horizon <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.3.html">bimanual tasks</a> including pouring, stacking, and pick-and-place in tabletop settings. Using GPT-4V to propose keypoints and relational constraints from a single RGB-D observation, the system achieved substantially higher task-completion rates than free-text plan baselines that lacked the geometric grounding step. The critical finding is directional: the keypoint-constraint abstraction reduced planning-to-execution errors because the optimizer received a numerically precise objective rather than a sentence it had to re-interpret at execution time. Specificity of the geometric contract, not the sophistication of the LLM, was the dominant factor in success.</p></div>
 
-<p>Knowing when to apply relational keypoints versus a denser representation is itself a design decision. Consider a "place the cup upright on the coaster" task: three keypoints (cup base center, cup rim center, coaster center) plus two costs (base-to-coaster distance below 1 cm; rim-to-base vertical alignment above 0.95) fully encode the goal, and any standard trajectory optimizer can satisfy them in milliseconds. Now contrast that with "slide the foam block flush against the wall": the contact extends along a full face, occlusion hides the block's far edge, and a single keypoint on the block center loses the orientation constraint entirely. The second task demands either additional keypoints on the block corners or a switch to a surface-fitting objective. The rule of thumb is that relational keypoints are appropriate when the goal reduces to a handful of point-to-point geometric predicates and when those points remain visible or trackable throughout the motion.</p>
+<p>Knowing when to apply relational keypoints versus a denser representation is itself a design decision. Consider a "place the cup upright on the coaster" task: three keypoints (cup base center, cup rim center, coaster center) plus two costs (base-to-coaster distance below 1 cm; rim-to-base vertical alignment above 0.95) fully encode the goal, and any standard <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">trajectory optimizer</a> can satisfy them in milliseconds. Now contrast that with "slide the foam block flush against the wall": the contact extends along a full face, occlusion hides the block's far edge, and a single keypoint on the block center loses the orientation constraint entirely. The second task demands either additional keypoints on the block corners or a switch to a surface-fitting objective. The rule of thumb is that relational keypoints are appropriate when the goal reduces to a handful of point-to-point geometric predicates and when those points remain visible or trackable throughout the motion.</p>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
 <p>Can you explain which keypoints in your task are semantically meaningful and which ones are merely easy for a detector to find but irrelevant for control?</p>
 </div>
 
 
-<p>ReKep is appealing because it lets language specify relations rather than every detail of a trajectory. That makes it a strong bridge between semantic tasking and numeric optimization, especially for manipulation tasks with a few dominant geometric constraints.</p>
+<p>ReKep is appealing because it lets <a href="../../part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.3.html">language specify relations</a> rather than every detail of a trajectory. That makes it a strong bridge between semantic tasking and numeric optimization, especially for manipulation tasks with a few dominant geometric constraints.</p>
 <p>The limit is representational mismatch. Some tasks really are low dimensional in terms of keypoints. Others depend on extended surfaces, fluids, or occluded contacts. A strong engineer knows when the compact representation is a help and when it is a trap.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices For Relational Keypoint Planning</div>

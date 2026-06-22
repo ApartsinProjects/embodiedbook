@@ -40,6 +40,10 @@
 <figcaption>Figure 2.3A: A taxonomy of action types arranged from discrete (button press, symbolic pick) through continuous joint torque to chunked multi-step action sequences, with a robot arm example for each tier.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the observation/state distinction introduced in section 2.2. The choice of action type directly shapes how rewards and constraints are specified, which is the subject of section 2.4. The discrete-versus-continuous tradeoff resurfaces in section 2.5 when action sequences are composed into trajectories and discounted over a horizon.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Action types: discrete, continuous, symbolic, motor-level, chunked</strong> define what the agent can actually do. The same task can be framed as choosing a skill, setting a velocity, moving a joint, emitting a language-conditioned action token, or committing to a short action chunk.</p>
@@ -79,10 +83,30 @@
 <div class="callout-title">Action Space Is Architecture</div>
 <p>The action representation decides which layer owns intelligence. A symbolic action delegates execution to skills. A motor command delegates almost nothing. A chunked action delegates timing to the policy for several future steps.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Action Representation Selection Checklist</h4>
+<p><strong>Input:</strong> task description, embodiment spec (actuators, controller rate $f_c$), latency budget $\tau$, safety monitor $\mathcal{S}$</p>
+<p><strong>Output:</strong> action space $\mathcal{A}$ with level, units, frame, bounds $\mathbf{b}$, rate $f_a$, chunk length $H$, and clipping rule</p>
+<ol>
+<li>Identify the lowest safe actuator level (torque $\tau_j$, joint velocity $\dot{q}$, end-effector delta $\Delta \mathbf{x}$, skill $\pi_k$) that the hardware controller can execute at rate $f_c$.</li>
+<li>Choose the coarsest action level $\ell$ such that recovery from an error is possible within the task's tolerance window $\tau$. If $\tau &lt; 0.5$ s, prefer end-effector or joint level; if $\tau &gt; 2$ s, symbolic or skill level may suffice.</li>
+<li>Assign units, coordinate frame, and sign convention to every action dimension. Record these as executable constants, not comments.</li>
+<li>Set per-dimension bounds $\mathbf{b} = (b_1, \dots, b_d)$ derived from actuator limits and safety monitor $\mathcal{S}$. Verify $\|\alpha\|_\infty \leq \mathbf{b}$ for all sampled policy outputs $\alpha \sim \pi(\cdot \mid o)$.</li>
+<li>If policy inference rate $f_\pi &lt; f_c$, select chunk length $H = \lfloor f_c / f_\pi \rfloor$ and enable temporal ensemble with weight $w_t = \exp(-\lambda t)$ where $\lambda \approx 1/H$.</li>
+<li>Define the clipping rule (clip-and-log, reject-and-hold, or scale) and confirm it produces a valid command even when $\pi$ saturates all dimensions simultaneously.</li>
+<li>Enumerate invalid-command conditions (stale timestamp, out-of-frame, NaN) and specify the fallback action $\alpha_\varnothing$ (hold position, zero velocity, or safe pose $q^*$).</li>
+<li>Inject synthetic saturation ($\alpha = \mathbf{b}$), delay ($\Delta t = 2/f_a$), and mid-chunk observation shift; confirm $\mathcal{S}$ halts execution before joint limits are violated.</li>
+<li>Log raw policy output $\alpha$, executed command $\hat{\alpha} = \mathrm{clip}(\alpha, \mathbf{b})$, and clip magnitude $\|\alpha - \hat{\alpha}\|$ separately from task reward $r$.</li>
+<li>If action validity failures exceed 1% of steps during evaluation, revisit bounds or switch to a finer action level before continuing training.</li>
+</ol>
+</div>
 <h2>Theory</h2>
 <p>Let the action space be $\mathcal{A}$. A discrete $\mathcal{A}$ might contain actions such as open, close, or move-left. A continuous $\mathcal{A}$ might be a vector of joint torques, velocities, or end-effector pose deltas. A symbolic $\mathcal{A}$ might contain calls such as <code>pick(red_block)</code>. A chunked $\mathcal{A}$ contains sequences of low-level actions emitted at once.</p>
 <p>The right action space depends on embodiment and timing. A high-level action can be easier to learn but hides safety-critical details. A low-level action can be precise but makes long-horizon reasoning harder. A chunked action can smooth robot motion and reduce model calls, but it delays correction if the world changes mid-chunk.</p>
 <p>Consider a specific case: <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.2.html">ACT (Action Chunking with Transformers, Zhao et al. 2023)</a> uses chunk lengths of 100 steps at 50 Hz on a bimanual robot, committing 2 seconds of motion before the next policy query. This reduced compounding errors on insertion tasks compared to single-step prediction, but required a temporal ensemble strategy to recover when the object shifted mid-chunk. By contrast, <a href="../../part-7-language-vision-and-action/module-34-vision-language-action-models/section-34.2.html">RT-2 (Brohan et al. 2023)</a> maps image and language tokens to 256 discrete action bins per dimension at 3 Hz, trading motor precision for broad semantic generalization across seen and unseen object categories.</p>
+<div class="callout tip">
+<p>When using ACT-style action chunking, set the temporal ensemble parameter <code>k</code> in the exponential weight formula <code>exp(-k * t)</code> to match your chunk length: a chunk of 100 steps at 50 Hz typically uses <code>k = 0.01</code>, while shorter chunks of 10-20 steps need <code>k</code> values around 0.1 to prevent stale early-chunk predictions from dominating. If you skip this tuning and leave the default <code>k</code> from the reference ACT implementation, you will see jerky transitions at chunk boundaries when deploying on hardware running at a different control rate than the training setup. The LeRobot library exposes this as <code>temporal_ensemble_coeff</code> in the ACT policy config and logs the effective ensemble weight per timestep, which makes mismatches immediately visible.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Every action needs units, limits, rate, coordinate frame, validity checks, and execution semantics. A delta pose in the end-effector frame is different from a target pose in the world frame. A gripper command can mean binary open-close, continuous width, or force-controlled closure.</p>

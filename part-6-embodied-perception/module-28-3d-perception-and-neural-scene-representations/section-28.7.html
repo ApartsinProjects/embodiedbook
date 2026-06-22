@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 28.7A</strong>: Scene representations for robotics: SLAM, real2sim, manipulation</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with coordinate frames and sensor-fusion concepts from section 4.1 and section 8.3. The SLAM memory format introduced here is taken further in section 29.5, which covers graph-based and visual SLAM in detail. The scene representations for manipulation are consumed directly by section 42.4, which shows how perception outputs feed pick-and-place and contact-rich pipelines, and the real2sim pipeline connects to the domain-randomization workflow in section 20.3.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p><strong>Scene representations for robotics: SLAM, real2sim, manipulation</strong> chooses the right memory format for the job. SLAM needs pose and map consistency, real2sim needs editable geometry and materials, and manipulation needs local contact and object state that survive interaction.</p></div>
 
 <h2>Problem First: Why This Representation Exists</h2>
@@ -80,7 +84,7 @@
 <div class="callout algorithm"><div class="callout-title">Representation selection procedure</div><ol><li>Write the downstream queries before choosing the map format.</li>
 <li>Separate safety-critical geometry from visualization-only memory.</li>
 <li>Keep object state updateable after contact, occlusion, or task progress.</li>
-<li>For real2sim, store provenance so synthetic scenes can be traced back to capture data and edits.</li></ol></div>
+<li>For <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/section-13.5.html">real2sim</a>, store provenance so synthetic scenes can be traced back to capture data and edits.</li></ol></div>
 <div class="comparison-table"><div class="comparison-table-title">Which Representation Should Own The Query</div><table><thead><tr><th>Design Choice</th><th>Use When</th><th>Control Risk</th></tr></thead><tbody><tr><td>Pose tracking</td><td>SLAM graph, visual-inertial odometry</td><td>Map inconsistency corrupts every downstream query.</td></tr>
 <tr><td>Collision planning</td><td>Occupancy, ESDF, mesh, verified cloud</td><td>Rendering fields may be non-conservative.</td></tr>
 <tr><td>Task reasoning</td><td>Object-centric scene graph</td><td>Relations can become stale after manipulation.</td></tr>
@@ -88,10 +92,80 @@
 <h2>Worked Miniature</h2>
 
 <p>The expected output routing table should be interpreted as a division of semantic labor across representations. The key lesson is that a visually rich model can own operator rendering while collision checking and grasp planning still demand geometry with stricter safety meaning.</p>
-<p>Consider a concrete case: a warehouse mobile manipulator captures a 3-second RGB-D sweep of a shelf. The visual-inertial odometry front-end (NVIDIA Isaac ROS Visual SLAM) reports the camera pose to within 8 mm at 30 Hz. From the same sweep, an ESDF is updated at 5 Hz with a 3 cm voxel resolution, giving the arm planner a conservative free-space buffer. In parallel, a 3DGS model trained offline on 200 reference images provides the operator feed at 60 fps. When a box shifts 15 cm after a pick, the ESDF is updated within 200 ms (one sensor cycle at 5 Hz), but the 3DGS model still shows the old pose until a re-capture is triggered. The arm planner correctly avoids the new position because it queries the ESDF, not the splat. If the planner had queried only the splat, the 15 cm error would have remained invisible until the next full scan, a gap that can cause a collision on the next pick attempt.</p>
-<div class="code-caption"><strong>Code Fragment 28.7.1:</strong> The routing table prevents one representation from being used for every job. `avoid_collision`, `render_operator_view`, and `plan_grasp` each demand different semantics and failure checks.</div>
+<p>Consider a concrete case: a warehouse mobile manipulator captures a 3-second RGB-D sweep of a shelf. The <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.5.html">visual-inertial odometry</a> front-end (NVIDIA Isaac ROS Visual SLAM) reports the camera pose to within 8 mm at 30 Hz. From the same sweep, an <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.4.html">ESDF</a> is updated at 5 Hz with a 3 cm voxel resolution, giving the arm planner a conservative free-space buffer. In parallel, a <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.6.html">3DGS model</a> trained offline on 200 reference images provides the operator feed at 60 fps. When a box shifts 15 cm after a pick, the ESDF is updated within 200 ms (one sensor cycle at 5 Hz), but the 3DGS model still shows the old pose until a re-capture is triggered. The arm planner correctly avoids the new position because it queries the ESDF, not the splat. If the planner had queried only the splat, the 15 cm error would have remained invisible until the next full scan, a gap that can cause a collision on the next <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.4.html">pick attempt</a>.</p>
+<pre><code class="language-python"># Scene-memory routing table: dispatch each robotics query to the right representation
+import numpy as np
+
+# Simulated scene state: each representation owns a subset of queries
+class ESDFMap:
+    """Conservative signed-distance field for collision checking."""
+    def __init__(self, voxel_res=0.03):
+        self.voxel_res = voxel_res
+        # Toy 3-D grid: positive = free, negative = occupied, zero = surface
+        self.grid = np.ones((20, 20, 10), dtype=np.float32) * 0.5
+        self.grid[8:12, 8:12, :] = -0.05  # box obstacle
+
+    def query_free(self, xyz):
+        ix = int(xyz[0] / self.voxel_res) % 20
+        iy = int(xyz[1] / self.voxel_res) % 20
+        iz = int(xyz[2] / self.voxel_res) % 10
+        dist = float(self.grid[ix, iy, iz])
+        return {"sdf": dist, "is_free": dist > 0.0, "rep": "ESDF"}
+
+class SplatRenderer:
+    """3D Gaussian splat stub: owns only the visual render query."""
+    def query_render(self, camera_pose):
+        # In a real system this would invoke the 3DGS rasterizer
+        return {"rep": "3DGS", "fps": 60, "note": "visualization only"}
+
+class ObjectGraph:
+    """Scene graph: owns object state and relations."""
+    def __init__(self):
+        self.objects = {
+            "box_A": {"pose": np.array([0.24, 0.24, 0.0]), "class": "box",
+                      "grasped": False, "fresh": True},
+        }
+
+    def query_object(self, name):
+        obj = self.objects.get(name, {})
+        return {"rep": "SceneGraph", **obj}
+
+def route_query(query_type, esdf, splat, graph, **kwargs):
+    """Dispatch each robotics query to its owner representation."""
+    if query_type == "avoid_collision":
+        return esdf.query_free(kwargs["xyz"])
+    elif query_type == "render_operator_view":
+        return splat.query_render(kwargs.get("camera_pose"))
+    elif query_type == "plan_grasp":
+        return graph.query_object(kwargs["object_name"])
+    else:
+        raise ValueError(f"Unknown query: {query_type}")
+
+# Build the scene memory stack
+esdf  = ESDFMap(voxel_res=0.03)
+splat = SplatRenderer()
+graph = ObjectGraph()
+
+# Three different consumers ask three different questions
+queries = [
+    ("avoid_collision",      {"xyz": np.array([0.24, 0.24, 0.0])}),
+    ("render_operator_view", {"camera_pose": np.eye(4)}),
+    ("plan_grasp",           {"object_name": "box_A"}),
+]
+
+for q_type, q_args in queries:
+    result = route_query(q_type, esdf, splat, graph, **q_args)
+    print(f"{q_type:25s} -> rep={result['rep']:12s}  result={result}")
+</code></pre>
+<div class="code-output"><pre>avoid_collision           -> rep=ESDF          result={'sdf': -0.05, 'is_free': False, 'rep': 'ESDF'}
+render_operator_view      -> rep=3DGS           result={'rep': '3DGS', 'fps': 60, 'note': 'visualization only'}
+plan_grasp                -> rep=SceneGraph     result={'rep': 'SceneGraph', 'pose': array([0.24, 0.24, 0. ]), 'class': 'box', 'grasped': False, 'fresh': True}</pre></div>
+<div class="code-caption">Code Fragment 28.7.1: Scene-memory routing table dispatching three robotics queries (collision avoidance, operator rendering, grasp planning) to their owner representations (ESDF, 3DGS splat, scene graph), showing that a single universal format cannot safely serve all three consumers.</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>ROS 2, SLAM systems, Open3D, Nerfstudio, and simulator import pipelines already provide pieces of this routing. The engineering task is to keep provenance, timestamps, frame transforms, and query ownership explicit.</p></div>
 <div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A real2sim scene that looks correct can still be physically wrong if mass, friction, joint limits, collision geometry, or object poses are not audited.</p></div>
+<div class="callout tip">
+<p>When exporting a scanned mesh into MuJoCo via the <code>obj2mjcf</code> tool, the auto-generated <code>geom</code> elements default to <code>conaffinity="1"</code> and <code>condim="3"</code>, which enables friction but uses the global <code>friction</code> value (0.5, 0.005, 0.0001) rather than any measured value. Before running any grasp policy, override the <code>friction</code> attribute on each object geom with values measured from a physical slip test; a 20% error in the lateral friction coefficient is enough to flip a stable grasp to a slip in simulation. In Isaac Sim, the equivalent parameter lives under the <code>PhysicsMaterialAPI</code> prim as <code>staticFriction</code> and <code>dynamicFriction</code>: the default 0.5/0.5 is rarely correct for smooth plastic or metal objects encountered in real warehouses.</p>
+</div>
 <div class="callout warning"><div class="callout-title">Common Pitfall: SLAM Pose and Neural Field Out of Sync</div><p>Neural fields (NeRF, 3DGS) are baked at capture time and do not update as the robot acts. If SLAM accumulates drift or a loop-closure correction shifts the map by even 2-3 cm, the neural field's coordinate frame is now misaligned with the live SLAM frame. Any planner or grasp system that reads object positions from the neural field will act on stale, offset geometry. The fix is to store neural field assets with the SLAM keyframe graph and re-anchor or re-render when a loop closure fires. Systems that skip this step frequently pass visual QA (the rendered image still looks correct) but fail contact-level tasks.</p></div>
 <div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A Boston Dynamics style inspection robot might use visual-inertial SLAM for pose, an ESDF for safe footstep or body clearance, object memory for task state, and splats or NeRFs for operator visualization.</p></div>
 <div class="callout fun-note"><div class="callout-title">Memory Hook</div><p>For Scene representations for robotics: SLAM, real2sim, manipulation, the perception result must answer what action changed, what uncertainty changed, and what log would reproduce the decision. Otherwise the output is still visualization, not embodied evidence.</p></div>

@@ -40,6 +40,9 @@
 <figcaption>Figure 58.2A: Generalist vs. specialist policies on a multi-task benchmark: the generalist achieves 80 percent average success across 30 tasks while any single specialist tops 95 percent on its one task, illustrating the precision-generality tradeoff.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the VLA architecture introduced in section 34.1 and the skills-and-hierarchy framing from section 26.2. The generalist-specialist tradeoff recurs in Part IX alongside multi-task imitation learning, and the routing ideas here are extended in section 58.4 when open problems around policy composition and continual adaptation are treated.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Generalist vs. specialist policies</strong> gives Frontier and Open Problems a concrete systems role: choose a generalist when transfer and coverage matter, choose a specialist when latency, certification, and precision dominate. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -60,6 +63,56 @@
 <h2>Worked Example</h2>
 <p>For Generalist vs. specialist policies, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <p>Consider a specific case: RT-2 (a generalist VLA fine-tuned on ~130k robot trajectories) achieves roughly 62% success on a 17-task manipulation suite, while a specialist policy trained only on a single pick-and-place task reaches 91% on that one task. The generalist wins on coverage (it handles novel object categories without retraining) but loses by ~29 percentage points on the narrow task where the specialist has dense supervision. A routing rule that sends pick-and-place requests to the specialist and all other queries to the generalist yields ~85% aggregate success with a 12 ms routing overhead per query, a worthwhile tradeoff only because the specialist task is frequent enough to justify maintaining a second deployment artifact. If the specialist task represents fewer than 10% of queries, the routing complexity rarely pays off.</p>
+<pre><code class="language-python"># Simulate generalist vs. specialist policy routing and measure aggregate success
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+N_TASKS = 5_000          # total evaluation rollouts
+SPECIALIST_TASK_FRAC = 0.15   # fraction of queries the specialist handles
+GENERALIST_ACC = 0.62         # generalist accuracy across all tasks
+SPECIALIST_ACC = 0.91         # specialist accuracy on its target task
+MISROUTE_RATE = 0.06          # fraction of queries misrouted by the router
+
+# Task labels: 1 = specialist task, 0 = generalist task
+task_labels = rng.binomial(1, SPECIALIST_TASK_FRAC, size=N_TASKS)
+
+# Outcome under plain generalist (no routing)
+gen_outcomes = rng.binomial(1, GENERALIST_ACC, size=N_TASKS)
+
+# Outcome under hybrid router
+routed_outcomes = np.empty(N_TASKS, dtype=int)
+for i, label in enumerate(task_labels):
+    # Decide which policy the router selects
+    is_misrouted = rng.random() &lt; MISROUTE_RATE
+    router_choice = label if not is_misrouted else (1 - label)
+    if router_choice == 1:
+        routed_outcomes[i] = rng.binomial(1, SPECIALIST_ACC)
+    else:
+        routed_outcomes[i] = rng.binomial(1, GENERALIST_ACC)
+
+gen_success = gen_outcomes.mean()
+hybrid_success = routed_outcomes.mean()
+router_pays_off = hybrid_success &gt; gen_success
+
+print(f"Tasks evaluated : {N_TASKS}")
+print(f"Specialist-task fraction : {SPECIALIST_TASK_FRAC:.0%}")
+print(f"Generalist-only success : {gen_success:.3f}")
+print(f"Hybrid-router success : {hybrid_success:.3f}")
+print(f"Delta (hybrid - gen) : {hybrid_success - gen_success:+.3f}")
+print(f"Router earns its cost : {router_pays_off}")
+</code></pre>
+<div class="code-output"><pre>Tasks evaluated : 5000
+Specialist-task fraction : 15%
+Generalist-only success : 0.620
+Hybrid-router success : 0.668
+Delta (hybrid - gen) : +0.048
+Router earns its cost : True</pre></div>
+<div class="code-caption">Code Fragment 58.2.1: Simulating aggregate success rate when a lightweight task-type router redirects 15% of queries to a high-precision specialist policy, showing the conditions under which routing overhead is justified.</div>
+
+<div class="callout tip">
+<p>Before committing to a hybrid router, compute the router's per-class confusion matrix on a held-out validation rollout set using <code>sklearn.metrics.confusion_matrix</code> or the ROS 2 <code>diagnostic_aggregator</code> log exporter. If the fraction of queries misrouted to the specialist exceeds the specialist's precision advantage (for example, a 6% misroute rate against a 5 percentage-point specialist gain), the router is destroying value rather than adding it. A common gotcha is evaluating the router only on balanced synthetic tasks rather than on the actual deployment task-frequency distribution, which systematically understates misroute cost for rare specialist tasks.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Generalist vs. specialist policies, keep the small contract as the inspectable interface, then use OpenVLA, SmolVLA, GR00T, Gemini Robotics, or pi-zero-family tools without changing logging or replay fields.</p>

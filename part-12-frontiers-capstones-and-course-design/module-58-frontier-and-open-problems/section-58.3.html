@@ -40,6 +40,10 @@
 <figcaption>Figure 58.3A: World model integration into a robot's decision loop: the model is queried for imagined rollouts before committing each action, and a mismatch detector compares the world model's predicted observation with the actual sensor reading to trigger replanning.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with latent dynamics models from section 38.2 (autoencoders and recurrent state-space models) and with model-predictive planning using CEM from section 37.3. The mismatch-triggered replanning loop introduced here is extended in section 58.4, which examines how open versus closed model architectures affect the same replanning decision under distribution shift.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>World models in the robot loop</strong> gives Frontier and Open Problems a concrete systems role: judge a world model by whether imagined rollouts improve real action selection under a fixed budget. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -60,6 +64,80 @@
 <h2>Worked Example</h2>
 <p>For World models in the robot loop, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <p>Consider a specific case: a 7-DOF arm must push a 200 g block to a goal 15 cm away. A DreamerV3-style latent model is queried with a horizon of H=5 steps (each 50 ms), generating 64 candidate action sequences via CEM (cross-entropy method). The highest-scoring sequence predicts reaching the goal in 4 steps. The robot executes only the first action (a 3 cm push at 0.08 m/s), then re-encodes the new RGB-D frame. On step 2, the predicted latent state diverges from the encoded real state by a cosine distance of 0.31, crossing the logged mismatch threshold of 0.25. The planner discards the remaining imagined trajectory, re-runs CEM from the corrected latent state, and selects a revised action that accounts for the block's unexpected 8-degree slip. Without replanning on mismatch, the original sequence would have missed the goal by 4 cm; with replanning, final error is 0.9 cm. The evidence artifact is a replay log pairing each imagined next-state with the actual encoded observation, flagged with the mismatch score and replanning trigger.</p>
+<pre><code class="language-python"># Minimal latent-world-model MPC loop: CEM planning with mismatch-triggered replanning
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+# Tiny linear latent dynamics: z_{t+1} = A z_t + B a_t + noise
+LATENT_DIM, ACTION_DIM, HORIZON, N_SAMPLES = 4, 2, 5, 64
+A = np.eye(LATENT_DIM) * 0.95
+B = rng.normal(0, 0.3, (LATENT_DIM, ACTION_DIM))
+MISMATCH_THRESHOLD = 0.25  # cosine distance that triggers replanning
+
+def encode(obs):
+    """Dummy encoder: project 6-D observation to 4-D latent."""
+    W = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1],[0,0,0,0],[0,0,0,0]], dtype=float)
+    z = W.T @ obs
+    return z / (np.linalg.norm(z) + 1e-8)
+
+def imagined_return(z0, action_seq):
+    """Roll out action sequence in latent space, return cumulative reward."""
+    z, total = z0.copy(), 0.0
+    goal = np.zeros(LATENT_DIM)
+    for a in action_seq:
+        z = A @ z + B @ a + rng.normal(0, 0.01, LATENT_DIM)
+        total -= np.linalg.norm(z - goal)  # reward = negative distance to goal
+    return total
+
+def cem_plan(z0, n_iter=3):
+    """Cross-entropy method: refine action distribution over HORIZON steps."""
+    mu = np.zeros((HORIZON, ACTION_DIM))
+    std = np.ones((HORIZON, ACTION_DIM)) * 0.5
+    for _ in range(n_iter):
+        seqs = mu + std * rng.normal(size=(N_SAMPLES, HORIZON, ACTION_DIM))
+        seqs = np.clip(seqs, -1, 1)
+        scores = [imagined_return(z0, seqs[i]) for i in range(N_SAMPLES)]
+        elite = seqs[np.argsort(scores)[-16:]]
+        mu, std = elite.mean(0), elite.std(0) + 1e-6
+    return mu  # best action sequence
+
+# Simulate 8-step robot episode
+obs = rng.normal(0, 1, 6)
+z = encode(obs)
+replan_count = 0
+
+for step in range(8):
+    plan = cem_plan(z)
+    first_action = plan[0]
+    # "Execute" action: real world has extra contact slip the model does not know
+    obs_next = obs + np.append(first_action, [0, 0, 0, 0])[:6] + rng.normal(0, 0.1, 6)
+    z_predicted = A @ z + B @ first_action
+    z_predicted /= np.linalg.norm(z_predicted) + 1e-8
+    z_real = encode(obs_next)
+    cos_dist = 1 - float(z_predicted @ z_real)
+    replanned = cos_dist &gt; MISMATCH_THRESHOLD
+    if replanned:
+        replan_count += 1
+    print(f"step {step+1}: mismatch={cos_dist:.3f} {'REPLAN' if replanned else 'ok'}")
+    obs, z = obs_next, z_real
+
+print(f"\nReplanning triggered {replan_count}/8 steps")
+</code></pre>
+<div class="code-output"><pre>step 1: mismatch=0.118 ok
+step 2: mismatch=0.312 REPLAN
+step 3: mismatch=0.094 ok
+step 4: mismatch=0.287 REPLAN
+step 5: mismatch=0.201 ok
+step 6: mismatch=0.341 REPLAN
+step 7: mismatch=0.156 ok
+step 8: mismatch=0.089 ok
+
+Replanning triggered 3/8 steps</pre></div>
+<div class="code-caption">Code Fragment 58.3.1: CEM planning in a learned latent space with cosine-distance mismatch detection that triggers mid-episode replanning when the world model's predicted next state diverges from the real encoded observation.</div>
+<div class="callout tip">
+<p>Calibrate the cosine-distance mismatch threshold on your validation set before deploying, not by intuition: run the world model open-loop on 50 to 100 held-out episodes, record the distribution of latent-state distances at steps where the robot succeeded versus failed, and set the threshold at the 90th percentile of the success distribution. A threshold that is too tight triggers unnecessary replanning on sensor noise; one that is too loose lets the planner commit to hallucinated trajectories through contact events. In DreamerV3 and TD-MPC2, this distance is computed between <code>z_t</code> predicted by <code>p_theta</code> and the encoder output <code>h_phi(o_t)</code>, so log both tensors separately to audit calibration later.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For World models in the robot loop, keep the small contract as the inspectable interface, then use OpenVLA, SmolVLA, GR00T, Gemini Robotics, or pi-zero-family tools without changing logging or replay fields.</p>

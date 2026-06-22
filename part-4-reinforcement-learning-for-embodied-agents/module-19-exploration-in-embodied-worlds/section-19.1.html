@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 19.1A</strong>: Exploration in the world is never a free sample. Every probe spends time, battery, reset effort, and sometimes hardware margin.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment loop and partial observability introduced in section 2.2, and with the exploration-exploitation tradeoff formalized in section 14.3. The cost-aware probe model developed here is extended by intrinsic motivation methods in section 19.2 and constrained by the safety envelope in section 19.3.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Embodied exploration is expensive and risky</strong> because the agent pays for information with motion. A web crawler can retry a link; a robot that opens the wrong cabinet may move an object, drain a battery, enter an unrecoverable corner, or create a reset that changes the next trial.</p>
@@ -55,6 +59,23 @@
 <h2>Theory</h2>
 <p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an <a class="cross-ref" href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.2.html">internal state estimate</a> $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. Exploration adds a second accounting stream: $i(a_t)$ for expected information, $c(a_t)$ for motion and time, $r(a_t)$ for reset burden, and $h(a_t)$ for hazard risk.</p>
 <p>A useful embodied exploration objective is therefore not "maximize novelty." It is closer to choosing probes with high information per unit of recoverable cost, while refusing probes whose hazard or irreversibility exceeds the current <a class="cross-ref" href="../../part-4-reinforcement-learning-for-embodied-agents/module-19-exploration-in-embodied-worlds/section-19.3.html">safety envelope</a>.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Cost-Gated Probe Selection</h4>
+<p><strong>Input:</strong> candidate probe set $\mathcal{A}_\text{probe}$; current belief $\hat{s}_t$; policy parameters $\theta$; budget limits $C_\text{max}$, $H_\text{max}$; weights $\alpha_r$, $\alpha_h$</p>
+<p><strong>Output:</strong> selected probe $a^*$ to execute, or $\varnothing$ if no probe passes the budget gate</p>
+<ol>
+<li>For each candidate $a \in \mathcal{A}_\text{probe}$, estimate expected information gain $i(a)$ under belief $\hat{s}_t$ using the current model parameterized by $\theta$.</li>
+<li>Compute motion and time cost $c(a)$ by querying the kinematic model or simulator for travel distance and execution duration.</li>
+<li>Compute reset burden $r(a)$: the estimated human or autonomous effort to return the environment to a comparable state after $a$ executes.</li>
+<li>Compute hazard risk $h(a)$: the probability that $a$ leads to an irreversible state, collision, or hardware damage.</li>
+<li>Compute the net probe score: $\text{score}(a) = i(a) - \alpha_r \, r(a) - \alpha_h \, h(a)$.</li>
+<li>Reject any probe where $c(a) > C_\text{max}$ or $h(a) > H_\text{max}$ (budget or hazard ceiling exceeded).</li>
+<li>Among surviving probes, select $a^* = \arg\max_a \, \text{score}(a)$.</li>
+<li>Execute $a^*$; record observation $o_{t+1}$ and update $\hat{s}_{t+1}$.</li>
+<li>Audit: compute realized information change $\Delta I = H(\hat{s}_t) - H(\hat{s}_{t+1})$ and append the triple $(a^*, \text{score}(a^*), \Delta I)$ to the reset ledger.</li>
+<li>If $\Delta I < \epsilon$ for three consecutive probes, flag the exploration policy $\pi_\theta$ for recalibration of $\alpha_r$ and $\alpha_h$.</li>
+</ol>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a loop of propose, price, execute, and audit. The agent proposes an information-gathering action, prices its energy, time, reset, and hazard costs, executes only if the action is recoverable, then records whether uncertainty actually fell.</p>
@@ -76,6 +97,9 @@ for probe in probes:
 tap handle 0.325
 drive behind shelf -0.1</div>
 <div class="code-caption"><strong>Code Fragment 19.1.1:</strong> This diagnostic ranks exploratory probes by a simple costed score. The low-risk tap wins even though it gathers less information, because the drawer and shelf probes spend more reset and hazard budget.</div>
+<div class="callout tip">
+<p>The hazard weight (1.5) and reset weight (0.5) in Code Fragment 19.1.1 are not universal constants: they encode the relative cost of an injury or unrecoverable state versus a slow human reset for one specific task. Before adopting this formula, run a calibration pass where you manually label five to ten past failures as either hazard-type or reset-type, then set the ratio so that the formula would have rejected those probes. In Habitat-Lab, log <code>episode_reset_count</code> and <code>collision_distance</code> together in a single CSV so you can fit the weights from real data rather than guessing them.</p>
+</div>
 <p><strong>Expected output:</strong> the printed trace should show which probe the cost model prefers and why. If the most informative action always wins, the diagnostic is missing the embodied part of embodied exploration.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>

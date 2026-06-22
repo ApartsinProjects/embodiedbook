@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 2.7A</strong>: Partially observable MDPs; belief states</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the MDP tuple and the Bellman equations introduced in section 2.6. The belief-state idea is extended in section 2.8, which explains why physical embodiment almost always forces partial observability. Later, section 8.6 shows how particle filters approximate the exact belief update derived here, and section 38.3 connects belief tracking to learned latent world models used in deep model-based agents.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Partially observable MDPs; belief states</strong> extend MDPs to the case where the agent cannot see the full state. The agent receives observations, maintains a probability distribution over possible states, and chooses actions using that uncertainty rather than pretending the latest sensor packet is complete.</p>
@@ -81,6 +85,23 @@
 <h2>Theory</h2>
 <p>A POMDP is often written as $(\mathcal{S}, \mathcal{A}, P, R, \Omega, O, \gamma)$. The new pieces are $\Omega$, the observation space, and $O(o|s,a)$, the probability of receiving observation $o$ after action $a$ when the world is in state $s$. Instead of acting on an unobserved state, the agent acts on a belief $b_t(s)$, a probability distribution over states.</p>
 <p>A one-step belief update has the form $$b_{t+1}(s') = \eta O(o_{t+1}|s',a_t)\sum_s P(s'|s,a_t)b_t(s),$$ where $\eta$ normalizes the probabilities so they sum to one. The summation predicts where the hidden state could move after the action. The observation likelihood then favors states that make the new sensor reading plausible.</p>
+<div class="callout algorithm">
+<h4>Algorithm: POMDP Belief-State Update</h4>
+<p><strong>Input:</strong> current belief $b_t(s)$ over state space $\mathcal{S}$; action $a_t \in \mathcal{A}$; observation $o_{t+1} \in \Omega$; transition model $P(s'|s,a)$; observation model $O(o|s',a)$</p>
+<p><strong>Output:</strong> updated belief $b_{t+1}(s')$ normalized over $\mathcal{S}$</p>
+<ol>
+<li>For each next state $s' \in \mathcal{S}$, compute the predicted belief by marginalizing over current states: $\hat{b}(s') = \sum_{s \in \mathcal{S}} P(s'|s, a_t)\, b_t(s)$.</li>
+<li>For each $s' \in \mathcal{S}$, weight the predicted belief by the observation likelihood: $\tilde{b}(s') = O(o_{t+1}|s', a_t)\cdot \hat{b}(s')$.</li>
+<li>Compute the normalization constant $\eta = \sum_{s' \in \mathcal{S}} \tilde{b}(s')$. If $\eta = 0$, the observation is incompatible with all predicted states; log a divergence warning and retain $\hat{b}$.</li>
+<li>Set $b_{t+1}(s') = \tilde{b}(s') / \eta$ for all $s' \in \mathcal{S}$.</li>
+<li>Verify $\sum_{s'} b_{t+1}(s') = 1$ to within floating-point tolerance (e.g., $|1 - \sum b_{t+1}| &lt; 10^{-6}$).</li>
+<li>Log the tuple $(b_t, a_t, o_{t+1}, b_{t+1})$ with a timestamp for offline calibration and failure diagnosis.</li>
+<li>Pass $b_{t+1}$ to the policy $\pi(a | b_{t+1})$ as the new action-relevant state representation.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When integrating multiple sensor streams (for example, camera plus force-torque), apply one normalizer per combined likelihood, not one per sensor. Calling <code>posterior[s] /= posterior[s].sum()</code> after each sensor independently forces each source to dominate the belief in turn and destroys the joint update. Compute the product of likelihoods across all active sensors first, then normalize once. In NumPy, <code>belief = (obs_cam * obs_ft * predicted); belief /= belief.sum()</code> is the correct single-pass pattern; the two-normalize version can produce posteriors that sum to values far from 1.0 with no visible error.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is predict, observe, correct, then act. Prediction uses the transition model to move the old belief forward. Correction uses the observation model to reweight possible states. The resulting belief should be logged because it is the only way to know whether the agent acted from calibrated uncertainty or from a stale guess.</p>

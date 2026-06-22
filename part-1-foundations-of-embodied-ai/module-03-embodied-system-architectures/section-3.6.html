@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 3.6A</strong>: Dual-system (System 1 / System 2) designs and where they come from</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on the reactive/deliberative contrast developed in section 3.5; readers who skipped that section should review it before working through the routing rule here. The dual-system split introduced below is extended in section 3.7, which places LLMs, VLMs, and VLAs into the slow-path role of the same architectural stack. The uncertainty and risk scoring that drives the router reappears in depth in section 53.2, where conformal prediction and ensemble calibration are treated as first-class design tools.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Dual-system (System 1 / System 2) designs and where they come from</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -88,6 +92,26 @@
 \text{System 2}, &amp; \text{otherwise}
 \end{cases}$$</p>
 <p>Here $u(o_t)$ is uncertainty, $r(o_t)$ is estimated risk, and $\tau,\rho$ are deployment thresholds. The assumption is that <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/section-53.2.html">uncertainty and risk are measurable enough</a> to decide when fast action is safe. The failure mode is false confidence: the fast path acts on a case that should have been escalated, or the slow path consumes time on a routine case until the physical opportunity disappears.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Dual-System Routing with Threshold Calibration</h4>
+<p><strong>Input:</strong> observation $o_t$; uncertainty estimator $u(\cdot)$; risk estimator $r(\cdot)$; validation set $\mathcal{V} = \{(o_i, y_i)\}_{i=1}^{N}$; target false-escalation rate $\alpha$</p>
+<p><strong>Output:</strong> routing decision $\delta_t \in \{\text{S1}, \text{S2}\}$; calibrated thresholds $(\tau^*, \rho^*)$; executed action $a_t$</p>
+<ol>
+<li>Fit temperature scalar $T^*$ on $\mathcal{V}$ by minimizing validation log-loss: $T^* = \arg\min_{T} \sum_i \ell(u(o_i)/T,\, y_i)$.</li>
+<li>Compute calibrated uncertainty scores $\hat{u}_i = u(o_i) / T^*$ for every $o_i \in \mathcal{V}$.</li>
+<li>Set $\tau^*$ as the $\alpha$-quantile of $\{\hat{u}_i : y_i = \text{safe}\}$ so that at most fraction $\alpha$ of safe cases are escalated.</li>
+<li>Set $\rho^*$ analogously from the risk scores $r(o_i)$ on $\mathcal{V}$.</li>
+<li>At deployment, receive $o_t$ and compute $\hat{u}_t = u(o_t)/T^*$ and $\hat{r}_t = r(o_t)$.</li>
+<li>Apply routing rule: $\delta_t = \text{S1}$ if $\hat{u}_t &lt; \tau^*$ and $\hat{r}_t &lt; \rho^*$, else $\delta_t = \text{S2}$.</li>
+<li>If $\delta_t = \text{S1}$: execute fast policy $\pi_1(o_t)$ within latency budget $\lambda_1$ (typically $\leq 20\,\text{ms}$).</li>
+<li>If $\delta_t = \text{S2}$: run deliberative planner $\pi_2(o_t; \theta_2)$ with gradient $\nabla_{\theta_2} \mathcal{L}$ available for fine-tuning.</li>
+<li>Log tuple $(o_t, \hat{u}_t, \hat{r}_t, \delta_t, a_t, \text{outcome})$ for retrospective threshold audit.</li>
+<li>Periodically refit $T^*$, $\tau^*$, $\rho^*$ on accumulated log data to track distribution shift.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When setting the escalation thresholds <code>TAU</code> and <code>RHO</code>, calibrate them against a held-out validation set rather than tuning by feel on training episodes. A common gotcha is that Monte Carlo Dropout uncertainty scores are not probability-calibrated out of the box: apply temperature scaling (a single scalar <code>T</code> fit on validation log-loss) before comparing the score against a fixed threshold, or the router will systematically under-escalate on novel inputs. In <code>torch-uncertainty</code>, the <code>TemperatureScaler</code> wrapper handles this in three lines and is compatible with any dropout-based ensemble.</p>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">When to Use This Architecture</div>
 <p>A dual-system split is worth its coordination overhead only when the two timing regimes genuinely differ by an order of magnitude or more, the fast path has a measurable competence region (e.g., calibrated uncertainty from a dropout ensemble or a conformal prediction set), and the cost of a wrong fast-path action exceeds the cost of deliberation latency. For tasks where a single 50 ms policy covers all cases reliably, the router itself becomes the weakest link. The architecture pays off in manipulation under novel lighting, navigation in crowds, and any setting where rare but high-stakes edge cases coexist with a large volume of routine interactions.</p>

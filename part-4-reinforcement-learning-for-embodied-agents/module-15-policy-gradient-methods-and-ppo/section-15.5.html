@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 15.5A</strong>: PPO succeeds when rollout evidence, minibatch updates, and embodied diagnostics stay synchronized.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the clipped surrogate objective and the trust-region argument developed in section 15.4. The implementation details here are extended in section 15.6, which shows how reward shaping interacts with the rollout buffer and advantage estimates. The same PPO data lifecycle recurs at scale in section 17.2, where massively parallel environments stress-test exactly the bookkeeping practices introduced here.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>PPO in practice</strong> is mostly disciplined bookkeeping. The clipped objective matters, but the difference between a stable embodied policy and a broken one often comes from rollout collection, old log probabilities, advantage normalization, value targets, entropy, and KL stopping.</p>
@@ -50,6 +54,24 @@
 <p>A typical PPO loss combines four pieces:</p>
 <p>$$L = L_{\mathrm{clip}} - c_{\mathrm{ent}}H(\pi_\theta) + c_v L_{\mathrm{value}},$$</p>
 <p>where $L_{\mathrm{clip}}$ is the actor objective, $H(\pi_\theta)$ encourages exploration, and $L_{\mathrm{value}}$ trains the critic. Implementations may also use value-function clipping and target-KL early stopping.</p>
+<div class="callout algorithm">
+<h4>Algorithm: PPO Update Cycle with Frozen Evidence and KL Stopping</h4>
+<p><strong>Input:</strong> Current policy parameters $\theta$, value parameters $\phi$, rollout horizon $T$, number of minibatch epochs $K$, minibatch size $M$, clip ratio $\epsilon$, entropy coefficient $c_{\mathrm{ent}}$, value coefficient $c_v$, target KL threshold $\delta_{\mathrm{KL}}$, GAE parameters $(\gamma, \lambda)$</p>
+<p><strong>Output:</strong> Updated policy parameters $\theta'$, updated value parameters $\phi'$, diagnostics (KL, clip fraction, entropy, explained variance)</p>
+<ol>
+<li><strong>Collect rollout.</strong> Run policy $\pi_\theta$ in vectorized environments for $T$ steps. For each step $t$, store $(o_t, a_t, r_t, V_\phi(o_t), \log\pi_\theta(a_t|o_t), \text{terminated}_t, \text{truncated}_t)$ in the rollout buffer. Set <code>old_log_prob</code> from $\log\pi_\theta(a_t|o_t)$ and freeze it for all subsequent epochs.</li>
+<li><strong>Bootstrap value at boundary.</strong> For any step where $\text{truncated}_t = \text{True}$ and $\text{terminated}_t = \text{False}$, append the value estimate $V_\phi(o_{t+1})$ as a bootstrap target. Do not bootstrap for genuinely terminal steps.</li>
+<li><strong>Compute GAE advantages.</strong> Working backwards from $t = T$, set $\delta_t = r_t + \gamma V_\phi(o_{t+1})(1 - \text{terminated}_t) - V_\phi(o_t)$ and accumulate $\hat{A}_t = \delta_t + \gamma\lambda(1-\text{terminated}_t)\hat{A}_{t+1}$. Compute returns $\hat{R}_t = \hat{A}_t + V_\phi(o_t)$.</li>
+<li><strong>Normalize advantages per minibatch.</strong> For each minibatch drawn from the rollout, normalize $\hat{A}$ to zero mean and unit variance: $\tilde{A}_i = (\hat{A}_i - \mu_{\hat{A}}) / (\sigma_{\hat{A}} + 10^{-8})$.</li>
+<li><strong>For each epoch $k = 1,\ldots,K$:</strong> shuffle the rollout buffer into minibatches of size $M$. For each minibatch, recompute $\log\pi_\theta(a|o)$ under the current parameters $\theta$ and form the probability ratio $r_i(\theta) = \exp(\log\pi_\theta(a_i|o_i) - \text{old\_log\_prob}_i)$.</li>
+<li><strong>Compute clipped actor loss.</strong> $L_{\mathrm{clip}} = -\frac{1}{M}\sum_i \min\bigl(r_i(\theta)\,\tilde{A}_i,\;\mathrm{clip}(r_i(\theta), 1-\epsilon, 1+\epsilon)\,\tilde{A}_i\bigr)$.</li>
+<li><strong>Compute value loss.</strong> $L_{\mathrm{value}} = \frac{1}{M}\sum_i \bigl(V_\phi(o_i) - \hat{R}_i\bigr)^2$. Optionally clip the value update: $L_{\mathrm{value}} = \frac{1}{M}\sum_i \max\bigl((V_\phi(o_i)-\hat{R}_i)^2, (V_{\phi_{\mathrm{old}}}(o_i)+\mathrm{clip}(V_\phi(o_i)-V_{\phi_{\mathrm{old}}}(o_i), -\epsilon, \epsilon) - \hat{R}_i)^2\bigr)$.</li>
+<li><strong>Compute total loss and update.</strong> $L = L_{\mathrm{clip}} - c_{\mathrm{ent}} H(\pi_\theta) + c_v L_{\mathrm{value}}$. Backpropagate and apply gradient step: $\theta \leftarrow \theta - \alpha \nabla_\theta L$, $\phi \leftarrow \phi - \alpha \nabla_\phi L$.</li>
+<li><strong>Check approximate KL and apply early stopping.</strong> After each epoch, compute $\widehat{\mathrm{KL}} \approx \frac{1}{M}\sum_i (\text{old\_log\_prob}_i - \log\pi_\theta(a_i|o_i))$. If $\widehat{\mathrm{KL}} > 1.5\,\delta_{\mathrm{KL}}$, stop all remaining epochs for this rollout and record the early-stop epoch index.</li>
+<li><strong>Log diagnostics.</strong> Record actor loss, value loss, entropy $H(\pi_\theta)$, approximate KL, clip fraction (fraction of steps where the ratio was clipped), explained variance $1 - \mathrm{Var}(\hat{R} - V_\phi) / \mathrm{Var}(\hat{R})$, and any embodied failure labels from the rollout buffer. Return $\theta'$, $\phi'$, and the diagnostic bundle.</li>
+</ol>
+</div>
+
 <div class="callout key-insight">
 <div class="callout-title">Freeze The Evidence</div>
 <p>The old log probability is part of the evidence record, not a value to recompute after the policy changes. If it drifts during training, PPO's ratio stops meaning "new policy divided by behavior policy."</p>
@@ -87,6 +109,9 @@ print(row.as_row())</code></pre>
 <p>The expected output is one rollout row whose critical feature is the combination <code>terminated=False</code> and <code>truncated=True</code>. That tells the PPO implementation to treat the boundary as a time limit case, not as a physical terminal failure, when constructing bootstrap targets.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The <code>PPORow</code> stores <code>old_log_prob</code>, <code>value</code>, and separate <code>terminated</code> and <code>truncated</code> flags. Those fields determine whether the update computes ratios correctly and whether GAE bootstraps at the rollout boundary.</div>
 <p>The <code>time_limit</code> label is not decoration. If this row is treated as terminal failure, the value target will be too low. If it is treated as an ordinary truncation, the critic can bootstrap from the next value estimate.</p>
+<div class="callout tip">
+<p>In Gymnasium-style environments, the truncation signal is delivered via <code>info["TimeLimit.truncated"]</code> rather than through the <code>terminated</code> flag; reading only <code>terminated</code> silently treats every timeout as a terminal absorbing state, which suppresses value estimates at episode boundaries and produces a systematic critic bias. Stable-Baselines3 and CleanRL both extract this key explicitly in their rollout collectors, and inspecting that extraction is the fastest way to confirm your own buffer handles timeouts correctly. Set the <code>truncated</code> field in your rollout row from <code>info.get("TimeLimit.truncated", False)</code> and verify that your GAE bootstrap multiplies by <code>(1 - terminated)</code>, not <code>(1 - done)</code>, since <code>done = terminated or truncated</code> would incorrectly zero out the bootstrap on timeouts.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Stable-Baselines3 is a good production starting point for standard Gymnasium-style tasks. CleanRL is better when the goal is to inspect every line of PPO logic. RSL-RL and rl_games are common in high-throughput simulated robotics because they emphasize vectorized rollout collection and GPU-friendly training.</p>

@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 22.7A</strong>: Choosing an action representation: a decision guide</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the five action families introduced in Chapter 22: one-step continuous actions (section 22.1), ACT chunking (section 22.2), diffusion-based sampling (section 22.4), flow matching (section 22.5), and discrete tokenization via VQ-BeT (section 22.6). The decision framework developed here is applied directly in section 23.6, where teleoperation data collection choices are constrained by the same latency and multimodality tradeoffs. The same tradeoffs recur in Part VII alongside robot foundation models and cross-embodiment generalization (Chapter 35).</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Choosing an action representation is a systems decision across horizon length, latency, multimodality, safety filtering, and controller compatibility. No action family is best outside a robot-task contract.</p>
@@ -92,6 +96,26 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <tr><td>Discrete action token</td><td>Motion primitives repeat across demonstrations</td><td>Codebook collapse and lost precision</td></tr>
 </tbody>
 </table>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Action Representation Decision Checklist</h4>
+<p><strong>Input:</strong> Task specification with control frequency $f$ (Hz), action dimension $d$, observed multimodality flag $M \in \{0,1\}$, maximum inference budget $\tau$ (ms), and smallest safe recovery window $r$ (ms)</p>
+<p><strong>Output:</strong> Selected action representation $\pi^* \in \{\text{one-step}, \text{ACT-chunk}, \text{diffusion-chunk}, \text{flow-chunk}, \text{discrete-token}\}$ with recommended horizon $H$ and sampler step count $K$</p>
+<ol>
+<li>Compute the per-step time budget: $\Delta t = 1000 / f$ ms. If $\Delta t &lt; 30$ ms, flag latency-constrained; skip any representation whose sampler requires $K \cdot t_{\text{fwd}} &gt; \Delta t$.</li>
+<li>Set $H = 1$ as the default (one-step). If the task exhibits temporal correlation longer than $\Delta t$ (e.g., contact or insertion sequences), increase $H$ until $H / f \approx r$, ensuring the chunk stays within the recovery window.</li>
+<li>Evaluate multimodality: if demonstrations contain two or more valid approach modes for the same observation (e.g., left-side vs. right-side grasp), set $M = 1$. A one-step policy will average modes; require a generative representation when $M = 1$.</li>
+<li>If $M = 1$ and $\tau \geq 50$ ms: select diffusion chunk with DDIM schedule, $K = 10$. Verify that $K \cdot t_{\text{fwd}} \leq \tau$ on the deployment GPU using <code>torch.cuda.synchronize()</code> before and after the denoising loop.</li>
+<li>If $M = 1$ and $\tau &lt; 50$ ms: select flow-matched chunk with $K = 5$ integration steps. Check vector-field extrapolation error on held-out rollouts; if $\|\hat{a} - a^*\|_2$ exceeds joint limits, reduce $H$.</li>
+<li>If $M = 0$ and precision requirements are coarse (e.g., pick-and-place with $\geq 5$ mm tolerance): evaluate discrete tokenization. Train VQ-BeT with codebook size $|C| \in \{64, 256\}$; accept if task success with nearest-neighbour lookup $\arg\min_{c \in C} \|z - c\|_2$ matches continuous baseline within 5 percentage points.</li>
+<li>If $M = 0$ and precision is fine (submillimeter contact): use ACT chunk with temporal ensembling. Tune $H$ by scoring $\text{score}(H) = H/f - \lambda \cdot H$ where $\lambda$ encodes measured latency penalty per step.</li>
+<li>Record the binding constraint that drove the choice (latency, multimodality, precision, or recovery window) in the experiment log alongside $\theta$ (model parameters), $\alpha$ (learning rate), and $\nabla \mathcal{L}$ curve.</li>
+<li>Run one deterministic smoke test (fixed seed, zero-noise episode) and one perturbation test (object shifted 2 cm) before committing to a full training run of $\pi^*$.</li>
+<li>Version the final selection as a single artifact: representation name, $H$, $K$, control frequency $f$, success metric, and failure labels. This artifact is the comparison anchor for any future $\alpha$ or architecture sweep.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When profiling Diffusion Policy at inference time, set <code>num_inference_steps</code> in the DDIM scheduler to 10 first, then benchmark with <code>torch.cuda.synchronize()</code> before and after the denoising loop on your actual deployment GPU. Many practitioners discover that the default 100-step schedule violates their 50 ms control budget only after integrating the policy into the real robot stack. Flow matching (via the <code>consistency_policy</code> branch of the <code>diffusion_policy</code> repo) typically achieves comparable quality at 5 steps and is the fastest drop-in swap if latency is the binding constraint.</p>
 </div>
 <p>Code Fragment 3 gives a small scoring rule for horizon choice. It is not a universal formula, but it forces the builder to balance intent, latency, and feedback.</p>
 <pre><code class="language-python"># Score candidate action horizons using latency and task-temporal needs.

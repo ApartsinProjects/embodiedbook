@@ -38,6 +38,9 @@
 <img alt="Warm educational cartoon scene connecting why data is the bottleneck to robot demonstrations, operator decisions, recorded trajectories, and later policy evaluation." loading="lazy" src="images/chapter-23-illustration-01.png"/>
 <figcaption><strong>Figure 23.1A</strong>: Data bottlenecks are physical bottlenecks: every missing reset, sensor view, operator correction, and failure label becomes a blind spot in the learned policy.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with supervised imitation objectives introduced in section 21.2. The coverage and split concepts developed here are extended in section 23.6 (dataset formatting with LeRobot) and section 24.1 (scaling laws across large multi-embodiment collections). Distribution shift, which is the central failure mode when coverage is insufficient, is analyzed formally in section 25.2.</p>
+</div>
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Robot data is expensive because each row is produced by a real body under time, safety, wear, and reset constraints. A web model can ingest text at datacenter speed; a manipulation policy must wait for cameras, motors, contact, human operators, and the next physical reset.</p></div>
 
 <h2>Why Physical Data Does Not Scale Like Text</h2>
@@ -69,9 +72,29 @@ print("factor-grid upper bound:", grid_upper_bound)</code></pre>
 observed episodes: 3
 factor-grid upper bound: 16</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The coverage dictionary makes the hidden combinatorics visible. The three observed episodes touch only a small part of the 16-cell factor grid, which is why deployment can fail even when the raw trajectory count looks nontrivial.</div>
+<div class="callout tip">
+<p>When auditing an existing dataset with LeRobot, run <code>lerobot.check_dataset</code> with the <code>--episodes</code> flag before any training step: it reports missing camera streams, timestamp gaps larger than one frame period, and episodes where the recorded action length does not match the observation length. Catching a 50 ms timestamp drift at this stage costs seconds; catching it after a week of training costs you the whole run. If your recording stack does not emit hardware-synchronized timestamps, add a software sync-pulse column to every episode at collection time and validate that column first.</p>
+</div>
 <p>The expected output should make the reader slightly suspicious: three episodes touch four distinct metadata fields, yet the simple factor grid already contains 16 possible combinations. The correct response is not to collect every grid cell blindly. It is to decide which factors are deployment-critical, then design train, validation, and stress splits that test those factors deliberately. The same logic governs <a href="../../part-5-learning-from-demonstration-and-robot-data/module-25-offline-rl-and-dataset-based-robot-learning/section-25.2.html">distribution shift</a> problems that arise when a policy trained offline is evaluated in new conditions.</p>
 <div class="callout fun-note">
   <p>Three demonstrations covering a 16-cell grid is like tasting three squares of a 4x4 chocolate bar and declaring you understand the whole bar. You do understand the bar, just not any of the squares you have not tried yet, which is precisely the part the robot will encounter on Tuesday.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Coverage-First Demonstration Collection</h4>
+<p><strong>Input:</strong> Task description $\mathcal{T}$, deployment factor set $\mathcal{F} = \{f_1, f_2, \ldots, f_k\}$, episode budget $N$, operator pool $H$, desired split fractions $(\alpha_\text{train}, \alpha_\text{val}, \alpha_\text{stress})$</p>
+<p><strong>Output:</strong> Annotated dataset $D = \{e_i\}_{i=1}^{N}$ with coverage table $C$, valid train/val/stress splits, and policy checkpoint $\pi_\theta$</p>
+<ol>
+<li>Write the task contract: specify objects, success criterion, reset rule, forbidden shortcuts, and stop condition for $\mathcal{T}$.</li>
+<li>Enumerate deployment factors $\mathcal{F}$; compute the factor-grid upper bound $G = \prod_{j=1}^{k} |f_j|$ to expose the combinatorial coverage target before any data is collected.</li>
+<li>Select the teleoperation interface (kinesthetic, joystick, leader-follower, VR, handheld gripper, or shared autonomy $\pi_\theta + \text{human}$) based on task contact requirements and operator $h \in H$ ergonomics.</li>
+<li>For each episode $e_i$: record synchronized streams $(o_t, a_t, s_t, \tau_t)$ at fixed frequency, where $o_t$ is observation, $a_t \in \mathbb{R}^d$ is commanded action, $s_t$ is robot state, and $\tau_t$ is hardware timestamp.</li>
+<li>At collection time, label each episode with context metadata $(f_1^{(i)}, \ldots, f_k^{(i)})$, outcome $y_i \in \{\text{success, slip, abort, intervention}\}$, and operator id $h_i$; do not defer labeling.</li>
+<li>After every $\lfloor N/5 \rfloor$ episodes, recompute the coverage table $C[f_j] = |\{e_i : f_j^{(i)}\}|$ and compare observed coverage against $G$; redirect collection toward under-represented factor combinations.</li>
+<li>Include near-miss and recovery episodes explicitly: for contact-rich tasks, failed attempts supply supervision for the boundary of competence that clean expert rollouts cannot provide.</li>
+<li>Freeze splits before any $\theta$ update: assign episodes to train ($\alpha_\text{train} \cdot N$), validation ($\alpha_\text{val} \cdot N$), and stress ($\alpha_\text{stress} \cdot N$) such that the validation and stress sets each change at least one deployment-critical factor $f_j$ relative to train.</li>
+<li>Verify data integrity with <code>lerobot.check_dataset</code>: confirm no missing camera streams, no timestamp gaps $\Delta\tau &gt; T_\text{frame}$, and no action-length mismatches before training.</li>
+<li>Train policy $\pi_\theta$ via imitation objective $\theta^* = \arg\min_\theta \sum_{(o_t, a_t) \in D_\text{train}} \mathcal{L}(\pi_\theta(o_t), a_t)$; evaluate on validation and stress splits separately to distinguish in-distribution accuracy from coverage generalization.</li>
+</ol>
 </div>
 <h2>Practical Collection Protocol</h2>
 <ol>

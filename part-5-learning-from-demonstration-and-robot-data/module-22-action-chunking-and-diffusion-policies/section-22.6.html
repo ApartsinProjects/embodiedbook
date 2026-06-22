@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 22.6A</strong>: VQ-BeT and discretized behavior modeling</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with continuous action-chunk prediction from section 22.2 and the VQ-VAE codebook idea introduced alongside diffusion policies in section 22.4. The comparison between discrete tokens and continuous outputs is resolved directly in section 22.7, which provides a decision framework for choosing an action representation. The discrete-token idea recurs in Part VII alongside robot foundation models and cross-embodiment generalization in section 35.2, where large transformers treat motion tokens as a shared vocabulary across robot bodies.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>VQ-BeT discretizes behavior by turning continuous action chunks into learned motion tokens. The representation can simplify multimodal behavior modeling, but it can also hide precision and contact details.</p>
@@ -78,8 +82,29 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>VQ-BeT discretizes continuous behavior into a codebook of action tokens, then models behavior as token prediction conditioned on observations. The central compression step assigns each continuous action chunk $A$ to the nearest code $e_j$:</p>
 <p>$$j^* = \arg\min_j \|A - e_j\|_2^2.$$</p>
 <p>This helps when demonstrations contain repeated motion primitives: reach variants, grasp closures, handovers, and recovery moves. Discretization can make multimodal behavior easier to model, but the codebook becomes a bottleneck if it is too small or trained on biased data.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: VQ-BeT Training Pipeline (Codebook + Transformer)</h4>
+<p><strong>Input:</strong> demonstration dataset $\mathcal{D} = \{(o_t, A_t)\}$ of observation-action pairs, codebook size $K$, chunk length $H$, transformer policy $\pi_\theta$</p>
+<p><strong>Output:</strong> trained VQ-VAE encoder $E_\phi$, codebook $\{e_j\}_{j=1}^K$, decoder $D_\psi$, and transformer head $\pi_\theta$</p>
+<ol>
+<li>Segment each demonstration into overlapping action chunks $A_t = [a_t, \ldots, a_{t+H-1}] \in \mathbb{R}^{H \times d}$ and pair each chunk with observation $o_t$.</li>
+<li>Train the VQ-VAE: encode each chunk to a latent $z = E_\phi(A_t)$, then find the nearest codebook entry $j^* = \arg\min_j \|z - e_j\|_2^2$, and update $E_\phi$, $D_\psi$, and $\{e_j\}$ via the VQ loss $\mathcal{L}_{VQ} = \|A_t - D_\psi(e_{j^*})\|_2^2 + \beta \|sg[z] - e_{j^*}\|_2^2$.</li>
+<li>Audit codebook utilization: compute token assignment entropy $H = -\sum_{j=1}^K p_j \log p_j$ over $\mathcal{D}$; if fewer than 40% of codes are assigned at least once, reduce $K$ and retrain.</li>
+<li>Freeze the VQ-VAE. For each $(o_t, A_t)$ in $\mathcal{D}$, extract the discrete label $y_t = j^*(A_t)$ and store the pair $(o_t, y_t)$.</li>
+<li>Train the transformer policy $\pi_\theta$ by minimizing the cross-entropy loss $\mathcal{L}_{CE} = -\sum_t \log \pi_\theta(y_t \mid o_t)$ using gradient descent with learning rate $\alpha$: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}_{CE}$.</li>
+<li>At inference, pass observation $o_t$ through $\pi_\theta$ to predict token $\hat{j} = \arg\max_j \pi_\theta(j \mid o_t)$.</li>
+<li>Decode the predicted token back to a continuous action chunk: $\hat{A}_t = D_\psi(e_{\hat{j}})$.</li>
+<li>Execute $\hat{A}_t$ on the robot in a receding-horizon loop; after $H$ steps collect new $o_{t+H}$ and repeat from step 6.</li>
+<li>Log per-token action reconstruction error $\|A_t - D_\psi(e_{j^*})\|_2$ per task; if error exceeds the contact-precision threshold (typically 2 mm), switch to a continuous-output policy for that subtask.</li>
+</ol>
+</div>
 <div class="callout key-insight"><div class="callout-title">Tokenize Motion Carefully</div><p>Action tokens are useful only if each token preserves a controllable behavior primitive. If the codebook mixes incompatible contacts, the downstream transformer inherits the confusion.</p></div>
 <p>Consider a specific case: VQ-BeT on the LIBERO-Spatial suite trains a residual transformer on top of a 2048-code VQ-VAE. Each 10-step action chunk (10 x 7 joint velocities = 70 floats) is compressed to a single token index. At inference the transformer predicts a token in one forward pass, then the VQ-VAE decoder expands it back to 70 floats; total inference latency on a single GPU is under 5 ms per chunk, compared to roughly 100 ms for 100-step DDPM denoising. On the Pick-and-Place tasks in LIBERO-Spatial, VQ-BeT achieves 87% success versus 82% for Diffusion Policy, but on tasks requiring precise peg insertion the gap reverses: codebook quantization introduces up to 3 mm of positional error that diffusion's continuous output avoids.</p>
+
+<div class="callout tip">
+<p>Before training the transformer head in VQ-BeT, audit codebook utilization with <code>vq_bet.vqvae.get_codebook_usage()</code> or by logging the entropy of token assignments across your demonstration set: if fewer than 40% of the <code>num_codes</code> entries are assigned at least once, the codebook is oversized for your data and the transformer wastes capacity modeling dead codes. For contact-rich tasks such as peg insertion, lower <code>num_codes</code> (try 512 or 256) and check that per-token action reconstruction error stays below 2 mm before freezing the VQ-VAE and starting transformer training. Skipping this audit is the single most common cause of unexplained performance drops when porting VQ-BeT from LIBERO to a new manipulation suite.</p>
+</div>
 
 <p>Code Fragment 3 assigns two action chunks to their nearest codebook entries.</p>
 <pre><code class="language-python"># Assign continuous action chunks to nearest discrete motion codes.

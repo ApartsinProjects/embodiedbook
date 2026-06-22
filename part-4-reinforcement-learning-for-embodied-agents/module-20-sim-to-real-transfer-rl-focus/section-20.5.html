@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 20.5A</strong>: Transfer measurement is credible when simulator numbers and hardware numbers are computed from the same task panel, protocol, and success definition.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the reality gap taxonomy from section 20.1 and with domain randomization from section 20.3, because the transfer ratio and gap diagnostics introduced here measure the gap that those earlier sections define and attempt to close. If you already understand how to compute a matched success rate across simulator and hardware, you can skip to section 20.4 for fine-tuning on hardware. The evaluation protocol developed here recurs in section 45.3 alongside large-scale locomotion benchmarks, where transfer tags and held-out terrain panels extend the same artifact schema to parallel training stacks.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Measuring transfer performance</strong> is not the same as reporting one real-robot success rate. A transfer result should say how the policy performed in simulation, how it performed on hardware, how much safety supervision it needed, which failures dominated, and whether those numbers were computed on the same task panel.</p>
@@ -59,6 +63,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is paired evaluation. Select the task panel, freeze the policy checkpoint, run the simulator evaluation, run the hardware evaluation under the documented gate, assign failure labels, and compute every metric from the same artifact table.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Paired Transfer Evaluation Protocol</h4>
+<p><strong>Input:</strong> policy parameters $\theta$, task panel $\mathcal{T} = \{t_1, \ldots, t_N\}$, success function $\sigma$, safety gate $g$, simulator $\text{Sim}$, hardware robot $\text{Real}$</p>
+<p><strong>Output:</strong> transfer report with $\rho$, gap diagnostics, intervention rate, and failure distribution</p>
+<ol>
+<li>Freeze checkpoint $\theta^*$ and evaluation code; record commit hash and simulator version so the run is reproducible.</li>
+<li>For each task instance $t_i \in \mathcal{T}$, run $\pi_{\theta^*}$ in $\text{Sim}$ and record success $s_i^{\text{sim}} = \sigma(\tau_i^{\text{sim}})$, return $G_i^{\text{sim}}$, and completion time $T_i^{\text{sim}}$.</li>
+<li>Run $\pi_{\theta^*}$ on the physical robot for the same $t_i$; log safety events $e_i$, interventions $v_i$, and blocked actions $b_i$ via the hardware gate $g$.</li>
+<li>Record hardware success $s_i^{\text{real}} = \sigma(\tau_i^{\text{real}})$ and assign a failure label $f_i \in \{\text{slip, delay, perception, drift, gate, timeout}\}$ for each $s_i^{\text{real}} = 0$.</li>
+<li>Write all fields $(t_i, s_i^{\text{sim}}, s_i^{\text{real}}, G_i, T_i, e_i, v_i, b_i, f_i)$ into one artifact table; never split simulator and hardware rows across separate files.</li>
+<li>Compute aggregate rates: $S_{\text{sim}} = \frac{1}{N}\sum_i s_i^{\text{sim}}$, $S_{\text{real}} = \frac{1}{N}\sum_i s_i^{\text{real}}$, transfer ratio $\rho = S_{\text{real}} / S_{\text{sim}}$, and intervention rate $\bar{v} = \frac{1}{N}\sum_i v_i$.</li>
+<li>Decompose the success gap $\Delta = S_{\text{sim}} - S_{\text{real}}$ by failure label to obtain per-category contributions $\Delta_{f}$ for each $f$.</li>
+<li>Estimate uncertainty: compute 95 percent bootstrap confidence intervals for $\rho$ and $\Delta$ by resampling the $N$ paired rows with replacement.</li>
+<li>Attach trace pointers (ROS 2 bag paths or LeRobot episode IDs) to each row so failures can be replayed and relabeled without re-running hardware.</li>
+<li>Publish the artifact with raw trials, summary statistics, uncertainty bounds, failure distribution $\{\Delta_f\}$, and trace pointers; report $\rho$ and $\bar{v}$ together, never separately.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 20.5.1 computes a small transfer report from matched simulated and real trials. Notice that success, interventions, and failure labels are computed from the same rows.</p>
@@ -83,6 +104,9 @@ transfer_ratio=0.75
 intervention_rate=0.40</div>
 <div class="code-caption"><strong>Code Fragment 20.5</strong>.1 computes <code>sim_rate</code>, <code>real_rate</code>, <code>transfer_ratio</code>, and <code>intervention_rate</code> from one matched artifact. The intervention rate changes the interpretation of the transfer ratio, because 0.75 transfer with frequent supervision is not the same result as 0.75 autonomous transfer.</div>
 <p><strong>Expected output:</strong> a transfer report should include the simulator rate, hardware rate, transfer ratio, and safety denominator. If the policy required interventions, that fact belongs next to the success rate, not in a separate paragraph.</p>
+<div class="callout tip">
+<p>When using LeRobot to store hardware episodes, set the <code>intervention</code> field in every episode's metadata at collection time, not in post-processing. Retroactively labeling interventions from video review introduces disagreement between annotators and inflates apparent autonomy. A row written without an intervention flag at the moment the operator took control is unrecoverable, so instrument your ROS 2 teleoperation node to write a boolean <code>human_override</code> stamp directly into the bag before the episode closes.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In practical systems, use evaluation harnesses that emit a single table per protocol: configuration, policy checkpoint, task instance, simulator metrics, hardware metrics, safety events, and failure label. Gymnasium wrappers, Isaac Lab task panels, ROS 2 logs, and LeRobot datasets are useful only if they preserve the common artifact schema.</p>

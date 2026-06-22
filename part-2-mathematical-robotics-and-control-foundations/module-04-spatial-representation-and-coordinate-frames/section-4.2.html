@@ -40,6 +40,10 @@
 <figcaption>Figure 4.2A: Points, vectors, and poses drawn on a 2D plane, then extended to SE(3): a pose arrow shows both position (where) and orientation (which way), distinguishing free vectors from position vectors.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the motivation for coordinate frames introduced in section 4.1. The geometric types defined here (points, vectors, poses, and frames) are the direct input to the rigid transform algebra developed in section 4.4, and the same distinctions recur throughout section 5.5 on forward kinematics and section 6.2 on dynamics, where misclassifying a free vector as a point produces silent numerical errors in joint-torque and contact-force calculations.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Points, vectors, poses, frames</strong> are the nouns of robot geometry. A point names a location, a vector names a displacement or direction, a pose names a coordinate frame, and a frame tells every subsystem how to interpret the numbers.</p>
@@ -62,6 +66,24 @@
 <div class="callout-title">Mechanism</div>
 <p>Homogeneous coordinates encode this distinction by giving points a final coordinate of 1 and vectors a final coordinate of 0. Multiplying by a 4 by 4 transform then applies translation to points and not to vectors.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Classify and Transform a Spatial Quantity Between Frames</h4>
+<p><strong>Input:</strong> A spatial array $x \in \mathbb{R}^3$, source frame $F_B$, destination frame $F_A$, pose $T_{AB} = (R_{AB},\, t_{AB})$ with $R_{AB} \in SO(3)$, $t_{AB} \in \mathbb{R}^3$</p>
+<p><strong>Output:</strong> Correctly transformed quantity $x^A$ expressed in $F_A$</p>
+<ol>
+<li>Inspect the physical meaning of $x$: does it represent an absolute location (point) or a displacement, direction, or axis (free vector)?</li>
+<li>If $x$ is a location, assign homogeneous coordinate $w = 1$; form $\tilde{x}^B = [x;\, 1] \in \mathbb{R}^4$.</li>
+<li>If $x$ is a direction or displacement, assign $w = 0$; form $\tilde{x}^B = [x;\, 0] \in \mathbb{R}^4$. Translation $t_{AB}$ will not act on this quantity.</li>
+<li>Assemble the $4 \times 4$ homogeneous transform $T_{AB}$ with $R_{AB}$ in the upper-left $3 \times 3$ block and $t_{AB}$ in the upper-right column.</li>
+<li>Compute $\tilde{x}^A = T_{AB}\, \tilde{x}^B$.</li>
+<li>Extract the result: $x^A = \tilde{x}^A_{1:3}$. Verify that $\tilde{x}^A_4 = w$ (unchanged); if not, a coding error mixed point and vector paths.</li>
+<li>If the quantity is a pose $T_{BC} \in SE(3)$, compute the composed pose $T_{AC} = T_{AB}\, T_{BC}$ directly; do not decompose into position and orientation separately.</li>
+<li>For a batch of $n$ quantities with mixed types (for example a point cloud with surface normals), partition by $w$ value, apply the appropriate transform to each partition, then merge.</li>
+<li>Check magnitude: $\|x^A\|$ must equal $\|x^B\|$ for free vectors and for points under pure rotation; a nonzero translation term for a direction vector signals a type error.</li>
+<li>Log the result with frame labels, e.g. $x^{F_A}$, so downstream code does not re-apply the same transform.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>A gripper approach point and an approach direction are both expressed in the tool frame. The point should rotate and translate into the base frame. The direction should rotate only.</p>
 <pre><code class="language-python"># Points, vectors, poses, frames: keep the section idea tied to observable evidence.
@@ -96,6 +118,9 @@ print("vector", np.round(v_base, 3))</code></pre>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
 <p>Adding translation to a normal vector is a quiet bug. It can tilt a grasp score, corrupt a contact normal, or make a controller push in a direction that no longer matches the sensed surface. This failure is most likely when a sensor API returns a plain NumPy array with no type label: depth cameras (RealSense, Azure Kinect) return point clouds and surface normals in the same array shape, and perception pipelines that stack them into a single tensor frequently apply a full SE(3) transform to every row. The result passes all shape and dtype checks while silently rotating and translating directions that should only rotate. The bug typically surfaces downstream as a grasp orientation error or a contact-force direction that is off by the magnitude of the camera-to-base translation.</p>
+</div>
+<div class="callout tip">
+<p>When using ROS 2 tf2's <code>do_transform_cloud</code>, every field in a <code>sensor_msgs/PointCloud2</code> message receives the full SE(3) transform, including normal fields (<code>normal_x</code>, <code>normal_y</code>, <code>normal_z</code>). To avoid silently translating normals, strip or split the normal fields before calling <code>do_transform_cloud</code>, apply only the rotation matrix to the normal columns, then reassemble the cloud. Alternatively, use Open3D's <code>transform()</code> on positions and <code>rotate()</code> on normals separately, which makes the geometric type explicit at the call site.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

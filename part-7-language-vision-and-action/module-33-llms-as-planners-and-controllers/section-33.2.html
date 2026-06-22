@@ -39,6 +39,9 @@
 <figcaption>Figure 33.2A: SayCan grounding: an LLM scores candidate action phrases by language likelihood while a value function scores them by physical affordance, and the product selects the action that is both linguistically plausible and physically feasible.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with value functions and reinforcement learning basics from section 14.2 and with skill libraries and hierarchical decomposition from sections 26.3 and 26.5. The affordance-grounding idea introduced here is extended in section 33.3, which replaces discrete skill selection with LLM-generated executable code, and recurs in Part X alongside open-world skill discovery in section 51.3.</p>
+</div>
 <p>Read the figure as the SayCan product rule in system form: language likelihood proposes what is useful, affordance likelihood estimates what is possible, and the robot acts only where both scores support an executable skill.</p>
 <figure class="diagram" id="fig-33-2">
 <svg aria-labelledby="fig-33-2-title fig-33-2-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -79,12 +82,30 @@
 <p>SayCan works because semantic plausibility and physical feasibility answer different questions. One says what the human probably wants next; the other says what the robot can actually do now.</p>
 </div>
 <h2>Theory</h2>
-<p>SayCan scores each candidate skill $k$ with a language prior and an affordance value: $$k^* = \arg\max_k \; p_\text{LLM}(k \mid x, h_t) \cdot V_k(s_t).$$ The language term prefers semantically appropriate next steps, while the value term estimates whether the robot can execute that step successfully in the current state.</p>
+<p>SayCan scores each candidate skill $k$ with a language prior and an affordance value: $$k^* = \arg\max_k \; p_\text{LLM}(k \mid x, h_t) \cdot V_k(s_t).$$ The language term prefers semantically appropriate next steps, while the <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.2.html">value function</a> estimates whether the robot can execute that step successfully in the current state.</p>
 <p>The multiplication matters. A skill with high semantic probability but near-zero affordance should be rejected, and a highly executable skill with no semantic relevance should not dominate just because it is easy. The method therefore depends on score calibration and on the quality of the candidate skill library.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A good mental model is product-of-experts planning. The LLM narrows the skill search to task-consistent options, and the affordance model removes options that are impossible or low value in the current world state.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: SayCan Affordance-Grounded Skill Selection</h4>
+<p><strong>Input:</strong> natural-language instruction $x$, interaction history $h_t$, robot state $s_t$, skill library $\mathcal{K} = \{k_1, \ldots, k_n\}$, language model with parameters $\theta$, per-skill value functions $\{V_{k}\}$ trained via RL with learning rate $\alpha$</p>
+<p><strong>Output:</strong> selected skill $k^*$ and an audit tuple $(k, p_\text{LLM}, V_k, \text{score})$ for every candidate</p>
+<ol>
+<li>Encode the instruction and history: form the prompt $c_t = (x, h_t)$ and pass it through the frozen LLM $\pi_\theta$ to obtain a distribution over skill tokens.</li>
+<li>Generate the candidate set: sample or enumerate the top-$m$ skills $\mathcal{K}' \subseteq \mathcal{K}$ ranked by $p_\theta(k \mid c_t)$ to avoid scoring the entire library.</li>
+<li>Score language plausibility: for each $k \in \mathcal{K}'$ compute $p_\text{LLM}(k) = p_\theta(k \mid c_t)$ and apply temperature scaling $\hat{p}(k) = p_\text{LLM}(k)^{1/\tau}$, then renormalize over $\mathcal{K}'$.</li>
+<li>Estimate affordance: query each value function $V_k(s_t) \in [0, 1]$ using the current scene observation; apply min-max normalization $\hat{V}_k = (V_k(s_t) - V_{\min}) / (V_{\max} - V_{\min})$ over $\mathcal{K}'$.</li>
+<li>Compute the joint score: $\text{score}(k) = \hat{p}(k) \cdot \hat{V}_k$ for all $k \in \mathcal{K}'$.</li>
+<li>Select the action: $k^* = \arg\max_{k \in \mathcal{K}'} \text{score}(k)$.</li>
+<li>Write audit record: append the tuple $(c_t,\, s_t,\, k^*,\, \hat{p}(k^*),\, \hat{V}_{k^*},\, \text{score}(k^*),\, k_2,\, \text{score}(k_2))$ where $k_2$ is the runner-up, to the episode log.</li>
+<li>Execute $k^*$ on the robot and observe the resulting state $s_{t+1}$ and verifier signal $r_t \in \{0, 1\}$.</li>
+<li>Update history: $h_{t+1} = h_t \cup \{(k^*, r_t)\}$ and increment $t$.</li>
+<li>Repeat from step 1 until the task is complete or a budget of $T$ steps is exceeded; on failure, inspect the audit log to determine whether the semantic prior ($\hat{p}$) or the affordance estimate ($\hat{V}$) was the proximate cause.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>Code Fragment 1 implements the core SayCan score on three skills. The example is tiny, but it makes the product structure visible and shows how the selected action can differ from the highest language score alone.</p>
 <pre><code class="language-python"># Combine semantic plausibility with grounded affordance values.
@@ -109,16 +130,19 @@ pick_sponge</div>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Define a compact skill library whose actions expose clear preconditions and effects.</li>
+<li>Define a compact <a href="../../part-5-learning-from-demonstration-and-robot-data/module-26-skills-hierarchy-and-task-decomposition/section-26.5.html">skill library</a> whose actions expose clear preconditions and effects.</li>
 <li>Generate only semantically plausible skill candidates rather than scoring the entire API surface.</li>
 <li>Estimate affordance or value in the current state before execution, not from a stale scene snapshot.</li>
 <li>Normalize or calibrate the two scores so one term does not dominate by scale alone.</li>
 <li>Inspect failure cases where the right long-horizon plan starts with a low-probability semantic step.</li>
 </ol>
+<div class="callout tip">
+<p>Before multiplying the two scores, apply temperature scaling to the LLM log-probabilities and normalize the affordance values to the same range (for example, min-max normalization over the current candidate set). Without this step, a value model that returns raw success probabilities near 1.0 for all feasible skills will compress the semantic signal to near-zero influence, making the planner behave like a greedy affordance selector. A fast diagnostic: log the ratio <code>p_llm / affordance</code> across a held-out episode; if it is consistently below 0.05, the affordance term is dominating and calibration is the first thing to fix, not the prompt.</p>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>SayCan can fail if the candidate skill set is too narrow, the value functions are poorly calibrated, or the semantic model overprefers narratively obvious steps that are not optimal for the current embodiment.</p>
-<p>In practice the most common failure is affordance miscalibration. If the value model was trained on a narrow set of scenes, it may return high scores for skills that are physically possible in the training distribution but inapplicable to the current configuration. For example, a value function trained on an uncluttered countertop may assign $V_\text{pick\_sponge}(s_t) = 0.90$ even when a bowl is blocking the sponge, because it never learned that obstacle. The LLM then sees a high combined score, selects the skill, and the robot fails at execution. The symptom looks like a planning error, but the root cause is a distributional gap in the affordance model. A second, subtler failure occurs at long horizons: the product rule is myopic, scoring each skill against the current state. In a multi-step cleanup task, the optimal first action may be to move a bowl with a low immediate semantic score, but that action unlocks the sponge for step two. SayCan has no lookahead and can get stuck in a locally attractive but globally suboptimal sequence.</p>
+<p>In practice the most common failure is affordance miscalibration. If the value model was trained on a narrow set of scenes, it may return high scores for skills that are physically possible in the training distribution but inapplicable to the current configuration. For example, a value function trained on an uncluttered countertop may assign $V_\text{pick\_sponge}(s_t) = 0.90$ even when a bowl is blocking the sponge, because it never learned that obstacle. The LLM then sees a high combined score, selects the skill, and the robot fails at execution. The symptom looks like a planning error, but the root cause is a distributional gap in the affordance model. A second, subtler failure occurs at <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-51-open-world-and-lifelong-embodiment/section-51.3.html">long horizons</a>: the product rule is myopic, scoring each skill against the current state. In a multi-step cleanup task, the optimal first action may be to move a bowl with a low immediate semantic score, but that action unlocks the sponge for step two. SayCan has no lookahead and can get stuck in a locally attractive but globally suboptimal sequence.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -139,7 +163,7 @@ pick_sponge</div>
 
 
 <p>The scientific subtlety in SayCan is calibration. The product formula is simple, but only meaningful if the two terms are roughly comparable in their interpretation. A miscalibrated value model can dominate the semantic term and reduce the planner to greedily choosing whichever skill is easiest right now.</p>
-<p>The method also inherits the classic option-discovery problem from hierarchical RL. It can only select among skills it already knows. If the correct subtask is missing from the library, no amount of language fluency will recover it, which is why skill design and affordance learning remain central.</p>
+<p>The method also inherits the classic <a href="../../part-5-learning-from-demonstration-and-robot-data/module-26-skills-hierarchy-and-task-decomposition/section-26.3.html">option-discovery problem from hierarchical RL</a>. It can only select among skills it already knows. If the correct subtask is missing from the library, no amount of language fluency will recover it, which is why skill design and <a href="../../part-5-learning-from-demonstration-and-robot-data/module-26-skills-hierarchy-and-task-decomposition/section-26.4.html">language as a high-level controller</a> remain central.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices Around SayCan-style Planning</div>
 <table>

@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 4.7A</strong>: Common frame mistakes and how to debug them</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The invariants tested here (determinant, round-trip residual, distance preservation) rest on the rotation and homogeneous-transform algebra developed in <a href="section-4.3.html">section 4.3</a> and <a href="section-4.4.html">section 4.4</a>. In <a href="../module-05-kinematics-and-robot-motion/section-5.1.html">section 5.1</a> those same transforms are chained across multiple joints, so a frame error that slips past the checks here will propagate through an entire kinematic tree. The optical-to-body convention mistake shown in this section recurs in Part 6 alongside camera projection and 3D scene representations, starting at <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.1.html">section 27.1</a>.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Common frame mistakes and how to debug them</strong> matters because frame bugs usually masquerade as perception, planning, or control failures. A robot reaching 20 centimeters to the side of a target may have a weak grasp policy, but it may also have a swapped transform direction, stale timestamp, meter-to-millimeter error, or left-handed frame where a right-handed frame was expected.</p>
@@ -56,6 +60,23 @@
 <p>$$T_{AB}T_{BA} \approx I.$$</p>
 <p>The approximation accounts for floating-point error, not conceptual error. A large residual means one of three things is likely: the transform was inverted twice, the multiplication order is wrong, or the stored translation is expressed in the wrong parent frame. Section <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.4.html">4.4 on rigid transforms and homogeneous coordinates</a> gives the algebraic foundation for these invariants.</p>
 <p>A second invariant is distance preservation. A rigid transform can move and rotate two points, but the distance between them must stay constant. If a transform changes distances, it is not a rigid transform. Check scale before checking policy behavior.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Frame Validity Decision Checklist</h4>
+<p><strong>Input:</strong> rotation matrix $R$, homogeneous transform $T_{AB}$, inverse $T_{BA}$, a known point $p$ with expected world-frame coordinates, units label, timestamp $t$</p>
+<p><strong>Output:</strong> pass/fail verdict per invariant; if any fails, a categorized fault label (reflection, order, scale, convention, or staleness)</p>
+<ol>
+<li>Compute $\det(R)$ and check $|\det(R) - 1| &lt; \varepsilon$; a value near $-1$ signals a reflection or left-handed frame where $\theta = \pi$ is not expected.</li>
+<li>Verify $R^{\top}R \approx I$ (orthogonality); large off-diagonal residuals indicate numerical drift or a non-rotation matrix was used.</li>
+<li>Compute the round-trip residual $\|T_{AB}\,T_{BA} - I\|_F$; if it exceeds $10^{-6}$, the inverse or multiplication order is wrong.</li>
+<li>Apply $T_{AB}$ to one known point $p$ and compare the result with the expected world-frame coordinates; a consistent offset of magnitude $\alpha$ suggests a units error (e.g., millimeters vs. meters, factor of $10^3$).</li>
+<li>Check axis handedness: confirm $\hat{x} \times \hat{y} = \hat{z}$ in the target convention; a sign flip in $\hat{z}$ means the frame is left-handed.</li>
+<li>Verify the convention label (optical: $x$ right, $y$ down, $z$ forward; body REP 103: $x$ forward, $y$ left, $z$ up); if they differ, apply the explicit rotation $R_{\text{body,optical}}$ before composing further transforms.</li>
+<li>Check that the transform timestamp $t$ falls within the tf2 buffer window; a stale pose older than the buffer limit should be rejected rather than silently reused.</li>
+<li>Confirm distance preservation: $\|\,T_{AB}\,p_1 - T_{AB}\,p_2\| = \|p_1 - p_2\|$ for two known points; a change in distance means a scale error, not a rotation bug.</li>
+<li>If all invariants pass, record the parent frame, child frame, units, timestamp, and multiplication order in the frame audit log before continuing to perception or control debugging.</li>
+</ol>
+</div>
+
 <h3>ROS conventions (REP 103)</h3>
 <p>Many frame bugs are convention mismatches against a published standard. ROS REP 103 fixes the axis conventions so that independently written nodes agree without negotiation:</p>
 <ul>
@@ -86,6 +107,9 @@ print("valid rotation? det =", round(float(np.linalg.det(R_body_optical)), 6))</
 valid rotation? det = 1.0</div>
 <div class="code-caption"><strong>Code Fragment 4.7</strong>.2 maps the camera optical-frame forward axis to the REP 103 body-frame forward axis ($x$ forward). The determinant check confirms the convention swap is a proper rotation, not an accidental reflection.</div>
 <p>Consider a specific case: a depth camera mounted 0.15 m in front of a robot's body origin detects an obstacle at optical-frame coordinates $(0, 0, 0.8)$ (straight ahead, 80 cm away). Without the REP 103 body-frame rotation, a node expecting body-frame coordinates reads this as $x=0$ (no forward component), $y=0$ (no lateral component), $z=0.8$ (upward, not forward). The planner concludes there is no obstacle ahead and drives forward. Applying the rotation from Code Fragment 4.7.2 correctly maps the point to body-frame $(0.8, 0, 0)$, placing the obstacle directly in the robot's path. The same silent reinterpretation error has caused collision failures in nav2 deployments when camera extrinsics were loaded without the optical-to-body rotation.</p>
+<div class="callout tip">
+<p>Rather than hardcoding the optical-to-body rotation matrix in every node, declare it once with ROS 2 <code>static_transform_publisher</code> using the equivalent Euler angles: <code>ros2 run tf2_ros static_transform_publisher 0 0 0 -1.5708 0 -1.5708 body camera_optical</code>. The four angle arguments are yaw, pitch, roll in radians; this exact sequence produces the same rotation as Code Fragment 4.7.2 and publishes it into the tf2 tree so that any node calling <code>lookup_transform("body", "camera_optical", ...)</code> receives the correct pose automatically. Verify the result by running <code>ros2 run tf2_tools view_frames</code> and checking that the camera optical frame appears as a child of the body frame with the expected RPY values.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Frame debugging works by shrinking the episode. Replace the learned detector with one known point, replace the controller with one logged target, and replace the transform tree with the exact edges used in the failing timestep. The smaller case tells you whether the geometry is trustworthy before the model is blamed.</p>

@@ -40,20 +40,24 @@
 <figcaption>Figure 41.1A: A diffusion planner applied to bimodal grasping: the score network denoises a trajectory from Gaussian noise conditioned on the current scene embedding, and the final denoised plan commits to one of the two valid grasp modes rather than averaging them.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with imitation learning and regression policies from section 21.2, and with action chunking from section 22.2. If you are already comfortable with the forward and reverse diffusion process, you can skip ahead to section 41.2, which applies these mechanics to the Diffuser and Decision Diffuser architectures. The conditional planning ideas introduced here recur in section 22.7 and are stress-tested against latency and out-of-distribution robustness constraints in sections 55.2 and 53.3.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Diffusion Models As Planners</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Action trajectories are multimodal. Faced with a mug on a table, a competent agent has several valid grasps: top handle, side rim, two-finger pinch on the body. A regression policy trained to minimize mean squared error against demonstrations averages those modes, and the average of a left grasp and a right grasp is a collision with the mug. This is the core reason diffusion models entered embodied AI: their iterative denoising naturally represents a multimodal distribution over trajectories rather than a single conditional mean.</p>
+<p>Action trajectories are multimodal. Faced with a mug on a table, a competent agent has several valid grasps: top handle, side rim, two-finger pinch on the body. A <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.2.html">regression policy trained to minimize mean squared error against demonstrations</a> averages those modes, and the average of a left grasp and a right grasp is a collision with the mug. This is the core reason diffusion models entered embodied AI: their iterative denoising naturally represents a <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.7.html">multimodal distribution over trajectories rather than a single conditional mean</a>.</p>
 <p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop. For multimodal action spaces, the answer is that the policy stops committing to the average place and starts committing to one coherent mode.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Diffusion Models As Planners, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>A diffusion planner treats a trajectory $\tau_0$ (a sequence of actions, states, or both) as a sample from a data distribution it must learn to generate. Training defines a fixed <em>forward</em> process that gradually corrupts a clean trajectory into Gaussian noise, and learning fits a <em>reverse</em> process that walks noise back to a plausible trajectory conditioned on context $c$ (the observation, the goal, or a return target).</p>
+<p>A diffusion planner treats a trajectory $\tau_0$ (a sequence of actions, states, or both) as a sample from a data distribution it must learn to generate. Training defines a fixed <em>forward</em> process that gradually corrupts a clean trajectory into Gaussian noise, and learning fits a <em>reverse</em> process that walks noise back to a plausible trajectory conditioned on context $c$ (the observation, the <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-18-reward-design-and-goal-specification/section-18.3.html">goal, or a return target</a>).</p>
 <p>The forward process adds noise according to a variance schedule $\beta_1,\dots,\beta_T$. Writing $\alpha_t = 1-\beta_t$ and $\bar\alpha_t = \prod_{s\le t}\alpha_s$, the closed form for the noised trajectory at step $t$ is</p>
 <p>$$
 q(\tau_t \mid \tau_0) = \mathcal{N}\!\left(\tau_t;\ \sqrt{\bar\alpha_t}\,\tau_0,\ (1-\bar\alpha_t) I\right).
@@ -67,6 +71,23 @@ $$</p>
 <div class="callout-title">Mechanism</div>
 <p>The forward schedule is fixed and parameter-free; all learning lives in the reverse denoiser. Given $\tau_0$ and a sampled $\bar\alpha_t$, you can jump directly to $\tau_t$ in one step (no need to simulate the chain), which is what makes training cheap: sample a timestep, noise the trajectory, ask the network to predict the noise.</p>
 </div>
+
+<div class="callout algorithm">
+<h4>Algorithm: Conditional Trajectory Denoising for Planning</h4>
+<p><strong>Input:</strong> trained score network $\epsilon_\theta$, context $c$ (observation or goal), noise schedule $\{\bar\alpha_t\}_{t=1}^{T}$, number of denoising steps $T$</p>
+<p><strong>Output:</strong> planned trajectory $\tau_0$ (sequence of actions or waypoints)</p>
+<ol>
+<li>Sample initial noise $\tau_T \sim \mathcal{N}(0, I)$ with the same shape as a full trajectory.</li>
+<li>For $t = T, T{-}1, \dots, 1$: predict the noise component $\hat\epsilon = \epsilon_\theta(\tau_t, t, c)$.</li>
+<li>Estimate the clean trajectory $\hat\tau_0 = \bigl(\tau_t - \sqrt{1 - \bar\alpha_t}\,\hat\epsilon\bigr) / \sqrt{\bar\alpha_t}$.</li>
+<li>Compute the DDIM deterministic update direction $\hat\epsilon_{\text{dir}} = \bigl(\tau_t - \sqrt{\bar\alpha_t}\,\hat\tau_0\bigr) / \sqrt{1 - \bar\alpha_t}$.</li>
+<li>Step to $\tau_{t-1} = \sqrt{\bar\alpha_{t-1}}\,\hat\tau_0 + \sqrt{1 - \bar\alpha_{t-1}}\,\hat\epsilon_{\text{dir}}$.</li>
+<li>Optionally apply classifier-free guidance: replace $\hat\epsilon$ with $(1 + w)\,\epsilon_\theta(\tau_t, t, c) - w\,\epsilon_\theta(\tau_t, t, \varnothing)$ before step 3, where $w \ge 0$ controls guidance strength.</li>
+<li>After $t = 1$, apply a feasibility projection if a kinematic or safety constraint $\pi(\tau)$ is available: set $\tau_0 \leftarrow \pi(\hat\tau_0)$.</li>
+<li>Return $\tau_0$; execute the first action $a_0$ in the loop and re-plan from the resulting observation to maintain closed-loop consistency.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>The probe below makes the forward and reverse processes concrete on a tiny 2D trajectory that should reach the goal at $(1, 0)$. We apply five steps of forward noising under a schedule $\bar\alpha_t$, then run five reverse steps with a deliberately simple linear denoiser that estimates $\tau_0$ and takes a DDIM-style update. The diagnostic to watch is the endpoint distance to the goal: it should grow during noising and shrink back toward zero during denoising.</p>
 <pre><code class="language-python"># Forward noising then reverse denoising of a 2D action trajectory.
@@ -122,7 +143,7 @@ Reverse denoising p_theta(tau_{t-1} | tau_t, goal):
   t=1  dist_to_goal=0.195
   t=0  dist_to_goal=0.016</code></div>
 <div class="code-caption"><strong>Code Fragment 41.1</strong>.1 runs the forward and reverse diffusion processes on a 2D trajectory and prints the endpoint distance to the goal at every step.</div>
-<p>Read the two columns together. Forward noising monotonically drives the endpoint away from the goal as $\bar\alpha_t$ shrinks; reverse denoising walks it back to $0.016$, essentially the goal. A real planner replaces <code>denoise_to_tau0</code> with a trained network $\epsilon_\theta(\tau_t, t, c)$, and replaces the single noise draw with fresh Gaussian samples so that repeated runs produce different valid plans. The point is not that this toy "solved planning"; it is that the same forward and reverse machinery scales from this 6-point line to a 16-step manipulation action chunk conditioned on a camera observation.</p>
+<p>Read the two columns together. Forward noising monotonically drives the endpoint away from the goal as $\bar\alpha_t$ shrinks; reverse denoising walks it back to $0.016$, essentially the goal. A real planner replaces <code>denoise_to_tau0</code> with a trained network $\epsilon_\theta(\tau_t, t, c)$, and replaces the single noise draw with fresh Gaussian samples so that repeated runs produce different valid plans. The point is not that this toy "solved planning"; it is that the same forward and reverse machinery scales from this 6-point line to a <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.2.html">16-step manipulation action chunk</a> conditioned on a camera observation.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Diffusion models as planners, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>
@@ -137,7 +158,10 @@ Reverse denoising p_theta(tau_{t-1} | tau_t, goal):
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
-<p>Diffusion planners fail in three characteristic ways that regression policies do not. First, inference latency: generating one plan requires 20 to 100 sequential denoising steps, which can exceed the control loop's time budget (Diffusion Policy on a 6-DoF arm runs at roughly 10 Hz with a U-Net denoiser, versus 30 Hz for a deterministic MLP policy). DiffuserLite (Huang et al., 2024) addresses this with consistency distillation, but the latency tradeoff must be measured, not assumed away. Second, out-of-distribution generation: the score network extrapolates poorly when the start state falls outside the training manifold; the denoised plan may be kinematically coherent yet physically impossible, and the robot executes it anyway because no feasibility check intercepts the output. Third, compounding denoising error: each reverse step uses the previous step's noisy estimate, so a bad early estimate shifts the entire chain; this is most visible on long horizons where the final waypoint drifts even when intermediate waypoints look clean.</p>
+<p>Diffusion planners fail in three characteristic ways that regression policies do not. First, inference latency: generating one plan requires 20 to 100 sequential denoising steps, which can exceed the <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-55-deployment-architecture/section-55.2.html">control loop's time budget</a> (Diffusion Policy on a 6-DoF arm runs at roughly 10 Hz with a U-Net denoiser, versus 30 Hz for a deterministic MLP policy). DiffuserLite (Huang et al., 2024) addresses this with consistency distillation, but the latency tradeoff must be measured, not assumed away. Second, <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/section-53.3.html">out-of-distribution generation</a>: the score network extrapolates poorly when the start state falls outside the training manifold; the denoised plan may be kinematically coherent yet physically impossible, and the robot executes it anyway because no feasibility check intercepts the output. Third, compounding denoising error: each reverse step uses the previous step's noisy estimate, so a bad early estimate shifts the entire chain; this is most visible on long horizons where the final waypoint drifts even when intermediate waypoints look clean.</p>
+</div>
+<div class="callout tip">
+<p>When Diffusion Policy inference is too slow for your control loop, switch the sampler from DDPM to DDIM before touching the network. DDIM is a deterministic, non-Markovian sampler that lets you reduce denoising steps from 100 to as few as 10 with negligible quality loss by setting <code>num_inference_steps=10</code> in the HuggingFace <code>DDIMScheduler</code>. The multimodal coverage you care about comes from running multiple independent DDIM rollouts with different initial noise vectors, not from stochastic steps within a single rollout. Do not conflate DDPM stochasticity with trajectory diversity: they are orthogonal knobs.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Diffusion Models As Planners</div>

@@ -40,6 +40,10 @@
 <figcaption>Figure 47.5A: Aerial agent safety architecture: a geo-fence constraint layer overrides the learned policy when the drone approaches a no-fly zone, a regulatory compliance checker validates the planned path against local airspace rules, and a safe-landing trigger activates when battery reaches a critical threshold.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The geofence polytope and control barrier function introduced here build directly on the safety formalism developed in section 54.2 and section 54.3 (Part XI), where those tools are applied to ground robots and manipulators as well. The simulation-first validation workflow connects to section 9.2, which establishes why sim-to-real transfer requires explicit constraint matching rather than just policy fidelity. Readers who want to see these safety layers operating inside a full flight controller should continue to section 47.6, where quadrotor dynamics and the control stack that the geofence monitor wraps are derived in detail.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Safety, regulation, and simulation for aerial agents</strong> is a concrete drones and aerial embodied AI skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
@@ -78,15 +82,40 @@
 </figure>
 <h2>Theory</h2>
 <p>Before any autonomy policy runs, it must operate inside a hard spatial envelope that reflects both physical limits and legal requirements. In the United States, FAA Part 107 restricts recreational and commercial small UAS to below 400 ft AGL (roughly 120 m), within visual line of sight, and out of controlled airspace unless a LAANC authorization is obtained. DJI encodes similar boundaries into its GEO 2.0 system: the firmware refuses takeoff inside a No-Fly Zone and reduces maximum altitude automatically near airports, independent of whatever the flight app requests. The lesson is that regulatory compliance is not a software feature to be toggled on before release; it is a constraint that must be baked into every layer of the autonomy stack from the first prototype flight.</p>
-<p>Safety for an autonomous drone is enforced by hard constraints that sit underneath the autonomy stack and cannot be overridden by a confident policy. The most common is the <strong>geofence</strong>, a permitted region of space. A convex geofence is naturally written as a polytope, an intersection of half-spaces:</p>
+<p>Safety for an autonomous drone is enforced by hard constraints that sit underneath the autonomy stack and cannot be overridden by a confident policy. The most common is the <strong><a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.2.html">geofence</a></strong>, a permitted region of space. A convex geofence is naturally written as a polytope, an intersection of half-spaces:</p>
 <p>$$\mathcal F = \{\, \mathbf x \in \mathbb R^3 : A\mathbf x \le \mathbf b \,\}.$$</p>
 <p>Each row of $A\mathbf x \le \mathbf b$ is one boundary plane (north, south, floor, ceiling, and so on), so a candidate position is legal exactly when every row holds. Checking membership is a single matrix-vector compare, which is cheap enough to run every control tick.</p>
-<p>A geofence only tells you whether you are inside; it does not stop you from flying out at speed. A <strong>control barrier function</strong> (CBF) makes safety dynamic. Define a scalar $h(\mathbf x)$ that is positive inside the safe set and zero on its boundary. Safety is forward-invariant if the control keeps</p>
+<p>A geofence only tells you whether you are inside; it does not stop you from flying out at speed. A <strong><a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.3.html">control barrier function</a></strong> (CBF) makes safety dynamic. Define a scalar $h(\mathbf x)$ that is positive inside the safe set and zero on its boundary. Safety is forward-invariant if the control keeps</p>
 <p>$$\dot h(\mathbf x) + \alpha\,h(\mathbf x) \ge 0,$$</p>
-<p>for some $\alpha > 0$. As $h \to 0$ (approaching the boundary) the inequality forces $\dot h \ge 0$, so the system is pushed back before it crosses. In practice this becomes a constraint in a small quadratic program that minimally adjusts the autonomy command, letting the policy do what it wants whenever it is safe and intervening only at the margin. Above these two layers sit discrete <strong>return-to-home (RTH) triggers</strong>: low battery, lost data link, GPS or estimator failure, or geofence breach each map to a fallback (hold, land, or return), with priority so the most urgent fault wins.</p>
+<p>for some $\alpha > 0$. As $h \to 0$ (approaching the boundary) the inequality forces $\dot h \ge 0$, so the system is pushed back before it crosses. In practice this becomes a constraint in a small quadratic program that minimally adjusts the autonomy command, letting the policy do what it wants whenever it is safe and intervening only at the margin.
+
+<div class="callout tip">
+<p>When using <code>safe-control-gym</code>'s CBF wrapper, the decay parameter <code>alpha</code> in the inequality $\dot{h} + \alpha h \ge 0$ defaults to <code>10.0</code>, which is tuned for slow ground robots and will cause the QP filter to override your aerial policy meters away from the actual fence boundary. For a quadrotor cruising at 3-5 m/s, start with <code>alpha=1.0</code> and reduce further if the safety controller still fights the nominal policy in open space. You can set it per-environment via the <code>task_config</code> YAML key <code>cbf_alpha</code> without touching library source.</p>
+</div>
+
+Above these two layers sit discrete <strong><a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/section-53.4.html">return-to-home (RTH) triggers</a></strong>: low battery, lost data link, GPS or estimator failure, or geofence breach each map to a fallback (hold, land, or return), with priority so the most urgent fault wins.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Pre-Flight Geofence and Regulatory Clearance Check</h4>
+<p><strong>Input:</strong> planned waypoint sequence $\mathbf{w}_{1:T} \subset \mathbb{R}^3$, geofence polytope $(A, \mathbf{b})$, CBF decay rate $\alpha &gt; 0$, regulatory ceiling $z_{\max}$, battery level $\beta \in [0,1]$, RTH priority table $\Pi$</p>
+<p><strong>Output:</strong> authorization decision $d \in \{\texttt{GO}, \texttt{HOLD}, \texttt{ABORT}\}$, per-waypoint margin vector $\mathbf{m} \in \mathbb{R}^T$, triggered failsafe label or $\emptyset$</p>
+<ol>
+<li>For each waypoint $\mathbf{w}_t$, compute the slack vector $\mathbf{s}_t = \mathbf{b} - A\mathbf{w}_t$ and the margin $m_t = \min_i s_{t,i}$. Flag $\mathbf{w}_t$ as a violation if $m_t &lt; 0$.</li>
+<li>Reject the plan immediately if any violation exists: set $d = \texttt{ABORT}$ and return the index of the first breached waypoint.</li>
+<li>Check the altitude ceiling: if $\max_t w_{t,z} &gt; z_{\max}$, set $d = \texttt{ABORT}$ with label <em>ceiling breach</em>.</li>
+<li>Evaluate the CBF forward-invariance condition along each inter-waypoint segment: verify $\dot{h}(\mathbf{x}) + \alpha\,h(\mathbf{x}) \ge 0$ holds for the nominal velocity $\dot{\mathbf{w}}_t = (\mathbf{w}_{t+1} - \mathbf{w}_t)/\Delta t$. If the condition fails at any segment, reduce $\dot{\mathbf{w}}_t$ by half and recheck; abort if three reductions still violate the condition.</li>
+<li>Consult the RTH priority table $\Pi$: if $\beta &lt; \beta_{\min}$, insert a return-to-home waypoint at the end of the plan before proceeding.</li>
+<li>Verify the RTH path itself against $(A, \mathbf{b})$ and $z_{\max}$; if it breaches either constraint, escalate to $d = \texttt{ABORT}$ with label <em>conflicting failsafes</em>.</li>
+<li>Query the airspace authorization service (LAANC or equivalent) with the bounding box $[\min \mathbf{w}_{1:T}, \max \mathbf{w}_{1:T}]$ and mission time window; abort if clearance is denied.</li>
+<li>Compute the minimum margin $m^* = \min_t m_t$. If $m^* &lt; \theta_{\text{warn}}$ (a configurable warning threshold), set $d = \texttt{HOLD}$ and alert the operator.</li>
+<li>Log the full margin vector $\mathbf{m}$, the CBF decay parameter $\alpha$, battery level $\beta$, airspace clearance token, and timestamp to the pre-flight artifact.</li>
+<li>If all checks pass, set $d = \texttt{GO}$ and pass the validated waypoint sequence to the flight controller together with the margin vector for in-flight monitoring.</li>
+</ol>
+</div>
+
 <div class="callout key-insight">
 <div class="callout-title">Real Systems, Real Constraints</div>
-<p>ArduPilot and PX4 both ship configurable geofence and RTH logic that pilots can observe in flight logs (DataFlash and ULog formats respectively). The open-source safe-control-gym library (Yuan et al., 2022) wraps these same CBF and CLF formulations in a Gym interface so teams can validate constraint satisfaction in simulation before touching hardware. For regulatory mapping, Wing and Amazon Prime Air both use the FAA's UAS Facility Maps and LAANC real-time airspace authorizations to gate autonomous missions: a mission that cannot obtain a LAANC clearance is not dispatched, regardless of what the planner computes. These pipelines show that the geofence polytope and the CBF constraint are not academic abstractions; they are the exact objects queried at takeoff in production systems.</p>
+<p>ArduPilot and <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-47-drones-and-aerial-embodied-ai/section-47.8.html">PX4</a> both ship configurable geofence and RTH logic that pilots can observe in flight logs (DataFlash and ULog formats respectively). The open-source safe-control-gym library (Yuan et al., 2022) wraps these same CBF and CLF formulations in a Gym interface so teams can <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-09-why-simulation-is-central/section-9.2.html">validate constraint satisfaction in simulation before touching hardware</a>. For regulatory mapping, Wing and Amazon Prime Air both use the FAA's UAS Facility Maps and LAANC real-time airspace authorizations to gate autonomous missions: a mission that cannot obtain a LAANC clearance is not dispatched, regardless of what the planner computes. These pipelines show that the geofence polytope and the CBF constraint are not academic abstractions; they are the exact objects queried at takeoff in production systems.</p>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>

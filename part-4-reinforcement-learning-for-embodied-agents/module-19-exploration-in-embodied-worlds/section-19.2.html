@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 19.2A</strong>: Novelty is useful when it points the agent toward learnable gaps, not when it rewards every shiny distraction equally.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the cost and risk framing from section 19.1. The intrinsic bonus designs introduced here are extended in section 19.3, which adds safety constraints that prevent curiosity from driving the agent into hazardous states, and in section 19.4, which adapts count-based and prediction-error bonuses to partially observable settings where the agent cannot directly count true world states.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Intrinsic motivation, curiosity, count-based, and novelty methods</strong> give an agent a reason to move before the external reward appears. They are useful in embodied worlds because a sparse task reward may arrive only after the robot has already discovered doorways, object affordances, viewpoints, and safe approaches.</p>
@@ -58,6 +62,24 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a sequence of transformations: encode the observation, update the novelty statistic, compute the intrinsic bonus, combine it with the task reward, and monitor whether the selected action reaches new useful state. Each transformation should have a measurable contract, otherwise a high intrinsic return can hide aimless motion.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Count-Based Intrinsic Bonus with Prediction-Error Fallback</h4>
+<p><strong>Input:</strong> policy $\pi_\theta$, feature encoder $\phi$, bonus scale $\beta$, external reward $r^{ext}$, forward model $f_\psi$ (for prediction-error mode), visit counts $N$, episode budget $T$</p>
+<p><strong>Output:</strong> updated policy parameters $\theta$, logged trace of $(o_t, \phi(o_t), N(\phi(o_t)), r_t^{int}, r_t^{ext}, a_t)$ per step</p>
+<ol>
+<li>Initialize visit count table $N \leftarrow \{\}$ and forward model parameters $\psi$ if using prediction-error mode.</li>
+<li>At each step $t$, encode the observation: $z_t = \phi(o_t)$. Choose the feature key that aligns with task-relevant state: grid cell, object contact flag, or learned embedding.</li>
+<li>Compute the intrinsic bonus. For count-based mode: $r_t^{int} = \beta / \sqrt{N(z_t) + 1}$. For prediction-error mode: $r_t^{int} = \beta \cdot \| f_\psi(z_t, a_t) - z_{t+1} \|^2$, normalized by a running standard deviation estimate $\sigma$.</li>
+<li>Increment the count: $N(z_t) \leftarrow N(z_t) + 1$.</li>
+<li>Combine rewards: $r_t = r_t^{ext} + r_t^{int}$. Clamp so that $r_t^{int} \leq r_t^{ext}$ once the agent reaches its first task milestone, preventing curiosity from dominating the policy objective.</li>
+<li>Select action $a_t \sim \pi_\theta(\cdot \mid o_t)$ and observe $o_{t+1}$.</li>
+<li>If using prediction-error mode, update forward model: $\psi \leftarrow \psi - \alpha \nabla_\psi \| f_\psi(z_t, a_t) - z_{t+1} \|^2$.</li>
+<li>Update policy with combined reward: $\theta \leftarrow \theta + \alpha \nabla_\theta \log \pi_\theta(a_t \mid o_t) \cdot r_t$.</li>
+<li>Log the tuple $(o_t, z_t, N(z_t), r_t^{int}, r_t^{ext}, a_t)$ to the result artifact at every step.</li>
+<li>After the episode, run one nuisance perturbation (change visual noise without changing task state) and confirm that $r_t^{int}$ does not increase for the perturbed frames.</li>
+<li>Compare $r_t^{int}$ and $r_t^{ext}$ curves on the same plot; if intrinsic reward does not decay as counts accumulate, the feature encoder is aliasing distinct states to the same key.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 19.2.1 shows the count-based idea without hiding it inside a learner. A repeated feature receives a smaller bonus, so the agent has a measurable reason to leave the familiar hallway and test a new cell.</p>
@@ -89,6 +111,9 @@ room:3 1 0.2</div>
 <div class="callout key-insight">
 <div class="callout-title">When to Choose Which Method</div>
 <p>Count-based bonuses (such as $r^{int} = \beta / \sqrt{N(\phi)}$) work best when the feature space is small and discrete, for example grid cells, door-key states, or object contact flags. They degrade when the feature encoder maps similar observations to distinct bins and the counts never accumulate. Curiosity methods such as the Intrinsic Curiosity Module (Pathak et al., 2017) or Random Network Distillation (Burda et al., 2018) work better in continuous or high-dimensional observation spaces because they estimate novelty through prediction error rather than literal counts. Prefer count-based bonuses when you can inspect the feature bins directly; prefer prediction-error bonuses when the observation space is image-based and a discrete partition would be too coarse to capture meaningful state differences. In both cases, set $\beta$ so the intrinsic reward is smaller than the external reward by the time the agent begins reliably reaching the first task milestone: a common starting value is $\beta = 0.01$ for dense-reward tasks and $\beta = 0.1$ for sparse-reward tasks, verified by plotting the two reward curves in the first few thousand steps.</p>
+</div>
+<div class="callout tip">
+<p>When using Random Network Distillation (RND) in continuous embodied environments, normalize the intrinsic reward stream by a running estimate of its standard deviation before combining it with the external reward. Without normalization, the raw prediction error can spike by two to three orders of magnitude during the first few thousand steps and override the external signal entirely, preventing the policy from learning the task at all. In the <code>stable-baselines3-contrib</code> package the wrapper <code>RNDWrapper</code> exposes a <code>normalize_intrinsic_rewards</code> flag that is <code>False</code> by default; set it to <code>True</code> and verify by plotting the ratio of mean intrinsic reward to mean external reward, which should stay below 1.0 once the agent begins reaching task milestones.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>

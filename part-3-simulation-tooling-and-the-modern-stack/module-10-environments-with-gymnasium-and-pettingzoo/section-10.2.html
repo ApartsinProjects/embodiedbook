@@ -39,6 +39,10 @@
 <figcaption>Figure 10.2A: Observation and action spaces visualized side by side for a continuous-control environment: a Dict observation space with image and proprioception keys, and a Box action space with joint torque bounds.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Gymnasium step-reset loop introduced in section 10.1. The space design principles developed here are extended directly in section 10.4, where wrappers transform and compose spaces for vectorized training, and recur in Part V alongside demonstration data formats, where observation space alignment between the environment and the dataset is a recurring source of silent breakage.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Observation and action spaces defines the contract an embodied experiment exposes to learning code: observations, actions, rewards, termination, truncation, rendering, and diagnostic info. Gymnasium handles the single-agent version of that contract, while PettingZoo extends the same discipline to multi-agent interaction.</p>
@@ -58,6 +62,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Spaces do three jobs at once: they document the contract, generate samples for smoke tests, and let wrappers or vector environments transform data safely. If <code>space.contains(value)</code> fails, the bug is at the interface boundary rather than inside the policy optimizer.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Observation and Action Space Design Checklist</h4>
+<p><strong>Input:</strong> task description, sensor suite $\mathcal{O}$, actuator set $\mathcal{A}$, policy class $\pi_\theta$</p>
+<p><strong>Output:</strong> validated space declarations $(\mathcal{S}_o, \mathcal{S}_a)$ with dtype, bounds, units, and a passing <code>contains</code> smoke test</p>
+<ol>
+<li>List every signal the real robot can sense at decision time; assign each a name, shape, dtype, physical unit, and bound $[o_{\min}, o_{\max}]$.</li>
+<li>For each continuous signal, declare a <code>Box</code> space with explicit <code>low</code>, <code>high</code>, <code>shape</code>, and <code>dtype</code>; for each discrete choice, declare <code>Discrete(n)</code> or <code>MultiDiscrete([n_1, \ldots, n_k])</code>.</li>
+<li>Group heterogeneous signals into a <code>Dict</code> space keyed by sensor name so that channel identity is preserved throughout the training stack.</li>
+<li>Repeat steps 1 through 3 for the action set $\mathcal{A}$: decide which dimensions are continuous commands (joint targets, velocities $\dot{q}$) and which are discrete switches (gripper open/close, mode select $m \in \{0,\ldots,M-1\}$).</li>
+<li>Move any simulator-only state (ground-truth object pose, contact forces not available on hardware) from the policy observation into the <code>info</code> dictionary.</li>
+<li>Sample $N \geq 10$ values via <code>observation_space.sample()</code> and assert <code>observation_space.contains(s)</code> for each; repeat for the action space.</li>
+<li>Run one full <code>reset</code> and <code>step</code> cycle; assert <code>observation_space.contains(obs)</code> on the returned observation to catch dtype or shape mismatches between the declared space and the simulator output.</li>
+<li>Confirm that no action dimension silently saturates at its bound $a_{\min}$ or $a_{\max}$ during a random-policy rollout of $T$ steps; saturation reveals a mismatch between the declared range and the controller's operating envelope.</li>
+<li>Record the finalized space definitions, including dtype, bounds, and units, as an artifact alongside the experiment configuration so that the space contract is reproducible independently of the code.</li>
+<li>Freeze the space declarations before tuning the policy architecture $\pi_\theta$ or the learning rate $\alpha$; architecture changes made after the space is stable do not invalidate the contract.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 10.2.1 builds a structured observation space for a tabletop robot. The camera, arm joints, and gripper state stay separate, so debugging can identify which signal violated the contract.</p>

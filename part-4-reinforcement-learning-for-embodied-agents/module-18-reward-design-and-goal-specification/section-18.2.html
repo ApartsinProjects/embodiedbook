@@ -39,6 +39,10 @@
 <figcaption>Figure 18.2A: Sparse vs. dense reward landscapes for a block-stacking task: the sparse signal is a single pulse at success while the shaped dense signal provides a gradient toward the goal at every state.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the reward-misspecification risks introduced in section 18.1. The shaping techniques developed here feed directly into section 18.3, where sparse rewards are combined with hindsight experience replay to handle goal-conditioned tasks. The exploration problem created by sparse rewards recurs in section 19.1, where embodied-world costs make trial-and-error especially expensive.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Sparse rewards tell the truth late; dense rewards speak early but may lie.</strong> A sparse success bonus preserves the task definition, yet it can leave a robot with almost no learning signal. A dense shaping term can guide exploration, yet an arbitrary dense term can teach the agent to optimize the hint instead of the goal.</p>
@@ -99,6 +103,23 @@ for step, reward in enumerate(sparse_rewards):
 <li>Log raw reward, shaping term, and shaped reward separately.</li>
 <li>Report final success using the unshaped metric, then report shaping as a training aid.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Potential-Based Reward Shaping Design Checklist</h4>
+<p><strong>Input:</strong> Task MDP with state space $S$, action space $A$, sparse reward $r(s,a,s')$, discount factor $\gamma$, policy parameters $\theta$</p>
+<p><strong>Output:</strong> Shaped reward $r'(s,a,s')$ with verified policy invariance; per-step audit log; unshaped evaluation metric</p>
+<ol>
+<li>Define the sparse success condition $r_{\text{sparse}}$ first: a termination event with physical units (for example, object within 2 cm of target for 10 steps). Do not proceed until this signal is unambiguous.</li>
+<li>Identify the learning bottleneck: is it exploration (agent never finds success), credit assignment (success occurs but $\nabla_\theta J$ is too weak), or delayed feedback (trajectory too long for return to propagate)? Record the diagnosis before choosing any dense term.</li>
+<li>Choose a scalar potential $\Phi : S \to \mathbb{R}$ with physical units (for example, $\Phi(s) = -\|s_{\text{ee}} - s_{\text{goal}}\|_2$ in meters). The potential must be stationary: it must not depend on training iteration, curriculum stage, or nonstationary model parameters.</li>
+<li>Compute the shaping term $F(s,a,s') = \gamma\,\Phi(s') - \Phi(s)$. Verify telescoping: summing $F$ over a trajectory from $s_0$ to $s_T$ yields $\gamma^T\Phi(s_T) - \Phi(s_0)$, a boundary term that does not create a new per-step preference.</li>
+<li>Form the shaped reward $r'(s,a,s') = r_{\text{sparse}}(s,a,s') + F(s,a,s')$ and confirm that $r'$ and $r_{\text{sparse}}$ share the same optimal policy $\pi^*$ under the discounted MDP.</li>
+<li>Log each step as a tuple $\langle r_{\text{sparse}},\,F,\,r',\,\Phi(s'),\,\text{termination\_cause} \rangle$ so the two signals remain auditable throughout training.</li>
+<li>Train the policy $\pi_\theta$ on $r'$, updating parameters with gradient $\nabla_\theta J = \mathbb{E}_{\pi_\theta}[\nabla_\theta \log \pi_\theta(a|s)\,r'(s,a,s')]$.</li>
+<li>Evaluate on the unshaped metric: run $\pi_\theta$ in an environment where the shaping coefficient is set to zero and report raw success rate, safety cost, time to success, and energy use on a fixed seed panel.</li>
+<li>If unshaped success stagnates while shaped return improves, return to step 3: the potential is either nonstationary, encodes a different goal, or is too easy relative to the true task.</li>
+<li>Record the final audit entry: potential used, shaping formula, training metric ($r'$), evaluation metric ($r_{\text{sparse}}$), and whether the policy invariance assumption held throughout training.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>A dense distance reward can teach a manipulator to hover near the object because hovering keeps earning progress-like feedback while grasping risks failure. The fix is not to avoid dense rewards entirely. The fix is to make shaping policy-invariant when possible and to audit the final behavior with the sparse success metric.</p>
@@ -106,6 +127,9 @@ for step, reward in enumerate(sparse_rewards):
 <div class="callout warning">
 <div class="callout-title">Common Pitfall: Nonstationary Potentials</div>
 <p>Potential-based shaping preserves optimal policies only when the potential $\Phi$ is fixed across training. Three common violations break this guarantee. First, curriculum schedules that gradually tighten the goal tolerance change $\Phi$ mid-training, so the agent can receive negative shaping for a step that was previously rewarded. Second, learned reward models (from human preferences or inverse RL) update $\Phi$ as new labels arrive, inverting the shaping gradient without any explicit task change. Third, a potential that encodes relative position to a moving obstacle produces different shaped rewards in different environment seeds, making the policy sensitive to initialisation rather than to real progress. In all three cases the policy may appear to train faster on shaped return while the raw success rate stagnates or regresses.</p>
+</div>
+<div class="callout tip">
+<p>When using Stable-Baselines3, <code>EvalCallback</code> scores policies on the shaped reward by default, so a run with a large shaping bonus can appear to improve while raw task success quietly regresses. Pass a separate evaluation environment wrapped with shaping disabled (set the shaping coefficient to zero in the wrapper constructor) and supply it via the <code>eval_env</code> argument so the callback reports only sparse task success. This single change surfaces the most common silent failure in potential-based shaping experiments.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

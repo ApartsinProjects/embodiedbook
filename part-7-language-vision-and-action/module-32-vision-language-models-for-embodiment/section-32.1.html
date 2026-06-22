@@ -38,6 +38,9 @@
 <img alt="Technical illustration for Section 32.1: From image-text models to embodied perception." loading="lazy" src="images/chapter-32-illustration-01.png"/>
 <figcaption>Figure 32.1A: The transition from image-text pretraining to embodied perception: a VLM pretrained on web data is fine-tuned on robot-scene images, transferring open-vocabulary object recognition to an agent operating in a real kitchen.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the visual perception pipeline introduced in section 27.1 and the localization concepts from section 29.1. The representation ideas introduced here are examined in depth in section 32.2 (CLIP, SigLIP, and DINOv2 encoders) and section 32.3 (open-vocabulary detection), which show how the same pretrained features become grounding tools for robot scenes.</p>
+</div>
 
 <p>Read the figure as a grounding pipeline: image and language tokens are not yet robot state until the section explains how they become time-stamped facts, affordances, uncertainty, and a logged control decision.</p>
 <figure class="diagram" id="fig-32-1">
@@ -92,6 +95,22 @@ $$
 <div class="callout-title">Why The Math Matters</div>
 <p>The cosine score tells us whether an image and phrase align in representation space. The belief $b_t(s)$ tells us whether the robot should move left, wait for another view, or abort because the target is uncertain. The first quantity is semantic evidence; the second is control state.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: VLM-to-Embodied-Belief Grounding</h4>
+<p><strong>Input:</strong> image sequence $I_{1:t}$, task query $q_t$, candidate region set $\mathcal{R} = \{r_1, \ldots, r_K\}$, action history $a_{1:t-1}$, staleness threshold $\tau$</p>
+<p><strong>Output:</strong> belief distribution $b_t(s)$ over scene state $s$, selected action $a_t$ or reobservation flag</p>
+<ol>
+<li>Encode the current image and task query: compute $f_I(I_t)$ and $f_T(q_t)$ using a pretrained VLM encoder with parameters $\theta$.</li>
+<li>Check temporal freshness: if the frame age exceeds threshold $\tau$, raise a reobservation flag and halt; do not proceed to scoring on a stale observation.</li>
+<li>For each candidate region $r_k \in \mathcal{R}$, compute the cosine similarity score $\sigma_k = f_I(r_k)^\top f_T(q_t) / (\|f_I(r_k)\| \, \|f_T(q_t)\|)$.</li>
+<li>Convert raw scores to a calibrated probability distribution: $p_k = \exp(\sigma_k / \alpha) / \sum_j \exp(\sigma_j / \alpha)$, where $\alpha$ is a temperature controlling commitment sharpness.</li>
+<li>Compute the confidence margin $\Delta = p_{(1)} - p_{(2)}$ between the top two candidates. If $\Delta$ falls below a task-specific threshold, trigger reobservation rather than action.</li>
+<li>Fuse semantic probabilities with geometric evidence (depth, reachability, frame offset) to update the belief $b_t(s) = p(s_t = s \mid I_{1:t}, a_{1:t-1}, q_t)$.</li>
+<li>Select action $a_t = \pi(b_t)$ under policy $\pi$ only when $\Delta$ exceeds the threshold and the belief entropy $H(b_t)$ is below the safety bound.</li>
+<li>Log the full evidence artifact: frame id, timestamp, prompt $q_t$, region scores $\{\sigma_k\}$, margin $\Delta$, chosen action $a_t$, and episode outcome.</li>
+<li>On the next control cycle, use the logged outcome as a gradient signal to refine $\theta$ or $\alpha$ if online adaptation is enabled: $\theta \leftarrow \theta - \nabla_\theta \mathcal{L}(\pi, b_t, \text{outcome})$.</li>
+</ol>
+</div>
 <h2>Worked Numeric Example</h2>
 <p>Code Fragment 1 turns a few region-language similarities into a calibrated object-selection distribution. This mirrors the simplest embodied use case: the robot must choose which region deserves the next action or reobservation.</p>
 <pre><code class="language-python"># Convert region-language similarities into a calibrated target distribution.
@@ -116,6 +135,9 @@ print({"target": region_names[best], "probabilities": probs.round(3).tolist(), "
 </div>
 <p>The expected output is a normalized probability vector whose top class is <code>red_mug</code> and whose confidence margin stays explicitly visible. A builder should read this trace as "semantic evidence exists, but the gap is not yet huge," which is why the margin is stored as a control signal for reobservation rather than hidden inside a single winning label.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This snippet converts three cosine similarities into a normalized target distribution over candidate regions. The `temperature` parameter controls whether the robot behaves cautiously or commits early, and the `margin` becomes a simple abstention signal. In a real loop, a small margin means "look again" rather than "grasp now."</div>
+<div class="callout tip">
+<p>Set <code>temperature</code> by counting your candidate regions, not by feel. With three to five candidates a value around 0.10 produces a useful spread; with fifteen or more candidates the same value collapses the distribution onto a single region regardless of how close the scores are, hiding genuine ambiguity. A practical calibration step is to log the full probability vector over a held-out scene set and confirm that the second-highest entry still carries nonzero mass before trusting the margin as an abstention signal. If it does not, raise the temperature until the margin becomes informative again.</p>
+</div>
 <p>The probability gap is a small but important embodied quantity. If the top two regions are nearly tied, a cautious robot should gather another view or ask for a disambiguating instruction instead of treating the current winner as ground truth. This is the same uncertainty-sensitive design principle that appeared in <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">state estimation and sensor fusion</a>.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>

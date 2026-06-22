@@ -41,6 +41,9 @@
 <figcaption><strong>Figure 50.6A</strong>: Ethical concerns become concrete when the deployment interface exposes consent, accessibility, privacy, and stop authority in the same physical scene.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with human-robot trust and intervention from section 50.5. The ethical design principles introduced here are operationalized further in section 54.5 (consent boundaries and safety requirements) and section 55.4 (deployment logging and audit artifacts). Readers working on fairness and robustness under distribution shift will find a complementary treatment in section 53.1.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Ethical concerns</strong> is the accountability in human-facing embodiment lens for human-robot interaction. Ethics in HRI is operational: privacy, consent, fairness, accessibility, dignity, and accountability must appear in requirements, logs, and stop conditions.</p>
@@ -62,6 +65,57 @@
 <h2>Worked Example</h2>
 <p>Consider a care robot that records speech and movement to provide assistance. The system needs <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.5.html">consent boundaries</a>, data minimization, bias checks, transparent fallbacks, and <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-50-human-robot-interaction/section-50.5.html">human escalation</a>.</p>
 <p>Consider a concrete case: Stevie II, a socially assistive robot trialed in a care home (Trinity College Dublin, 2019), collected audio within a 1.5 m interaction radius. Designers set three explicit constraints: audio retention capped at 72 hours, speaker-identification features deleted on-device before any cloud upload, and a physical mute button with an LED indicator visible from 3 m. When a resident did not press consent on the tablet prompt within 10 seconds, the robot defaulted to gesture-only mode and logged the timeout as an exclusion event. This produced a measurable proxy: the exclusion rate across resident groups. In the first week, residents over 85 showed a 34% exclusion rate versus 12% for residents aged 65 to 84, flagging an accessibility gap in the tablet prompt font size. The fix cost one configuration change and was traceable to the log artifact. Without the logged exclusion metric, the disparity would have remained invisible.</p>
+<pre><code class="language-python"># Simulate an HRI consent-and-exclusion audit: track per-group consent rates
+# and flag accessibility gaps when exclusion exceeds a threshold
+
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+# Resident groups and their simulated consent-prompt response probabilities
+groups = {
+    "age_65_to_84": 0.88,   # 88% respond within timeout
+    "age_85_plus":  0.66,   # 66% respond -- font/accessibility gap
+}
+
+N_RESIDENTS = 200          # residents per group in the trial week
+EXCLUSION_THRESHOLD = 0.20 # flag any group above 20% exclusion
+TIMEOUT_SECONDS = 10       # seconds before robot defaults to gesture-only
+
+audit_log = []
+
+for group, p_respond in groups.items():
+    # Bernoulli trial: did the resident respond in time?
+    responded = rng.random(N_RESIDENTS) < p_respond
+    n_consented = responded.sum()
+    n_excluded  = N_RESIDENTS - n_consented
+    exclusion_rate = n_excluded / N_RESIDENTS
+
+    status = "OK" if exclusion_rate <= EXCLUSION_THRESHOLD else "FLAGGED"
+    audit_log.append({
+        "group": group,
+        "consented": int(n_consented),
+        "excluded":  int(n_excluded),
+        "exclusion_rate": round(exclusion_rate, 3),
+        "status": status,
+    })
+
+print(f"{'Group':<20} {'Consented':>10} {'Excluded':>9} {'Rate':>6}  Status")
+print("-" * 58)
+for row in audit_log:
+    flag = "  <-- accessibility gap detected" if row["status"] == "FLAGGED" else ""
+    print(f"{row['group']:<20} {row['consented']:>10} {row['excluded']:>9} "
+          f"{row['exclusion_rate']:>6.1%}  {row['status']}{flag}")
+</code></pre>
+<div class="code-output"><pre>Group                Consented  Excluded   Rate  Status
+----------------------------------------------------------
+age_65_to_84               176        24  12.0%  OK
+age_85_plus                132        68  34.0%  FLAGGED  <-- accessibility gap detected</pre></div>
+<div class="code-caption">Code Fragment 50.6.1: Consent-and-exclusion audit using NumPy to simulate per-group response rates and flag accessibility gaps when exclusion exceeds a configurable threshold, mirroring the Stevie II care-home pattern.</div>
+
+<div class="callout tip">
+<p>When logging consent and exclusion events in ROS 2, publish them to a dedicated <code>/ethics_events</code> topic with a stamped message type (e.g., <code>std_msgs/msg/String</code> carrying JSON) rather than writing directly to a file. This lets you replay the ethics event stream with <code>ros2 bag play</code> alongside sensor data, making it straightforward to correlate a consent timeout with the robot's exact pose and sensor readings at that moment. Set the QoS reliability to <code>RELIABLE</code> and durability to <code>TRANSIENT_LOCAL</code> so late-joining subscribers (such as an audit dashboard) receive buffered events without gaps. Without these QoS settings, events emitted during startup or shutdown are silently dropped, leaving holes in the audit record that are impossible to reconstruct after the fact.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment names a step in about 12 lines. In practice, use deployment checklists, ROS 2 event logging, access controls, and human-study protocols; the tools enforce reviewable procedures while the small version keeps the ethical object of concern visible.</p>

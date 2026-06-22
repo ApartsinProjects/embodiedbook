@@ -40,14 +40,18 @@
 <figcaption>Figure 41.4A: Generating scenes and synthetic experience: a scene diffusion model conditions on a task description and an initial robot pose, synthesizes photorealistic environment images and contact configurations, and the resulting synthetic episodes augment the training set.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with domain randomization and synthetic data pipelines from section 13.2, and with offline RL dataset construction from section 25.3. The guidance-weight trade-off introduced here is the central concern of section 41.5, which covers the risks of generated experience in detail. The scene-coverage ideas also recur in Part IX alongside active data collection and curiosity-driven exploration.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Generating Scenes And Synthetic Experience</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Planning with generative models reframes the planner as a sampler. Diffuser (Janner et al., 2022) generates a full trajectory at once by diffusion, then steers that generation toward high reward with classifier guidance, so the act of planning and the act of optimizing collapse into the same denoising forward pass. Decision Diffuser instead conditions on a desired return-to-go for offline reinforcement learning, sampling trajectories that the dataset suggests will achieve that return. The same generative machinery also produces candidate futures and synthetic scenes that planners and learners can consume.</p>
-<p>The catch is shared across all of these uses: generated trajectories and scenes help only when they stay near the real control regime, and the guidance that makes them high-reward can also pull them off the data manifold. The right framing is generation as a proposal engine whose proposals must survive a feasibility check, whether the proposal is a planned trajectory or a synthetic training scene.</p>
+<p>Planning with generative models reframes the planner as a sampler. <a href="../../part-8-world-models-and-model-based-embodied-ai/module-41-diffusion-and-generative-planning/section-41.2.html">Diffuser (Janner et al., 2022) generates a full trajectory at once by diffusion</a>, then steers that generation toward high reward with classifier guidance, so the act of planning and the act of optimizing collapse into the same denoising forward pass. Decision Diffuser instead conditions on a desired return-to-go for <a href="../../part-5-learning-from-demonstration-and-robot-data/module-25-offline-rl-and-dataset-based-robot-learning/section-25.3.html">offline reinforcement learning</a>, sampling trajectories that the dataset suggests will achieve that return. The same generative machinery also produces candidate futures and synthetic scenes that planners and learners can consume.</p>
+<p>The catch is shared across all of these uses: generated trajectories and scenes help only when they stay near the real control regime, and the guidance that makes them high-reward can also pull them off the data manifold. The right framing is generation as a proposal engine whose proposals must survive a <a href="../../part-8-world-models-and-model-based-embodied-ai/module-37-model-based-rl-and-mpc/section-37.3.html">feasibility check</a>, whether the proposal is a planned trajectory or a synthetic training scene.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Generating Scenes And Synthetic Experience, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
@@ -60,6 +64,24 @@ $$</p>
 <p>where $c$ is the conditioning (a goal or a high-return signal) and $w$ is the guidance weight. With $w=0$ the sample is unconditional; larger $w$ pushes harder toward the conditioned objective. The trade-off is direct: strong guidance shapes more goal-directed plans but can drag samples off the data manifold into dynamically infeasible trajectories, which is why a feasibility filter still sits downstream. <strong>Decision Diffuser</strong> uses this same conditioning mechanism with the return-to-go as $c$, turning offline reinforcement learning into conditional trajectory generation.</p>
 <p>A practical cost note frames the rest of the chapter: generative planning pays 20 to 50 denoising steps at inference for every plan, against a single forward pass for a deterministic policy. That latency is the price of multimodality and guidance, and it is exactly what the speedup work in Section 41.5 attacks.</p>
 <p>When generated trajectories are reused as training data, a dataset mixes real trajectories $\mathcal{D}_r$ with generated ones $\mathcal{D}_g$ under a weight $\alpha$, $\mathcal{L}(\theta)=\mathbb{E}_{\mathcal{D}_r}[\ell_\theta] + \alpha\,\mathbb{E}_{\mathcal{D}_g}[\ell_\theta]$. The hard part is not the mixture; it is ensuring $\mathcal{D}_g$ adds coverage near task-relevant but underrepresented states rather than injecting trajectories that violate real embodiment dynamics.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Guided Synthetic Scene Generation and Dataset Augmentation</h4>
+<p><strong>Input:</strong> real dataset $\mathcal{D}_r$, scene diffusion model $p_\theta$, guidance weight $w$, mixture weight $\alpha$, verifier $V$, target coverage region $\mathcal{R}$, denoising steps $T$</p>
+<p><strong>Output:</strong> augmented training dataset $\mathcal{D}_r \cup \mathcal{D}_g^*$, policy parameters $\theta^*$</p>
+<ol>
+<li>Identify underrepresented region $\mathcal{R}$ by computing state-space density from $\mathcal{D}_r$; flag bins with fewer than a threshold count as coverage gaps.</li>
+<li>For each desired synthetic sample, draw a conditioning signal $c \sim \mathcal{R}$ (a rare state, contact configuration, or scene description targeting the coverage gap).</li>
+<li>Initialize trajectory or scene $\tau_T \sim \mathcal{N}(0, I)$ and run the guided reverse diffusion loop for $t = T, T{-}1, \ldots, 1$:
+$$\tilde{\epsilon}_\theta = (1+w)\,\epsilon_\theta(\tau_t, t, c) - w\,\epsilon_\theta(\tau_t, t), \qquad \tau_{t-1} = \tau_t - \eta\,\tilde{\epsilon}_\theta.$$</li>
+<li>Obtain the denoised proposal $\hat{\tau} = \tau_0$.</li>
+<li>Apply verifier $V(\hat{\tau})$: check geometric feasibility (no interpenetration, valid contact normals), dynamic plausibility (within reach radius, gravity consistent), and realism score; reject proposals that fail any criterion.</li>
+<li>Collect accepted proposals into generated set $\mathcal{D}_g$; repeat steps 2 to 5 until $|\mathcal{D}_g|$ meets the target budget.</li>
+<li>Form the augmented dataset with mixture weight $\alpha$: $\mathcal{L}(\theta) = \mathbb{E}_{\mathcal{D}_r}[\ell_\theta] + \alpha\,\mathbb{E}_{\mathcal{D}_g}[\ell_\theta]$.</li>
+<li>Train or fine-tune policy $\pi_\theta$ on the augmented dataset, using the same seed panel and evaluation split as the real-data baseline.</li>
+<li>Evaluate transfer gap: run $\pi_\theta$ on hardware (or a held-out simulation split) and compare against the policy trained on $\mathcal{D}_r$ alone.</li>
+<li>If transfer gap is positive (synthetic policy performs worse), reduce $\alpha$ or tighten the verifier $V$ and return to step 2; otherwise record $\mathcal{D}_g^*$ and $\theta^*$ as the accepted augmentation.</li>
+</ol>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Classifier-free guidance trains one network to produce both conditional and unconditional noise predictions (by randomly dropping the condition during training), then combines them at sampling time with weight $w$. No separate classifier is needed, and $w$ becomes a single inference-time dial that trades goal adherence against on-manifold realism.</p>
@@ -98,6 +120,9 @@ w=1.0: endpoint=[1.084, 0.012] dist_to_goal=0.085 feasible=True
 w=4.0: endpoint=[2.083, 0.012] dist_to_goal=1.083 feasible=False</code></div>
 <div class="code-caption"><strong>Code Fragment 41.4</strong>.1 runs guided trajectory denoising at three guidance weights and reports goal distance and feasibility for each.</div>
 <p>The three rows are the whole story of guidance. At $w=0$ the plan stays comfortably feasible but stops short of the goal; at $w=1$ it reaches the goal and is still feasible; at $w=4$ it overshoots far past the feasible reach radius. This is why Diffuser pairs guidance with a feasibility check: turning $w$ up makes plans more goal-directed right up to the point where they leave the manifold of trajectories the robot can actually execute. Decision Diffuser swaps the goal condition for a return-to-go target, but the same dial and the same risk apply.</p>
+<div class="callout tip">
+<p>When tuning the guidance weight <code>w</code> in Diffuser or Diffusion Policy, calibrate it against the planning horizon <code>H</code> jointly, not in isolation. A weight that keeps plans feasible at <code>H=5</code> will routinely push them off the data manifold at <code>H=20</code>, because guidance errors compound across steps. A reliable heuristic is to sweep <code>w</code> at your largest intended horizon first, lock that value, then verify it is not too conservative at shorter horizons. Logging the ratio of feasibility-check rejections to total samples (rather than just final task success) gives an early signal that <code>w</code> has drifted into the infeasible regime before downstream policy performance degrades.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Generating scenes and synthetic experience, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>
@@ -136,7 +161,7 @@ w=4.0: endpoint=[2.083, 0.012] dist_to_goal=1.083 feasible=False</code></div>
 </div>
 
 
-<p>Synthetic data helps when three conditions hold together: real coverage is sparse in the target region, the generator can be conditioned on that region specifically, and a verifier (simulator check, geometric filter, or learned realism classifier) can reject off-manifold proposals before they enter training. When any one of these is missing, the mixture tends to hurt. A generator conditioned on a broad return signal will fill in high-return but physically impossible transitions; a verifier that only checks visual realism will pass scenes with violated contact constraints; and an unconditioned generator will simply oversample the already-dense part of the distribution. The practical signal to watch is transfer gap: if a policy trained on real-plus-synthetic performs worse on hardware than one trained on real alone, the synthetic component is likely adding distributional shift rather than coverage.
+<p>Synthetic data helps when three conditions hold together: real coverage is sparse in the target region, the generator can be conditioned on that region specifically, and a verifier (simulator check, geometric filter, or learned realism classifier) can reject off-manifold proposals before they enter training. When any one of these is missing, the mixture tends to hurt. A generator conditioned on a broad return signal will fill in high-return but physically impossible transitions; a verifier that only checks visual realism will pass scenes with violated <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/section-13.2.html">contact constraints</a>; and an unconditioned generator will simply oversample the already-dense part of the distribution. The practical signal to watch is <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/section-20.1.html">transfer gap</a>: if a policy trained on real-plus-synthetic performs worse on hardware than one trained on real alone, the synthetic component is likely adding distributional shift rather than coverage.
 
 The most reliable pattern is to use generation as a data proposal engine and keep a conservative verifier downstream. Scene generators propose clutter, lighting, camera poses, or long-horizon futures; simulators, geometric filters, and held-out hardware tests decide whether those proposals are worth learning from.</p>
 <p>For teaching and production alike, insist on one artifact that records real-sample count, synthetic-sample count, weighting, realism checks, and transfer outcome. Without that bookkeeping, synthetic data stories are nearly impossible to audit.</p>

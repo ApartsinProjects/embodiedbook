@@ -44,6 +44,9 @@
 <p><strong>The policy gradient theorem</strong> explains why we can improve a policy by multiplying the gradient of its log probability by a return signal. <strong>REINFORCE</strong> is the direct Monte Carlo version: sample trajectories, compute returns, and push up the probability of actions that appeared in successful trajectories.</p>
 </div>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with stochastic policies and the expected-return objective introduced in section 15.1. The likelihood-ratio estimator derived here is extended in section 15.3, which replaces raw Monte Carlo returns with actor-critic advantage estimates and GAE. The same log-probability mechanism recurs in Part V alongside trust-region and clipping constraints when PPO is applied to contact-rich locomotion tasks.</p>
+</div>
 
 
 <p>The policy objective is still expected return, $J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}[G(\tau)]$. The obstacle is that the trajectory distribution contains environment dynamics, contact physics, resets, sensor noise, and reward delays. REINFORCE works because it differentiates the probability of the sampled trajectory with respect to the policy, while treating the environment as a source of samples.</p>
@@ -63,6 +66,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>REINFORCE is an unbiased but noisy estimator. It waits until returns are known, assigns the same delayed evidence to many earlier sampled actions, and therefore needs many trajectories or a good baseline to become stable.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: REINFORCE with Baseline</h4>
+<p><strong>Input:</strong> differentiable policy $\pi_\theta$, step size $\alpha$, baseline $b(s)$ (e.g., a value network or running mean), discount $\gamma$, number of episodes $N$</p>
+<p><strong>Output:</strong> updated parameters $\theta$ that increase the probability of high-return actions</p>
+<ol>
+<li>Initialize policy parameters $\theta$ randomly or from a pretrained checkpoint.</li>
+<li>For each episode $i = 1, \ldots, N$: sample a complete trajectory $\tau^{(i)} = (s_0, a_0, r_0, s_1, a_1, r_1, \ldots, s_T)$ by executing $\pi_\theta$ in the environment and recording observations, actions, and rewards.</li>
+<li>For each timestep $t$ in the trajectory, compute the discounted return $G_t = \sum_{k=t}^{T} \gamma^{k-t} r_k$.</li>
+<li>Compute the advantage signal $\delta_t = G_t - b(s_t)$ by subtracting the baseline from the return.</li>
+<li>Compute the log probability of each sampled action: $\ell_t = \log \pi_\theta(a_t \mid s_t)$. Use the post-processing action (after any clipping or rescaling) to avoid mismatch.</li>
+<li>Form the policy gradient estimate: $\hat{g} = \frac{1}{T} \sum_t \delta_t \nabla_\theta \ell_t$.</li>
+<li>Update the policy parameters: $\theta \leftarrow \theta + \alpha \hat{g}$.</li>
+<li>Update the baseline $b(s_t)$ toward $G_t$ using a separate regression step or running average so future episodes start with a better variance reference.</li>
+<li>Normalize advantages within the current batch (subtract mean, divide by standard deviation) when reward scale varies across tasks or environment resets.</li>
+<li>Repeat steps 2 through 9 until the expected return $J(\theta) = \mathbb{E}_\tau[G(\tau)]$ converges or a sample budget is reached.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 computes a tiny REINFORCE-style update for a two-action policy. The numbers show why a good return attached to a low-probability action produces a large learning signal.</p>
@@ -100,6 +120,9 @@ right advantage: -0.5 loss term: -0.144</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The estimator becomes misleading if the stored log probability does not match the action that actually reached the environment. This can happen after action clipping, invalid-action masking, controller overrides, or unit conversions between policy output and robot command.</p>
+</div>
+<div class="callout tip">
+<p>To verify that your stored log probabilities are consistent, call <code>dist.log_prob(clipped_action)</code> rather than <code>dist.log_prob(raw_action)</code> when your policy clips or rescales its output before sending it to the environment. In PyTorch distributions, <code>torch.distributions.Normal.log_prob(x)</code> evaluates at whatever <code>x</code> you pass, so passing the pre-clip value silently produces a mismatched gradient. A quick sanity check is to assert that <code>dist.log_prob(stored_action).mean()</code> matches the log probability recorded during rollout to within 1e-5; a mismatch larger than that almost always points to a unit conversion or clipping step that was applied after sampling but before storage.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

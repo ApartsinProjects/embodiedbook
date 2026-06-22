@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 17.2A</strong>: Fast walking policies come from disciplined parallel practice: many robots, varied resets, short horizons, and a separate test panel that refuses to be impressed by reward alone.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with PPO rollout mechanics and advantage estimation from sections 15.4 and 15.5. The parallel recipe developed here is extended in section 17.5, which adds teacher-student distillation on top of the same training loop, and in section 17.6, which addresses throughput and cost engineering at scale. The ideas about reward shaping hazards introduced here recur in Part 4 alongside domain randomization and sim-to-real transfer in sections 20.2 and 20.3.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Learning to walk in minutes</strong> became plausible when simulators could generate enough locomotion experience per wall-clock minute to keep PPO updates saturated. The recipe is not automatic acceleration; it is a careful balance of environment count, rollout horizon, reward shaping, curriculum, minibatches, and evaluation separation.</p>
@@ -62,6 +66,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The loop is: reset many robots across terrain and command strata, collect $T$ steps, compute advantages, shuffle the $T N$ samples into minibatches, run a few PPO epochs, update normalization statistics, and evaluate on held-out seeds. The policy never sees an isolated episode as the primary training object; it sees a dense rollout block.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Parallel-RL Locomotion Training (PPO, $N$ Environments)</h4>
+<p><strong>Input:</strong> policy parameters $\theta$, environment count $N$, rollout horizon $T$, learning rate $\alpha$, minibatch count $M$, PPO epochs $K$, held-out seed panel $\mathcal{S}_{\text{eval}}$</p>
+<p><strong>Output:</strong> trained policy $\pi_\theta$ with versioned normalization statistics $\mu$, $\sigma$</p>
+<ol>
+<li>Initialize $N$ parallel simulator instances with randomized terrain, mass, friction, and command seeds drawn from the training distribution.</li>
+<li>Collect a rollout block: for each step $t = 1, \ldots, T$, execute $\pi_\theta(a \mid s)$ in all $N$ environments simultaneously, storing transitions $(s_t, a_t, r_t, s_{t+1})$ in device buffers.</li>
+<li>Compute per-environment advantages $\hat{A}_t$ using Generalized Advantage Estimation with discount $\gamma$ and trace parameter $\lambda$, using the current value estimate $V_\theta(s_t)$.</li>
+<li>Update running observation normalization statistics $\mu \leftarrow \mu + \Delta\mu$, $\sigma \leftarrow \sigma + \Delta\sigma$ over the $TN$ collected observations.</li>
+<li>Shuffle the $TN$ transitions into $M$ minibatches of size $TN / M$.</li>
+<li>For each PPO epoch $k = 1, \ldots, K$: compute the clipped surrogate objective $L^{\text{CLIP}}(\theta)$ and update $\theta \leftarrow \theta + \alpha \nabla_\theta L^{\text{CLIP}}(\theta)$; enforce KL budget and stop early if $\mathrm{KL}(\pi_\theta \| \pi_{\theta_{\text{old}}}) > \delta$.</li>
+<li>Log each reward term $r^{(i)}_t$ and each reset reason separately; do not log only the aggregate return $\sum_i r^{(i)}_t$.</li>
+<li>Every fixed number of updates, run $\pi_\theta$ (without exploration noise) on held-out seeds $\mathcal{S}_{\text{eval}}$; record command-tracking error, fall rate, and energy proxy as a single co-computed artifact.</li>
+<li>Save checkpoint $(\theta, \mu, \sigma)$ as one versioned artifact; never separate policy weights from their normalization statistics.</li>
+<li>Repeat from step 1 until the held-out evaluation metrics satisfy the transfer readiness criteria.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 17.2.1 calculates the sample geometry for a typical fast locomotion run. The aggregate robot-seconds are large, but the per-environment horizon stays short to control policy lag.</p>
@@ -110,6 +131,9 @@ sample reuse per rollout: 5 PPO epochs</div>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall: When the Recipe Breaks at Transfer</div>
 <p>Three additional failure modes appear after the training curve looks good. First, observation normalization statistics computed on training seeds can become stale when the policy is evaluated on held-out terrains or on hardware, causing action saturation on unusual inputs. Second, a horizon that is too short (fewer than 8 to 12 steps on a 50 Hz controller) can prevent the policy from learning to recover from stumbles, because the advantage estimate never sees the consequence of a near-fall. Third, aggressively large minibatch counts with many PPO epochs push the KL divergence beyond safe limits and cause reward collapse mid-training; in practice this appears as a sudden drop in the training return after several hundred updates, not as a divergence at the start.</p>
+</div>
+<div class="callout tip">
+<p>RSL-RL stores running mean and variance for observations via its <code>normalize_observation</code> flag, but those statistics are saved separately from the policy weights in <code>model_{iter}.pt</code>. When you export a checkpoint for hardware deployment, copy the companion <code>normalizer.pt</code> file alongside it; a policy loaded without its normalizer will receive raw unnormalized observations and will produce saturated or near-zero actions immediately, even though the network weights are correct. To verify, print the normalizer's running mean at the first inference step and confirm it is non-zero and plausible for your observation space.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

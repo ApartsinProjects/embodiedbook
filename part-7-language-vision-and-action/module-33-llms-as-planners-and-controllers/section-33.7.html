@@ -38,6 +38,9 @@
 <img alt="Illustration for Section 33.7: Memory, state tracking, and hallucination in physical tasks" loading="lazy" src="images/illustration-33-7.png"/>
 <figcaption><strong>Figure 33.7A</strong>: Memory, state tracking, and hallucination in physical tasks</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section builds on the belief-state formalism introduced in section 2.7 and the affordance-grounding approach of SayCan covered in section 33.2. The freshness-gating and verification ideas developed here are extended in section 33.8, which addresses safe action interfaces that depend on reliable state estimates, and recur in Part 10 alongside multi-agent coordination, where one agent's action can silently invalidate another's memory (section 49.1).</p>
+</div>
 
 <p>Read the figure as a memory-validity audit. A planner may remember prior observations, but physical tasks require timestamps, scope, invalidation rules, and a check that retrieved state still matches the current scene.</p>
 <figure class="diagram" id="fig-33-7">
@@ -79,10 +82,10 @@
 <p>Embodied memory is only useful if it carries provenance and freshness. A remembered object location with no timestamp is not memory; it is a latent bug.</p>
 </div>
 <h2>Theory</h2>
-<p>Let memory items be facts $m_i = (f_i, c_i, t_i)$ with content, confidence, and timestamp. A planner should reason over a belief state $$b_t = p(s_t \mid o_{1:t}, a_{1:t-1}, m_{1:t}),$$ not over free-floating text summaries alone. New observations should update or erase memory items whose confidence is no longer justified.</p>
-<div class="callout key-insight"><div class="callout-title">When the Belief-State Formula Matters</div><p>This formalism becomes practically important in three situations: (1) the robot executes a multi-step task spanning minutes, so the scene can change between steps; (2) multiple agents share the same environment, meaning one agent's action silently invalidates another's memory; (3) the LLM plans at a high abstraction level while low-level controllers run at millisecond rates, creating a temporal gap between language-level "knowledge" and physical reality. In simpler single-step fetch tasks the gap rarely matters. In household or warehouse deployments with moving objects and parallel actors, ignoring the belief-state update rule is the primary source of execution failures that look like hallucination but are actually synchronization failures.</p></div>
+<p>Let memory items be facts $m_i = (f_i, c_i, t_i)$ with content, confidence, and timestamp. A planner should reason over a <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">belief state</a> $$b_t = p(s_t \mid o_{1:t}, a_{1:t-1}, m_{1:t}),$$ not over free-floating text summaries alone. New observations should update or erase memory items whose confidence is no longer justified.</p>
+<div class="callout key-insight"><div class="callout-title">When the Belief-State Formula Matters</div><p>This formalism becomes practically important in three situations: (1) the robot executes a multi-step task spanning minutes, so the scene can change between steps; (2) multiple <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-49-multi-agent-embodied-ai/section-49.1.html">agents share the same environment</a>, meaning one agent's action silently invalidates another's memory; (3) the LLM plans at a high abstraction level while low-level controllers run at millisecond rates, creating a temporal gap between language-level "knowledge" and physical reality. In simpler single-step fetch tasks the gap rarely matters. In household or warehouse deployments with moving objects and parallel actors, ignoring the belief-state update rule is the primary source of execution failures that look like hallucination but are actually synchronization failures.</p></div>
 <p>Hallucination in embodied tasks often means one of three things: inventing an object or tool, asserting a stale state as current, or carrying a wrong relational fact across scene changes. The fix is rarely 'better prompting' alone. It is usually a better contract between memory, observation, and verification.</p>
-<p>This distinction has been demonstrated empirically. The SayCan system (Ahn et al., 2022) showed that grounding language plans in a value function over robot affordances reduced infeasible action selection, but the remaining failure mode was often stale object state: the model would plan to pick up an item whose location had changed since the last observation. EmbodiedBench (Wang et al., 2025) confirms the pattern at scale: on tasks with hidden state changes between replanning steps, even frontier models drop success rates by 30 to 50 percentage points relative to tasks with static scenes. Both results point to the same architectural gap: an LLM that rewrites its plan from scratch each step treats its context window as ground truth, not as a belief that needs freshness gating.</p>
+<p>This distinction has been demonstrated empirically. The <a href="../../part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.2.html">SayCan system</a> (Ahn et al., 2022) showed that grounding language plans in a value function over robot affordances reduced infeasible action selection, but the remaining failure mode was often stale object state: the model would plan to pick up an item whose location had changed since the last observation. EmbodiedBench (Wang et al., 2025) confirms the pattern at scale: on tasks with hidden state changes between replanning steps, even frontier models drop success rates by 30 to 50 percentage points relative to tasks with static scenes. Both results point to the same architectural gap: an LLM that rewrites its plan from scratch each step treats its context window as ground truth, not as a belief that needs freshness gating.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A good memory system separates semantic memory, such as user preference, from dynamic world state, such as object location. The first may persist across episodes; the second should expire quickly or be refreshed from sensors before use.</p>
@@ -102,6 +105,9 @@ print(usable)</code></pre>
 <div class="code-output">['user_prefers_blue_mug']</div>
 <p>The expected output is a memory subset where durable user preferences survive but stale scene claims do not. The point is that embodied memory should grant planning authority only to facts whose lifespan matches the kind of fact they are, not to every retrieved sentence equally.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This gating rule preserves long-lived preference memory while rejecting stale world-state memory. The key lesson is that not all remembered text should have equal planning authority once the physical scene may have changed.</div>
+<div class="callout tip">
+<p>Set the freshness threshold for dynamic world-state facts to no more than one replanning cycle. If your LLM planner runs every 5 seconds, set <code>max_age_s</code> to 5 in a Pydantic <code>MemoryItem</code> model and validate it at retrieval time rather than in ad-hoc <code>if</code> checks. Using Pydantic means a missing timestamp raises a <code>ValidationError</code> before the planner ever sees the record, catching the schema violation at write time instead of silently letting an undated fact pass as fresh. For semantic memory such as user preferences, omit the expiry field entirely and use a separate model class so the type system itself encodes the distinction.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>State stores, graph memories, and vector memories can all hold the facts, but they are only safe in robotics when coupled to freshness metadata and sensor-side verification hooks. The library can manage retrieval; it cannot decide which physical facts are still true.</p>
@@ -114,6 +120,22 @@ print(usable)</code></pre>
 <li>Never let retrieved text bypass a verifier when the action depends on current geometry.</li>
 <li>Log contradictions between memory and observation as first-class events.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Freshness-Gated Belief Update for Embodied Memory</h4>
+<p><strong>Input:</strong> Memory store $\mathcal{M} = \{m_i = (f_i, c_i, t_i)\}$ (facts, confidences, timestamps); new observation $o_t$ at time $t$; freshness threshold $\tau$; belief state $b_{t-1}$; planned action $a$</p>
+<p><strong>Output:</strong> Updated belief state $b_t$; validated memory subset $\mathcal{M}_{\text{valid}}$; contradiction log $\mathcal{C}$</p>
+<ol>
+<li>Partition $\mathcal{M}$ into durable facts $\mathcal{M}_D$ (user preferences, invariants) and dynamic facts $\mathcal{M}_W$ (object locations, scene state).</li>
+<li>For each dynamic fact $m_i \in \mathcal{M}_W$, compute age $\delta_i = t - t_i$. Retain $m_i$ only if $\delta_i \le \tau$; mark expired facts as stale and exclude them from $\mathcal{M}_{\text{valid}}$.</li>
+<li>Apply the Bayesian belief update: $b_t = p(s_t \mid o_{1:t},\, a_{1:t-1},\, \mathcal{M}_{\text{valid}})$, giving higher weight to sensor evidence $o_t$ than to any single memory item $m_i$ when they conflict.</li>
+<li>For each retained fact $m_i \in \mathcal{M}_{\text{valid}}$, check consistency with $o_t$. If $m_i$ contradicts $o_t$ beyond tolerance $\epsilon$, append $(m_i, o_t, t)$ to contradiction log $\mathcal{C}$ and reduce $c_i \leftarrow \alpha \cdot c_i$ with decay $\alpha \in (0,1)$.</li>
+<li>For action $a$ that depends on a geometric or relational world-state fact, require $c_i \ge c_{\min}$ and $\delta_i \le \tau$ before granting planning authority. Reject $a$ and request sensor refresh otherwise.</li>
+<li>If a sensor refresh is triggered, issue a perception query $\pi_{\text{verify}}$ targeting the specific object or relation that $a$ depends on, then return to step 2 with the updated observation.</li>
+<li>Log the selected action $a$, the supporting facts $\mathcal{M}_{\text{valid}}$, and any contradiction events in $\mathcal{C}$ as a single provenance record before execution.</li>
+<li>After execution, record the observed outcome $o_{t+1}$ and update $c_i$ for all facts whose truth value can now be confirmed or refuted by $\nabla$-graded sensor feedback.</li>
+</ol>
+</div>
+
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The easiest hallucination to miss is not a novel object. It is a plausible but stale memory, such as believing the mug is still on the counter after another agent already moved it.</p>
@@ -128,7 +150,7 @@ print(usable)</code></pre>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Current research explores memory graphs, learned world models, and verifier-guided long-horizon planning for embodied agents. The open challenge is keeping memories useful across long tasks without allowing stale facts to outrank fresh sensor evidence.</p>
+<p>Current research explores memory graphs, <a href="../../part-12-frontiers-capstones-and-course-design/module-58-frontier-and-open-problems/section-58.3.html">learned world models</a>, and verifier-guided long-horizon planning for embodied agents. The open challenge is keeping memories useful across long tasks without allowing stale facts to outrank fresh sensor evidence.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -136,7 +158,7 @@ print(usable)</code></pre>
 </div>
 
 
-<p>This section connects directly to classical filtering and SLAM. The novelty is that language memories and symbolic task facts must join the same belief-management discipline as geometric state. Otherwise the planner treats a ten-minute-old caption and a ten-millisecond-old sensor reading as equally authoritative.</p>
+<p>This section connects directly to <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.5.html">classical filtering and SLAM</a>. The novelty is that language memories and symbolic task facts must join the same belief-management discipline as geometric state. Otherwise the planner treats a ten-minute-old caption and a ten-millisecond-old sensor reading as equally authoritative.</p>
 <p>That is also why hallucination should be decomposed. A model may hallucinate semantically, but many embodied 'hallucinations' are actually stale-state propagation errors. Better memory schemas, not bigger models, are often the right fix.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices For Embodied Memory and State Tracking</div>

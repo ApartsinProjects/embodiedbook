@@ -39,6 +39,9 @@
 <figcaption><strong>Figure 59.8A</strong>: LLM-based household task planner</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the LLM-as-planner loop introduced in section 33.1 and the affordance-grounding pipeline developed in section 31.3. If you are new to language-guided embodied agents, review section 31.1 before working through the affordance-check example here. The replanning and mixed-initiative ideas introduced in this capstone are extended in section 59.9, which applies the same grounding-and-replan contract to a drone inspection domain.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>LLM-based household task planner</strong> gives Capstone Projects a concrete systems role: separate language planning from grounding, affordance checks, and controller execution. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -59,6 +62,102 @@
 <h2>Worked Example</h2>
 <p>For LLM-based household task planner, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <p>Consider a concrete case: the user issues the goal "make coffee" to a tabletop manipulator in an AI2-THOR kitchen scene. GPT-4 decomposes this into six subgoals: locate mug (object ID <code>Mug_3</code>), pick up mug, locate coffee machine (<code>CoffeeMachine_1</code>), place mug on machine, toggle machine on, pick up filled mug. The grounding layer checks each subgoal against the scene graph. Subgoal 3 fails immediately: <code>CoffeeMachine_1</code> is inside a closed cabinet with a stuck-drawer flag set in the scene, so its affordance vector returns <code>reachable=False</code>. The planner receives a structured rejection (<code>PRECONDITION_FAIL: object_not_reachable</code>) and replans in one round-trip (380 ms on a local 7B model): it inserts "open cabinet door" before step 3, now passing all affordance checks. The execution trace logs one replan, five successful controller calls, and a final task-success flag. Without the affordance gate, the original six-step plan would have reached step 3, collided with the cabinet, and halted with no informative error. The product of per-step success probabilities drops from $0.95^6 \approx 0.74$ to $0.95^7 \approx 0.70$ after inserting the extra step, illustrating that longer plans require higher per-step reliability to maintain overall success rates.</p>
+<pre><code class="language-python"># LLM-based household task planner: affordance-gated subgoal execution with replanning
+import numpy as np
+
+# Simulated scene graph: object_id -> {reachable, open, in_hand}
+scene = {
+    "Mug_3":          {"reachable": True,  "open": False, "in_hand": False},
+    "Cabinet_2":      {"reachable": True,  "open": False, "in_hand": False},
+    "CoffeeMachine_1":{"reachable": False, "open": False, "in_hand": False},
+}
+
+def affordance_check(action, obj_id, scene):
+    """Return (ok, reason) based on the current scene graph."""
+    obj = scene.get(obj_id)
+    if obj is None:
+        return False, f"PRECONDITION_FAIL: object_not_found ({obj_id})"
+    if action in ("pick_up", "toggle"):
+        if not obj["reachable"]:
+            return False, f"PRECONDITION_FAIL: object_not_reachable ({obj_id})"
+    if action == "place_on":
+        if not obj["reachable"]:
+            return False, f"PRECONDITION_FAIL: object_not_reachable ({obj_id})"
+    return True, "OK"
+
+def execute_action(action, obj_id, scene):
+    """Simulate side-effects on the scene graph."""
+    if action == "open":
+        scene[obj_id]["open"] = True
+        # Opening Cabinet_2 makes CoffeeMachine_1 reachable
+        if obj_id == "Cabinet_2":
+            scene["CoffeeMachine_1"]["reachable"] = True
+    elif action == "pick_up":
+        scene[obj_id]["in_hand"] = True
+
+def run_plan(plan, scene, label=""):
+    print(f"\n--- {label} ---")
+    replans = 0
+    for step, (action, obj_id) in enumerate(plan):
+        ok, reason = affordance_check(action, obj_id, scene)
+        if not ok:
+            print(f"  step {step+1}: {action}({obj_id}) FAILED -> {reason}")
+            return replans, False
+        execute_action(action, obj_id, scene)
+        print(f"  step {step+1}: {action}({obj_id}) OK")
+    return replans, True
+
+# Original LLM plan (6 steps, ignores closed cabinet)
+plan_v1 = [
+    ("pick_up",  "Mug_3"),
+    ("locate",   "CoffeeMachine_1"),
+    ("place_on", "CoffeeMachine_1"),
+    ("toggle",   "CoffeeMachine_1"),
+    ("pick_up",  "Mug_3"),
+]
+
+import copy
+scene_v1 = copy.deepcopy(scene)
+_, success_v1 = run_plan(plan_v1, scene_v1, label="Plan v1 (no affordance repair)")
+
+# Replanned: insert open-cabinet step before reaching the machine
+plan_v2 = [
+    ("pick_up",  "Mug_3"),
+    ("open",     "Cabinet_2"),       # inserted by replanner
+    ("place_on", "CoffeeMachine_1"),
+    ("toggle",   "CoffeeMachine_1"),
+    ("pick_up",  "Mug_3"),
+]
+
+scene_v2 = copy.deepcopy(scene)
+_, success_v2 = run_plan(plan_v2, scene_v2, label="Plan v2 (affordance-repaired)")
+
+# Per-step success probability product
+p = 0.95
+for n, label in [(5, "v1 (5 steps)"), (6, "v2 (6 steps, +open cabinet)")]:
+    print(f"P(task success | {label}): {p**n:.3f}")
+</code></pre>
+<div class="code-output"><pre>
+--- Plan v1 (no affordance repair) ---
+  step 1: pick_up(Mug_3) OK
+  step 2: locate(CoffeeMachine_1) OK
+  step 3: place_on(CoffeeMachine_1) FAILED -> PRECONDITION_FAIL: object_not_reachable (CoffeeMachine_1)
+
+--- Plan v2 (affordance-repaired) ---
+  step 1: pick_up(Mug_3) OK
+  step 2: open(Cabinet_2) OK
+  step 3: place_on(CoffeeMachine_1) OK
+  step 4: toggle(CoffeeMachine_1) OK
+  step 5: pick_up(Mug_3) OK
+
+P(task success | v1 (5 steps)): 0.774
+P(task success | v2 (6 steps, +open cabinet)): 0.735
+</pre></div>
+<div class="code-caption">Code Fragment 59.8.1: Affordance-gated LLM task planner simulating plan failure, single-step replan insertion, and per-step success probability for a "make coffee" household goal.</div>
+
+<div class="callout tip">
+<p>When using OpenAI function calling or a local LLM (such as a Llama-3 7B served via Ollama), pass the current scene graph as a serialized JSON string in the system prompt rather than in the user turn; this keeps the affordance snapshot out of the conversation history and prevents the model from treating stale state from a previous planning call as current. Set <code>temperature=0.0</code> for the planning call: language planners produce structurally inconsistent subgoal lists at higher temperatures, which breaks downstream affordance checks silently because object IDs partially match but preconditions do not.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Use an LLM planner only behind typed tools, symbolic preconditions, and executable checks. The preserved fields are user goal, parsed subgoal, tool call, world-state assertion, failed precondition, revised plan, and completed physical action.</p>

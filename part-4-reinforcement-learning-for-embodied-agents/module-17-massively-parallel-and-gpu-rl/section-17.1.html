@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 17.1A</strong>: Parallel RL works when thousands of practice lanes produce diverse evidence, not when they merely repeat the same lucky episode faster.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the PPO rollout mechanics introduced in section 15.4 and the GPU-resident simulation contract from section 6.6. The diversity problem introduced here recurs in section 13.2, which covers domain randomization as the primary tool for breaking correlated resets. The full payoff appears in section 20.2, where parallel training results are stress-tested against held-out sim-to-real transfer benchmarks.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Why thousands of parallel envs changed the field</strong> is the scaling story behind modern robot RL. Instead of waiting for one simulator to finish one trajectory, the learner gathers a tensor of trajectories from thousands of environments, usually on the same accelerator that updates the policy.</p>
@@ -55,9 +59,30 @@
 <h2>Theory</h2>
 <p>For <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.4.html">PPO-style training</a>, one update typically consumes a rollout block with shape $T \times N \times d$, where $T$ is the horizon, $N$ is the number of parallel environments, and $d$ is the observation dimension. The sample count is $T N$, but the learning signal also depends on how correlated those $N$ environments are.</p>
 <p>If all environments reset with related seeds, share the same command schedule, and hit the same terrain patch at the same time, the gradient can become overconfident. Good parallel RL treats environment count, horizon, minibatch size, and reset diversity as a coupled design, not as separate knobs.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Vectorized PPO Rollout Collection</h4>
+<p><strong>Input:</strong> Policy $\pi_\theta$ with parameters $\theta$; $N$ parallel environments with diverse seed families; horizon $T$; observation dimension $d$; learning rate $\alpha$; value network $V_\phi$</p>
+<p><strong>Output:</strong> Updated parameters $\theta'$; rollout buffer $\mathcal{B}$ of shape $T \times N \times d$ with full provenance record</p>
+<ol>
+<li>Assign independent seed families, terrain strata, and command velocities to each of the $N$ environments; record assignments in the rollout ledger before any steps are taken.</li>
+<li>Initialize contiguous device tensors for observations $\mathbf{o} \in \mathbb{R}^{N \times d}$, actions $\mathbf{a}$, rewards $\mathbf{r}$, dones $\mathbf{d}$, log-probabilities $\log \pi_\theta(\mathbf{a}|\mathbf{o})$, and value estimates $V_\phi(\mathbf{o})$; verify <code>.is_contiguous()</code> before the loop.</li>
+<li>For each step $t = 1, \dots, T$: infer $\mathbf{a}_t \sim \pi_\theta(\cdot|\mathbf{o}_t)$ for all $N$ environments in a single batched forward pass, then step the simulator to obtain $(\mathbf{o}_{t+1}, \mathbf{r}_t, \mathbf{d}_t)$ without leaving device memory.</li>
+<li>Write $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{d}_t, V_\phi(\mathbf{o}_t), \log \pi_\theta(\mathbf{a}_t|\mathbf{o}_t))$ into contiguous buffer slots at index $t$; do not copy to CPU during collection.</li>
+<li>After $T$ steps, compute advantages $\hat{A}_t$ via generalized advantage estimation: $\hat{A}_t = \sum_{k=0}^{T-t-1} (\gamma \lambda)^k \delta_{t+k}$, where $\delta_t = r_t + \gamma V_\phi(\mathbf{o}_{t+1}) - V_\phi(\mathbf{o}_t)$.</li>
+<li>Shuffle the $TN$ transitions and partition into minibatches; for each minibatch compute the clipped surrogate loss $L^{\text{CLIP}}(\theta) = \mathbb{E}\!\left[\min\!\left(r_t(\theta)\hat{A}_t,\; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$, where $r_t(\theta) = \pi_\theta(\mathbf{a}_t|\mathbf{o}_t) / \pi_{\theta_{\text{old}}}(\mathbf{a}_t|\mathbf{o}_t)$.</li>
+<li>Update $\theta \leftarrow \theta - \alpha \nabla_\theta L^{\text{CLIP}}(\theta)$ and $\phi \leftarrow \phi - \alpha \nabla_\phi L^{V}(\phi)$; repeat for the configured number of PPO epochs over the same buffer.</li>
+<li>Check per-environment return variance across the $N$ environments: if variance is low while aggregate reward is high, flag the batch as correlated and inspect seed assignments before accepting the gradient update.</li>
+<li>Reset any environments where $\mathbf{d}_t = 1$ by drawing new seeds, terrain, command, and mass from the training distribution; never reuse the evaluation seed pool.</li>
+<li>Log rollout shape $T \times N \times d$, samples per update $TN$, seed families, reset strata, GPU memory, steps per second, and held-out evaluation success rate as one artifact before reporting a throughput or reward claim.</li>
+</ol>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a repeated tensor operation: infer actions for all environments, step all environments, write observations, rewards, dones, values, and log probabilities into contiguous buffers, then update from shuffled slices of that buffer. GPU RL wins when simulation, policy inference, and storage stay resident on device and avoid per-environment Python loops. The physics underpinning this residency is covered in <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.6.html">Section 6.6</a>.</p>
+</div>
+<div class="callout tip">
+<p>When using Isaac Lab, observation and reward tensors passed between the simulation and the policy must be contiguous in memory; calling <code>.contiguous()</code> before indexing or stacking is not optional. A non-contiguous tensor silently produces wrong gradient estimates because PyTorch's <code>view</code> raises a <code>RuntimeError</code> at random points in training rather than immediately at the offending line. The fastest diagnostic is to add <code>assert obs.is_contiguous()</code> at the rollout buffer write step and run one update before scaling to thousands of environments.</p>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 17.1.1 turns the rollout contract into concrete numbers. The snippet does not simulate physics; it shows the accounting a training script should print before anyone trusts a speedup claim.</p>

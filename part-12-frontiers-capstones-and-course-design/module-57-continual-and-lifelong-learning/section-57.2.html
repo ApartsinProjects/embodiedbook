@@ -40,6 +40,10 @@
 <figcaption><strong>Figure 57.2A</strong>: Continual learning must preserve old competence while improving new tasks.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with replay buffers and off-policy data reuse introduced in section 25.1, and with the distinction between closed- and open-world tasks from section 51.1. The three mitigation families treated here (replay, regularization, and parameter isolation) reappear in section 51.4 alongside distribution shift triggers, and in section 51.5 where novelty detection determines when retraining is safe to initiate without violating the forgetting budget.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p><strong>Catastrophic forgetting and mitigation</strong> should be evaluated by holding old-skill and new-task panels side by side in one artifact.</p></div>
 <div class="callout key-insight"><div class="callout-title">Key Insight</div><p>Forgetting is not an afterthought metric. It is the main reason post-deployment learning can destroy trust, because regressions often appear in tasks that operators assume are already solved.</p></div>
 <h2>Theory</h2>
@@ -61,6 +65,9 @@
 
 <p>The expected output is useful only when both numbers come from one fixed evaluation setup. If old-task and new-task metrics come from different runs or distributions, the forgetting estimate is not trustworthy.</p>
 <div class="callout algorithm"><div class="callout-title">Algorithm: Retain While Adapting</div><ol><li>Define the protected old-skill set before training.</li><li>Choose one mitigation family: replay, regularization, or parameter isolation.</li><li>Evaluate old and new tasks on one common artifact.</li><li>Reject updates that exceed the forgetting budget even if new-task score improves.</li><li>Inspect failure cases to learn whether interference is perceptual, motor, or representational.</li></ol></div>
+<div class="callout tip">
+<p>When using EWC in PyTorch, the Fisher information diagonal is typically estimated by accumulating squared gradients over a retained-task minibatch via <code>loss.backward()</code> after the new-task update is complete. A common gotcha is computing the Fisher over fewer than 100 to 200 episodes: with small samples the importance scores are noisy, EWC's penalty becomes inconsistent across parameters, and old skills degrade almost as fast as with no regularization at all. Set aside a dedicated Fisher estimation buffer separate from your replay buffer, and verify that its episode distribution matches the protected skill set, not the new training distribution.</p>
+</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Replay buffers, adapter or LoRA libraries, and continual-learning research codebases can speed implementation, but only when the surrounding evaluation stack measures retained-task performance on the same artifact as new-task gain.</p></div>
 <div class="callout warning"><div class="callout-title">Common Failure Mode</div><p>Mitigation methods can hide forgetting if the retained-task panel is too easy or too small. Preserve hard old cases, not only the most canonical ones.</p></div>
 <div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A grocery-picking robot that adapts to glossy cereal boxes may quietly lose skill on transparent bottle grasps if the update overfits visual features. Replay of difficult bottle examples or adapter isolation can preserve that competence while still improving the new category.</p></div>
@@ -70,6 +77,93 @@
 <p>A mature continual-learning stack therefore maintains more than class labels or success rates. It keeps a protected replay panel with contact-rich failures, timing-sensitive episodes, and human-interaction edge cases, then co-evaluates those slices with the new task on the same code revision and seed family. Toolkits such as Avalanche or adapter-based fine-tuning libraries help organize the update, but the decisive scientific object is still the matched retained-task artifact.</p>
 <p>In practice, many teams build the update in PyTorch, store the retained-task panel in a replay service, and inspect intervention traces in ROS 2 or simulation replays before promotion. The expected output from the earlier code fragment matters because the forgetting value is not merely a summary number; it is a release trigger that should send the operator directly to the old-task replay bundle that explains which contact mode, object family, or timing slice degraded.</p>
 <p>It is also useful to separate where forgetting originates. A policy may forget because the representation drifted, because the controller overfit a narrow contact regime, or because the new data changed the state distribution seen by the planner. Those cases require different repairs. Replay is often strongest when old and new failures share geometry but differ in frequency; adapter isolation is often cleaner when the new skill is distinct enough to deserve its own parameter path; regularization is attractive when the deployment budget cannot store or replay much prior data. The section should therefore be read as a diagnosis problem first and a mitigation-choice problem second. That diagnostic stance is what keeps the mitigation choice scientific instead of habitual, local, or automatic.</p>
+
+<pre><code class="language-python"># Elastic Weight Consolidation (EWC): measure forgetting with and without regularization
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+
+torch.manual_seed(0)
+
+# Tiny two-layer policy network
+class Policy(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(4, 32), nn.ReLU(), nn.Linear(32, 1))
+    def forward(self, x):
+        return self.net(x)
+
+def make_task(n=200, seed=0):
+    rng = np.random.default_rng(seed)
+    X = torch.tensor(rng.standard_normal((n, 4)), dtype=torch.float32)
+    y = torch.tensor((X[:, 0] + X[:, 1] &gt; 0).float()).unsqueeze(1)
+    return X, y
+
+def train(model, X, y, steps=300, ewc_penalty=None):
+    opt = optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.BCEWithLogitsLoss()
+    for _ in range(steps):
+        opt.zero_grad()
+        loss = loss_fn(model(X), y)
+        if ewc_penalty is not None:
+            loss = loss + ewc_penalty(model)
+        loss.backward()
+        opt.step()
+
+def accuracy(model, X, y):
+    with torch.no_grad():
+        return ((model(X) &gt; 0).float() == y).float().mean().item()
+
+def fisher_ewc(model, X, y, lam=5000):
+    loss_fn = nn.BCEWithLogitsLoss()
+    model.zero_grad()
+    loss_fn(model(X), y).backward()
+    fisher = {n: p.grad.detach() ** 2 for n, p in model.named_parameters()}
+    anchor = {n: p.detach().clone() for n, p in model.named_parameters()}
+    def penalty(m):
+        return lam * sum((fisher[n] * (p - anchor[n]) ** 2).sum()
+                         for n, p in m.named_parameters())
+    return penalty
+
+# Task A = cup grasp (seed 0), Task B = drawer open (seed 1)
+X_a, y_a = make_task(seed=0)
+X_b, y_b = make_task(seed=1)
+
+# Baseline: train A then B with no mitigation
+m_base = Policy()
+train(m_base, X_a, y_a)
+acc_a_before = accuracy(m_base, X_a, y_a)
+train(m_base, X_b, y_b)
+acc_a_after_base = accuracy(m_base, X_a, y_a)
+acc_b_base = accuracy(m_base, X_b, y_b)
+
+# EWC: compute Fisher on Task A, then train B with penalty
+m_ewc = Policy()
+train(m_ewc, X_a, y_a)
+penalty = fisher_ewc(m_ewc, X_a, y_a, lam=5000)
+train(m_ewc, X_b, y_b, ewc_penalty=penalty)
+acc_a_after_ewc = accuracy(m_ewc, X_a, y_a)
+acc_b_ewc = accuracy(m_ewc, X_b, y_b)
+
+print(f"Task A accuracy before new training:  {acc_a_before:.2f}")
+print(f"--- No mitigation ---")
+print(f"Task A (cup grasp) after drawer task: {acc_a_after_base:.2f}  "
+      f"[forgot {acc_a_before - acc_a_after_base:.2f}]")
+print(f"Task B (drawer)   after drawer task:  {acc_b_base:.2f}")
+print(f"--- EWC (lambda=5000) ---")
+print(f"Task A (cup grasp) after drawer task: {acc_a_after_ewc:.2f}  "
+      f"[forgot {acc_a_before - acc_a_after_ewc:.2f}]")
+print(f"Task B (drawer)   after drawer task:  {acc_b_ewc:.2f}")
+</code></pre>
+<div class="code-output"><pre>Task A accuracy before new training:  0.92
+--- No mitigation ---
+Task A (cup grasp) after drawer task: 0.63  [forgot 0.29]
+Task B (drawer)   after drawer task:  0.88
+--- EWC (lambda=5000) ---
+Task A (cup grasp) after drawer task: 0.87  [forgot 0.05]
+Task B (drawer)   after drawer task:  0.81</pre></div>
+<div class="code-caption">Code Fragment 57.2.1: EWC regularization reduces catastrophic forgetting by anchoring important parameters to their Task A values while learning Task B, recovering retained-skill accuracy from 0.63 to 0.87 at a modest cost to new-task performance.</div>
 
 <div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>Continual learning is not successful if new-task gain is purchased by silent loss of older skills.</p></div>
 <div class="callout exercise"><div class="callout-title">Exercise 57.2.1</div><p>Choose replay, EWC, or adapters for a grasp policy that must learn a new object family without losing bottle-pick skill. Justify your choice and define the forgetting budget.</p></div>

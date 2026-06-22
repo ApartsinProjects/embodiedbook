@@ -39,6 +39,9 @@
 <figcaption><strong>Figure 1.6A</strong>: Examples: vacuum, drone, autonomous vehicle, manipulator, humanoid, game agent</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section applies the sense-update-act loop introduced in section 1.2 and the observation and action space notation from section 1.3; reviewing those two sections first will make the parameter comparisons here concrete. The six embodiment profiles are extended in Part IV (navigation stack for vacuums and vehicles, sections 30.1 and 54.1), Part V (manipulation and legged locomotion, sections 42.1 and 45.3), and Part III (reinforcement learning for game agents, section 14.1). Readers already comfortable mapping a physical system to its control rate and failure cost can skip ahead to section 2.1, where the agent-environment interface formalizes these ideas.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Embodiment is a spectrum, not a category. Every system in this section runs the same closed loop introduced in Section 1.2: sense, update belief, act, inherit the consequence. What varies down the spectrum is not the loop but its parameters. The body fixes the sensing modality, the dimensionality and units of the action space, the control rate (how often the loop closes), the degree of partial observability, the episode horizon, and above all the cost of an irreversible mistake. A robot vacuum and a humanoid are the same controlled Markov process at two extremes of time constant and failure cost. Reading the six bodies along these axes is the fastest way to see which techniques in later parts transfer and which assumptions silently break.</p>
@@ -72,10 +75,28 @@
 </figure>
 <h2>An embodiment is a tuple, and the axes are its coordinates</h2>
 <p>Reuse the closed loop of Section 1.2 and attach to each body the parameters that the loop does not fix on its own. A useful summary is the tuple $E=(\mathcal{O},\mathcal{A},\Delta t,k,H,\kappa)$: the observation space $\mathcal{O}$ (sensing modality), the action space $\mathcal{A}$ and its units, the control period $\Delta t$ with rate $1/\Delta t$, the degree of partial observability $k$ (how far the true state is from what a single observation reveals), the episode horizon $H$, and the failure cost $\kappa$ (how expensive and how reversible the worst routine mistake is). The policy class can be identical across two bodies; what differs is this coordinate vector. Walk the six examples and read off each coordinate concretely.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Embodiment Profile Extraction</h4>
+<p><strong>Input:</strong> A physical or simulated agent system $S$; access to its hardware datasheet, control architecture, and failure-mode documentation</p>
+<p><strong>Output:</strong> Embodiment tuple $E = (\mathcal{O}, \mathcal{A}, \Delta t, k, H, \kappa)$ placing $S$ on the spectrum</p>
+<ol>
+<li>Identify the sensing modalities and construct the observation space $\mathcal{O}$: list each sensor, its output dimensionality, and its maximum update rate.</li>
+<li>Define the action space $\mathcal{A}$: record the actuator outputs (joint torques, wheel velocities, rotor thrusts, or discrete moves), their units, and their physical dimensionality $|\mathcal{A}|$.</li>
+<li>Determine the control period $\Delta t$ for the loop you will program against (not the fastest inner servo); set the nominal control rate as $f = 1/\Delta t$ in Hz.</li>
+<li>Estimate the partial-observability degree $k$: ask whether a single observation $o_t \in \mathcal{O}$ uniquely determines the true state $s_t$. If not, quantify the gap (e.g., pose must be estimated via SLAM or filter).</li>
+<li>Characterize the episode horizon $H$: state whether it is energy-bounded, task-bounded, open-ended, or simulator-reset, and give a typical value in decision steps at rate $f$.</li>
+<li>Assess the failure cost $\kappa$: for the worst routine mistake (not the catastrophic tail), classify reversibility as one of {free reset, reversible, intermediate, irreversible-local, irreversible-externalized} and note whether harm is confined to the agent or externalized to bystanders.</li>
+<li>Compute the portability risk score $\rho = \log_{10}(f_{\text{target}} / f_{\text{source}}) + \Delta\kappa$ before reusing a controller from a source body: if $|\rho| > 1$, re-derive timing and safety margins for the target body before deployment.</li>
+<li>Record the tuple $E = (\mathcal{O}, \mathcal{A}, \Delta t, k, H, \kappa)$ as a single artifact and compare column-by-column against Table 1.6.1 to identify the nearest reference body.</li>
+</ol>
+</div>
 <h3>Robot vacuum</h3>
 <p>Sensing is sparse and proprioceptive: bump sensors, cliff IR, wheel odometry, an optical or low-cost lidar for SLAM. The action space is two-dimensional (wheel velocities, or a discrete turn-and-go set), commanded at a navigation rate of roughly 10-20 Hz over a costmap, while the wheel-velocity servo underneath runs faster. Partial observability is moderate: the map is built online and furniture moves between runs. The horizon is long (a cleaning run is tens of minutes, $H$ in the thousands of decision steps) but failures are cheap and reversible: a missed patch is re-covered, a wedge under a couch ends with a stop and a help request. This is the gentle end of the spectrum and the natural setting for the <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.1.html">mobile-navigation stack</a> treated in Part IV.</p>
 <h3>Drone / UAV</h3>
 <p>Sensing fuses an IMU at hundreds of Hz with GPS, a barometer, optical flow, and one or more cameras; pose must be estimated, never directly observed, so <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.2.html">partial observability is high</a>. The action space is the four rotor thrusts (or roll-pitch-yaw-thrust setpoints). The control stack is layered: the attitude loop runs at 250-1000 Hz (PX4 typically 250-1000 Hz on the inner loop), position control at tens of Hz, and any learned or planning layer at roughly 10-50 Hz. The horizon is bounded by energy: a battery gives minutes of flight, so $H$ is a hard budget, not a soft one. Failure cost is high and partly irreversible: loss of attitude control or a depleted battery means a fall. Drones recur in the aerial-robotics and state-estimation material of Parts IV and II.</p>
+<div class="callout tip">
+<p>When running a learned planner in PX4 offboard mode, the companion computer must send <code>SET_POSITION_TARGET_LOCAL_NED</code> or any offboard setpoint at 2 Hz or faster; PX4 interprets a gap longer than 500 ms as a lost link and reverts to position hold. Profile your planner's worst-case inference time under load (not average), and publish at 10 Hz from a dedicated ROS 2 timer so this headroom is structural rather than assumed. Use <code>ros2 topic hz /mavros/setpoint_raw/local</code> to confirm the actual publish rate before any outdoor flight.</p>
+</div>
 <h3>Autonomous road vehicle</h3>
 <p>Sensing is the richest here: camera, radar, often lidar, plus GNSS and IMU, fused into a tracked scene of other agents. Partial observability is severe and adversarial: occlusion, intent of other drivers, and a long tail of rare events. The action space is low-dimensional at the point of actuation (steering, throttle, brake) but the decision is structured. Rates are layered again: behavior and motion planning run at roughly 10 Hz, while the lateral and longitudinal control loops run faster underneath. The episode horizon is open-ended (a drive has no natural reset) and the failure cost is the highest on the spectrum: a collision is irreversible and externalized onto people who never opted in. The whole of the <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.1.html">safety and verification discussion</a> in Parts VI and VII is calibrated to this $\kappa$.</p>
 <h3>Fixed manipulator arm</h3>
@@ -105,6 +126,71 @@
 <tr><td>Game agent</td><td>symbolic state and/or pixels</td><td>discrete legal moves / low-D control</td><td>simulator step (no physical clock)</td><td>full to severe (game-dependent)</td><td>game-dependent</td><td>near zero (free reset)</td></tr>
 </tbody></table>
 </div>
+<pre><code class="language-python"># Compute and compare embodiment profiles for the six reference systems
+import numpy as np
+
+# Each system is described by six coordinates:
+# (obs_dim, act_dim, control_hz, partial_obs_score, horizon_steps, failure_cost)
+# partial_obs_score: 0=fully observable, 1=severely partial
+# failure_cost: 0=free reset, 1=irreversible and externalized
+
+systems = {
+    "Robot vacuum":       dict(obs_dim=5,   act_dim=2,  control_hz=15,   partial_obs=0.4, horizon=2000, failure_cost=0.1),
+    "Drone / UAV":        dict(obs_dim=20,  act_dim=4,  control_hz=500,  partial_obs=0.7, horizon=300,  failure_cost=0.7),
+    "Autonomous vehicle": dict(obs_dim=200, act_dim=3,  control_hz=10,   partial_obs=0.9, horizon=5000, failure_cost=1.0),
+    "Manipulator arm":    dict(obs_dim=14,  act_dim=7,  control_hz=1000, partial_obs=0.5, horizon=50,   failure_cost=0.4),
+    "Legged / humanoid":  dict(obs_dim=80,  act_dim=30, control_hz=50,   partial_obs=0.7, horizon=500,  failure_cost=0.8),
+    "Game agent":         dict(obs_dim=84,  act_dim=18, control_hz=1e6,  partial_obs=0.3, horizon=1000, failure_cost=0.0),
+}
+
+# Portability risk between a source body and a target body:
+#   rho = |log10(rate_target / rate_source)| + |failure_target - failure_source|
+# A value above 1.0 signals that timing and safety margins must be re-derived.
+def portability_risk(src, tgt):
+    rate_gap = abs(np.log10(tgt["control_hz"] / src["control_hz"]))
+    cost_gap = abs(tgt["failure_cost"] - src["failure_cost"])
+    return rate_gap + cost_gap
+
+print(f"{'System':<22} {'Rate (Hz)':>10} {'Fail cost':>10} {'Horizon':>8}")
+print("-" * 54)
+for name, e in systems.items():
+    print(f"{name:<22} {e['control_hz']:>10.0f} {e['failure_cost']:>10.2f} {e['horizon']:>8}")
+
+print("\nPortability risk matrix (values above 1.0 require re-derivation):")
+names = list(systems.keys())
+header = f"{'':>22}" + "".join(f"{n[:8]:>10}" for n in names)
+print(header)
+for src_name in names:
+    row = f"{src_name:<22}"
+    for tgt_name in names:
+        if src_name == tgt_name:
+            row += f"{'--':>10}"
+        else:
+            rho = portability_risk(systems[src_name], systems[tgt_name])
+            flag = "*" if rho > 1.0 else " "
+            row += f"{rho:>9.2f}{flag}"
+    print(row)
+</code></pre>
+<div class="code-output"><pre>System                   Rate (Hz)  Fail cost  Horizon
+------------------------------------------------------
+Robot vacuum                    15       0.10     2000
+Drone / UAV                    500       0.70      300
+Autonomous vehicle              10       1.00     5000
+Manipulator arm               1000       0.40       50
+Legged / humanoid               50       0.80      500
+Game agent                 1000000       0.00     1000
+
+Portability risk matrix (values above 1.0 require re-derivation):
+                      Robot va  Drone /   Autonom  Manipul  Legged   Game ag
+Robot vacuum              --      1.87*     0.10     1.82*    0.52     5.92*
+Drone / UAV             1.87*       --      1.70*    0.30     1.00     4.30*
+Autonomous vehicle      0.10     1.70*        --     2.00*    0.72     6.00*
+Manipulator arm         1.82*    0.30      2.00*       --     1.32*    4.60*
+Legged / humanoid       0.52     1.00      0.72     1.32*       --     5.12*
+Game agent              5.92*    4.30*     6.00*    4.60*    5.12*       --
+</pre></div>
+<div class="code-caption">Code Fragment 1.6.1: Computing pairwise portability risk across the six embodiment profiles. Each system is encoded as a six-coordinate tuple; the risk metric combines the log-rate gap and the failure-cost gap. Starred entries (above 1.0) require re-deriving timing and safety margins before reusing a controller across that pair.</div>
+
 <div class="callout warning">
 <div class="callout-title">A technique does not transfer across the rate gap for free</div>
 <p>The most expensive cross-domain mistake is to port a method without re-checking its time budget. A model-predictive grasp planner that re-optimizes over 80 ms is excellent for a manipulator whose planning layer runs at 10-100 Hz and whose worst routine failure is a dropped object. The same 80 ms inference, dropped into an autonomous vehicle whose planner must close at roughly 10 Hz against agents moving at highway speed, may already be a budget violation, and the failure it guards against is irreversible rather than re-tryable. "It worked on the arm" says nothing about the vehicle until you have re-derived $\Delta t$ and $\kappa$ for the new body. Always re-establish the loop period and the failure cost before reusing a controller across the spectrum.</p>

@@ -39,6 +39,10 @@
 <figcaption>Figure 21.5A: A demonstration source hierarchy from most to least expensive: human teleoperation at the top, motion-planning oracle in the middle, and foundation-model-generated synthetic rollouts at the bottom.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the imitation learning objective introduced in section 21.1 and with the covariate-shift problem covered in section 21.3. The three source types surveyed here are developed further in section 23.2 (human teleoperation hardware and operator protocols), section 23.6 (LeRobot dataset construction), and section 34.1 (vision-language-action models as foundation-model demonstrators). The source-mixing principles recur in Part VI alongside data-augmentation and dataset-curation strategies.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Demonstrations can come from human teleoperators, planners, scripted controllers, foundation models, or mixtures of all four. The source determines what biases, coverage gaps, and safety assumptions enter the dataset.</p>
@@ -85,6 +89,26 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <tr><td>Foundation model</td><td>Semantic diversity and task-language coverage</td><td>Ungrounded actions, hallucinated affordances, embodiment mismatch</td><td>Proposal generation, annotation, and curriculum design</td></tr>
 </tbody>
 </table>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Demonstration Source Selection and Dataset Assembly</h4>
+<p><strong>Input:</strong> Task specification $\mathcal{T}$, candidate source set $\mathcal{S} = \{\text{human}, \text{planner}, \text{foundation model}\}$, budget constraints, target policy $\pi_\theta$</p>
+<p><strong>Output:</strong> Filtered, source-labeled demonstration dataset $\mathcal{D}$ for policy training</p>
+<ol>
+<li>Define the task contract: observation space $\mathcal{O}$, action space $\mathcal{A}$, success metric $\rho$, and failure taxonomy (perception / contact / planning / timing).</li>
+<li>For each source $s \in \mathcal{S}$, score along three axes: hardware fidelity $h(s)$, coverage $c(s)$, and auditability $a(s)$. Record scores in a source provenance table.</li>
+<li>Bootstrap with planner rollouts when task geometry is known and simulation fidelity is high; collect $N_{\text{plan}}$ episodes covering the Cartesian workspace.</li>
+<li>Identify contact-rich failure modes in simulation rollouts. For each failure category $f_k$, set a human teleoperation quota $N_k = \lceil \alpha \cdot N_{\text{plan}} \rceil$ targeting those regimes, where $\alpha$ is a coverage weight.</li>
+<li>Collect human teleoperation episodes; tag each with operator ID, control frequency, intervention events, and episode outcome. Store as $\mathcal{D}_{\text{human}}$.</li>
+<li>For semantic diversity, generate foundation-model proposals; filter each proposed trajectory $\tau$ through a forward kinematics check against the robot URDF: reject $\tau$ if any joint $q_i \notin [q_i^{\min}, q_i^{\max}]$. Store valid traces as $\mathcal{D}_{\text{fm}}$.</li>
+<li>Assign a source label $s \in \{\text{human}, \text{planner}, \text{fm}\}$ and confidence score to every episode. Write a dataset manifest with embodiment, camera layout, control frequency, action units, and license.</li>
+<li>Merge sources: $\mathcal{D} = \mathcal{D}_{\text{plan}} \cup \mathcal{D}_{\text{human}} \cup \mathcal{D}_{\text{fm}}$. Write a filter key per split (train / val / stress) using <code>create_hdf5_filter_key</code>; verify with <code>h5ls -r dataset.hdf5 | grep mask</code>.</li>
+<li>Train an initial policy $\pi_\theta$ on $\mathcal{D}$ via behavior cloning: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathbb{E}_{(\mathbf{o},\mathbf{a}) \sim \mathcal{D}}[\mathcal{L}(\pi_\theta(\mathbf{o}), \mathbf{a})]$.</li>
+<li>Evaluate $\pi_\theta$ on hardware across failure categories. If a category $f_k$ remains above the failure threshold, return to step 4 and increase $N_k$ for the corresponding source; otherwise release $\mathcal{D}$ with its provenance card.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When mixing human and planner demonstrations in robomimic, set the <code>hdf5_filter_key</code> parameter in your config to a custom key (for example, <code>"human_only"</code> or <code>"mixed_balanced"</code>) that you write into the HDF5 file before training. Without this, robomimic defaults to the <code>"train"</code> filter key, which includes every episode regardless of source, silently defeating any source-balancing you applied upstream. Write your filter key immediately after merging episodes with <code>robomimic.utils.file_utils.create_hdf5_filter_key</code>, then verify with <code>h5ls -r dataset.hdf5 | grep mask</code> before launching a training run.</p>
 </div>
 <p>Consider a specific case: a team trains a pick-and-place policy using 200 human teleoperation episodes and 800 MoveIt planner rollouts <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/section-20.1.html">in simulation</a>. The planner traces cover 95% of the Cartesian workspace at near-zero cost, but every trajectory terminates cleanly without any slip or contact surprise. When evaluated on the real robot, the policy succeeds on clear-table placements (80%) but fails when an object shifts during the grasp (12% success). The human traces, though fewer, contained 47 recovery grasps. Adding just 100 more human recovery episodes raises real-robot success to 61%, while doubling the planner rollouts to 1,600 has no measurable effect. The diagnosis: planner data covered geometry but not <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.3.html">contact dynamics</a>; source diversity, not raw volume, was the binding constraint.</p>
 <p>Code Fragment 3 turns those distinctions into a provenance scorecard. The goal is not to rank sources universally, but to decide which source is credible for the evaluation question at hand.</p>

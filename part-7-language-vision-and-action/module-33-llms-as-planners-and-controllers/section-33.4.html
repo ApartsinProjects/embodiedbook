@@ -38,6 +38,9 @@
 <img alt="Technical illustration for Section 33.4: VoxPoser: composing 3D value maps." loading="lazy" src="images/chapter-33-illustration-04.png"/>
 <figcaption>Figure 33.4A: VoxPoser's 3D value map: an LLM outputs natural-language affordance and avoidance descriptions, a VLM grounds them to 3D voxel regions, and a motion planner optimizes a trajectory that maximizes the combined value map.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with 3D voxel representations from section 28.4 and with open-vocabulary visual grounding from section 32.3. The value-map interface introduced here is extended in section 33.5, where relational keypoint constraints replace voxel scoring as the spatial language between the LLM and the motion planner. The broader pattern of using structured spatial representations to bridge language and geometry recurs in Part 8 alongside contact-rich manipulation.</p>
+</div>
 
 <p>Read the figure as a value-map composition pipeline. VoxPoser-style systems must turn language into spatial objectives, collision costs, affordance maps, and controller targets in a shared 3D frame.</p>
 <figure class="diagram" id="fig-33-4">
@@ -79,15 +82,35 @@
 <p>Spatial value maps are a natural interface between semantic intent and classical optimization.</p>
 </div>
 <h2>Theory</h2>
-<p>VoxPoser represents language-conditioned objectives as voxelized value and constraint maps. A planner then searches for a trajectory $\tau$ that maximizes integrated value while respecting constraints, for example $$\tau^* = \arg\max_\tau \sum_{t=0}^{T} V_x(p_t) - \lambda C_x(p_t),$$ where $p_t$ are end-effector poses, $V_x$ is a language-conditioned affordance map, and $C_x$ is a constraint or collision cost map.</p>
+<p>VoxPoser represents language-conditioned objectives as voxelized value and constraint maps. A <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">planner</a> then searches for a trajectory $\tau$ that maximizes integrated value while respecting constraints, for example $$\tau^* = \arg\max_\tau \sum_{t=0}^{T} V_x(p_t) - \lambda C_x(p_t),$$ where $p_t$ are end-effector poses, $V_x$ is a language-conditioned affordance map, and $C_x$ is a constraint or collision cost map.</p>
 <p>This matters because free-text plans like 'move above the mug, then approach from the side' are hard to execute directly. A value map expresses the same semantics in the planner's native language: spatial preference over poses. The optimizer can then handle smoothness, collision, and dynamics with standard tools.</p>
+<div class="callout algorithm">
+<h4>Algorithm: VoxPoser Value-Map Composition</h4>
+<p><strong>Input:</strong> natural-language instruction $l$, RGB-D observation $o$, voxel grid $\mathcal{G}$ of resolution $r$, open-vocabulary VLM with parameters $\theta$, trajectory planner $\pi$, constraint weight $\lambda$</p>
+<p><strong>Output:</strong> optimized end-effector trajectory $\tau^*$ through free space</p>
+<ol>
+<li>Parse $l$ with the LLM to produce a set of sub-objective descriptions $\{d_1^+, \ldots, d_m^+\}$ (affordance targets) and constraint descriptions $\{d_1^-, \ldots, d_k^-\}$ (avoidance regions).</li>
+<li>For each target description $d_i^+$, query the VLM ($\theta$) on observation $o$ to obtain a pixel-level relevance mask $M_i^+$; back-project $M_i^+$ into $\mathcal{G}$ and assign per-voxel affordance scores $v_i(g)$ for $g \in \mathcal{G}$.</li>
+<li>For each constraint description $d_j^-$, repeat the VLM grounding step to obtain per-voxel cost scores $c_j(g)$.</li>
+<li>Normalize each score map independently: $\hat{v}_i(g) = \frac{v_i(g) - \min v_i}{\max v_i - \min v_i + \epsilon}$ and analogously for $\hat{c}_j(g)$, where $\epsilon$ prevents division by zero.</li>
+<li>Compose the positive maps into a single affordance volume: $V_x(g) = \frac{1}{m}\sum_{i=1}^{m} \hat{v}_i(g)$.</li>
+<li>Compose the negative maps into a single constraint volume: $C_x(g) = \max_{j} \hat{c}_j(g)$ (take the maximum so any violated constraint dominates).</li>
+<li>Form the combined planning objective $\Phi(g) = V_x(g) - \lambda C_x(g)$ over all voxels.</li>
+<li>Pass $\Phi$ to the trajectory planner $\pi$; solve $\tau^* = \arg\max_{\tau} \sum_{t=0}^{T} \Phi(p_t)$, where $p_t$ are sampled end-effector poses along the trajectory.</li>
+<li>Execute $\tau^*$ on the robot; record the executed poses, the final $\Phi$ map, and whether each sub-objective was satisfied as the audit artifact.</li>
+<li>If execution fails, identify whether the fault is in grounding ($V_x$ or $C_x$ mislocalized), composition ($\lambda$ mis-weighted), or optimization ($\pi$ could not realize the map), and return to step 2 or 7 accordingly.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>Normalize both $V_x$ and $C_x$ to the range $[0, 1]$ before composing them, then choose $\lambda$ on that normalized scale rather than on raw VLM confidence scores. VLMs such as OWL-ViT produce logit-scale outputs whose magnitude varies with prompt phrasing, so a fixed $\lambda$ that works with one object description can silently fail to penalize a constraint region when a differently phrased prompt shifts the score distribution. In Open3D, a simple <code>voxel_scores = (voxel_scores - voxel_scores.min()) / (voxel_scores.max() - voxel_scores.min() + 1e-8)</code> applied per map before composition keeps the weighting interpretable and prevents one loud affordance signal from drowning out a safety constraint.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Think of VoxPoser as translation between description space and optimization space. The LLM and VLM identify which regions should be attractive or forbidden, and the motion planner solves the rest.</p>
 </div>
 <div class="callout key-insight">
 <div class="callout-title">How the Pipeline Produces a Map (Step by Step)</div>
-<p>Given the instruction "place the cup on the coaster without knocking over the bottle," the system proceeds in three stages. First, the LLM parses the command into two sub-objectives: a positive affordance target (the coaster surface) and a negative constraint (the region around the bottle). It emits these as natural-language descriptions, not coordinates. Second, an open-vocabulary VLM such as DINO or OWL-ViT localizes each described region in the current RGB-D frame and projects the pixel masks into the shared 3D voxel grid, assigning a value score to each voxel. Third, the scores from all sub-objectives are composed into a single $V_x$ and $C_x$ map and passed to the motion planner. Prefer this architecture when the task has explicit spatial exclusion zones or when free-text step sequences would require the executor to re-parse geometry at runtime; prefer direct policy or code-as-policy approaches when the scene is too cluttered for reliable open-vocabulary localization.</p>
+<p>Given the instruction "place the cup on the coaster without knocking over the bottle," the system proceeds in three stages. First, the LLM parses the command into two sub-objectives: a positive affordance target (the coaster surface) and a negative constraint (the region around the bottle). It emits these as natural-language descriptions, not coordinates. Second, an <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.3.html">open-vocabulary VLM such as DINO or OWL-ViT</a> localizes each described region in the current RGB-D frame and projects the pixel masks into the shared <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.4.html">3D voxel grid</a>, assigning a value score to each voxel. Third, the scores from all sub-objectives are composed into a single $V_x$ and $C_x$ map and passed to the motion planner. Prefer this architecture when the task has explicit spatial exclusion zones or when free-text step sequences would require the executor to re-parse geometry at runtime; prefer direct policy or code-as-policy approaches when the scene is too cluttered for reliable open-vocabulary localization.</p>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 builds a one-dimensional toy value map and shows how the best pose changes when language and constraints are composed. The toy numbers are not the point; the compositional interface is.</p>
@@ -115,7 +138,7 @@ print(best_cell)</code></pre>
 <li>Build a scene representation that supports language-conditioned voxel or point-based scoring.</li>
 <li>Separate attractive maps from forbidden or high-cost maps instead of mixing them too early.</li>
 <li>Compose maps before optimization so the planner sees one coherent objective.</li>
-<li>Hand the result to a classical motion planner or MPC stack rather than bypassing geometry checks.</li>
+<li>Hand the result to a <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.3.html">classical motion planner</a> or MPC stack rather than bypassing geometry checks.</li>
 <li>Visualize the maps during debugging, because silent spatial mistakes are easy to miss in text logs alone.</li>
 </ol>
 <div class="callout warning">
@@ -132,7 +155,7 @@ print(best_cell)</code></pre>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Recent 3D grounding work combines voxel maps, Gaussian splats, and keypoint constraints with language-conditioned planners. The open problem is how to keep these spatial objectives stable under clutter, viewpoint change, and contact-rich dynamics.</p>
+<p>Recent 3D grounding work combines voxel maps, <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.6.html">Gaussian splats</a>, and keypoint constraints with language-conditioned planners. The open problem is how to keep these spatial objectives stable under clutter, viewpoint change, and contact-rich dynamics.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -148,7 +171,7 @@ print(best_cell)</code></pre>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
 <tr><td>VoxPoser reference code</td><td>Language-to-value-map composition.</td><td>Use it when you want a concrete implementation of the map interface.</td></tr>
-<tr><td>Open3D or voxel libraries</td><td>Scene discretization and point-cloud processing.</td><td>Use them when the planner needs explicit spatial support from RGB-D data.</td></tr>
+<tr><td>Open3D or voxel libraries</td><td>Scene discretization and <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.2.html">point-cloud processing</a>.</td><td>Use them when the planner needs explicit spatial support from RGB-D data.</td></tr>
 <tr><td>MoveIt or MPC stack</td><td>Trajectory optimization under geometry and collision constraints.</td><td>Use them when the value map should shape but not replace motion planning.</td></tr>
 <tr><td>SAM 2 or open-vocabulary VLM</td><td>Object localization feeding map composition.</td><td>Use them when language must be grounded before the value map is built.</td></tr>
 <tr><td>Nerfstudio or 3D scene representation tools</td><td>Richer spatial context for long-horizon manipulation.</td><td>Use them when static depth snapshots are too weak for the task.</td></tr>

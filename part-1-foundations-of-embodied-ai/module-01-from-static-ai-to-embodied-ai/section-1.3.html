@@ -40,6 +40,10 @@
 <figcaption><strong>Figure 1.3A</strong>: The task contract made physical: what the agent senses (observation), what it commands (action), what the world does in response (transition), what it is graded on (reward), and the boundary it must not cross (constraint).</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes you are comfortable with the feedback-loop intuition introduced in section 1.1 and the distinction between static and embodied settings from section 1.2. The MDP and POMDP formalisms defined here are extended in section 2.7, which treats the observation function in depth, and in section 26.3, which applies hierarchical action spaces to long-horizon manipulation tasks. The constrained MDP structure recurs throughout Part 9 alongside safety-critical locomotion and dexterous manipulation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Six words, agent, environment, observation, action, reward, constraint, are not vocabulary; they are a contract that pins down exactly what an embodied learning problem <em>is</em> before any algorithm touches it. The contract is a tuple. Write the tuple down and the hard questions become explicit: is the state observed or only partially sensed, is the action a discrete menu or a torque vector, is the objective a single reward or a reward subject to a cost budget. Get the tuple wrong and every downstream result is measuring a different problem than the one you meant. This section gives the formal contract at full precision: the MDP, its partially observed extension that almost every embodied task actually inhabits, and the constrained variant that captures the safety and resource limits real robots cannot ignore.</p>
@@ -75,11 +79,32 @@
 <p>The base contract for a fully observed embodied task is a Markov decision process, the tuple $(\mathcal{S},\mathcal{A},P,r,\gamma,\rho_0)$. Here $\mathcal{S}$ is the state space (every configuration the world can be in: joint angles, object poses, contact state), $\mathcal{A}$ is the action space, $P(s' \mid s,a)$ is the transition kernel giving the probability of landing in state $s'$ after taking action $a$ in state $s$, $r(s,a)$ is the scalar reward, $\gamma \in [0,1)$ is the discount factor, and $\rho_0$ is the initial-state distribution. A policy $\pi(a \mid s)$ closes the loop. The Markov property is the load-bearing assumption: $s_t$ summarizes all history relevant to the future, so $P$ and $r$ may condition on $s_t$ alone.</p>
 <p>The objective is the discounted return, and the policy is graded by its expected value:</p>
 <p>$$G_t = \sum_{k=0}^{\infty} \gamma^{k} r_{t+k}, \qquad J(\pi) = \mathbb{E}_{s_0 \sim \rho_0,\, a_t \sim \pi,\, s_{t+1}\sim P}\!\left[\sum_{t=0}^{\infty} \gamma^{t} r(s_t,a_t)\right].$$</p>
+<div class="callout tip">
+<p>When setting the discount factor $\gamma$, start with $\gamma = 0.99$ for tasks with horizons up to a few hundred steps and drop to $\gamma = 0.95$ or lower if the policy stalls or reward gradients vanish during early training. A common trap is copying $\gamma = 0.999$ from a paper that used 10,000-step episodes into a 200-step task: the effective horizon $1/(1-\gamma)$ becomes 1,000 steps, swamping the actual episode with discounted future noise and slowing convergence. In Isaac Lab and similar GPU-parallelized simulators, verify that your chosen $\gamma$ matches the environment's <code>decimation</code> parameter (the ratio of physics substeps to policy steps), because a finer physics timestep multiplies the effective horizon even when episode length in wall-clock seconds appears unchanged.</p>
+</div>
 <p>Two distinctions in this objective are routinely conflated and cost teams weeks. <em>Reward</em> $r_t$ is a per-step quantity; <em>return</em> $G_t$ is the discounted sum the policy actually optimizes. A reward that looks correct step by step can induce a return that rewards stalling, oscillating, or any behavior the discount happens to favor. And the expectation is taken over the policy-induced trajectory distribution, so changing $\pi$ changes the states on which $r$ is sampled, the coupling developed in <a href="../../part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.1.html">Section 1.1</a>.</p>
 <h2>Why embodied tasks are partially observed</h2>
 <p>The MDP assumes the agent sees $s_t$. A robot never does. It sees pixels, joint encoders, force readings, and a language instruction, none of which recover full object pose, mass, friction, or another agent's intent. The honest contract is therefore a <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">partially observable MDP (POMDP)</a>, the tuple $(\mathcal{S},\mathcal{A},\mathcal{O},P,Z,r,\gamma)$, which adds an observation space $\mathcal{O}$ and an observation function</p>
 <p>$$Z(o \mid s',a) = \Pr(o_{t+1}=o \mid s_{t+1}=s',\, a_t=a),$$</p>
 <p>the probability of receiving observation $o$ after action $a$ lands the world in state $s'$. Because $Z$ is generally many-to-one and noisy, the observation $o_t$ is a lossy projection of the state, not the state. A POMDP policy cannot be Markov in $o_t$; it must act on a sufficient statistic of history, the belief state $b_t(s) = \Pr(s_t = s \mid o_{0:t}, a_{0:t-1})$, which is itself updated by Bayes' rule through $Z$ and $P$. The belief MDP over $b_t$ is the formally correct object, and it is why memory, filtering, and recurrent or transformer policies appear the moment a task is genuinely partially observed.</p>
+<div class="callout algorithm">
+<h4>Algorithm: POMDP Agent-Environment Interaction Loop</h4>
+<p><strong>Input:</strong> policy $\pi(a \mid o_{0:t}, a_{0:t-1})$, initial belief $b_0(s) = \rho_0(s)$, discount $\gamma \in [0,1)$, cost budgets $\{d_i\}$, horizon $T$</p>
+<p><strong>Output:</strong> trajectory $\tau = (o_0, a_0, r_0, c_0, \dots, o_{T-1}, a_{T-1}, r_{T-1}, c_{T-1})$, return $G = \sum_{t=0}^{T-1} \gamma^t r_t$, cumulative cost $J_c = \sum_{t=0}^{T-1} \gamma^t c_t$</p>
+<ol>
+<li>Sample initial state $s_0 \sim \rho_0$; receive first observation $o_0 \sim Z(\cdot \mid s_0, \varnothing)$; set history $h_0 = (o_0)$.</li>
+<li>Initialize belief $b_0(s) = \rho_0(s)$ (prior over states consistent with $o_0$).</li>
+<li><strong>For</strong> each timestep $t = 0, 1, \dots, T-1$:</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;Select action $a_t \sim \pi(\cdot \mid h_t)$ where $h_t = (o_0, a_0, \dots, o_t)$.</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;Environment draws next state $s_{t+1} \sim P(\cdot \mid s_t, a_t)$ and emits observation $o_{t+1} \sim Z(\cdot \mid s_{t+1}, a_t)$.</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;Record reward $r_t = r(s_t, a_t)$ and cost vector $(c_{i,t})$ with $c_{i,t} = c_i(s_t, a_t)$; note that $r_t$ and each $c_{i,t}$ remain separate (no folding into $r - \lambda c$).</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;Update belief via Bayes' rule: $b_{t+1}(s') \propto Z(o_{t+1} \mid s', a_t) \sum_s P(s' \mid s, a_t)\, b_t(s)$.</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;Append $o_{t+1}$ to history: $h_{t+1} = h_t \cup \{a_t, o_{t+1}\}$.</li>
+<li>&nbsp;&nbsp;&nbsp;&nbsp;<strong>If</strong> $s_{t+1}$ is terminal or $t+1 = T$, break.</li>
+<li>Compute return $G = \sum_{t} \gamma^t r_t$ and each $J_{c_i} = \sum_{t} \gamma^t c_{i,t}$.</li>
+<li>Check feasibility: policy satisfies the CMDP constraints iff $J_{c_i} \le d_i$ for all $i$; otherwise flag constraint violation and adjust $\lambda_i$ (Lagrangian dual update $\lambda_i \leftarrow \max(0,\, \lambda_i + \alpha (J_{c_i} - d_i))$).</li>
+</ol>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Observation is not state</div>
 <p>The single most common modeling error in embodied AI is writing a policy $\pi(a \mid o_t)$ and reasoning about it as if $o_t = s_t$. Under partial observation, two distinct states can emit the same observation, so any reactive policy on $o_t$ is provably suboptimal for tasks that require disambiguating them. The fix is not a better network on $o_t$ alone; it is giving the policy access to history, $\pi(a \mid o_{0:t}, a_{0:t-1})$, so it can carry the belief the single observation cannot.</p>

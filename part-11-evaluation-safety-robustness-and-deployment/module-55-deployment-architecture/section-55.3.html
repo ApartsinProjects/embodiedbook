@@ -39,6 +39,9 @@
 <img alt="Technical illustration for Section 55.3: Edge vs. cloud-robot computation; asynchronous inference." loading="lazy" src="images/chapter-55-illustration-03.png"/>
 <figcaption>Figure 55.3A: Edge vs. cloud-robot computation tradeoff: latency-sensitive reactive control runs on-board, heavier perception and planning modules stream to a nearby edge server, and a cloud backend handles periodic policy updates and telemetry aggregation.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with closed-loop control timing from section 7.1 and sensor state estimation from section 8.6. The compute-placement tradeoffs developed here are applied directly in section 55.4, which covers deployment monitoring and fallback policies. The asynchronous inference patterns also recur in Part 7 alongside vision-language models for embodiment (section 32.3), where cloud-hosted models must respect the same staleness and fallback constraints described here.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Edge vs. cloud-robot computation; asynchronous inference</strong> matters because compute placement is a safety and reliability decision. The section treats evaluation, uncertainty, safety, and deployment as one closed-loop contract rather than as separate checklist items.</p>
@@ -128,6 +131,26 @@ print(placement)</code></pre>
 <div class="callout key-insight">
 <div class="callout-title">What Asynchronous Inference Means in Practice</div>
 <p>Asynchronous inference means the local controller does not block waiting for a cloud result. Instead, it acts on the most recent cached prediction while a newer one is in flight. Consider a mobile manipulation robot using a cloud-hosted <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.3.html">vision-language model</a> for object identification. The local controller runs at 50 Hz using the last received label; a new cloud query fires every 500 ms over a 4G uplink with roughly 80 ms round-trip latency under good conditions. If the uplink degrades to 400 ms, the robot continues using a now-stale label for up to 900 ms. The architecture must define a staleness threshold, a fallback behavior (halt, use a local lightweight classifier, or hold last action), and a recovery trigger when the uplink recovers. Without these three elements the system is asynchronous in name only.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Asynchronous Cloud Inference with Staleness Fallback</h4>
+<p><strong>Input:</strong> local controller frequency $f_\text{local}$ (Hz), cloud query period $T_q$ (s), staleness threshold $\tau$ (s), cached prediction $\hat{y}_t$, policy parameters $\theta$, fallback policy $\pi_\text{fallback}$</p>
+<p><strong>Output:</strong> action $a_t$ at each control tick; updated cache $\hat{y}_{t+1}$; staleness flag $s_t \in \{0,1\}$</p>
+<ol>
+<li>Compute placement score $R = w_1 \cdot \text{criticality} + w_2 \cdot \text{latency} + w_3 \cdot \text{availability} + w_4 \cdot \text{privacy}$ for each module; assign modules with $R \geq R_\text{thresh}$ to edge, remainder to cloud.</li>
+<li>At each local tick $t$, read observation $o_t$ from onboard sensors and update state estimate $\hat{x}_t$ using local estimator with parameters $\theta_\text{local}$.</li>
+<li>Check staleness: set $s_t = 1$ if $t - t_\text{last\_reply} > \tau$, else $s_t = 0$.</li>
+<li>If $s_t = 0$: compute action $a_t = \pi(\hat{x}_t, \hat{y}_t; \theta)$ using the cached cloud prediction $\hat{y}_t$.</li>
+<li>If $s_t = 1$: apply fallback $a_t = \pi_\text{fallback}(\hat{x}_t; \theta_\text{local})$ (halt, lightweight classifier, or hold last safe action).</li>
+<li>Pass $a_t$ through the local safety monitor; if the monitor raises a barrier, override with $a_t \leftarrow a_\text{safe}$ and log the interrupt event.</li>
+<li>Execute $a_t$ and record $(o_t, \hat{x}_t, \hat{y}_t, s_t, a_t, \text{monitor\_state})$ into the deployment artifact.</li>
+<li>Every $T_q$ seconds, fire an asynchronous cloud query with $o_t$ and $\hat{x}_t$; do not block on the reply.</li>
+<li>On receipt of cloud reply $\hat{y}_\text{new}$: update $\hat{y}_{t+1} \leftarrow \hat{y}_\text{new}$, reset $t_\text{last\_reply} \leftarrow t$, and log $\nabla_\theta \mathcal{L}$ if the reply includes a gradient update.</li>
+<li>Periodically aggregate artifact rows and compute fleet-level metrics (mean staleness fraction, fallback activation rate, safety interrupt rate); flag any run where staleness fraction exceeds $\alpha_\text{max}$ for review.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When publishing cloud inference results back to a ROS 2 local controller, set the topic QoS to <code>BEST_EFFORT</code> reliability and <code>VOLATILE</code> durability, and apply a <code>lifespan</code> policy equal to your staleness threshold (for example, <code>rclpy.qos.QoSDurabilityPolicy.VOLATILE</code> with <code>lifespan=Duration(seconds=0.9)</code>). Using <code>RELIABLE</code> durability instead causes the subscriber to queue and replay missed messages on reconnect, so the controller silently acts on a burst of stale predictions the moment the uplink recovers. The <code>lifespan</code> field kills any message that sits in the queue longer than the threshold, giving you the expiry logic for free without a hand-rolled timestamp check.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>

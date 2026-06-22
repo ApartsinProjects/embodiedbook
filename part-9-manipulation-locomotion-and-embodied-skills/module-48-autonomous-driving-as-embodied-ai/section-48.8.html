@@ -43,14 +43,17 @@
 <img alt="Cartoon autonomous car approaching an occluded pedestrian scenario with safe fallback motion shown as ghost paths." loading="lazy" src="images/chapter-48-illustration-08.png"/>
 <figcaption><strong>Figure 48.8A</strong>: Scenario-based planning makes hidden risk visible by tying route, behavior, prediction, trajectory, control, and fallback evidence to the same road situation.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the Frenet coordinate frame from section 48.4 and with scan-matching localization from section 29.3, both of which underlie the lane-relative reasoning used here. The scenario-based validation ideas introduced here are extended into closed-loop evaluation and disengagement analysis in section 48.9. The safety-case methodology recurs in Part 11 alongside formal hazard analysis and SOTIF-style operational design domain reasoning in sections 54.1 and 54.6.</p>
+</div>
 <h2>Route, Behavior, And Local Planning</h2>
-<p>Route planning chooses a coarse path through a road graph. Behavior planning chooses maneuvers such as follow, yield, merge, stop, nudge, overtake, or pull over. Local planning turns that decision into a dynamically feasible trajectory with speed, curvature, comfort, and collision constraints.</p>
+<p>Route planning chooses a coarse path through a road graph. Behavior planning chooses maneuvers such as follow, yield, merge, stop, nudge, overtake, or pull over. Local planning turns that decision into a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">dynamically feasible trajectory with speed, curvature, comfort, and collision constraints</a>.</p>
 <div class="callout key-insight">
 <div class="callout-title">Prediction And Planning Are Coupled</div>
 <p>The planner does not react to one fixed future. It plans against uncertain futures from other agents, then updates as those agents respond. That makes driving an interactive embodied system, not a static path search.</p>
 </div>
 <h2>HD Maps And Localization</h2>
-<p>Route and behavior planning both stand on a high-definition map. Unlike a navigation map, an HD map encodes lane geometry, traffic signs, crosswalks, and stop lines to roughly 10 cm precision, organized as layers: lane centerlines and boundaries, regulatory elements (signs, signals, speed limits), and topology (which lane connects to which). The vehicle locates itself in this map by scan matching, aligning live LiDAR or camera features against the stored map, which yields a lane-relative pose far more precise than raw GNSS. Crowdsourced map updates, where the fleet reports discrepancies, keep the map fresh.</p>
+<p>Route and behavior planning both stand on a high-definition map. Unlike a navigation map, an HD map encodes lane geometry, traffic signs, crosswalks, and stop lines to roughly 10 cm precision, organized as layers: lane centerlines and boundaries, regulatory elements (signs, signals, speed limits), and topology (which lane connects to which). The vehicle locates itself in this map by <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.3.html">scan matching, aligning live LiDAR or camera features against the stored map</a>, which yields a lane-relative pose far more precise than raw GNSS. Crowdsourced map updates, where the fleet reports discrepancies, keep the map fresh.</p>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode: Map Staleness</div>
 <p>Construction zones are the canonical HD-map hazard. The map shows a lane that is now coned off, so a planner that trusts the map will route into a closed lane. The mitigation is online perception that detects cones, barriers, and lane closures and lets live evidence override the stored map; the residual risk is the set of construction layouts the detector still mishandles.</p>
@@ -82,8 +85,28 @@ print(f"ego in {lane_id}: nearest center {tuple(cpt)}, lateral offset {lateral:.
 </code></pre>
 <p><strong>Expected output:</strong> the ego at <code>(12.0, -1.2)</code> is assigned to <code>lane_R</code> with a nearest centerline vertex at <code>(10.0, -1.8)</code> and a distance of about 2.09 m (dominated by the 10 m vertex spacing of this coarse polyline; a real HD map is sampled far more densely). The lane assignment is the lane-relative localization a behavior planner needs before it can reason about gaps and maneuvers, and in a real stack the snap is refined by scan matching against the full HD map layers.</p>
 <h2>Scenario-Based Validation</h2>
-<p>Scenario testing is the bridge from impressive driving clips to engineering evidence. A scenario names the road layout, actors, initial states, behavior scripts, weather, sensor configuration, success criteria, and termination rules. OpenSCENARIO, ScenarioRunner, CommonRoad, and CARLA-style tooling make those assumptions explicit.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Hierarchical Driving Plan with Scenario Validation</h4>
+<p><strong>Input:</strong> ego pose $\mathbf{x}_t$, HD-map graph $\mathcal{G}$, goal pose $\mathbf{g}$, agent predictions $\{\hat{\pi}_i\}$, scenario suite $\mathcal{S}$, safety threshold $\alpha$</p>
+<p><strong>Output:</strong> validated trajectory $\tau^*$, safety evidence vector $\mathbf{e}$</p>
+<ol>
+<li><strong>Route planning.</strong> Search $\mathcal{G}$ for the lowest-cost lane sequence $R = \arg\min_r \sum_k c(r_k)$ from $\mathbf{x}_t$ to $\mathbf{g}$, where $c(r_k)$ encodes travel time, legality, and map confidence.</li>
+<li><strong>Lane-relative localization.</strong> Project $\mathbf{x}_t$ into Frenet frame $(s, d)$ along the leading lane centerline; compute lateral offset $d = \|\mathbf{x}_t - \mathbf{p}^*\|$ where $\mathbf{p}^*$ is the nearest centerline point.</li>
+<li><strong>Behavior selection.</strong> Enumerate candidate maneuvers $\mathcal{M} = \{\text{follow, yield, merge, stop, nudge}\}$; score each under the predicted futures $\{\hat{\pi}_i\}$; select $m^* = \arg\max_{m \in \mathcal{M}} \sum_i w_i U(m, \hat{\pi}_i)$ where $U$ is a comfort-and-safety utility and $w_i$ are prediction confidence weights.</li>
+<li><strong>Trajectory optimization.</strong> Given $m^*$, generate a set of candidate local trajectories $\{\tau_j\}$ satisfying kinematic constraints; solve $\tau^* = \arg\min_j J(\tau_j)$ where $J = \lambda_1 J_{\text{collision}} + \lambda_2 J_{\text{comfort}} + \lambda_3 J_{\text{progress}}$ and $\nabla_\theta J$ drives continuous refinement when a differentiable planner is used.</li>
+<li><strong>Scenario matching.</strong> For each scenario $s_k \in \mathcal{S}$, compute match score $\sigma_k = \text{sim}(\mathbf{x}_t, s_k.\text{context})$; if $\sigma_k \geq \theta_{\text{match}}$, retrieve the associated safety criteria and required evidence metrics.</li>
+<li><strong>Safety evidence collection.</strong> Evaluate $\tau^*$ on matched scenario criteria: TTC (time-to-collision), lateral jerk $\ddot{d}$, rule compliance flags, fallback availability, and ODD membership; store results in $\mathbf{e}$.</li>
+<li><strong>Safety gate.</strong> If $\min(\mathbf{e}) \geq \alpha$, emit $\tau^*$; otherwise escalate to the fallback policy $\pi_{\text{safe}}$ (controlled deceleration to a minimal-risk condition) and log the rejection with evidence vector $\mathbf{e}$ for offline scenario review.</li>
+<li><strong>Controller handoff.</strong> Pass $\tau^*$ as the reference $(s(t), d(t), v(t))$ to the tracking controller; monitor lateral error $|d_{\text{actual}} - d_{\text{ref}}|$ and re-invoke behavior selection if deviation exceeds a threshold.</li>
+</ol>
+</div>
+
+<p>Scenario testing is the bridge from impressive driving clips to engineering evidence. A scenario names the road layout, actors, initial states, behavior scripts, weather, sensor configuration, success criteria, and termination rules. OpenSCENARIO, ScenarioRunner, CommonRoad, and CARLA-style tooling make those assumptions explicit, forming the same <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-48-autonomous-driving-as-embodied-ai/section-48.6.html">scenario testing and safety case framework</a> introduced earlier in this chapter.</p>
 <p>A useful scenario program separates functional scenarios, logical scenarios, and concrete scenarios. The functional scenario says "occluded pedestrian after parked van." The logical scenario defines parameter ranges for speed, distance, visibility, and pedestrian timing. The concrete scenario fixes one reproducible test instance with exact values.</p>
+<div class="callout tip">
+<p>When converting a logical scenario into a concrete one, fix every free parameter in OpenSCENARIO's <code>ParameterDeclaration</code> block and record the random seed used by any stochastic actor. A common gotcha is leaving pedestrian timing as a sampled range: two engineers running the "same" scenario then observe different collision margins and cannot compare results. Pinning seed and parameter values turns a reproducing-only-sometimes failure into a regression test you can track across planner versions.</p>
+</div>
 <div class="comparison-table">
 <div class="comparison-table-title">Driving Planning Layers</div>
 <table>
@@ -98,8 +121,8 @@ print(f"ego in {lane_id}: nearest center {tuple(cpt)}, lateral offset {lateral:.
 </table>
 </div>
 <h2>Safety Case Thinking</h2>
-<p>A safety case connects hazards, mitigations, tests, and residual risk. For driving, this means the evidence should be organized by operational design domain: road type, weather, speed range, traffic density, lighting, map quality, sensor availability, and fallback behavior.</p>
-<p>SOTIF-style reasoning asks whether the intended function can be unsafe even without a component failure. That question is central for learned perception and planning: the camera may work, the model may run, and the vehicle may still choose an unsafe maneuver because the scenario sits outside the validated operational design domain.</p>
+<p><a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.6.html">A safety case connects hazards, mitigations, tests, and residual risk.</a> For driving, this means the evidence should be organized by operational design domain: road type, weather, speed range, traffic density, lighting, map quality, sensor availability, and fallback behavior.</p>
+<p><a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.1.html">SOTIF-style reasoning</a> asks whether the intended function can be unsafe even without a component failure. That question is central for learned perception and planning: the camera may work, the model may run, and the vehicle may still choose an unsafe maneuver because the scenario sits outside the validated operational design domain.</p>
 
 <p><strong>Expected output:</strong> the scenario name should identify a recognizable hazard pattern and the metric count should confirm that the planner will be judged on more than route completion alone. If your scenario card cannot name its fallback behavior or its ODD, it is not strong enough to support a safety claim.</p>
 <div class="callout library-shortcut">

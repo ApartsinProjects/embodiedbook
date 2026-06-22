@@ -42,6 +42,10 @@
 <figcaption><strong>Figure 36.3A</strong>: A tiny one-step bias can become a disastrous long-horizon forecast when the planner repeatedly feeds predictions back into itself.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with forward model types and the distinction between state-space and observation-space prediction covered in section 36.2. The compounding-error perspective developed here is extended in section 36.4, which addresses uncertainty quantification as the principal tool for deciding when a rollout has drifted too far to trust. The horizon-capping strategy recurs in Part IX alongside closed-loop replanning and model-predictive control, where short trusted horizons are the practical foundation for real-time deployment.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Compounding error is the main reason predictive control trusts short horizons first. Every rollout step consumes the model's own previous output, so small one-step mistakes can grow geometrically or drift into regions with no data support.</p>
@@ -92,6 +96,9 @@ print({"horizon_error": horizon_error, "final_error": horizon_error[-1]})</code>
 <h2>Failure Analysis That Actually Helps</h2>
 <p>When a long-horizon planner fails, the first useful artifact is not another scalar plot. It is an overlay of real and imagined trajectories aligned by time, with the first meaningful divergence marked explicitly. On a manipulator, that marker is often the first contact frame where normal force or slip onset differs. On a drone, it may be the first step where unmodeled drag or attitude lag changes the commanded recovery. A good debugging ledger therefore stores the horizon at which divergence becomes decision-relevant, not just numerically visible.</p>
 <p>Tool support matters here. <code>wandb</code> or <code>TensorBoard</code> can store horizon-tagged traces, but the deeper point is methodological: keep the rollout panel fixed while comparing horizon caps, model versions, and controller variants. If the panel changes, the claim about horizon trust stops being defensible.</p>
+<div class="callout tip">
+<p>When using MBPO or any short-branched rollout scheme, set the <code>rollout_length</code> schedule to ramp up gradually during training rather than holding it fixed at the maximum from the start. In the reference MBPO implementation, <code>rollout_schedule</code> takes a list of <code>(epoch, length)</code> pairs; starting at length 1 and stepping up by 1 every few epochs keeps early training stable, because the dynamics model has not yet accumulated enough coverage to justify longer horizons. A common gotcha is setting <code>rollout_length=5</code> from epoch zero: the model visits out-of-distribution states immediately, inflates the replay buffer with fictitious transitions, and policy loss spikes in a way that looks identical to a hyperparameter problem rather than a horizon-trust problem.</p>
+</div>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Error accumulation becomes catastrophic in three specific situations that are easy to miss during offline evaluation. First, near contact transitions: a manipulator model trained mostly on free-space data underestimates stiffness after first touch, so a three-step rollout that crosses a contact boundary can report a physically impossible arm pose with low predicted error. Second, at high-speed locomotion gaits where foot-contact duration is a single timestep: one missed liftoff in the imagined rollout sends velocity predictions into divergence within four to six steps. Third, after distributional shift caused by policy improvement: the updated policy visits states the dynamics model was never trained on, so horizon trust drops sharply mid-training even if one-step loss has not changed. In each case the symptom is a planner that scores its own rollouts confidently while the real robot fails immediately on execution.</p></div>
 <div class="callout algorithm">
 <div class="callout-title">Practical Recipe</div>

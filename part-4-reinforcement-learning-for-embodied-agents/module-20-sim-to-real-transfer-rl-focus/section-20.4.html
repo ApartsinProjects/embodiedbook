@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 20.4A</strong>: Hardware fine-tuning earns its extra performance only when exploration is filtered through explicit safety gates and recoverable test protocols.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with domain randomization and the RMA adaptation architecture from section 20.3, and with constrained policy optimization from section 18.3. The constrained update pattern introduced here is extended in section 20.5, which develops formal metrics for auditing whether hardware fine-tuning actually improved transfer. The safety-gate design recurs in Part 9, alongside force-controlled manipulation in section 42.3 and whole-body safety constraints for humanoids in section 46.2.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Fine-tuning on hardware</strong> is the step where simulation stops being the only teacher. It is also the step where exploration can damage equipment, create unsafe motions, and teach the policy to exploit hardware quirks. Safe real-world RL treats every policy update as a controlled experiment with limits, monitors, stop conditions, and rollback.</p>
@@ -59,6 +63,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a gated loop: propose an action, filter it through constraints, execute under a monitor, record reward and safety events, update only within the approved parameter subset, and roll back if the gate statistics degrade.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Constrained Residual Hardware Fine-Tuning</h4>
+<p><strong>Input:</strong> frozen simulator-trained policy $\pi_\theta$ (fixed parameters $\theta$), residual policy $\pi_\phi$ (trainable parameters $\phi$), safety gate set $\{g_i\}$, learning rate $\alpha$, rollback threshold $\delta$, intervention budget $B$</p>
+<p><strong>Output:</strong> updated residual parameters $\phi^*$ satisfying the safety envelope, or rolled-back $\phi_0$ if safety degrades</p>
+<ol>
+<li>Load frozen checkpoint $\pi_\theta$; initialize residual $\pi_\phi$ with $\phi = \phi_0$. Record baseline intervention rate $r_0$ under evaluation-only rollouts.</li>
+<li>Collect evaluation rollouts on hardware without any gradient updates. Verify that the human-intervention rate satisfies $r_0 \leq B$ before proceeding.</li>
+<li>At each timestep $t$, sample a proposed composite action $a_t = \pi_\theta(o_t) + \pi_\phi(o_t)$ where $o_t$ is the current observation.</li>
+<li>Evaluate every safety gate: accept $a_t$ only if $g_i(o_t, a_t) \leq 0$ for all $i$. Log blocked actions and their violated constraint index; blocked actions are never executed.</li>
+<li>Execute accepted $a_t$ on hardware. Record transition $(o_t, a_t, r_t, o_{t+1})$ and hardware health signals (force, temperature, actuator delay).</li>
+<li>After a fixed mini-batch of $N$ accepted transitions, compute the policy gradient estimate $\hat{\nabla}_\phi J(\phi) = \frac{1}{N} \sum_t \nabla_\phi \log \pi_\phi(a_t \mid o_t) \cdot R_t$ where $R_t$ is the discounted return.</li>
+<li>Update residual parameters: $\phi \leftarrow \phi + \alpha \hat{\nabla}_\phi J(\phi)$. Only $\phi$ changes; $\theta$ remains frozen throughout.</li>
+<li>Recompute the safety statistics: blocked-action fraction $f_\text{block}$ and intervention rate $r$. If $r &gt; B$ or $f_\text{block} &gt; 2 f_{\text{block},0}$ or task reward drops below the $\pi_\theta$ baseline, immediately restore $\phi \leftarrow \phi_0$ and halt updates.</li>
+<li>Periodically widen the gate thresholds only when two consecutive update batches satisfy all safety criteria and held-out reward exceeds the frozen-policy baseline by a statistically reliable margin.</li>
+<li>After training, evaluate $\phi^*$ on a held-out initial-condition panel with perturbed actuator delays and workspace-edge starts. Report reward, blocked-action count, interventions, resets, and hardware health as one co-computed artifact.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 20.4.1 implements a simple action gate for a residual pushing policy. The proposed residual is allowed only if speed, force, actuator delay, and workspace checks stay within the approved envelope.</p>
@@ -81,6 +102,9 @@ print(f"passes_safety_gate={passes_gate}")</code></pre>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In practical systems, the RL library is only one part of the safety stack. Use ROS 2 controllers, watchdogs, collision monitors, force limits, and emergency-stop hardware around the learner. Gymnasium-style wrappers can express gates in software, but software gates must agree with the robot controller and physical stop channel.</p>
+</div>
+<div class="callout tip">
+<p>When using Stable-Baselines3 for online hardware fine-tuning, set <code>learning_starts</code> to a very small value (typically 1 to 10 real steps) rather than accepting its default of 100 or 1000. The default delays the first policy update until a large replay buffer is filled, meaning the robot executes many unguided exploratory actions before the safety gate statistics can detect degradation and trigger a rollback. Pair this with a small <code>batch_size</code> (16 to 32 samples) so each update uses only recent on-hardware transitions rather than mixing in stale sim data that may have snuck into the buffer during initialization.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>

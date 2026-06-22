@@ -39,6 +39,10 @@
 <figcaption>Figure 16.2A: Replay buffer and target network in the DQN training loop: transitions are stored and sampled uniformly, and the target network (updated every C steps) stabilizes the bootstrap target against moving-target divergence.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Q-learning objective and the DQN loss introduced in section 16.1. The replay buffer and Polyak target update described here carry forward directly into section 16.3, where DDPG, TD3, and SAC each rely on both mechanisms for continuous robot control. Section 16.4 then shows how the target network interacts with the entropy term in maximum-entropy RL.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Replay buffers and target networks</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -55,10 +59,30 @@
 <h2>Theory</h2>
 <p>Without replay, consecutive updates come from consecutive frames. In a robot task, that means many nearly identical observations while the arm approaches the same object. Gradient descent then overfits the most recent local experience and forgets rare but important transitions.</p>
 <p>A replay buffer stores tuples $(o_t, a_t, r_t, o_{t+1}, d_t)$ and samples mini-batches from that store. Uniform replay reduces short-range correlation. Prioritized replay samples high-error transitions more often, which can speed learning but needs correction weights because the sampled distribution no longer matches the buffer distribution.</p>
+<p><div class="callout tip">
+<p>When using prioritized experience replay (PER) in Stable-Baselines3 or Tianshou, set <code>optimize_memory_usage=False</code> and always pass the returned importance-sampling weights to the loss function via the <code>weights</code> argument. Skipping the IS weights corrects the sampling bias on paper but leaves it in the gradient, which silently inflates Q-values for high-priority transitions and can cause divergence that looks like a target-network problem. The PER paper (Schaul et al., 2016) uses exponent <code>beta=0.4</code> at the start and anneals to <code>1.0</code> by the end of training; most library defaults freeze <code>beta</code> at 0.4, so set a linear schedule explicitly or the correction is always partial.</p>
+</div>
 <p>A target network addresses a different problem. The DQN loss uses a target of the form $r + \gamma \max_{a'}Q_{\theta^-}(o',a')$. If $\theta^-$ equals the online network after every update, the model changes both sides of its own target at once. Copying online weights into $\theta^-$ every fixed interval, or slowly averaging them with Polyak updates, makes the target move on a slower time scale.</p>
 <div class="callout key-insight">
 <div class="callout-title">Hard Sync vs. Polyak Update: When to Use Which</div>
 <p>Hard synchronization (copying online weights into the target every C steps) produces a piecewise-constant target that is easy to audit: you always know exactly which checkpoint is computing the bootstrap value. Polyak averaging ($\theta^- \leftarrow \tau \theta + (1-\tau)\theta^-$, with $\tau$ near 0.005) produces a continuously lagged target that changes every step. Hard sync is easier to diagnose and replay; Polyak averaging is smoother and avoids the periodic jump in target values at each sync boundary. In practice, use hard sync when you want reproducible checkpoints (e.g., during a curriculum where you need to attribute a value spike to a specific policy version) and Polyak averaging when stability matters more than auditability (e.g., SAC and TD3 in continuous robot control).</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: DQN Training with Replay Buffer and Target Network</h4>
+<p><strong>Input:</strong> environment $\mathcal{E}$, replay buffer $\mathcal{B}$ of capacity $N$, online parameters $\theta$, target parameters $\theta^-$, learning rate $\alpha$, discount $\gamma$, target sync interval $C$, batch size $B$, exploration schedule $\epsilon$</p>
+<p><strong>Output:</strong> trained Q-network parameters $\theta$ approximating $Q^*(o, a)$</p>
+<ol>
+<li>Initialize $\theta$ randomly; copy $\theta^- \leftarrow \theta$; empty buffer $\mathcal{B}$.</li>
+<li>Observe $o_t$ from $\mathcal{E}$; select action $a_t \sim \pi_\epsilon(\cdot \mid o_t)$ using $\epsilon$-greedy policy over $Q_\theta$.</li>
+<li>Execute $a_t$; receive reward $r_t$ and next observation $o_{t+1}$; record terminal flag $d_t$.</li>
+<li>Store transition $(o_t, a_t, r_t, o_{t+1}, d_t)$ in $\mathcal{B}$; evict oldest entry if $|\mathcal{B}| > N$.</li>
+<li>Sample a mini-batch $\{(o_i, a_i, r_i, o_i', d_i)\}_{i=1}^{B}$ uniformly from $\mathcal{B}$.</li>
+<li>Compute bootstrap targets: $y_i = r_i + \gamma (1 - d_i) \max_{a'} Q_{\theta^-}(o_i', a')$.</li>
+<li>Compute the DQN loss: $\mathcal{L}(\theta) = \frac{1}{B} \sum_{i=1}^{B} \bigl(y_i - Q_\theta(o_i, a_i)\bigr)^2$.</li>
+<li>Update online network: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)$.</li>
+<li>Every $C$ steps apply hard sync ($\theta^- \leftarrow \theta$) or Polyak averaging ($\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-$).</li>
+<li>Decay $\epsilon$; increment $t$; return to step 2 until the training budget is exhausted.</li>
+</ol>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>

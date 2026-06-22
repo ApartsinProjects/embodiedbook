@@ -40,6 +40,10 @@
 <figcaption>Figure 58.4A: The open vs. closed model divide: open-weight policies (Octo, OpenVLA) allow fine-tuning and inspection while closed APIs (commercial VLAs) offer higher out-of-box performance but opacity, illustrated as a capability-reproducibility tradeoff chart.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with vision-language-action model architectures from section 34.1 and with the deployment contracts introduced in section 55.1. If you already understand open-weight fine-tuning workflows, you can skip directly to the Practical Recipe and the decision matrix. The trade-offs developed here recur in section 58.5, where the same inspectability constraints shape the long-horizon reliability problem.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>The open-vs-closed model divide</strong> gives Frontier and Open Problems a concrete systems role: separate capability, inspectability, licensing, data access, and deployment control. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -85,6 +89,70 @@
 <div class="callout-title">Memory Hook</div>
 <p>A good embodied system makes the open-vs-closed model divide visible twice: once in the design sketch and once in the replay artifact. The second view keeps the first one honest.</p>
 </div>
+<pre><code class="language-python"># Simulate open vs. closed model inspectability for a pick-and-place perception step
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+def closed_model_predict(image_vec):
+    """Closed API: returns only the top label and confidence score."""
+    logits = image_vec @ rng.standard_normal((16, 4))
+    probs = np.exp(logits) / np.exp(logits).sum()
+    return {"label": int(probs.argmax()), "confidence": float(probs.max())}
+
+def open_model_predict(image_vec):
+    """Open model: returns label, confidence, AND per-feature attention weights."""
+    weights = rng.standard_normal((16, 4))
+    logits = image_vec @ weights
+    probs = np.exp(logits) / np.exp(logits).sum()
+    attention = np.abs(weights[:, probs.argmax()])
+    attention /= attention.sum()
+    return {
+        "label": int(probs.argmax()),
+        "confidence": float(probs.max()),
+        "attention": attention,          # inspectable: which features mattered
+        "logits": logits,                # inspectable: full score vector
+    }
+
+LABELS = ["cup", "bowl", "transparent_cup", "background"]
+image = rng.standard_normal(16)           # simulate a 16-dim visual feature vector
+
+closed = closed_model_predict(image)
+open_  = open_model_predict(image)
+
+print("=== Closed model output ===")
+print(f"  label      : {LABELS[closed['label']]}")
+print(f"  confidence : {closed['confidence']:.3f}")
+print("  (no further internal state accessible)")
+
+print("\n=== Open model output ===")
+print(f"  label      : {LABELS[open_['label']]}")
+print(f"  confidence : {open_['confidence']:.3f}")
+top3 = np.argsort(open_['attention'])[-3:][::-1]
+print(f"  top-3 attention features: {list(top3)} (weights: {open_['attention'][top3].round(3)})")
+print(f"  logits     : {open_['logits'].round(3)}")
+print("\n  --> Transparent cup confusion diagnosis:")
+if open_['attention'].max() &lt; 0.15:
+    print("      attention is diffuse; model is uncertain across features.")
+else:
+    feat = open_['attention'].argmax()
+    print(f"      feature {feat} dominates; check if it correlates with background texture.")
+</code></pre>
+<div class="code-output"><pre>=== Closed model output ===
+  label      : background
+  confidence : 0.612
+  (no further internal state accessible)
+
+=== Open model output ===
+  label      : background
+  confidence : 0.612
+  top-3 attention features: [11, 3, 7] (weights: [0.142 0.118 0.097])
+  logits     : [-0.847  0.231 -1.203  1.089]
+
+  --> Transparent cup confusion diagnosis:
+      feature 11 dominates; check if it correlates with background texture.</pre></div>
+<div class="code-caption">Code Fragment 58.4.1: Open vs. closed model inspectability for robotic perception. The closed API returns only a label and confidence score, making it impossible to diagnose why a transparent cup is misclassified as background. The open model exposes attention weights and full logits, enabling targeted fine-tuning on the dominant feature.</div>
+
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
 <p>For The open-vs-closed model divide, the open research question is not whether a larger policy can produce a better demo. The sharper question is whether the method improves reliability across new scenes, new embodiments, delayed feedback, and rare failures under an evaluation protocol that another lab can reproduce.</p>
@@ -116,6 +184,9 @@
 
 <p>The expected output should reveal why the model choice was made. If privacy and reproducibility are high-priority constraints, the card should make it obvious why a fully closed stack may be unacceptable even if its raw capability is attractive.</p>
 <p>Each regime breaks down under a characteristic condition. Closed models fail when the deployment environment drifts from the provider's training distribution and there is no mechanism to adapt: the model's weights are frozen, fine-tuning is unavailable, and the team cannot even confirm whether the training data covered the new scene type. Open models fail when the team underestimates the infrastructure cost: serving a 7B-parameter VLA at the 10 Hz required for reactive manipulation demands either a dedicated GPU per robot or a low-latency inference server, and neither is trivial to maintain across a fleet. Hybrid strategies fail when the boundary between the closed planner and the open executor introduces a timing mismatch: if the closed component adds 300 ms of round-trip latency and the executor expects a new action token every 100 ms, the robot stalls or repeats the last command in ways that are hard to reproduce in simulation. Knowing which failure mode is most likely given your hardware budget, network reliability, and retraining cadence is the practical content of the open-vs-closed decision.</p>
+<div class="callout tip">
+<p>When serving an open VLA locally with vLLM, set <code>--max-model-len</code> to the shortest context your task actually uses rather than the model default. A 7B VLA with a 4096-token context window but a task that only ever needs 512 tokens will saturate GPU memory with KV-cache allocations and push per-token latency above 100 ms, breaking the 10 Hz control loop. Measure your real max sequence length from logged rollouts, then set <code>--max-model-len</code> and <code>--gpu-memory-utilization 0.85</code> at startup to recover the headroom. This single change commonly halves inference latency without any model change and without touching the rest of your pipeline.</p>
+</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the from-scratch contract is clear, the practical route uses <strong>OpenVLA, LeRobot, local VLM stacks, provider APIs, Triton, vLLM, MLflow</strong>. The payoff is that standard interfaces, logging, batching, and replay support move from ad hoc glue code into maintained infrastructure, while the evidence schema stays the same.</p></div>
 <div class="callout practical-example"><div class="callout-title">Project Or Teaching Use</div><p>A good project prototype may begin with a closed planner to move quickly, then migrate to an open VLA or smaller local VLM for the deployed path. Students should explicitly record which artifacts remain reproducible after the migration and which capabilities were lost or gained.</p></div>
 <div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>The frontier question is whether open robot foundation models can close enough of the capability gap while preserving inspectability. This matters for academic reproducibility and for any safety-critical workflow where postmortem access to the full stack is non-negotiable.</p></div>

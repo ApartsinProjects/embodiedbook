@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 14.4A</strong>: Algorithm labels become useful when they reveal what is represented and whose data trained the update.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Markov decision process formalism and the Bellman equations introduced in section 14.1, and with the value-function definitions in section 14.2. The occupancy-measure analysis here is taken further in section 15.3, where importance-weighted gradients compensate for the on/off-policy mismatch during PPO training, and in section 16.1, where off-policy Q-learning is developed as the canonical solution to the data-reuse problem.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Model-free vs. model-based and on-policy vs. off-policy</strong> are two independent axes. One asks whether the learner represents dynamics; the other asks whether the data came from the policy being improved.</p>
@@ -62,6 +66,24 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is data distribution control. Model choice defines what the learner can predict or plan with; policy mismatch defines whether the collected evidence supports the policy being improved.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: RL Algorithm Classification Checklist</h4>
+<p><strong>Input:</strong> environment $\mathcal{M} = (S, A, P, R, \gamma)$, dataset $\mathcal{D} = \{(s_t, a_t, r_t, s_{t+1})\}$ collected under behavior policy $\mu$, candidate update target policy $\pi_\theta$</p>
+<p><strong>Output:</strong> classification of the learning setup on two independent axes (representation axis and data-source axis), with the primary audit question for each choice</p>
+<ol>
+<li>Check whether the algorithm maintains an explicit model $\hat{P}(s' \mid s, a)$ or $\hat{R}(s, a)$. If yes, label the representation axis <em>model-based</em>; otherwise label it <em>model-free</em>.</li>
+<li>If model-based: estimate one-step prediction error $\mathbb{E}[\|\hat{P}(s' \mid s, a) - P(s' \mid s, a)\|]$ over held-out transitions. Flag any horizon $H$ where cumulative model error exceeds a threshold $\epsilon_{\text{model}}$.</li>
+<li>Identify the behavior policy $\mu$ that collected $\mathcal{D}$. If $\mu = \pi_\theta$ (same policy, same version), label the data-source axis <em>on-policy</em>; otherwise label it <em>off-policy</em>.</li>
+<li>If off-policy: compute the discounted occupancy mismatch $\delta(s, a) = d_\gamma^{\pi_\theta}(s, a) - d_\gamma^{\mu}(s, a)$ for each critical state-action region. Regions where $\delta(s, a) \gg 0$ are under-supported by $\mathcal{D}$.</li>
+<li>For each under-supported region identified in step 4, choose one corrective action: add importance weights $\rho_t = \pi_\theta(a_t \mid s_t) / \mu(a_t \mid s_t)$, collect fresh on-policy rollouts, or apply a conservative objective that penalizes out-of-distribution actions.</li>
+<li>Record data provenance for every transition in $\mathcal{D}$: behavior policy identifier $\mu$, policy version, simulator or hardware source, reward function version $R_v$, and a boolean flag for any model-generated rollout.</li>
+<li>Select an update rule consistent with the two labels. On-policy model-free: use $\nabla_\theta J(\theta) = \mathbb{E}_{\pi_\theta}[\nabla_\theta \log \pi_\theta(a \mid s) \, Q^{\pi_\theta}(s, a)]$. Off-policy model-free: use a replay buffer with a target network and importance correction. Model-based: plan with $\hat{P}$ for at most $H$ steps, then fall back to the learned value function.</li>
+<li>Before the first gradient update, verify that the replay buffer or dataset covers the state-action pairs with highest $d_\gamma^{\pi_\theta}$ mass. If coverage is less than a threshold $\eta$, delay updates or inject on-policy seed transitions.</li>
+<li>Run the update step: $\theta \leftarrow \theta + \alpha \, g_\theta$, where $g_\theta$ is the gradient or TD target appropriate to the label pair from step 7, and $\alpha$ is the learning rate.</li>
+<li>After each evaluation episode, log success rate, discounted return $G_0 = \sum_{t} \gamma^t r_t$, model rollout error (if model-based), replay coverage fraction, and any safety cost. Compare methods only within one environment panel and one metric definition.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>Code Fragment 1 computes a finite-horizon approximation to discounted occupancy for two policies in a two-state robot task. The behavior policy is cautious; the target policy is more aggressive about contact.</p>
 <pre><code class="language-python"># Estimate discounted occupancy for behavior and target policies.
@@ -93,6 +115,9 @@ for name, policy in policies.items():
 <div class="code-output">behavior_mu {'approach/slow': 0.23, 'approach/fast': 0.058, 'contact/slow': 0.085, 'contact/fast': 0.036}
 target_pi {'approach/slow': 0.041, 'approach/fast': 0.096, 'contact/slow': 0.055, 'contact/fast': 0.218}</div>
 <p>The expected output shows the coverage mismatch directly in the occupancy mass. <code>behavior_mu</code> spends most of its discounted weight on cautious approach actions, while <code>target_pi</code> places much more mass on <code>contact/fast</code>, which is exactly where off-policy support becomes weakest.</p>
+<div class="callout tip">
+<p>When using SAC or any off-policy algorithm, set the replay buffer's <code>min_buffer_size</code> (called <code>learning_starts</code> in Stable-Baselines3) to at least 10,000 transitions before the first gradient update. Starting updates too early means the buffer is dominated by the random initialization policy, whose occupancy almost never covers the state-action pairs the target policy needs. A common symptom is Q-value divergence in the first few thousand steps, which practitioners often misattribute to the learning rate rather than to this cold-start coverage gap.</p>
+</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The occupancy calculation shows that `behavior_mu` collects much more `approach/slow` data, while `target_pi` spends more mass on `contact/fast`. This is the numeric reason off-policy training needs coverage checks, importance weighting, conservative objectives, or fresh rollouts.</div>
 <p>The example also clarifies model-based learning. If a reliable model predicted the transition from `approach` to `contact`, the learner could plan contact behavior before trying every variant on hardware. If the model predicts contact poorly, planning amplifies the error.
 

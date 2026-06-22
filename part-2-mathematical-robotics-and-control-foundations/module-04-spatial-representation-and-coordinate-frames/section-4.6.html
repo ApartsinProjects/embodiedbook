@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 4.6A</strong>: Camera, body, and world frames</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the homogeneous transforms introduced in section 4.4 and the rotation representations covered in section 4.3. The camera-to-body-to-world chain developed here recurs in section 8.2 (depth camera calibration) and section 8.3 (IMU-to-body alignment), where the same frame-composition pattern is applied to real sensor hardware. In Part V, visual servoing and grasping pipelines depend directly on the pixel-to-body-frame conversion shown here.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Camera, body, and world frames</strong> connect pixels to action. The camera frame explains where a measurement came from, the body frame explains what the robot can do now, and the world frame explains how the robot remains consistent over time. Without this chain, a detected object is only a bright region in an image, not a reachable target.</p>
@@ -57,6 +61,27 @@
 <p>Back-projection reverses this mapping when depth $Z$ is known:</p>
 <p>$$X = (u-c_x)\frac{Z}{f_x}, \qquad Y = (v-c_y)\frac{Z}{f_y}.$$</p>
 <p>This derivation assumes a calibrated pinhole model after distortion correction, matching image resolution, synchronized depth, and a camera optical frame convention. OpenCV convention usually uses $x$ right, $y$ down, and $z$ forward. Robotics body frames often use $x$ forward, $y$ left, and $z$ up. That mismatch is why camera-to-body extrinsics must be explicit. The physical sensors that supply the depth value, including <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.2.html">cameras and structured-light depth sensors</a>, each define their own optical frame, making this mismatch a persistent source of error.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Pixel-to-World Frame Projection</h4>
+<p><strong>Input:</strong> pixel coordinates $(u, v)$, depth $Z$, camera intrinsics $(f_x, f_y, c_x, c_y)$, extrinsic transform $T_{\text{body},\text{cam}} \in \mathbb{R}^{4 \times 4}$, robot pose $T_{\text{world},\text{body}} \in \mathbb{R}^{4 \times 4}$</p>
+<p><strong>Output:</strong> 3D point $\mathbf{p}_{\text{world}} \in \mathbb{R}^3$ expressed in the world frame</p>
+<ol>
+<li>Verify that $(u, v)$ lies within the valid image region and that $Z &gt; 0$; reject detections outside this domain.</li>
+<li>Apply back-projection to recover the camera-frame ray: $X = (u - c_x)\,Z / f_x$, $\;Y = (v - c_y)\,Z / f_y$.</li>
+<li>Form the homogeneous camera-frame point $\mathbf{p}_{\text{cam}} = [X,\, Y,\, Z,\, 1]^{\top}$.</li>
+<li>Load the extrinsic matrix $T_{\text{body},\text{cam}}$ from calibration storage; confirm it encodes both rotation $R$ and translation $\mathbf{t}$, not a pure translation.</li>
+<li>Transform to the body frame: $\mathbf{p}_{\text{body}} = T_{\text{body},\text{cam}}\,\mathbf{p}_{\text{cam}}$.</li>
+<li>Retrieve the current robot pose $T_{\text{world},\text{body}}$ from the state estimator, noting the timestamp $\tau$.</li>
+<li>Transform to the world frame: $\mathbf{p}_{\text{world}} = T_{\text{world},\text{body}}\,\mathbf{p}_{\text{body}}$.</li>
+<li>Check the timestamp gap $|\tau_{\text{depth}} - \tau_{\text{pose}}|$; if it exceeds the latency budget $\Delta\tau_{\max}$, mark the result stale and do not issue a grasp command.</li>
+<li>Record the full provenance: source pixel, depth sensor, $T_{\text{body},\text{cam}}$ version, pose timestamp, frame names, and unit convention (metres, radians).</li>
+<li>Return $\mathbf{p}_{\text{world}}[:3]$ to the downstream planner or controller.</li>
+</ol>
+</div>
+
+<div class="callout tip">
+<p>When using ROS 2 tf2, always look up the transform from <code>camera_optical_frame</code> to your body frame rather than constructing the rotation by hand. REP-103 defines the optical frame with $x$ right, $y$ down, $z$ forward and the body frame with $x$ forward, $y$ left, $z$ up; the fixed rotation between them is a 90-degree rotation about $x$ followed by a 90-degree rotation about $z$, and getting even one sign wrong flips targets to the opposite side of the robot. Calling <code>tf_buffer.lookup_transform("base_link", "camera_optical_frame", rclpy.time.Time())</code> lets tf2 supply this rotation from the URDF rather than trusting a hand-coded matrix.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The camera pipeline has two contracts. Intrinsics convert between pixels and rays inside the camera. Extrinsics convert 3D points between camera, body, and world frames. A failure in either contract can look like a weak detector, even when the detector is doing exactly what it was trained to do.</p>

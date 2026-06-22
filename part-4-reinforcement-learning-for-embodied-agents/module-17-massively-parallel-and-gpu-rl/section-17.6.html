@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 17.6A</strong>: Throughput, wall-clock, and cost engineering</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with PPO rollout semantics from section 15.5 and advantage computation from section 15.3, because those steps contribute the learner-time term in the cost ledger. The simulator options discussed in section 17.3 and the JIT compilation behaviour covered in section 17.4 determine the rollout-time term. The cost-per-success discipline developed here reappears in Part VI alongside deployment budget constraints, where the same accounting applies to inference rather than training.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Throughput, wall-clock, and cost engineering</strong> is where GPU RL becomes an engineering system. A useful run is not the one with the largest steps-per-second number; it is the one that reaches a held-out success target with known memory use, known evaluation overhead, and known compute cost.</p>
@@ -58,6 +62,26 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is an accounting loop: measure rollout time, learner time, evaluation time, synchronization time, peak memory, and target success in the same run. Only then can you decide whether the bottleneck is simulation, policy inference, <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.3.html">advantage computation</a>, optimizer updates, logging, or evaluation.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: GPU RL Cost-Ledger Accounting Loop</h4>
+<p><strong>Input:</strong> policy $\pi_\theta$, learning rate $\alpha$, batch size $B$, target success rate $\tau$, held-out seed panel $\mathcal{E}$, instance price $c$ (USD/hr), maximum budget $C_{\max}$</p>
+<p><strong>Output:</strong> cost ledger row $(W_{\text{train}}, W_{\text{eval}}, M_{\text{peak}}, \hat{\rho}, \$_{\text{total}})$ for the first checkpoint reaching $\hat{\rho} \ge \tau$</p>
+<ol>
+<li>Record instance type, $c$, $B$, $\tau$, and $\mathcal{E}$ in the ledger header before launch.</li>
+<li>Start the rollout timer after the first compiled step; measure rollout wall-clock $W_{\text{roll}}$ per update using <code>torch.cuda.synchronize()</code> at each phase boundary.</li>
+<li>Collect $B$ transitions from $N$ parallel environments; record peak GPU memory $M_{\text{peak}}$ in GB.</li>
+<li>Compute advantages $\hat{A}_t = \sum_{k=0}^{T} (\gamma \lambda)^k \delta_{t+k}$ and update $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\pi_\theta)$; measure learner wall-clock $W_{\text{learn}}$.</li>
+<li>At each evaluation checkpoint, run $\pi_\theta$ on $\mathcal{E}$ and compute held-out success rate $\hat{\rho}$; record evaluation wall-clock $W_{\text{eval}}$.</li>
+<li>Accumulate total wall-clock $W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}$ and billable cost $\$ = (W / 3600) \cdot c$.</li>
+<li>If $\hat{\rho} \ge \tau$, write the ledger row and stop; report $(\$, W, M_{\text{peak}}, \hat{\rho})$ as the cost-to-success result.</li>
+<li>If $\$ \ge C_{\max}$ before $\hat{\rho} \ge \tau$, label the run as failed, record it in the ledger, and include it in the aggregate cost estimate.</li>
+<li>Identify the dominant bottleneck: compare $W_{\text{roll}}, W_{\text{learn}}, W_{\text{eval}}, W_{\text{sync}}, W_{\text{log}}$ as fractions of $W$.</li>
+<li>Report throughput as $S / W_{\text{roll}}$ (steps per rollout second) and learning cost as $\$ / \hat{\rho}$ (dollars per unit success); never mix denominators across ledger rows.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When timing CUDA-based simulators such as Isaac Lab or Isaac Gym, always call <code>torch.cuda.synchronize()</code> immediately before reading <code>time.perf_counter()</code>. CUDA kernel launches are asynchronous, so a timer that wraps the rollout call without a sync barrier measures kernel-launch latency rather than actual GPU compute time, silently reporting rollout as two to five times faster than it is. The resulting bottleneck diagnosis is wrong: the run looks learner-bound when it is actually simulation-bound, and you tune the wrong component. One sync call per phase boundary costs negligible overhead and makes the timing trustworthy.</p>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 17.6.1 computes the metrics that should appear together in a cost report. The same artifact contains throughput, wall-clock to target, evaluation overhead, and compute spend.</p>

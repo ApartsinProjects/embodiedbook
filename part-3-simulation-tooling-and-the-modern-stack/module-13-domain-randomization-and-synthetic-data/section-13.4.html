@@ -39,6 +39,10 @@
 <figcaption>Figure 13.4A: Tiled cameras in IsaacGym rendering 4096 environment instances simultaneously, with one tile zoomed in to show photoreal material quality and another showing the per-instance randomized lighting.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the domain randomization foundations from section 13.1 and the visual parameter sweep techniques from section 13.2. The ideas developed here, specifically sensor-faithful rendering and multi-view label synchronization, are extended in section 13.5, which shows how scanned real assets replace procedural geometry to close the remaining appearance gap. The same camera-model discipline recurs in Part V alongside perception-stack evaluation, where held-out camera poses from section 13.4 become the test panels used to benchmark detectors on the robot.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Photoreal rendering and tiled cameras address the perception side of the reality gap. Photorealism tries to make rendered images match the sensor's visual statistics; tiled cameras make it affordable to render many viewpoints, objects, and annotations in parallel. Both matter only when they preserve the camera model and the task labels the policy will use.</p>
@@ -60,6 +64,24 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is synchronized rendering at scale. Tiled cameras multiply viewpoint coverage, while the renderer keeps labels tied to the same scene state, object transforms, and camera calibration.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Sensor-Faithful Tiled-Camera Dataset Generation</h4>
+<p><strong>Input:</strong> scene graph $\mathcal{S}$ with object poses $\{T_i\}$, real sensor parameters $\theta_\text{cam} = (K, d, \sigma_n, \tau)$ (intrinsics, distortion, noise $\sigma_n$, latency $\tau$), tiled-camera layout $\Pi = \{\pi_1, \dots, \pi_N\}$, visual randomization distribution $p(\alpha)$ over lighting and material factors $\alpha$</p>
+<p><strong>Output:</strong> dataset $\mathcal{D} = \{(I_k^\text{rgb}, I_k^\text{depth}, M_k, T_k^\text{pose}, \pi_k, \alpha_k)\}_{k=1}^{N \cdot S}$ with one synchronized record per tile per scene</p>
+<ol>
+<li>Load real sensor calibration: record $\theta_\text{cam}$ from camera logs; verify intrinsic matrix $K$ and distortion coefficients $d$ against a held-out checkerboard panel before any rendering begins.</li>
+<li>Configure each virtual camera $\pi_j \in \Pi$ to match $\theta_\text{cam}$ exactly; document any intentional deviation (such as a wider field of view) as a named dataset variant so downstream consumers know the departure from the real sensor.</li>
+<li>For each scene $s = 1, \dots, S$, sample visual factors $\alpha_s \sim p(\alpha)$ covering lighting intensity, material roughness, and background texture; fix the random seed $r_s$ so the scene can be reproduced.</li>
+<li>Render all $N$ tiled cameras simultaneously against the same scene state $(\mathcal{S}, \alpha_s)$, producing RGB frame $I_{s,j}^\text{rgb}$ and depth map $I_{s,j}^\text{depth}$ for each tile $\pi_j$; a single authoritative object transform $T_i$ is shared across tiles so pose labels are geometrically consistent.</li>
+<li>Export segmentation mask $M_{s,j}$ and 6-DoF pose label $T_{s,j}^\text{pose}$ by projecting object transforms through each camera's calibration matrix $K_j$: $\hat{u} = K_j \, T_{s,j}^\text{pose} \, P_\text{world}$.</li>
+<li>Apply sensor noise model $\nabla_{\sigma_n}$: add Gaussian noise $\sigma_n$ to depth, simulate rolling-shutter offset by $\tau$, and apply radial distortion $d$ so rendered depth matches the real sensor's failure modes.</li>
+<li>Run a small inspection batch ($S \leq 10$ scenes, all $N$ tiles) and compute per-channel alignment $\Delta = \lVert I^\text{depth}_\text{rendered} - I^\text{depth}_\text{real} \rVert_1$ on held-out static scenes; abort dataset generation if $\Delta$ exceeds a pre-set threshold $\epsilon$.</li>
+<li>Partition the full tile set $\Pi$ into training cameras $\Pi_\text{train}$ and held-out cameras $\Pi_\text{eval}$, where $\Pi_\text{eval}$ contains only poses within the real robot's deployment envelope.</li>
+<li>Generate the full dataset at scale using $\Pi_\text{train}$ only; record scene seed $r_s$, $\alpha_s$, $\theta_\text{cam}$, and label channels in a dataset manifest for provenance.</li>
+<li>Train the perception module on $\mathcal{D}_\text{train}$ and evaluate pose error and closed-loop success on $\Pi_\text{eval}$ alongside real held-out frames; report both synthetic and real metrics together in the same result artifact.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>The following snippet computes a small tiled-camera budget. The point is not the arithmetic; it is the habit of budgeting frames, labels, and viewpoints before generating a dataset that is too large to inspect.</p>
 <pre><code class="language-python"># Estimate a tiled camera render budget before dataset generation.

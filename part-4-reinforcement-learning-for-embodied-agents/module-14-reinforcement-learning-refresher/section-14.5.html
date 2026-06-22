@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 14.5A</strong>: Embodied RL has to earn reward without hiding sample cost, reset burden, or safety violations.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with MDPs and the reward signal introduced in section 14.1 and the POMDP extension in section 14.3. The sample-cost and safety ideas developed here are prerequisites for the constrained policy-gradient training covered in Chapter 15 and for the reward-shaping techniques in section 18.2. The sim-to-real problem, which is largely a response to physical sample cost, is treated in depth in section 20.2 and section 20.3.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Why RL is hard in embodied systems</strong> comes down to costly samples, imperfect rewards, and safety constraints. A policy that wins in reward space can still fail as a physical system.</p>
@@ -62,9 +66,30 @@
 <p>Safety is the third obstacle. A constrained MDP writes the builder's intent more explicitly:</p>
 <p>$$\max_\pi J_R(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t r_{t+1}\right]\quad\text{subject to}\quad J_C(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t c_{t+1}\right]\le d.$$</p>
 <p>Here $r$ is task reward, $c$ is safety cost, and $d$ is the allowed discounted cost budget. The constraint matters because a policy can have excellent reward and still be unacceptable if it reaches that reward through collisions, excessive force, or unstable contacts.</p>
+<div class="callout tip">
+<p>When using Safety Gymnasium (the constrained-RL benchmark built on MuJoCo) set <code>cost_limit</code> to your budget <em>before</em> training begins and wire it to an early-stop callback that halts the run if the rolling 10-episode mean cost exceeds the limit. Without this hard stop, PPO-Lagrangian and TRPO-Lagrangian both discover high-reward trajectories that exploit the lag between constraint violations and Lagrange multiplier updates, producing policies that look acceptable on the reward curve while steadily violating the safety budget. The parameter to watch is <code>lagrangian_multiplier_init</code>: starting it too low (default 0.001) lets the agent accumulate dozens of violations before the penalty grows large enough to matter.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a second ledger next to return. The experiment should track reward, safety cost, resets, interventions, and reward-proxy failures in the same run, otherwise the best-looking policy may be the least deployable one.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Embodied RL Feasibility Checklist</h4>
+<p><strong>Input:</strong> candidate policy $\pi_\theta$ (parameters $\theta$), task reward $r$, safety cost $c$, allowed budget $d$, physical platform with reset protocol</p>
+<p><strong>Output:</strong> decision (deploy / reject / revise), annotated ledger of sample cost, reward quality, and safety compliance</p>
+<ol>
+<li>Estimate physical sample cost: count expected episodes $N$, resets, battery cycles, and technician hours before committing to on-hardware training. If $N$ exceeds platform budget, route to simulation first.</li>
+<li>Audit the reward proxy: inspect $R(s,a,s')$ for shortcuts. Check whether a policy can score well by damaging objects, exploiting perception blind spots, or reaching unstable terminal poses. If so, add shaped penalty terms before training.</li>
+<li>Define the safety cost function $c(s,a,s')$ and set the discounted cost budget $d$ independently of reward. Record both in the experiment config so they cannot be changed after training begins.</li>
+<li>Initialize the Lagrange multiplier $\lambda \leftarrow \lambda_0$ (recommend $\lambda_0 \ge 0.1$ to avoid early constraint violations) and attach a hard stop callback that halts training if the rolling 10-episode mean cost exceeds $d$.</li>
+<li>For each training iteration: sample a mini-batch of trajectories $\{\tau_i\}$, compute $\hat{J}_R = \mathbb{E}_\tau[\sum_t \gamma^t r_{t+1}]$ and $\hat{J}_C = \mathbb{E}_\tau[\sum_t \gamma^t c_{t+1}]$, then update $\theta \leftarrow \theta + \alpha \nabla_\theta(\hat{J}_R - \lambda \hat{J}_C)$.</li>
+<li>Update the Lagrange multiplier: $\lambda \leftarrow \max(0,\, \lambda + \eta_\lambda(\hat{J}_C - d))$ where $\eta_\lambda$ is the dual learning rate.</li>
+<li>Log to the sample ledger: episode count, wall time, reset cause (task completion, hardware fault, human intervention, or safety stop), and battery or hardware wear indicator.</li>
+<li>Log to the reward ledger: total return $J_R(\pi_\theta)$, each shaped component, and any detected proxy shortcuts identified from video or trace review.</li>
+<li>Log to the safety ledger: discounted cost $J_C(\pi_\theta)$, number of constraint violations, near-miss events, and emergency stop triggers.</li>
+<li>At evaluation time, accept $\pi_\theta$ only if $J_C(\pi_\theta) \le d$ on the shared evaluation panel. Report the highest-return policy that satisfies the constraint; keep all rejected candidates in the experiment registry.</li>
+<li>If $\pi_\theta$ is rejected: classify the failure as sample-cost, reward-proxy, or safety-constraint and return to the appropriate earlier step rather than tuning hyperparameters blindly.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 evaluates three candidate policies with the same reward and safety-cost definitions. The best policy by reward is not automatically acceptable because the safety budget is a separate constraint.</p>

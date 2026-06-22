@@ -39,6 +39,9 @@
 <img alt="Technical illustration for Section 4.3: Rotations: matrices, Euler angles, axis-angle, quaternions; pitfalls." loading="lazy" src="images/chapter-04-illustration-03.png"/>
 <figcaption>Figure 4.3A: The four rotation representations (rotation matrix, Euler angles, axis-angle, quaternion) illustrated on the same 30-degree tilt, with a gimbal-lock diagram highlighting the singularity that makes Euler angles dangerous.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with coordinate frames and the homogeneous transform structure introduced in section 4.2. The rotation representations developed here are used directly in section 4.4, where rotations are embedded into SE(3) rigid-body transforms, and again in section 5.7, where the rotational part of the Jacobian connects joint velocities to end-effector angular velocity. If you are already fluent with SO(3) and the four standard representations, you can skip ahead to section 4.4.</p>
+</div>
 
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
@@ -66,6 +69,25 @@
 <div class="callout-title">Mechanism</div>
 <p>Use matrices for applying rotations, quaternions for storage and interpolation, rotation vectors for small optimization updates, and Euler angles for user-facing display. Convert at boundaries with one tested library and one documented convention.</p>
 </div>
+
+<div class="callout algorithm">
+<h4>Algorithm: Rotation Representation Selection and Validation</h4>
+<p><strong>Input:</strong> A rotation task type (apply, store, interpolate, or optimize), a target rotation $R$ or equivalent $(q, \hat{n}, \theta, \alpha, \beta, \gamma)$, and a convention spec (axis order, component order, units)</p>
+<p><strong>Output:</strong> Validated rotation in the chosen representation, with invariant checks passed and convention documented</p>
+<ol>
+<li>Identify the operation: applying $R$ to vectors uses a matrix; storing orientation across time uses a unit quaternion $q$ with $\lVert q \rVert = 1$; interpolating between two orientations uses SLERP on quaternions; optimizing a pose with gradient descent uses a rotation vector $\omega = \theta\hat{n} \in \mathbb{R}^3$.</li>
+<li>Record the convention before any conversion: axis order (ZYX, XYZ, or other), component order (wxyz or xyzw), angle units (radians or degrees), and handedness (right-hand rule assumed unless stated).</li>
+<li>If the input is a rotation matrix $R$, verify $R^\top R = I$ (orthonormality) and $\det(R) = +1$ (no reflection). Flag any deviation larger than $10^{-6}$ as a numerical or sign error.</li>
+<li>If the input is a quaternion $q = [w, x, y, z]$, verify $\lVert q \rVert = 1$. Re-normalize only when the drift is small ($| \lVert q \rVert - 1 | &lt; 10^{-4}$); otherwise treat it as a bad input and reject it.</li>
+<li>If the input is Euler angles $(\alpha, \beta, \gamma)$, check for gimbal lock: when the pitch angle satisfies $|\beta| \approx \pi/2$, the first and third axes align and one degree of freedom is lost. Convert immediately to a quaternion for any subsequent storage or propagation.</li>
+<li>If the input is a rotation vector $\omega = \theta\hat{n}$, verify that $\theta = \lVert\omega\rVert$ and $\hat{n} = \omega / \theta$ when $\theta \neq 0$. For $\theta \approx 0$ use the small-angle linearization $R \approx I + [\omega]_\times$ to avoid division by zero.</li>
+<li>Convert to the target representation using one tested function (for example, <code>scipy.spatial.transform.Rotation</code>). Never hand-roll trigonometric conversion unless validating a reference implementation.</li>
+<li>Apply the rotation to one known test vector $v$ and compare the result against a hand-computed or trusted reference. A single vector check catches axis swaps, sign flips, and transposed conventions.</li>
+<li>At every serialization boundary (file, network message, or inter-process topic), re-state the convention in the artifact header or message field name. Log the component order (wxyz or xyzw) and angle units explicitly.</li>
+<li>After round-tripping through the full pipeline (apply, serialize, deserialize, invert), confirm that $R R^{-1} \approx I$ within $10^{-6}$ and that the original test vector is recovered.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>This fragment walks the whole representation chain. It builds a composed rotation $R_z(45^\circ)R_y(30^\circ)R_x(0^\circ)$ from elementary matrices and verifies the two invariants, demonstrates gimbal lock at pitch $\theta = 90^\circ$, forms a quaternion and its conjugate, and SLERPs between two orientations.</p>
 <pre><code class="language-python"># Rotation representations end to end: matrices, invariants, gimbal lock,
@@ -107,6 +129,9 @@ q      [w,x,y,z]: [0.8924, -0.099, 0.2391, 0.3696]
 q_conj [w,x,y,z]: [0.8924, 0.099, -0.2391, -0.3696]
 SLERP midpoint yaw (deg): 45.0</div>
 <div class="code-caption"><strong>Code Fragment 4.3</strong>.1 verifies the SO(3) invariants on a composed rotation, exhibits gimbal lock at pitch 90 degrees (two distinct angle sets yield one rotation), forms a quaternion conjugate, and SLERPs to the 45-degree midpoint between two yaw orientations.</div>
+<div class="callout tip">
+<p><code>scipy.spatial.transform.Rotation.as_quat()</code> always returns <code>[x, y, z, w]</code> (scalar last), but ROS 2 tf2, MuJoCo, and Isaac Lab all expect <code>[w, x, y, z]</code> (scalar first). Pass <code>scalar_first=True</code> to <code>as_quat()</code> (added in SciPy 1.11) to get the wxyz order directly, instead of manually re-indexing the array as <code>[q[3], q[0], q[1], q[2]]</code>. When reading from those frameworks, use <code>Rotation.from_quat(q_wxyz, scalar_first=True)</code> on the way back in. Pinning this one-liner at every serialization boundary eliminates the most common source of silent orientation bugs.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The teaching fragment is about 9 lines. scipy.spatial.transform.Rotation reduces conversion, composition, inversion, and interpolation to named operations. spatialmath and ROS 2 tf2 provide pose-level wrappers when the rotation must travel with translation, frame_id, and timestamp.</p>

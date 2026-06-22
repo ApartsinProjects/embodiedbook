@@ -41,9 +41,12 @@
 <figcaption><strong>Figure 48.3A</strong>: Prediction is fundamentally multi-modal: the same observed history is consistent with several plausible futures, and a good predictor keeps all of them alive until the evidence picks one.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the tracked actor representations produced in section 48.2 (sensor fusion) and the object-tracking pipeline introduced in section 27.2. The multi-modal trajectory distributions computed here are consumed directly by the route and local planner in section 48.4, and the same best-of-K evaluation framework recurs in Part 11 alongside uncertainty quantification and runtime monitoring (section 53.4).</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p>Once perception delivers tracked actors, <strong>prediction</strong> forecasts where each one will go over the next few seconds. The defining property is multi-modality: a car approaching an intersection might go straight, turn, or stop, and the predictor must represent several distinct futures with calibrated probabilities. This section defines the standard error metrics (minADE and minFDE), shows how to compute them, and introduces lane-graph-conditioned models that ground predictions in the road structure.</p>
+<p>Once perception delivers <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.2.html">tracked actors</a>, <strong>prediction</strong> forecasts where each one will go over the next few seconds. The defining property is multi-modality: a car approaching an intersection might go straight, turn, or stop, and the predictor must represent several distinct futures with calibrated probabilities. This section defines the standard error metrics (minADE and minFDE), shows how to compute them, and introduces lane-graph-conditioned models that ground predictions in the road structure.</p>
 </div>
 <p>This section develops behavior prediction as a measurable contract: ingest agent histories and a vectorized map, output $K$ candidate future trajectories per agent with probabilities, and score them against the realized future. Because the future is uncertain, the standard metrics evaluate the best of $K$ samples rather than a single guess, which rewards covering the true mode without penalizing diversity.</p>
 <h2>Theory</h2>
@@ -54,14 +57,35 @@
 <p>$$\text{minFDE}_K = \min_{k=1}^{K}\big\lVert \hat y_T^{(k)} - y_T \big\rVert_2.$$</p>
 <p>Both take the best of $K$ predictions: the model is credited if any one of its samples is close to the truth. A related metric, the miss rate, counts the fraction of agents for which even the best sample's final point exceeds a threshold (commonly 2 m).</p>
 <h3>Lane-graph-conditioned models</h3>
-<p><strong>VectorNet</strong> represents both agent histories and map elements (lane centerlines, crosswalks, boundaries) as polylines of vectors, then reasons over them with a graph network so predictions respect road geometry. <strong>MTR</strong> (Motion Transformer) uses a set of learnable motion-mode queries with a transformer to produce diverse, map-consistent trajectories and led the Waymo motion-prediction benchmark. The shared idea is conditioning on the lane graph so that a predicted path follows drivable lanes rather than cutting across medians.</p>
+<p><strong>VectorNet</strong> represents both agent histories and <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.7.html">map elements</a> (lane centerlines, crosswalks, boundaries) as polylines of vectors, then reasons over them with a graph network so predictions respect road geometry. <strong>MTR</strong> (Motion Transformer) uses a set of learnable motion-mode queries with a transformer to produce diverse, map-consistent trajectories and led the Waymo motion-prediction benchmark. The shared idea is conditioning on the lane graph so that a predicted path follows drivable lanes rather than cutting across medians.</p>
+<div class="callout tip">
+<p>When using the <strong>nuScenes prediction devkit</strong>, <code>PredictionHelper.get_future_for_agent(seconds_of_history, seconds_in_future)</code> silently drops any agent whose annotation history is shorter than <code>seconds_of_history</code>. On sparse-annotation splits this can quietly remove most cut-in and merge agents, the exact rare maneuvers you want to stress-test. Set <code>seconds_of_history=1.0</code> (the minimum the model can run with) rather than the default 2.0 so those short-history agents stay in your evaluation slice, then verify the agent count before and after filtering.</p>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Best-Of-K Rewards Coverage, Not Confidence</div>
-<p>Because minADE and minFDE take the minimum over samples, a predictor is scored on whether it covered the true future, not on whether its top sample was right. This is intentional: downstream planning must be safe against every plausible mode, so a predictor that keeps the correct mode alive (even at low probability) is more useful than one that commits confidently to the wrong single path.</p>
+<p>Because minADE and minFDE take the minimum over samples, a predictor is scored on whether it covered the true future, not on whether its top sample was right. This is intentional: downstream planning must be safe against every plausible mode, so a predictor that keeps the correct mode alive (even at low probability) is more useful than one that commits confidently to the wrong single path. See <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/section-53.4.html">runtime monitoring and fail-safe behavior</a> for how planners act on this uncertainty at execution time.</p>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The danger of best-of-K is <strong>mode collapse</strong>: a model that minimizes average error tends to predict $K$ near-identical trajectories down the most common mode (going straight). It then scores well on routine data but misses exactly the rare, safety-critical maneuvers (a sudden lane change). Diversity-promoting losses, anchor trajectories, and mode-specific queries (as in MTR) exist precisely to prevent this collapse.</p>
+<p>The danger of best-of-K is <strong>mode collapse</strong>: a model that minimizes average error tends to predict $K$ near-identical trajectories down the most common mode (going straight). It then scores well on routine data but misses exactly the <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.2.html">rare, safety-critical maneuvers</a> (a sudden lane change). Diversity-promoting losses, anchor trajectories, and mode-specific queries (as in MTR) exist precisely to prevent this collapse.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Lane-Graph-Conditioned Multi-Modal Trajectory Prediction</h4>
+<p><strong>Input:</strong> Agent history $\mathbf{h} = \{(x_t, y_t, \theta_t, v_t)\}_{t=-H}^{0}$ over past $H$ timesteps; vectorized lane graph $\mathcal{G} = \{\mathbf{p}_i\}$ of polyline segments; number of prediction modes $K$; forecast horizon $T$.</p>
+<p><strong>Output:</strong> $K$ trajectory samples $\{\hat{\mathbf{y}}^{(k)}\}_{k=1}^{K}$ each of length $T$, with mode probabilities $\pi_1, \dots, \pi_K$ and scalar scores $\text{minADE}_K$, $\text{minFDE}_K$.</p>
+<ol>
+<li><strong>Encode agent history.</strong> Compute per-timestep feature vectors from $\{(x_t, y_t, \theta_t, v_t)\}$ and embed them with a shared MLP to produce a context vector $\mathbf{c} \in \mathbb{R}^d$.</li>
+<li><strong>Encode the lane graph.</strong> For each polyline segment $\mathbf{p}_i \in \mathcal{G}$, compute a vector embedding; apply a graph attention layer to propagate context across adjacent lanes and produce map features $\mathbf{m} \in \mathbb{R}^d$.</li>
+<li><strong>Fuse context and map.</strong> Concatenate or cross-attend $\mathbf{c}$ and $\mathbf{m}$ to obtain a joint representation $\mathbf{z} = f_\theta(\mathbf{c}, \mathbf{m})$, where $\theta$ denotes all learned parameters.</li>
+<li><strong>Initialize $K$ mode queries.</strong> Sample or retrieve $K$ learnable anchor embeddings $\{q_k\}_{k=1}^{K}$ representing candidate intention modes (straight, left turn, right turn, stop, etc.).</li>
+<li><strong>Decode per-mode trajectories.</strong> For each mode $k$, decode a trajectory $\hat{\mathbf{y}}^{(k)} = g_\alpha(\mathbf{z}, q_k)$ using a recurrent or transformer decoder with parameters $\alpha$, producing $T$ future $(x, y)$ waypoints that respect lane geometry.</li>
+<li><strong>Compute mode probabilities.</strong> Apply a softmax over mode logits: $\pi_k = \text{softmax}(\text{score}(\mathbf{z}, q_k))$, giving a normalized distribution over $K$ modes summing to 1.</li>
+<li><strong>Optimize with winner-takes-all loss.</strong> During training, find the closest mode $k^* = \arg\min_k \|\hat{\mathbf{y}}^{(k)} - \mathbf{y}\|_2$ and apply regression loss only to $k^*$, plus a classification loss on $\pi_{k^*}$; add a diversity penalty $\nabla_\alpha \|\hat{\mathbf{y}}^{(j)} - \hat{\mathbf{y}}^{(k)}\|$ across mode pairs to prevent collapse.</li>
+<li><strong>Compute minADE$_K$.</strong> Given ground truth $\mathbf{y} = \{y_t\}_{t=1}^{T}$, evaluate $\text{minADE}_K = \frac{1}{T}\min_{k=1}^{K}\sum_{t=1}^{T}\|\hat{y}_t^{(k)} - y_t\|_2$.</li>
+<li><strong>Compute minFDE$_K$.</strong> Evaluate $\text{minFDE}_K = \min_{k=1}^{K}\|\hat{y}_T^{(k)} - y_T\|_2$ using only the final predicted waypoint.</li>
+<li><strong>Check mode coverage.</strong> Verify that the $K$ trajectories are geometrically distinct (lane-separated or behaviorally distinct); if pairwise distance between any two modes falls below a threshold, increase the diversity weight $\nabla_\alpha$ and retrain.</li>
+<li><strong>Output and forward.</strong> Return $\{(\hat{\mathbf{y}}^{(k)}, \pi_k)\}_{k=1}^{K}$ to the downstream planner, which must consume all $K$ modes rather than only the highest-probability one.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>The example computes $\text{minADE}_6$ given six predicted trajectory samples and one ground-truth future.</p>
@@ -124,7 +148,7 @@ print("minFDE_6:", round(min_fde_k(preds, gt), 3), "m")
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Joint multi-agent prediction (forecasting interacting agents together rather than independently) and goal-conditioned models that reason about intent are the active frontier. The hard part is calibration: producing probabilities a planner can trust, not just diverse trajectories that game best-of-K.</p>
+<p>Joint multi-agent prediction (forecasting interacting agents together rather than independently) and goal-conditioned models that reason about intent are the active frontier. The hard part is <a href="../../part-8-world-models-and-model-based-embodied-ai/module-36-predicting-the-future/section-36.4.html">calibration: producing probabilities a planner can trust</a>, not just diverse trajectories that game best-of-K.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>

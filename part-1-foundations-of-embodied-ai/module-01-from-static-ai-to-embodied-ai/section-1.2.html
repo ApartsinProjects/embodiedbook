@@ -40,6 +40,10 @@
 <figcaption>Figure 1.2A: The perception-action loop illustrated as a closed cycle: a sensory signal from the world enters the agent, a decision is formed, and an action changes the world state the agent will sense next.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the static-versus-embodied distinction introduced in section 1.1. The five-step loop formalized here (sense, estimate, decide, act, observe) is refined throughout the book: section 2.7 treats partial observability in depth, section 8.6 develops the recursive Bayesian estimator that fills the estimate step, and section 7.1 analyzes open-loop control as the degenerate case where the feedback path is cut. In Part 8, sections 38.3 and 40.2 show how the loop's transition model $f$ can be learned rather than hand-specified.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Intelligence that never acts cannot be tested, and intelligence that acts but never re-senses the result is flying blind. The perception-action loop closes that gap: an agent senses, estimates the state it cannot see directly, decides, acts, then senses the consequence and folds it back in. A world is what supplies those consequences. The argument of this section is that the loop is not an implementation detail wrapped around a model; it is the thing that makes robust behavior possible under disturbance and partial information, and the cybernetic tradition formalized exactly why.</p>
@@ -78,6 +82,22 @@
 <p>The loop is five recurring operations executed every cycle: sense ($y_t = h(s_t)+n_t$), estimate state or belief ($b_t = \mathrm{update}(b_{t-1}, a_{t-1}, y_t)$), decide ($a_t = \pi(b_t)$), act (apply $a_t$ to the world), and observe the consequence ($y_{t+1}$), which feeds the next cycle. When the true state is hidden, the estimate step is a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">recursive Bayesian update</a>,</p>
 <p>$$b_{t+1}(s') \propto O(y_{t+1}\mid s')\sum_{s} T(s'\mid s, a_t)\, b_t(s),$$</p>
 <p>in which the transition model $T$ pushes the belief forward through the action and the observation model $O$ reweights it by the new evidence. The prediction term is what lets a probing action be valuable before it reaches the goal: an action that sharpens $b_{t+1}$ pays off even when it makes no direct task progress. <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">Partial observability</a> is the normal case, not an exception. Cameras do not see behind objects, lidar misses glass, tactile sensors report contact only after contact, and a language instruction omits the operational state entirely. An agent that assumes full observability builds a controller for a world it is not in.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Perception-Action Loop (Closed-Loop Cycle)</h4>
+<p><strong>Input:</strong> prior belief $b_{t-1}$, previous action $a_{t-1}$, reference signal $r$, transition model $T(s' \mid s, a)$, observation model $O(y \mid s)$, policy $\pi$, gain $K$</p>
+<p><strong>Output:</strong> updated belief $b_t$, action $a_t$ issued to the world</p>
+<ol>
+<li><strong>Sense.</strong> Read the current sensor measurement $y_t = h(s_t) + n_t$; record the timestamp so stale observations can be detected.</li>
+<li><strong>Predict belief forward.</strong> Propagate the prior through the transition model: $\hat{b}_t(s') = \sum_{s} T(s' \mid s, a_{t-1})\, b_{t-1}(s)$.</li>
+<li><strong>Update belief on evidence.</strong> Reweight by the likelihood of $y_t$: $b_t(s') \propto O(y_t \mid s')\, \hat{b}_t(s')$; normalize so $\sum_{s'} b_t(s') = 1$.</li>
+<li><strong>Compute error signal.</strong> Form $e_t = r - y_t$; if $|e_t| < \theta_{\min}$ the agent is within tolerance and may skip actuation this cycle.</li>
+<li><strong>Select action via policy.</strong> Evaluate $a_t = \pi(b_t)$; for a proportional regulator this reduces to $a_t = K\, e_t$.</li>
+<li><strong>Act.</strong> Issue $a_t$ to the actuator; record $a_t$ so the next predict step (step 2) can condition on it correctly.</li>
+<li><strong>Check stability margin.</strong> Verify $|a - b K| < 1$ (or the appropriate spectral condition for multi-dimensional plants); if the gain $K$ violates the margin, clip or reduce $K$ before proceeding.</li>
+<li><strong>Observe consequence.</strong> Wait one cycle ($\Delta t$) for the world to respond; set $t \leftarrow t + 1$ and return to step 1 with the new $y_{t+1}$.</li>
+</ol>
+</div>
+
 <p>The cleanest instance is a regulator holding a measured signal $y_t$ at a reference $r$. The proportional feedback law is</p>
 <p>$$u_t = K\,(r - y_t),$$</p>
 <p>where $e_t = r - y_t$ is the tracked error and $K$ is the gain. Consider a scalar plant $y_{t+1} = a\,y_t + b\,u_t + d$ with a constant disturbance $d$. Under open-loop control with a precomputed $u$, the steady state settles at $y_\infty = (b\,u + d)/(1-a)$, so the disturbance $d$ appears undiminished in the output: there is no term that cancels it. Under proportional feedback the closed-loop steady state is</p>
@@ -132,6 +152,9 @@ print(f"open-loop steady-state y = {y_open:.4f}  (error {r - y_open:+.4f})")
 print(f"feedback  steady-state y = {y_fb:.4f}  (error {r - y_fb:+.4f})")
 print(f"feedback rejects {100 * (1 - abs(r - y_fb) / abs(r - y_open)):.1f}% of the open-loop error")</code></pre>
 <div class="code-caption"><strong>Code 1.2.1</strong>. Output: <code>open-loop steady-state y = 2.5000 (error -1.5000)</code>, <code>feedback steady-state y = 1.1429 (error -0.1429)</code>, <code>feedback rejects 90.5% of the open-loop error</code>. The open-loop command was correct for the modeled plant, so its entire residual error is the disturbance it could not see. Feedback never models $d$; it senses $d$'s effect on $y$ and cancels most of it, leaving the small steady-state offset $d/(1-a+bK)$ predicted above. Raising $K$ shrinks that offset, but here the stable range is bounded by $|a - bK| < 1$, that is $K < 3.6$; push past it and the loop oscillates, which is the latency-and-gain trade the next section develops.</div>
+<div class="callout tip">
+<p>When you vary <code>K</code> in the <code>simulate()</code> function, always verify that <code>steps</code> is large enough to reach steady state before reading <code>y</code>. The closed-loop settling time is roughly <code>3 / abs(log(abs(a - b*K)))</code> steps; with <code>a=0.8, b=0.5, K=0.1</code> the dominant pole is at 0.75 and settling takes over 30 steps, so the default <code>steps=40</code> barely converges and a comparison against the analytical formula will look wrong. A quick check: run <code>simulate(..., steps=200)</code> and confirm the result changes by less than 1e-6 before treating it as the true steady state. Alternatively, call <code>python-control</code>'s <code>control.feedback(control.tf([b], [1, -a]), K).dcgain()</code> to read the exact steady-state value algebraically and use the simulation only to verify, not to derive.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library shortcut: python-control</div>
 <p>The hand-coded plant and gain above are deliberately minimal. The <code>python-control</code> package gives you the same loop as composable transfer-function or state-space objects: build the plant, close the loop with <code>feedback()</code>, and read steady-state error, disturbance rejection, and stability margins directly instead of re-deriving $y_\infty = (bKr + d)/(1-a+bK)$ by hand. It replaces the manual algebra and the by-hand stability checks once your plant is more than one scalar state. Use the toy here to see why feedback works; reach for python-control the moment the plant has dynamics worth analyzing.</p>

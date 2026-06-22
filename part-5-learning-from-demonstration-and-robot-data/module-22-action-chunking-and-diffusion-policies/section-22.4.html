@@ -39,6 +39,9 @@
 <figcaption>Figure 22.4A: Diffusion Policy as iterative denoising: starting from Gaussian noise in action space, a noise-conditioned U-Net conditions on the current observation and steps the action toward a clean trajectory over K denoising steps.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the action-chunking formulation introduced in section 22.1 and with the imitation learning objective covered in section 21.2. The denoising math here is extended in section 22.5, which replaces the noise-prediction objective with flow matching for faster inference. The multimodal action distribution idea recurs in Part VII alongside robot foundation models in section 35.2.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Diffusion Policy generates robot action chunks by denoising, which lets a policy represent multiple valid futures rather than averaging them into a weak command. The section makes the denoising objective explicit.</p>
@@ -77,6 +80,24 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>Diffusion Policy represents a robot policy as an iterative denoising process over an action sequence. Training samples a clean action chunk $A_0$, adds noise at diffusion step $k$ to produce $A_k$, then trains a network $\epsilon_\theta$ to predict the injected noise from the noisy action chunk and the observation context:</p>
 <p>$$\mathcal{L}_{diff} = \mathbb{E}_{A_0,\epsilon,k}\left[\left\|\epsilon - \epsilon_\theta(A_k, k, o_t)\right\|_2^2\right], \quad A_k = \sqrt{\bar\alpha_k}A_0 + \sqrt{1-\bar\alpha_k}\epsilon.$$</p>
 <p>At inference, the policy starts with Gaussian noise and repeatedly denoises it into an action chunk, then executes the first part in receding-horizon control. This makes multimodal action distributions natural: different denoising samples can choose different valid futures such as grasping an object from the left or from the right.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Diffusion Policy Inference via Iterative Denoising</h4>
+<p><strong>Input:</strong> current observation $o_t$, trained noise-prediction network $\epsilon_\theta$, denoising schedule $\{\bar\alpha_k\}_{k=1}^{K}$, number of denoising steps $K$, action horizon $H$, receding-horizon fraction $H_{\text{exec}} \leq H$</p>
+<p><strong>Output:</strong> executed action subsequence $A_{0}^{(1:H_{\text{exec}})}$ applied to the robot</p>
+<ol>
+<li>Sample initial action noise: $A_K \sim \mathcal{N}(0, I)$ with shape $(H, \dim_a)$.</li>
+<li>For each denoising step $k = K, K{-}1, \ldots, 1$:</li>
+<li>Predict injected noise: $\hat\epsilon = \epsilon_\theta(A_k,\, k,\, o_t)$.</li>
+<li>Compute the denoised action estimate: $\hat A_0 = \frac{A_k - \sqrt{1-\bar\alpha_k}\,\hat\epsilon}{\sqrt{\bar\alpha_k}}$.</li>
+<li>Re-noise to step $k{-}1$ using the DDPM (or DDIM) reverse update: $A_{k-1} = \sqrt{\bar\alpha_{k-1}}\,\hat A_0 + \sqrt{1-\bar\alpha_{k-1}}\,\hat\epsilon$.</li>
+<li>After all $K$ steps, obtain clean action chunk $A_0 = A_0^{(1:H)}$.</li>
+<li>Execute only the first $H_{\text{exec}}$ steps of $A_0$ on the robot.</li>
+<li>Re-observe the environment to obtain $o_{t+H_{\text{exec}}}$.</li>
+<li>Set $t \leftarrow t + H_{\text{exec}}$ and return to step 1 (receding-horizon loop).</li>
+</ol>
+</div>
+
 <div class="callout key-insight"><div class="callout-title">Why Denoising Helps</div><p>Regression tends to average incompatible actions. Denoising learns a distribution over coherent chunks, so the policy can commit to one valid mode instead of blending several into a physically meaningless middle.</p></div>
 <p>Code Fragment 3 performs the forward noising calculation for one scalar action so the formula is inspectable.</p>
 <pre><code class="language-python"># Apply one diffusion noising step to an action value.
@@ -107,6 +128,9 @@ print(f"target noise: {epsilon:.3f}")</code></pre>
 <div class="callout warning">
 <div class="callout-title">When Diffusion Policy Breaks in Practice</div>
 <p>Three failure modes appear most often in deployed diffusion policies. First, inference latency: with K=100 denoising steps on a U-Net, a single action chunk can take 80-200 ms to generate, which is too slow for a 10 Hz control loop; practitioners reduce K to 10-20 using DDIM sampling, but aggressive step reduction can produce blurry or jerky trajectories. Second, out-of-distribution contact: if the demonstration set covers grasping from above but the object shifts 15 cm forward, the denoised action chunk can steer the gripper into empty space with high confidence because the model learned the contact geometry, not the object location. Third, mode collapse under limited data: with fewer than roughly 50 demonstrations per task mode, the denoising network may always converge to the same mode and ignore the alternative valid grasp, defeating the multimodal advantage that motivates the approach.</p>
+</div>
+<div class="callout tip">
+<p>When reducing DDIM steps to cut inference latency, set <code>num_inference_steps</code> in the <code>DDIMScheduler</code> config rather than retraining: the official <code>real-stanford/diffusion_policy</code> repo exposes this as <code>inference_num_ddim_iters</code> in the hydra config and defaults to 100. Dropping to 16 steps typically keeps task success within 5 percentage points of the 100-step baseline on Push-T while cutting chunk generation time from roughly 150 ms to under 25 ms on a single GPU. Verify on your own task before deploying, because contact-rich tasks with tight tolerances degrade more sharply than planar push tasks at low step counts.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

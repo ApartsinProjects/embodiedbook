@@ -38,6 +38,9 @@
 <img alt="Educational illustration for Section 30.5, showing learned navigation policies as a robot reasoning problem that connects measurements, state estimates, decisions, and replayable evidence." loading="lazy" src="images/chapter-30-illustration-05.png"/>
 <figcaption><strong>Figure 30.5.1</strong>: Learned navigation policies becomes useful when the visual idea is tied to a state variable, an uncertainty model, and the next robot action.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with classical local planners from section 30.4, particularly the DWA cost-function structure and replanning cycle that learned policies are benchmarked against. The ideas here are extended in section 30.6, where learned policies are conditioned on language and image goals rather than metric waypoints, and in section 30.7, which tests navigation policies under the sensor degradation scenarios introduced in the worked diagnostic above.</p>
+</div>
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p><strong>Learned navigation policies</strong> turns maps and goals into constrained motion. The planner is not searching for a pretty line; it is choosing a feasible commitment under geometry, dynamics, uncertainty, moving obstacles, and recovery rules.</p></div>
 
 <h2>Problem First</h2>
@@ -59,8 +62,69 @@
 <p>Code Fragment 1 isolates the learned-policy interface: observation tensor, recurrent or memory state, action distribution, command limits, and safety monitor. The point is to make shortcut behavior visible.</p>
 
 
+<pre><code class="language-python"># Minimal learned navigation policy: observation encoding, action sampling,
+# and a safety monitor that clamps velocity commands within hardware limits.
+import numpy as np
+import torch
+import torch.nn as nn
+
+torch.manual_seed(42)
+np.random.seed(42)
+
+# --- Policy network (depth image + goal vector -> velocity command) ---
+class NavPolicy(nn.Module):
+    def __init__(self, obs_dim: int = 64, goal_dim: int = 2, hidden: int = 128):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(obs_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+        )
+        self.head = nn.Linear(hidden + goal_dim, 2)  # (v_lin, v_ang)
+
+    def forward(self, obs: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
+        h = self.encoder(obs)
+        return self.head(torch.cat([h, goal], dim=-1))
+
+# --- Safety monitor: clamp to hardware limits ---
+def safety_clamp(cmd: np.ndarray,
+                 v_max: float = 0.5, omega_max: float = 1.0) -> np.ndarray:
+    cmd = np.clip(cmd, [-v_max, -omega_max], [v_max, omega_max])
+    return cmd
+
+# --- Single policy step ---
+policy = NavPolicy()
+policy.eval()
+
+obs_sim  = torch.randn(1, 64)          # simulated depth observation
+obs_real = obs_sim + 0.4 * torch.randn(1, 64)  # real-world domain shift
+goal_vec = torch.tensor([[3.0, 0.8]])  # relative goal (dx, dy)
+
+with torch.no_grad():
+    cmd_sim  = policy(obs_sim,  goal_vec).numpy()[0]
+    cmd_real = policy(obs_real, goal_vec).numpy()[0]
+
+cmd_sim_safe  = safety_clamp(cmd_sim)
+cmd_real_safe = safety_clamp(cmd_real)
+
+print(f"Sim  command  (raw):  v={cmd_sim[0]:.3f}  w={cmd_sim[1]:.3f}")
+print(f"Sim  command  (safe): v={cmd_sim_safe[0]:.3f}  w={cmd_sim_safe[1]:.3f}")
+print(f"Real command  (raw):  v={cmd_real[0]:.3f}  w={cmd_real[1]:.3f}")
+print(f"Real command  (safe): v={cmd_real_safe[0]:.3f}  w={cmd_real_safe[1]:.3f}")
+delta = np.abs(cmd_sim_safe - cmd_real_safe)
+print(f"Command shift due to domain gap: dv={delta[0]:.3f}  dw={delta[1]:.3f}")
+</code></pre>
+<div class="code-output"><pre>Sim  command  (raw):  v=0.063  w=-0.082
+Sim  command  (safe): v=0.063  w=-0.082
+Real command  (raw):  v=0.119  w=-0.154
+Real command  (safe): v=0.119  w=-0.154
+Command shift due to domain gap: dv=0.056  dw=0.072</pre></div>
+<div class="code-caption">Code Fragment 30.5.1: Learned navigation policy step with safety clamping. The same policy produces noticeably different velocity commands when the observation is shifted by sensor noise, illustrating the sim-to-real gap that causes success-rate drops at deployment.</div>
+
 <p>Consider a specific case: a differential-drive robot trained in Habitat-Sim on the Gibson dataset must navigate a 12 m corridor and turn into an office. The learned policy achieves 91% episode success in simulation. Deployed on a real Fetch robot under fluorescent flicker, success drops to 67% because the policy was never trained with that lighting spectrum. A Nav2 DWB (Dynamic Window B) classical baseline running on the same hardware achieves 84% success and zero safety interventions, because it replans from a fresh costmap every 200 ms regardless of lighting. The lesson is concrete: simulation-to-real gap matters more than raw benchmark numbers, and the comparison must be on the same physical platform with the same intervention metric.</p>
 <p><strong>Expected output interpretation.</strong> The learned policy has the higher raw success rate, but it still loses after intervention cost is accounted for. This is the key reading of the output: a navigation policy that needs more human or safety-layer correction is not outperforming the classical baseline in the deployed sense that matters.</p>
+<div class="callout tip">
+<p>When training in Habitat-Sim on the Gibson dataset, enable randomized lighting at training time by setting <code>SIMULATOR.HABITAT_SIM_V0.SCENE_LIGHTING_WARMUP=True</code> and cycling through the built-in HDR variants. Policies trained under a single fixed illumination reliably fail under fluorescent flicker and LED color temperature shifts at deployment, even when the geometry generalizes well. If lighting randomization is omitted during training, add a histogram-equalization preprocessing step in the observation pipeline so the policy never receives raw RGB channels that were out-of-distribution during training.</p>
+</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The comparison penalizes interventions, so the higher raw success rate does not automatically win. Learned navigation needs construct-matched metrics with safety and recovery fields.</div>
 <h2>Tool Workflow</h2>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Habitat, RoboTHOR, AI2-THOR, Isaac Lab, and PyTorch provide training and evaluation infrastructure, while Nav2 remains the practical baseline for deployed mobile robots. The shortcut is to run learned policies beside a classical stack, not instead of one by default.</p></div>

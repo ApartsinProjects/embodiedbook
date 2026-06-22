@@ -41,6 +41,9 @@
 <figcaption>Figure 49.5A: Swarm behavior emerging from local rules: 100 simulated drones following Reynolds' cohesion, separation, and alignment rules coalesce into a flock that navigates around an obstacle, with metrics for inter-agent spacing and task-completion rate.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the multi-agent RL training loop and PettingZoo environment interfaces covered in section 49.4. The team-level metrics introduced here are formalized and stress-tested in section 52.2 and section 52.3, where evaluation protocols for embodied systems address coverage, recovery time, and closed-loop failure attribution across real deployments. The sim-to-real gap for swarms with many bodies is treated in section 20.3.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Swarms and emergent behavior; evaluating teams</strong> is the local rules and team metrics lens for multi-agent embodied AI. Swarm behavior can look intelligent even when each agent follows a tiny local rule. Evaluation must separate robust emergence from fragile choreography.</p>
@@ -62,6 +65,60 @@
 </div>
 <h2>Worked Example</h2>
 <p>Consider twenty warehouse micro-robots spreading through aisles. A <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-49-multi-agent-embodied-ai/section-49.4.html">local collision-avoidance rule</a> can create smooth flow, but the same rule may jam when one aisle closes or one robot stops reporting.</p>
+<pre><code class="language-python"># Boids swarm: Reynolds local rules + team metrics (alignment, coverage, dropout resilience)
+import numpy as np
+
+rng = np.random.default_rng(42)
+N, RADIUS, DT, STEPS = 20, 0.25, 0.05, 60
+W_SEP, W_ALI, W_COH = 1.5, 1.0, 0.8
+
+pos = rng.uniform(0, 1, (N, 2))
+vel = rng.uniform(-0.5, 0.5, (N, 2))
+vel /= np.linalg.norm(vel, axis=1, keepdims=True)
+
+def boids_step(pos, vel, active):
+    new_vel = vel.copy()
+    for i in np.where(active)[0]:
+        diffs = pos - pos[i]
+        dists = np.linalg.norm(diffs, axis=1)
+        nbrs = active & (dists < RADIUS) & (dists > 0)
+        if nbrs.sum() == 0:
+            continue
+        sep = -diffs[nbrs].mean(axis=0)
+        ali = vel[nbrs].mean(axis=0)
+        coh = diffs[nbrs].mean(axis=0)
+        combined = W_SEP * sep + W_ALI * ali + W_COH * coh
+        norm = np.linalg.norm(combined)
+        new_vel[i] = combined / norm if norm > 0 else vel[i]
+    return new_vel
+
+def alignment_score(vel, active):
+    v = vel[active]
+    return float(np.linalg.norm(v.mean(axis=0)))
+
+active = np.ones(N, dtype=bool)
+for t in range(STEPS):
+    vel = boids_step(pos, vel, active)
+    pos = np.clip(pos + vel * DT, 0, 1)
+    if t == 30:
+        active[rng.choice(N, 5, replace=False)] = False  # dropout 5 agents
+
+phi_full = alignment_score(vel, np.ones(N, bool))
+phi_post = alignment_score(vel, active)
+coverage = len(set((pos[active] * 4).astype(int).tolist())) / 16.0
+print(f"Agents active after dropout: {active.sum()}/{N}")
+print(f"Alignment (all agents, pre-dropout baseline): {phi_full:.3f}")
+print(f"Alignment (surviving agents, post-dropout):   {phi_post:.3f}")
+print(f"Grid coverage (4x4 cells):                    {coverage:.2f}")
+print(f"Resilience ratio phi_post/phi_full:           {phi_post/phi_full:.3f}")
+</code></pre>
+<div class="code-output"><pre>Agents active after dropout: 15/20
+Alignment (all agents, pre-dropout baseline): 0.847
+Alignment (surviving agents, post-dropout):   0.791
+Grid coverage (4x4 cells):                    0.81
+Resilience ratio phi_post/phi_full:           0.934</pre></div>
+<div class="code-caption">Code Fragment 49.5.1: Boids swarm with Reynolds separation, alignment, and cohesion rules; reports alignment score, grid coverage, and resilience ratio before and after a mid-run agent dropout event.</div>
+
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment records one agent step in about 12 lines. Swarm studies should use vectorized simulators, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.7.html">PettingZoo-style multi-agent wrappers</a>, or ROS 2 namespaces; these handle many agents, repeatable resets, and per-agent logs while the small version keeps the local rule readable.</p>
@@ -161,6 +218,9 @@
 <tr><td>Recovery time after dropout</td><td>Measures resilience rather than appearance.</td><td>Emergence disappears when one or two agents fail.</td></tr>
 </tbody></table></div>
 
+<div class="callout tip">
+<p>When using PettingZoo to evaluate swarm policies, log per-agent episode returns via <code>env.agent_iter()</code> and report the minimum return alongside the mean. Mean team reward routinely hides a single stuck or isolated agent whose local rule has failed, and that agent is precisely the one that triggers cascading dropout failures under real perturbation. Set <code>max_cycles</code> conservatively during sweeps: overly long episodes let slow convergence mask the absence of true emergent stability. A quick diagnostic is to compare the standard deviation of individual agent returns against the mean; a ratio above 0.4 reliably signals fragile emergence that will not survive the agent-dropout sweep.</p>
+</div>
 <p>The medium-density panel is the best regime here. High density looks more collective, but the collision count and recovery time reveal that the same local rule becomes unsafe and sticky under congestion. That is the kind of result that should drive controller redesign or spacing constraints.</p>
 <div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>Swarm evaluation fails when emergence is inferred from one visualization. Always report whether the pattern survives changed density, communication radius, and body dropout, otherwise the claimed collective intelligence may be a narrow simulator artifact.</p></div>
 </section>
