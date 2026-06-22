@@ -74,21 +74,80 @@
 </div>
 <h2>Theory</h2>
 
-<p>For Limits of static VLMs in dynamic worlds, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<p>A static vision-language model is a function from a single observation to an output: a caption, a detection, or, in a policy wrapper, an action. We can ask formally why such a model degrades the moment it is dropped into a temporal embodied loop. There are four distinct arguments, and they compound.</p>
+
+<h3>1. Distribution shift: the i.i.d. assumption fails</h3>
+<p>A VLM is trained by minimizing expected loss over a dataset of images drawn independently:</p>
+<p>$$\theta^\star = \arg\min_\theta \; \mathbb{E}_{x \sim \mathcal{D}_{\text{img}}}\big[\ell(f_\theta(x), y)\big], \qquad x_i \perp x_j \;\; \forall i \neq j.$$</p>
+<p>The independence assumption $x_i \perp x_j$ is what makes the empirical average a valid estimator of the population risk. At deployment the agent does not see independent draws. It sees a trajectory whose frames are produced by its own dynamics:</p>
+<p>$$o_{t+1} = g(o_t, a_t) + \varepsilon_t, \qquad \text{Corr}(o_t, o_{t+1}) \to 1 \;\; \text{as} \;\; \Delta t \to 0.$$</p>
+<p>Consecutive frames are nearly identical, errors are temporally correlated, and the visited state distribution $d^\pi(o)$ is induced by the policy itself, not by $\mathcal{D}_{\text{img}}$. The training risk no longer bounds the deployment risk, because the test distribution $d^\pi \neq \mathcal{D}_{\text{img}}$. This is the same covariate-shift mechanism that DAgger was built to address: small per-step errors move the agent into states never seen during training, and the errors accumulate quadratically in the horizon.</p>
+
+<h3>2. Temporal aliasing: visually equal states, different correct actions</h3>
+<p>Embodied tasks routinely contain pairs of states that look identical to a single-frame encoder but demand opposite actions. Consider a gripper at world position $p$ just <em>before</em> a grasp versus the same gripper at $p$ just <em>after</em> the object is secured. The pixels can be nearly the same; the correct action is "close and lift" in one case and "retract and transport" in the other. Write the perceptual aliasing as</p>
+<p>$$o_t^{(\text{before})} \approx o_t^{(\text{after})} \quad \text{but} \quad a_t^{(\text{before})} \neq a_t^{(\text{after})}.$$</p>
+<p>A static policy is a function of the current observation only, $\pi(a \mid o_t)$. If $o_t^{(\text{before})} \approx o_t^{(\text{after})}$, then $\pi(a \mid o_t^{(\text{before})}) \approx \pi(a \mid o_t^{(\text{after})})$ by continuity of $f_\theta$. The model is structurally unable to emit two different actions for two observations it cannot distinguish. The phase of the task (which is hidden state) is exactly the information a single frame discards.</p>
+
+<h3>3. The Markov assumption and why context is required</h3>
+<p>A single-frame policy is only optimal when the observation is a sufficient statistic for the state, that is, when the process is Markov in $o_t$:</p>
+<p>$$P(s_{t+1} \mid o_t, a_t) = P(s_{t+1} \mid o_1, \dots, o_t, a_t).$$</p>
+<p>Embodied perception violates this because cameras give partial observations: occlusion, motion blur, limited field of view, and the phase ambiguity above all hide state. The problem is then a POMDP, and the optimal policy is a function of the history (or a belief state), not the latest frame:</p>
+<p>$$\pi^\star(a \mid b_t), \qquad b_t = P(s_t \mid o_1, a_1, \dots, o_t).$$</p>
+<p>A static VLM attempts to approximate $\pi^\star(a \mid b_t)$ with $\pi(a \mid o_t)$. When the Markov assumption holds this is exact; when it fails (the common case in manipulation and navigation) the static model cannot recover the missing state, no matter how large the backbone. The gap is information-theoretic, not a question of capacity.</p>
+
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism in Limits of static VLMs in dynamic worlds is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+<p>The degradation is not a tuning problem. It is the composition of three failures: the training risk stops bounding the deployment risk (distribution shift), continuity forces equal outputs on aliased frames (temporal aliasing), and a single frame is not a sufficient statistic for the hidden phase (broken Markov property). Each is fixed by giving the model access to the history.</p>
 </div>
-<h2>Worked Example</h2>
-<p>For Limits of static VLMs in dynamic worlds, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+
+<h2>Worked Example: static VLM vs a 4-frame context buffer</h2>
+<p>To make the argument concrete, compare a single-frame policy against a policy that stacks a short history window, on a temporally structured manipulation benchmark such as Franka Kitchen (a multi-stage task: approach, grasp, manipulate, release). The single-frame policy maps the latest RGB frame to an action; the context policy concatenates the last four frames so the network can infer velocity and task phase.</p>
 <pre><code class="language-python">import numpy as np
 
-points_world = np.array([[0.0, 0.0, 1.0], [0.5, 0.2, 1.0]])
-camera_offset = np.array([0.1, 0.0, 0.0])
-points_camera = points_world - camera_offset
-print(points_camera)</code></pre>
-<div class="code-caption">Code Fragment 32.6.1 turns Limits of static VLMs in dynamic worlds into an executable trace with explicit observation, action, and outcome fields.</div>
-<p><strong>Expected output:</strong> the printed trace for Limits of static VLMs in dynamic worlds should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+rng = np.random.default_rng(0)
+
+# Two task phases that produce near-identical single frames
+# but require opposite actions (close-and-lift vs retract-and-transport).
+def render_frame(phase, t):
+    base = np.array([0.40, 0.00, 0.15])          # gripper at the same xyz
+    blur = rng.normal(0, 0.002, size=3)          # sensor noise
+    return base + blur                           # phase is NOT visible in one frame
+
+def correct_action(phase):
+    return np.array([0.0, 0.0, +0.05]) if phase == "before" else \
+           np.array([0.0, 0.0, -0.05])           # lift vs retract
+
+# A single-frame policy sees only render_frame(phase, t): the inputs are
+# statistically indistinguishable, so any function of one frame must give
+# (nearly) the same action for both phases -> ~50% phase error by construction.
+o_before = render_frame("before", 5)
+o_after  = render_frame("after", 5)
+print("single-frame |o_before - o_after| =", np.linalg.norm(o_before - o_after))
+
+# A 4-frame buffer exposes the trajectory leading in: the approach sequence
+# (descending z) precedes "before", the lift sequence (ascending z) precedes
+# "after", so the phase becomes linearly decodable from the stacked window.
+def window(phase):
+    if phase == "before":
+        zs = [0.30, 0.25, 0.20, 0.15]            # descending -> approaching
+    else:
+        zs = [0.15, 0.18, 0.21, 0.24]            # ascending  -> already lifting
+    return np.array(zs)
+
+w_before, w_after = window("before"), window("after")
+print("4-frame window slope before:", np.polyfit(range(4), w_before, 1)[0])
+print("4-frame window slope after :", np.polyfit(range(4), w_after, 1)[0])</code></pre>
+<div class="code-caption">Code Fragment 32.6.1: the single-frame observations for the two phases are within sensor noise of each other, so no single-frame policy can separate them; the 4-frame window recovers the sign of the z-velocity, which disambiguates the phase.</div>
+<p><strong>Expected output:</strong> the single-frame difference prints on the order of $10^{-3}$ (pure noise), while the window slopes print with opposite signs (negative for the approach, positive for the lift). The history makes a quantity that was invisible to one frame linearly decodable.</p>
+<p><strong>What the literature reports.</strong> The same effect shows up at scale. Adding temporal context is the difference between policies that stall at task boundaries and policies that complete multi-stage rollouts. Video pre-training (VPT) shows that learning from sequences, not isolated frames, is what lets a model acquire temporally extended skills. R3M demonstrates that representations pre-trained on video transfer to manipulation far better than single-image features. RT-2 carries vision-language pre-training into a closed-loop policy and benefits from action history and chunked outputs. Across these systems the qualitative pattern is consistent: a context window large enough to span the relevant dynamics recovers exactly the phase and velocity information that a single frame discards, and closed-loop success rises accordingly.</p>
+
+<h2>The Fixes</h2>
+<p>All three theoretical failures share one cure, restore access to the history, and there are three standard ways to do it:</p>
+<ul>
+<li><strong>Temporal context (frame stacking and video pre-training).</strong> Feed a window $o_{t-k:t}$ instead of $o_t$. Video-pretrained encoders (VPT, R3M) already encode motion, so velocity and phase are present in the features. This directly attacks temporal aliasing and the broken Markov property.</li>
+<li><strong>Recurrent state (LSTM/GRU heads on a VLM).</strong> Carry a hidden state $h_t = \text{RNN}(h_{t-1}, f_\theta(o_t))$ that summarizes the history into a learned belief. The policy becomes $\pi(a \mid h_t)$, an explicit approximation of $\pi^\star(a \mid b_t)$. This is the POMDP-correct structure and is used in VLM-derived policies such as RT-2 style architectures.</li>
+<li><strong>Action chunking.</strong> Predict a short sequence of future actions $a_{t:t+H}$ from one observation rather than a single step. Committing to a chunk reduces the per-step decision frequency, smooths over aliased frames, and mitigates the compounding error of single-step closed-loop control (the mechanism behind ACT and diffusion-policy chunked outputs).</li>
+</ul>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The from-scratch fragment is for understanding. In a practical system, use OpenCV, PyTorch, Detectron2, Ultralytics, Segment Anything, DINOv2, SigLIP, and Gaussian Splatting tools to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
@@ -164,6 +223,22 @@ print(points_camera)</code></pre>
 </div><div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2304.02643" rel="noopener" target="_blank">Kirillov et al. (2023). "Segment Anything." ICCV.</a></p>
 <p class="bib-annotation">Segment Anything gives the chapter a maintained route from visual prompting to masks and regions.</p>
+<span class="bib-meta">Paper</span>
+</div><div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2206.11795" rel="noopener" target="_blank">Baker et al. (2022). "Video PreTraining (VPT): Learning to Act by Watching Unlabeled Online Videos." NeurIPS.</a></p>
+<p class="bib-annotation">VPT shows that learning from sequences rather than isolated frames is what lets a model acquire temporally extended skills, the core argument for temporal context.</p>
+<span class="bib-meta">Paper</span>
+</div><div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2203.12601" rel="noopener" target="_blank">Nair et al. (2022). "R3M: A Universal Visual Representation for Robot Manipulation." CoRL.</a></p>
+<p class="bib-annotation">R3M demonstrates that video-pretrained representations transfer to manipulation far better than single-image features, motivating temporal pre-training for embodied policies.</p>
+<span class="bib-meta">Paper</span>
+</div><div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2307.15818" rel="noopener" target="_blank">Brohan et al. (2023). "RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control." arXiv.</a></p>
+<p class="bib-annotation">RT-2 carries vision-language pre-training into a closed-loop policy and benefits from action history and chunked outputs, a reference for recurrent and chunked fixes.</p>
+<span class="bib-meta">Paper</span>
+</div><div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2011.13456" rel="noopener" target="_blank">Ross, Gordon, and Bagnell (2011). "A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning (DAgger)." AISTATS.</a></p>
+<p class="bib-annotation">DAgger formalizes the compounding covariate shift that arises when an i.i.d.-trained policy is deployed in its own correlated state distribution.</p>
 <span class="bib-meta">Paper</span>
 </div>
 </section>
