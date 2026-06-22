@@ -34,164 +34,190 @@
 <h1>Section 17.1: Why thousands of parallel envs changed the field</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Why thousands of parallel envs changed the field matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 17.1: Why thousands of parallel envs changed the field, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-17-illustration-01.png"/>
-<figcaption><strong>Figure 17.1A</strong>: Section 17.1: Why thousands of parallel envs changed the field is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration with many small robot learners practicing the same locomotion task in parallel lanes while one evaluator watches a separate test lane, illustrating rollout scale and evaluation separation." loading="lazy" src="images/chapter-17-illustration-01.png"/>
+<figcaption><strong>Figure 17.1A</strong>: Parallel RL works when thousands of practice lanes produce diverse evidence, not when they merely repeat the same lucky episode faster.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Why thousands of parallel envs changed the field</strong> is one lens on massively parallel and GPU RL. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Why thousands of parallel envs changed the field</strong> is the scaling story behind modern robot RL. Instead of waiting for one simulator to finish one trajectory, the learner gathers a tensor of trajectories from thousands of environments, usually on the same accelerator that updates the policy.</p>
 </div>
-<p>It extends simulator choices from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>, operationalizes PPO from <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>, and feeds directly into reward design in <a class="cross-ref" href="../module-18-reward-design-and-goal-specification/index.html">Chapter 18: Reward Design and Goal Specification</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section by following the batch dimension: how many environments run, how many steps each contributes, how seeds and resets differ, and which evaluation workers are kept out of training. The important question is whether more samples also mean more independent experience.</p>
+</div>
+<p>For Why thousands of parallel envs changed the field, GPU RL depends on simulator fidelity, PPO rollout semantics, reward terms, and reset distribution being versioned in the same training artifact.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for why thousands of parallel envs changed the field into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for vectorized rollouts. We separate <em>throughput</em>, the number of environment steps collected per second, from <em>statistical diversity</em>, the amount of genuinely different experience inside those steps.</p>
+<p>The key question is practical: when a run reports 98,304 samples per PPO update, do those samples cover different terrain, commands, contacts, and failure modes, or do they come from synchronized copies of the same narrow task?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In why thousands of parallel envs changed the field, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">The Batch Dimension Is Not A Free Lunch</div>
+<p>Parallel environments turn time into width: one rollout step produces a whole column of experiences. The policy improves only when that width contains useful variation, so seeds, terrain randomization, command sampling, and reset logic are part of the learning algorithm.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>For PPO-style training, one update typically consumes a rollout block with shape $T \times N \times d$, where $T$ is the horizon, $N$ is the number of parallel environments, and $d$ is the observation dimension. The sample count is $T N$, but the learning signal also depends on how correlated those $N$ environments are.</p>
+<p>If all environments reset with related seeds, share the same command schedule, and hit the same terrain patch at the same time, the gradient can become overconfident. Good parallel RL treats environment count, horizon, minibatch size, and reset diversity as a coupled design, not as separate knobs.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a repeated tensor operation: infer actions for all environments, step all environments, write observations, rewards, dones, values, and log probabilities into contiguous buffers, then update from shuffled slices of that buffer. GPU RL wins when simulation, policy inference, and storage stay resident on device and avoid per-environment Python loops.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 17.1.1 turns the rollout contract into concrete numbers. The snippet does not simulate physics; it shows the accounting a training script should print before anyone trusts a speedup claim.</p>
+<pre><code class="language-python"># Compute the rollout block that a vectorized PPO run will train on.
+# Track seed families separately because high sample count can hide correlation.
+num_envs = 4096
+horizon = 24
+obs_dim = 48
+seed_families = 128
+eval_envs = 256
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 17.1.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Why thousands of parallel envs changed the field should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+samples_per_update = num_envs * horizon
+rollout_shape = (horizon, num_envs, obs_dim)
+envs_per_seed_family = num_envs // seed_families
+
+print(f"rollout tensor: {rollout_shape}")
+print(f"samples per update: {samples_per_update:,}")
+print(f"training seed families: {seed_families}")
+print(f"envs sharing each seed family: {envs_per_seed_family}")
+print(f"held-out evaluation envs: {eval_envs}")</code></pre>
+<div class="code-output">rollout tensor: (24, 4096, 48)
+samples per update: 98,304
+training seed families: 128
+envs sharing each seed family: 32
+held-out evaluation envs: 256</div>
+<div class="code-caption">Code Fragment 17.1.1 makes the hidden rollout dimensions explicit. The important line is not only the 98,304 samples per update, but also the 128 seed families and 256 held-out evaluation environments that keep the batch from becoming a synchronized echo.</div>
+<p><strong>Expected output:</strong> the trace should report rollout shape, samples per update, seed diversity, and evaluation separation. A benchmark that reports only steps per second is missing the evidence needed to judge learning quality.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical GPU RL, Isaac Lab, RSL-RL, rl_games, SKRL, Brax, and MJX already implement the wide rollout machinery. The library shortcut is not the idea that batching exists; it is that the framework keeps simulation buffers, policy inference, and learner tensors aligned while you focus on reset diversity, reward terms, and held-out evaluation.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Choose $N$ and $T$ together so the rollout covers enough states without making the policy update stale.</li>
+<li>Assign independent seed families, command samples, and domain randomization draws before measuring throughput.</li>
+<li>Keep simulation, observations, rewards, actions, and learner tensors on the same device whenever the framework supports it.</li>
+<li>Reserve evaluation environments with separate seeds and no exploration noise.</li>
+<li>Log steps per second, reward, success rate, fall rate, reset reasons, GPU memory, and the exact seed set in one artifact.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to increase environment count until the GPU looks busy, then forget that neighboring environments may be seeing nearly identical episodes. Throughput without diversity can make a weak policy converge faster to the wrong behavior.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using why thousands of parallel envs changed the field should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A legged-robotics team may train 4,096 simulated quadrupeds at once, but it should still stratify resets across slopes, pushes, payloads, friction, and command velocities. The useful artifact is a panel showing which strata improved, not a single aggregate reward curve.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Thousands of environments are a choir, not a crowd, if every reset sings the same note. The conductor is the seed schedule.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>As of 2026, the frontier is moving from faster simulator loops toward richer on-device experience: pixel observations, many robot morphologies, domain randomization, and sim-to-real evaluation in the same workflow. The research risk is that accelerator-scale training can make closed-loop success look mature before independent hardware tests and held-out task panels confirm it.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for why thousands of parallel envs changed the field? If not, the system boundary is still too vague.</p>
+<p>Can you name $N$, $T$, samples per update, seed families, evaluation seeds, and the reset strata for a reported parallel RL run? If not, the speedup is not yet reproducible.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Massively Parallel and GPU RL, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when the rollout block is treated as a scientific object. A complete block has shape, seed provenance, reset causes, reward components, termination flags, and value estimates. Without those fields, a run can be fast and still be impossible to debug.</p>
+<p>The graduate-level habit is to separate three claims. The systems claim says the simulator collected steps faster. The learning claim says the policy improved on held-out seeds. The embodiment claim says the improved policy survives contacts, delays, disturbances, and sensing limits that were not silently tuned into the training panel.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Why thousands of parallel envs changed the field</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Why thousands of parallel envs changed the field</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Why thousands of parallel envs changed the field</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Why thousands of parallel envs changed the field</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Why thousands of parallel envs changed the field</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Isaac Lab</td><td>GPU-resident robot tasks with thousands of environments</td><td>Use it when the task depends on articulated robots, sensors, terrain, and NVIDIA simulation assets.</td></tr><tr><td>RSL-RL</td><td>High-throughput PPO for legged locomotion</td><td>Use it when the policy and rollout tensors should stay close to the simulator and the task uses common locomotion conventions.</td></tr><tr><td>Brax</td><td>JAX-native batched physics and RL loops</td><td>Use it when compilation, vectorization, and accelerator scaling matter more than photorealistic sensing.</td></tr><tr><td>MJX</td><td>MuJoCo-style models executed through JAX</td><td>Use it when you want MuJoCo modeling concepts with accelerator-friendly batched stepping.</td></tr><tr><td>Gymnasium VectorEnv</td><td>CPU-side vectorization baseline</td><td>Use it as a debugging baseline before claiming that GPU residency changed the learning result.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a rollout ledger. The ledger records the exact training panel and the separate evaluation panel, so throughput, reward, and generalization are not stitched together from different runs.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Record environment count, horizon, minibatch count, epochs, device, and GPU memory budget.</li>
+<li>Store training seeds and evaluation seeds as different lists, not as one global seed.</li>
+<li>Log reset strata such as terrain, command range, friction, mass, and push schedule.</li>
+<li>Export success, return, fall rate, and reset reason from the same evaluation pass.</li>
+<li>Compare methods only when one script evaluates them on the same held-out panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Why thousands of parallel envs changed the field.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one reproducibility record for a parallel rollout run.
+# Keep training seeds separate from evaluation seeds to prevent leakage.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class RolloutLedger:
+    envs: int
+    horizon: int
+    train_seed_families: int
+    eval_seed_families: int
+    device: str
+    artifact: str
 
-record = EvidenceRecord(
-    section="17.1",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+ledger = RolloutLedger(
+    envs=4096,
+    horizon=24,
+    train_seed_families=128,
+    eval_seed_families=16,
+    device="cuda:0",
+    artifact="runs/walk_4096x24_eval16.jsonl",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 17.1.2 records the method-specific evidence schema for testing Why thousands of parallel envs changed the field with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(ledger.as_row())</code></pre>
+<div class="code-output">{'envs': 4096, 'horizon': 24, 'train_seed_families': 128, 'eval_seed_families': 16, 'device': 'cuda:0', 'artifact': 'runs/walk_4096x24_eval16.jsonl'}</div>
+<div class="code-caption">Code Fragment 17.1.2 records the fields needed to reproduce a vectorized rollout claim. The separate train and evaluation seed families make it possible to audit whether a reported gain came from training throughput or evaluation leakage.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the rollout ledger before they touch model code. The exercise exposes vague batch, seed, and evaluation definitions early, when they are cheap to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a massively parallel run fails, first ask whether the policy failed or whether the batch lied. Check for synchronized resets, stale normalization statistics, identical command curricula, action clipping, and evaluation seeds that were also used during training. Then rerun a smaller batch where every episode can be inspected by seed family.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Why thousands of parallel envs changed the field, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For parallel rollout claims, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same held-out seed set, same perturbation suite, and the same success definition. Save steps per second, GPU memory, reward, success rate, fall rate, and reset reasons as one artifact so speed and learning quality are backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Why thousands of parallel envs changed the field is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Thousands of parallel environments changed robot RL because they made experience collection wide enough to match accelerator learning, but the gain is real only when the batch is diverse, evaluation is separate, and the artifact records both speed and behavior.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 17.1.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 17.1.1</div><p>Design a 2,048-environment PPO run for a walking robot. Specify $T$, minibatch size, train seed families, held-out evaluation seeds, reset strata, and the one artifact that would let another team reproduce both throughput and success rate.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned why thousands of parallel envs changed the field into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-17.2.html">Section 17.2</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned parallel environment count into a reproducible rollout contract: define $N$, $T$, seed diversity, device residency, evaluation separation, and one comparable artifact. Next, continue with <a href="section-17.2.html">Section 17.2</a>, where that contract becomes a practical recipe for fast locomotion training.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2108.10470" rel="noopener" target="_blank">Makoviychuk, V. et al. (2021). Isaac Gym: High Performance GPU-Based Physics Simulation For Robot Learning. arXiv.</a></p>
-<p class="bib-annotation">Isaac Gym showed how GPU-resident simulation can change robot RL throughput. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Gym is the historical reference for why GPU-resident physics changed robot RL throughput. Read it here for the systems shift: simulation, policy inference, and rollout storage become one accelerator-scale pipeline.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2106.13281" rel="noopener" target="_blank">Freeman, C. D. et al. (2021). Brax: A Differentiable Physics Engine for Large Scale Rigid Body Simulation. arXiv.</a></p>
-<p class="bib-annotation">Brax is a JAX-based simulator designed for accelerator-scale RL. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Brax shows the same parallelism lesson from the JAX side. Its value for this section is the mental model of environment batches as arrays rather than as thousands of Python objects.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://isaac-sim.github.io/IsaacLab/" rel="noopener" target="_blank">NVIDIA Isaac Lab documentation.</a></p>
-<p class="bib-annotation">Isaac Lab is the current NVIDIA workflow for robot learning tasks on top of Isaac Sim. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Lab is the practical successor workflow for defining large robot-learning task panels. Use the documentation to inspect how task configs, wrappers, and runners preserve the rollout contract at scale.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/mjx.html" rel="noopener" target="_blank">Google DeepMind MuJoCo MJX documentation.</a></p>
-<p class="bib-annotation">MJX brings MuJoCo-style physics into JAX workflows for accelerator execution. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">MJX brings MuJoCo modeling concepts into JAX execution. It supports the section's main point that simulator semantics and accelerator-friendly batches now need to be designed together.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978" rel="noopener" target="_blank">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
-<p class="bib-annotation">This paper is a landmark example of fast legged locomotion training with massive parallelism. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Rudin et al. provide the canonical locomotion example behind the chapter title. Read it for the coupling between environment count, reward design, terrain variation, and wall-clock claims.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://github.com/leggedrobotics/rsl_rl" rel="noopener" target="_blank">RSL-RL repository.</a></p>
-<p class="bib-annotation">RSL-RL is a widely used PPO implementation for legged robot learning. For this section, connect the source to why thousands of parallel envs changed the field and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">RSL-RL is a useful code reference for PPO storage and update patterns in legged locomotion. Its configs make the rollout dimensions and minibatch choices concrete.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>

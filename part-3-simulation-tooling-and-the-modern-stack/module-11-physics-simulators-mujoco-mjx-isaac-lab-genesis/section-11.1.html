@@ -27,17 +27,22 @@
 <main class="content" id="main-content">
 <blockquote class="epigraph"><p>"The first bug in a robot simulator is usually a promise nobody wrote down."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 11.1: What Physics Simulators Model, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-11-illustration-01.png"/>
-<figcaption><strong>Figure 11.1A</strong>: Section 11.1: What Physics Simulators Model is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 11.1: What Physics Simulators Model." loading="lazy" src="images/chapter-11-illustration-01.png"/>
+<figcaption><strong>Figure 11.1A</strong>: A simulator is trustworthy only when state, action, contact, observation, and validation evidence are treated as one contract.</figcaption>
 </figure>
 <cite>A Constraint-Checking AI Agent</cite></blockquote>
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Before choosing MuJoCo, Isaac Lab, Genesis, or any other simulator, we need to know what a physics simulator actually promises. It updates a state through time by applying forces, constraints, contacts, and actuator commands, then exposes part of that state as observations for the agent loop introduced in <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2</a>.</p>
-<p>This section applies the dynamics background from <a class="cross-ref" href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/index.html">Chapter 6: Dynamics and Simulation Math</a> to the simulator stack introduced in <a class="cross-ref" href="../module-09-why-simulation-is-central/index.html">Chapter 9: Why Simulation Is Central</a>. It also prepares the GPU training workflows in <a class="cross-ref" href="../../part-4-reinforcement-learning-for-embodied-agents/module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a> and the randomization workflow in <a class="cross-ref" href="../module-13-domain-randomization-and-synthetic-data/index.html">Chapter 13: Domain Randomization and Synthetic Data</a> by tying tool choice to measurable task risk.</p>
+<p>This section connects rigid-body and contact math to simulator design choices: integrator, contact solver, constraint stabilization, and sensor abstraction. It prepares later GPU workflows by making the modeled physics explicit.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a simulator contract: name the state variables, name the forces and constraints that update them, name the observation function the agent receives, then name the validation artifact that proves the model is close enough for the task.</p>
 </div>
 <h2>The Physics Contract</h2>
 <p>A simulator answers a question: given the current state $s_t$, an action $a_t$, and a time step $\Delta t$, what state should come next? For rigid-body robotics, the state usually includes body poses, velocities, joint positions, joint velocities, actuator states, and contacts. The update can be summarized as:</p>
 <p>$$s_{t+1} = \operatorname{step}(s_t, a_t, \Delta t, \theta)$$</p>
 <p>The parameters $\theta$ contain masses, inertias, joint limits, friction coefficients, damping, solver tolerances, sensor noise, and contact settings. This equation looks compact, but each term is a modeling choice that can decide whether a learned policy transfers to reality.</p>
+<p>The solver settings deserve special attention because they are not cosmetic. Timestep, integrator choice, constraint softness, contact margin, and solver iteration count decide how much penetration, bounce, jitter, and energy drift the simulator permits. A good experiment records these values next to the policy checkpoint because changing them can change the learned behavior as much as changing a reward term.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">What The Simulator Models</div>
 <table>
@@ -89,21 +94,26 @@ for row in trajectory:
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Code Fragment 1 uses about 20 lines to teach the state update. In practice, MuJoCo reduces the same rigid-body stepping pattern to a model load plus repeated <code>mj_step</code> calls, while handling articulated bodies, constraints, contacts, actuator dynamics, sensors, and solver settings internally. The hand-built stepper remains useful because it teaches what to inspect when a full simulator behaves strangely.</p></div>
 <h2>Contacts Are The Hard Part</h2>
 <p>Free-space motion is usually not where robot simulation becomes surprising. Contact is harder because the simulator must prevent interpenetration, estimate collision points, solve constraint forces, approximate friction cones, and remain numerically stable. A grasp that succeeds in simulation because friction is too generous is not a robot skill. It is a measurement error.</p>
-<div class="callout tip"><div class="callout-title">Simulator Choice Evidence Rule</div><p>Choose a simulator by task contract, not reputation. Record the dominant physical risk, required sensor model, throughput target, asset format, and integration boundary, then run the same task panel before comparing tools.</p></div>
+<p>Most engines therefore expose a contact model rather than a single truth about contact. A stiff contact setting can reduce visible penetration but create jitter or smaller stable timesteps. A softer setting can make training smoother but hide impact failures. The validation question is concrete: if friction, restitution, timestep, and solver iterations move within plausible ranges, does the same policy still satisfy the task metric?</p>
+<div class="callout tip"><div class="callout-title">Simulator Choice Evidence Rule</div><p>Choose the simulator by the physical mechanism being tested: contact stiffness, friction cone behavior, actuator limits, sensor timing, and reset semantics matter more than benchmark reputation.</p></div>
 <div class="callout warning"><div class="callout-title">Reality Gap Trap</div><p>If a policy only works when contact parameters are tuned to a narrow value, the simulator is not validating the policy. It is training the policy to exploit the simulator. This is why later chapters treat domain randomization, system identification, and real-world evaluation as part of one workflow.</p></div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write down the state variables the simulator owns and the observations the agent receives.</li>
 <li>Identify the contacts that decide success: gripper-object, foot-ground, wheel-floor, drone-air, or tool-surface.</li>
-<li>Record friction, restitution, damping, and solver tolerances in the experiment config.</li>
-<li>Run one perturbation per critical parameter before trusting a result.</li>
+<li>Record friction, restitution, damping, contact margin, timestep, integrator, and solver tolerances in the experiment config.</li>
+<li>Run one perturbation sweep over each critical contact or solver parameter before trusting a result.</li>
 <li>Keep logs that separate physics failure, perception failure, policy failure, and evaluation failure.</li>
 </ol>
 <div class="callout practical-example"><div class="callout-title">Practical Example</div><p>For a tabletop pushing task, do not start by asking whether Isaac Lab or MuJoCo is faster. Start by asking whether object mass, table friction, contact geometry, camera pose, and action frequency match the task. Once those are written down, speed becomes meaningful because you know what the simulator is accelerating.</p></div>
-<p><strong>Expected output:</strong> Section 11.1 should leave a reproducible evidence trace with configuration, metric, and failure label.</p>
+<p><strong>Expected output:</strong> A simulator report for this section should include the state variables, the observation mapping, the contact parameters, the solver settings, and a perturbation table showing whether the policy remains stable under plausible physics changes.</p>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A simulator is a promise about the next state. The debugging trick is to ask which promise failed: the body model, the contact model, the sensor model, or the solver that glued them together.</p>
+</div>
 <div class="callout self-check"><div class="callout-title">Self Check</div><p>Pick a task from your own work. Can you name the three physical parameters that would most change the outcome? If the answer is no, the simulator choice is premature.</p></div>
 <div class="callout exercise"><div class="callout-title">Exercise 11.1</div><p>Modify Code Fragment 1 so the block starts with a horizontal velocity and loses 10 percent of that velocity every time it touches the floor. Explain which line represents a friction approximation and which line represents a contact approximation.</p></div>
-<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Current robot-learning systems increasingly combine fast simulation with measured uncertainty about the simulator itself. The open question is not only how to make simulation faster, but how to make simulator error visible enough that training, evaluation, and transfer can reason about it.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Current robot-learning systems increasingly combine fast simulation with measured uncertainty about the simulator itself. A strong 2026 research direction is contact-aware validation: estimating how sensitive a learned policy is to friction, compliance, restitution, and solver settings before hardware trials. The open question is not only how to make simulation faster, but how to make simulator error visible enough that training, evaluation, and transfer can reason about it.</p></div>
 <div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>A physics simulator is a state-transition model plus a sensor model plus an error budget. If you cannot describe all three, you are not ready to interpret the result.</p></div>
 <div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="section-11.2.html">Section 11.2</a> turns this physics contract into concrete MuJoCo models written in MJCF or imported from URDF.</p></div>
 <section class="bibliography">

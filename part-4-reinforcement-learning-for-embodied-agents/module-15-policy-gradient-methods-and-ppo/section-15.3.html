@@ -34,136 +34,144 @@
 <h1>Section 15.3: Actor-critic and advantage estimation (GAE)</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Actor-critic and advantage estimation (GAE) matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 15.3: Actor-critic and advantage estimation (GAE), showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-15-illustration-03.png"/>
-<figcaption><strong>Figure 15.3A</strong>: Section 15.3: Actor-critic and advantage estimation (GAE) is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration showing an actor choosing robot actions while a critic estimates whether outcomes beat expectation." loading="lazy" src="images/chapter-15-illustration-03.png"/>
+<figcaption><strong>Figure 15.3A</strong>: The actor asks what to do next, while the critic asks whether the last action beat the state’s expectations.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Actor-critic and advantage estimation (GAE)</strong> is one lens on policy gradient methods and PPO. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Actor-critic</strong> methods pair a policy that acts with a value function that judges whether the action was better or worse than expected. <strong>Generalized Advantage Estimation</strong> (GAE) turns noisy reward sequences into smoother advantage targets for PPO-style updates.</p>
 </div>
-<p>It builds on the RL framing from <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, contrasts with off-policy learning in <a class="cross-ref" href="../module-16-value-based-and-off-policy-methods/index.html">Chapter 16: Value-Based and Off-Policy Methods</a>, and becomes easier to scale in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as variance control for policy gradients: replace raw Monte Carlo returns with a learned baseline, then choose how much multi-step reward evidence to trust through the GAE parameter $\lambda$.</p>
+</div>
+<p>For Actor-critic and advantage estimation (GAE), the PPO dependency is concrete: trajectory collection, advantage estimation, policy update, entropy term, and evaluation seed must be recorded together.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for actor-critic and advantage estimation (GAE) into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>REINFORCE can assign a long delayed return to every action in a trajectory. That is unbiased, but it is noisy for embodied agents where a late slip, contact bounce, or tracking error can dominate the episode return. Actor-critic methods reduce this noise by learning $V_\phi(s)$, an estimate of how much return is expected from a state before the next action is chosen.</p>
+<p>The actor update uses an advantage estimate:</p>
+<p>$$A_t = Q(s_t,a_t)-V(s_t).$$</p>
+<p>In practice, PPO often starts from the temporal-difference residual:</p>
+<p>$$\delta_t=r_t+\gamma V(s_{t+1})-V(s_t),$$</p>
+<p>then combines residuals with GAE:</p>
+<p>$$\hat A_t^{\mathrm{GAE}(\gamma,\lambda)}=\sum_{l=0}^{\infty}(\gamma\lambda)^l\delta_{t+l}.$$</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In actor-critic and advantage estimation (GAE), the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Advantage Means Better Than Expected</div>
+<p>The critic does not tell the actor whether the state is good in absolute terms. It tells the actor whether the sampled action led to a result above or below what the state already promised.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The parameter $\lambda$ controls a bias-variance tradeoff. When $\lambda=0$, the advantage uses one-step TD evidence, which is low variance but depends heavily on critic accuracy. When $\lambda$ is near 1, the estimate resembles Monte Carlo return, which uses longer evidence but becomes noisier. PPO commonly uses values near 0.95 because that often balances delayed reward evidence with manageable variance.</p>
+<p>For embodied control, this tradeoff is visible in time. A one-step residual may miss that a foot placement caused a stumble three frames later. A long-horizon return may blame that foot placement for an unrelated collision after a perception glitch. GAE gives the builder a knob for how far credit should travel backward through the rollout.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The critic supplies a baseline, the TD residual measures local surprise, and GAE smooths those surprises backward through time. The actor then uses the resulting advantage to weight the same log-probability update introduced in REINFORCE.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 computes GAE for a short rollout. Notice that the advantages are computed backward because later residuals influence earlier credit.</p>
+<pre><code class="language-python"># Compute Generalized Advantage Estimation from rewards and value predictions.
+# The backward recursion sends delayed evidence to earlier sampled actions.
+rewards = [0.0, 0.2, 1.0, -0.1]
+values = [0.3, 0.4, 0.6, 0.2, 0.0]
+gamma = 0.99
+lam = 0.95
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 15.3.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Actor-critic and advantage estimation (GAE) should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+advantages = []
+gae = 0.0
+for t in reversed(range(len(rewards))):
+    delta = rewards[t] + gamma * values[t + 1] - values[t]
+    gae = delta + gamma * lam * gae
+    advantages.insert(0, round(gae, 3))
+
+print("advantages:", advantages)</code></pre>
+<div class="code-output">advantages: [0.746, 0.691, 0.316, -0.3]</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>delta</code> term measures one-step surprise against the critic's <code>values</code>. The backward <code>gae</code> recursion makes the positive reward at step 2 influence earlier actions without assigning the full episode return to every step.</div>
+<p>This trace gives the mental model. Step 3 has a negative advantage because the outcome was worse than the critic expected. Earlier steps remain positive because the later reward still supplies evidence that those actions helped set up a useful state.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Stable-Baselines3, CleanRL, RSL-RL, and rl_games all implement actor-critic PPO with GAE. The implementation details to inspect are <code>gamma</code>, <code>gae_lambda</code>, value loss scaling, advantage normalization, and whether time-limit truncations are bootstrapped correctly.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Train the actor and critic on the same rollout batch so advantages match the behavior policy.</li>
+<li>Bootstrap from $V(s_{t+1})$ when a rollout segment ends by truncation, but not when the episode truly terminates.</li>
+<li>Normalize advantages per batch to prevent reward-scale changes from dominating the policy loss.</li>
+<li>Track explained variance or value error so a broken critic does not silently corrupt the actor update.</li>
+<li>Audit GAE under perturbations, because delayed physical failures change how far credit should travel backward.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>Time-limit truncation is often mistaken for termination. If a robot episode ends because the rollout buffer filled, the critic should usually bootstrap from the next value; if it ended because the robot fell, it should not.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using actor-critic and advantage estimation (GAE) should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>In dexterous manipulation, a grasp adjustment may pay off several control steps later when the object stops slipping. GAE lets that delayed evidence reach the adjustment action without letting a much later unrelated collision dominate the whole rollout.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
-<p>Actor-critic and advantage estimation (GAE) is where the agent learns that optimism is not an evaluation metric. The simulator may applaud every rollout, but the hardware still asks for the receipt: logs, perturbations, and one failure case that explains what happened.</p>
+<p>The critic is the agent's skeptical lab partner. It does not celebrate reward by itself; it asks whether the reward was better than the state already predicted.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Recent embodied-policy systems often train critics on privileged simulator state while actors receive deployable observations. That asymmetry can improve training, but it raises a deployment question: does the learned actor still behave well when the critic's privileged information disappears?</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for actor-critic and advantage estimation (GAE)? If not, the system boundary is still too vague.</p>
+<p>Can you identify which terms in a rollout affect the actor loss, which affect the critic loss, and which termination flags decide whether GAE should bootstrap?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Policy Gradient Methods and PPO, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The actor and critic optimize different targets from the same experience. The actor asks which sampled actions should become more likely. The critic asks which states predict future return. If these targets are mixed casually, a bug in value learning can masquerade as a policy improvement.</p>
+<p>Embodied systems add one more complication: the critic often sees partial observations, not the full physical state. If the value function cannot infer hidden contact state, object slip, battery sag, or actuator temperature, its baseline will be noisy. That does not make actor-critic invalid, but it does mean the value diagnostics must be read alongside physical failure labels.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Advantage Estimator Choices</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Estimator</th><th>Strength</th><th>Embodied Risk</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Actor-critic and advantage estimation (GAE)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Actor-critic and advantage estimation (GAE)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Actor-critic and advantage estimation (GAE)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Actor-critic and advantage estimation (GAE)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Actor-critic and advantage estimation (GAE)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Monte Carlo return</td><td>Uses complete future reward evidence.</td><td>High variance when late physical events dominate the episode.</td></tr>
+<tr><td>One-step TD</td><td>Low variance and fast feedback.</td><td>Biased when the critic misses delayed contact consequences.</td></tr>
+<tr><td>GAE with $\lambda$ near 0.95</td><td>Balances delayed credit and variance.</td><td>Sensitive to truncation handling and value-function quality.</td></tr>
+<tr><td>Normalized advantages</td><td>Stabilizes batch scale for PPO.</td><td>Can hide reward-scale bugs if raw advantages are never inspected.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>Code Fragment 2 shows the second piece most PPO implementations apply after GAE: advantage normalization. This is not part of the theorem; it is a practical stabilizer that keeps the policy loss scale consistent across batches.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Compute advantages before shuffling minibatches, using the rollout time order.</li>
+<li>Normalize advantages after GAE, using the full batch mean and standard deviation.</li>
+<li>Keep raw advantages in logs so reward-scale and critic failures remain visible.</li>
+<li>Train the value function on returns compatible with the same bootstrap convention.</li>
+<li>Plot value prediction, return target, and failure labels for several complete episodes.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Actor-critic and advantage estimation (GAE).
-# The same schema should be used for the baseline and the library shortcut.
-from dataclasses import dataclass, asdict
+<pre><code class="language-python"># Normalize advantages after GAE so PPO sees a stable loss scale.
+# Keep raw values for diagnostics because normalization can hide reward bugs.
+advantages = [0.746, 0.691, 0.316, -0.300]
+mean_advantage = sum(advantages) / len(advantages)
+variance = sum((x - mean_advantage) ** 2 for x in advantages) / len(advantages)
+std_advantage = variance ** 0.5
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
-
-record = EvidenceRecord(
-    section="15.3",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 15.3.2 records the method-specific evidence schema for testing Actor-critic and advantage estimation (GAE) with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+normalized = [(x - mean_advantage) / (std_advantage + 1e-8) for x in advantages]
+print([round(x, 3) for x in normalized])</code></pre>
+<div class="code-output">[0.918, 0.786, -0.113, -1.59]</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>normalized</code> advantages keep the positive and negative ordering from GAE while centering the batch around zero. PPO uses this stabilized scale for the actor loss, but raw <code>advantages</code> should still be logged for debugging.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Have readers compute GAE once with $\lambda=0$ and once with $\lambda=1$. The contrast makes the bias-variance knob visible before PPO adds clipping and minibatches.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When actor-critic training fails, check critic health first. A value loss that falls while episode behavior worsens can mean the critic learned the wrong shortcut, such as predicting timeout length rather than task progress. A value loss that never falls can turn every advantage estimate into high-variance noise.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Actor-critic and advantage estimation (GAE), compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For actor-critic and GAE, compare only construct-matched metrics co-computed in one pass on one configuration: same rollout horizon, same bootstrap convention, same $\gamma$, same $\lambda$, same value target, and same perturbation suite. Save raw advantages, normalized advantages, value predictions, returns, truncation flags, and failure labels in one artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Actor-critic and advantage estimation (GAE) is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Actor-critic methods make policy gradients usable by asking a sharper question: was this action better than expected from this state? GAE controls how much delayed embodied evidence flows backward into that answer.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 15.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.3.1</div><p>Given a five-step rollout with rewards, values, and termination flags, compute TD residuals, GAE advantages, normalized advantages, and value targets. Mark which steps should bootstrap if the rollout ended by timeout instead of task failure.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned actor-critic and advantage estimation (GAE) into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-15.4.html">Section 15.4</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section showed how actor-critic methods and GAE reduce policy-gradient variance while preserving delayed reward evidence. Next, <a href="section-15.4.html">Section 15.4</a> adds trust-region control so those actor updates do not move too far from the rollout policy.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

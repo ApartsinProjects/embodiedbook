@@ -34,176 +34,126 @@
 <h1>Section 36.3: Error accumulation and horizon</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"I made a future, then the robot took one step and asked for a revision."</p>
-<figure class="illustration">
-<img alt="Cartoon educational scene for Section 36.3: Error accumulation and horizon, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-36-illustration-03.png"/>
-<figcaption><strong>Figure 36.3A</strong>: Section 36.3: Error accumulation and horizon becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
-</figure>
-<cite>A Horizon-Aware Predictor</cite></blockquote>
-<div class="callout big-picture">
-<div class="callout-title">Big Picture</div>
-<p><strong>Error Accumulation And Horizon</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
-</div>
-<h2>What This Section Develops</h2>
-<p>This section turns Error Accumulation And Horizon into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
+        <blockquote class="epigraph">
+        <p>Long rollouts are persuasive until their first small bias compounds into a fake future.</p>
+        <figure class="illustration">
+        <img alt="Predicted and true trajectories diverging over time, showing a small initial bias that compounds into large planning error across the horizon." loading="lazy" src="images/chapter-36-illustration-03.png"/>
+        <figcaption><strong>Figure 36.3A</strong>: A tiny one-step bias can become a disastrous long-horizon forecast when the planner repeatedly feeds predictions back into itself.</figcaption>
+        </figure>
+        <cite>A Horizon-Aware Predictor</cite>
+        </blockquote>
+        <div class="callout big-picture">
+        <div class="callout-title">Big Picture</div>
+        <p>Compounding error is the main reason predictive control trusts short horizons first. Every rollout step consumes the model's own previous output, so small one-step mistakes can grow geometrically or drift into regions with no data support.</p>
+        </div>
+        <div class="callout pathway">
+        <div class="callout-title">Reader Pathway</div>
+        <p>Watch how one-step error, model Lipschitz constant, and chosen horizon interact. The planner does not need the longest horizon, it needs the longest horizon that remains decision-useful.</p>
+        </div>
+        <div class="callout key-insight">
+        <div class="callout-title">Key Insight</div>
+        <p>Rollout horizon is a trust budget. Each extra imagined step spends more of that budget, and eventually the model starts paying for action with fiction instead of evidence.</p>
+        </div>
+        <h2>Why Rollout Error Grows</h2>
+<p>If the true dynamics are $f$ and the learned model is $\hat f$, then a one-step state error of size $\varepsilon$ can grow after $H$ rollout steps roughly like</p>
+<p>$$
+\lVert s_{t+H} - \hat s_{t+H} \rVert \lesssim \sum_{k=0}^{H-1} L^k \varepsilon,
+$$</p>
+<p>where $L$ is an effective sensitivity constant of the dynamics and controller. If $L &gt; 1$, the planner cannot assume that a small local fit implies a good long imagined future.</p>
+<p>In practice, three mechanisms usually dominate this blow-up. First, state-estimation noise enters the first prediction and is then recycled as if it were clean state. Second, actuator delay or rate limits make the model optimistic about how quickly the robot can correct itself. Third, contact mode switches, wheel slip, or near-singular arm poses create local dynamics with much larger sensitivity than the average transition error suggests. That is why a model that looks excellent on one-step loss can still rank action sequences badly after only a few imagined steps.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A model earns its place only when it improves action. In Error Accumulation And Horizon, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
+<div class="callout-title">Builder Consequence</div>
+<p>Longer horizon is valuable only until model bias dominates. After that point, more imagination produces less trustworthy control.</p>
 </div>
-<h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. Error Accumulation And Horizon changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is observe, encode, predict, score, act, and monitor. Each transformation needs a measurable input, output, timing assumption, and failure label so debugging does not collapse into guessing.</p>
-</div>
-<h2>Worked Example</h2>
-<p>The following compact probe makes Error accumulation and horizon concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"># Probe how prediction error grows across an imagined horizon.
-# The toy model is linear so the diagnostic stays inspectable.
-import numpy as np
+<h2>Worked Probe</h2>
+<p>The next probe logs how a small underestimation of acceleration error drifts over five rollout steps. The pattern is simple enough to inspect by eye, which is exactly what a first debugging panel should allow.</p>
+        <pre><code class="language-python"># Roll out a biased model and compare cumulative error by horizon.
+true_pos = 0.0
+true_vel = 1.0
+model_pos = 0.0
+model_vel = 0.98
+dt = 0.1
 
-state = np.array([0.0, 1.0])
-transition = np.array([[1.0, 0.1], [0.0, 0.96]])
-truth = []
-prediction = []
-for horizon in range(1, 6):
-    state = transition @ state
-    predicted_position = state[0]
-    measured_position = 0.1 * horizon - 0.003 * horizon ** 2
-    truth.append(round(measured_position, 3))
-    prediction.append(round(predicted_position, 3))
+horizon_error = []
+for step in range(1, 6):
+    true_pos += true_vel * dt
+    model_pos += model_vel * dt
+    horizon_error.append(round(true_pos - model_pos, 4))
+    true_vel *= 0.99
+    model_vel *= 0.97
 
-print({"truth": truth, "prediction": prediction})</code></pre>
-<div class="code-output"><p><code>The printed arrays let the reader see horizon-conditioned drift instead of a single averaged prediction score.</code></p></div>
-<div class="code-caption">Code Fragment 36.3.1 implements prediction_horizon_probe for Error accumulation and horizon and prints the diagnostic quantity the controller or evaluator should inspect.</div>
-<div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut</div>
-<p>The hand-built probe is about 20 lines. In a working project, use Gymnasium for the maintained path and MuJoCo for reproducible evaluation support. The maintained route handles interfaces, batching, logging, and versioned artifacts; the hand-built version remains useful for debugging the contract and explaining the failure mode.</p>
-</div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
-</ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between perception, representation, planning, control, and evaluation.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example: Error Accumulation And Horizon</div>
-<p><strong>Who:</strong> Rina, prediction evaluation lead at a mobile-robot warehouse lab. <strong>Situation:</strong> A 12-robot evaluation shift must decide whether Error accumulation and horizon improves closed-loop behavior. <strong>Problem:</strong> offline scores look promising, but the robot still has to recover from sensor noise, delayed actuation, and rare contact changes. <strong>Dilemma:</strong> ship the new model after a visual or reward score, or require a matched baseline, one perturbation panel, and manual review of the 20 hardest rollouts. <strong>Decision:</strong> the lead keeps the baseline and candidate on the same seed panel and logs every observation, action, intervention, and terminal state. <strong>How:</strong> the run saves one artifact with configuration, metrics, latency, videos, and failure tags. <strong>Result:</strong> the candidate is accepted only when it improves the chapter metric by 10 percent and does not increase unsafe recoveries. <strong>Lesson:</strong> Error Accumulation And Horizon matters when it changes decisions in the loop, not when it only improves a standalone proxy.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Future prediction is strongest when it reports horizon-conditioned error, not one averaged score. The research frontier connects prediction losses to planning usefulness, uncertainty calibration, and the point where closed-loop correction matters more than open-loop visual accuracy.</p>
-</div>
-<div class="callout cross-ref">
-<div class="callout-title">Cross-Reference Thread</div>
-<p>This section connects to <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2</a> for state, observation, and partial observability, <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/index.html">Chapter 29</a> for state estimation, <a href="../module-37-model-based-rl-and-mpc/index.html">Chapter 37</a> for MPC with learned models. Follow those links when a planning, perception, or safety assumption needs a refresher before the current method is trusted.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you state the observation, state estimate, action, prediction horizon, success metric, and most likely failure mode for Error accumulation and horizon? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Error Accumulation And Horizon becomes useful when it is tied to short-horizon prediction, uncertainty, and closed-loop feedback. The contract names the observation stream, latent or physical state, action representation, timing budget, and evaluation artifact before any model comparison is made. This answers the core agent checklist questions: what changes in the loop, why it should help, how it is measured, and when the method should be rejected.</p>
-<p>Classic world-model work and DreamerV3 show how prediction becomes useful when the agent trains behavior inside imagined futures rather than treating next-frame accuracy as the final goal. The skeptical-reader test is simple: a claim about Error accumulation and horizon must identify the baseline, the shared seed panel, the horizon or task split, and the failure labels saved in one artifact.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 36.3</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>Gymnasium</td><td>Supports short-horizon prediction, uncertainty, and closed-loop feedback.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>MuJoCo</td><td>Supports short-horizon prediction, uncertainty, and closed-loop feedback.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>JAX or PyTorch</td><td>Supports short-horizon prediction, uncertainty, and closed-loop feedback.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>Weights and Biases</td><td>Supports short-horizon prediction, uncertainty, and closed-loop feedback.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>ROS 2 bags</td><td>Supports short-horizon prediction, uncertainty, and closed-loop feedback.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr>
-</tbody>
-</table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with one inspectable probe, then replaces only the plumbing with maintained libraries. Keep the artifact schema identical across baseline and shortcut runs so the comparison is construct-matched and co-computed in one pass.</p>
-<ol>
-<li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>
-<li>Run a deterministic smoke test on one seed and save the complete configuration.</li>
-<li>Add one perturbation tied to the section topic: delay, noise, horizon length, contact change, distractor object, or generated-scene shift.</li>
-<li>Compare only methods evaluated by the same script, split, seed panel, and metric definition.</li>
-<li>Record a postmortem that assigns failures to perception, representation, dynamics, planning, control, data coverage, timing, or evaluation.</li>
-</ol>
-<pre><code class="language-python"># Build one evidence record for Error accumulation and horizon.
-# Use the same schema for the baseline and the maintained shortcut.
-from dataclasses import dataclass, asdict
-
-@dataclass
-class EvidenceRecord:
-    section: str
-    topic: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
-    failure_tag: str
-
-record = EvidenceRecord(
-    section="36.3",
-    topic="Error accumulation and horizon",
-    tool="Gymnasium",
-    observation="sensor, latent, or generated observation used by the method",
-    action="control, plan, or query chosen by the agent",
-    metric="construct-matched closed-loop success metric",
-    perturbation="the smallest shift that should expose brittleness",
-    failure_tag=(
-        "perception, representation, dynamics, planning, control, timing, data, or evaluation"
-    ),
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 36.3.2 records the evidence schema for Error accumulation and horizon so the hand-built probe and the Gymnasium shortcut are compared on the same contract.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Error accumulation and horizon fails, do not collapse the result into a single method verdict. Assign the failure to the interface that broke, rerun one controlled perturbation, and keep the trace next to the metric. That habit turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
-<div class="callout key-takeaway">
-<div class="callout-title">Key Takeaway</div>
-<p>Error Accumulation And Horizon is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
-</div>
-<div class="callout exercise"><div class="callout-title">Exercise 36.3.1</div><p>Design a minimal experiment for Error accumulation and horizon. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
-<section class="bibliography">
-<h2>Bibliography &amp; Further Reading</h2>
-<h3>Primary References And Tools</h3>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Ha, D., and Schmidhuber, J.. "World Models." (2018). <a href="https://worldmodels.github.io/" rel="noopener" target="_blank">https://worldmodels.github.io/</a></p>
-<p class="bib-annotation">A compact foundation for learning a compressed latent dynamics model and using it for control. Read it for the basic separation between representation, dynamics, and controller before moving to larger agents.</p>
+print({"horizon_error": horizon_error, "final_error": horizon_error[-1]})</code></pre>
+        <div class="code-output">
+        <p><code>{'horizon_error': [0.002, 0.0049, 0.0086, 0.013, 0.0181], 'final_error': 0.0181}</code></p>
+        <p>Read the latent-state values as a test of whether the model preserves control variables, not as a pretty embedding. The useful question is whether contact, velocity, object pose, or occupancy information remains available for action selection.</p>
+        </div>
+        <div class="code-caption"><strong>Code Fragment 36.3.1:</strong> The exact numbers matter less than the monotone drift. What the planner should notice is that trusting horizon five is harder than trusting horizon one, even in a nearly trivial system.</div>
+        <div class="callout library-shortcut">
+        <div class="callout-title">Library Shortcut</div>
+        <p>In production, save horizon-conditioned metrics explicitly. A single scalar MSE hides whether the model is excellent at one to three steps and unusable after ten, which is often the real control-relevant story. In <code>PyTorch</code> or <code>JAX</code> training loops, log per-horizon error tables and sequence-ranking accuracy alongside loss. In <code>mujoco_mpc</code>, <code>Isaac Lab</code>, or <code>Drake</code> rollouts, log whether the same horizon cap preserves closed-loop success under the same seed panel.</p>
+        </div>
+        <h2>Failure Analysis That Actually Helps</h2>
+<p>When a long-horizon planner fails, the first useful artifact is not another scalar plot. It is an overlay of real and imagined trajectories aligned by time, with the first meaningful divergence marked explicitly. On a manipulator, that marker is often the first contact frame where normal force or slip onset differs. On a drone, it may be the first step where unmodeled drag or attitude lag changes the commanded recovery. A good debugging ledger therefore stores the horizon at which divergence becomes decision-relevant, not just numerically visible.</p>
+<p>Tool support matters here. <code>wandb</code> or <code>TensorBoard</code> can store horizon-tagged traces, but the deeper point is methodological: keep the rollout panel fixed while comparing horizon caps, model versions, and controller variants. If the panel changes, the claim about horizon trust stops being defensible.</p>
+        <div class="callout algorithm">
+        <div class="callout-title">Practical Recipe</div>
+        <p>Fit one-step transitions first, evaluate multi-step rollouts on held-out episodes, then cap planner horizon where task performance still improves. If longer horizons help only on paper, shorten the rollout and rely more on feedback or terminal values.</p>
+        </div>
+        <div class="callout warning">
+        <div class="callout-title">Warning</div>
+        <p>Do not compare a short-rollout method and a long-rollout method using metrics produced by different seed panels or different reset logic. Horizon claims are extremely sensitive to data support and termination conditions.</p>
+        </div>
+        <div class="callout practical-example">
+        <div class="callout-title">Practical Example</div>
+        <p>A highway-driving planner may want a multi-second horizon in free space, but a manipulator inserting a connector often trusts only a few contact-relevant steps before replanning. The correct horizon is the one that keeps model bias below the action-threshold the robot cares about.</p>
+        </div>
+        <div class="callout note">
+        <div class="callout-title">Cross-References</div>
+        <p>This section reinforces the rollout caution that appears in <a href="../module-37-model-based-rl-and-mpc/section-37.4.html">Section 37.4</a> on imagination rollouts and complements the stability discussion in <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">Chapter 7</a>.</p>
+        </div>
+        <div class="callout research-frontier">
+        <div class="callout-title">Research Frontier</div>
+        <p>MBPO is a key modern lesson here: short branched model rollouts often beat naive long hallucinations. Current work on trust-aware model usage and value-guided rollouts continues pushing the idea that rollout horizon should be adaptive, not fixed by taste.</p>
+        </div>
+        <div class="callout self-check">
+        <div class="callout-title">Self Check</div>
+        <p>Suppose your model is excellent for two steps and unreliable after eight. What planning strategy would still exploit it, and what evidence would you save to defend that choice?</p>
+        </div>
+        <div class="callout fun-note">
+        <div class="callout-title">Memory Hook</div>
+        <p>Rollout horizon is like credit on a shaky map: spend only as much as the map deserves.</p>
+        </div>
+        <div class="callout key-takeaway">
+        <div class="callout-title">Key Takeaway</div>
+        <p>The longest imagined future is rarely the best one. Strong model-based systems plan only across horizons the model has earned.</p>
+        </div>
+        <div class="callout exercise"><div class="callout-title">Exercise</div><p>Design a held-out evaluation that reports one-step, three-step, and ten-step rollout error for a robot task of your choice. Which horizon would you trust for planning, and why?</p></div>
+        <section class="bibliography">
+        <h2>Bibliography &amp; Further Reading</h2>
+        <h3>Primary References And Tools</h3>
+        <div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Janner, M. et al.. "When to Trust Your Model: Model-Based Policy Optimization." (2019). <a href="https://arxiv.org/abs/1906.08253" rel="noopener" target="_blank">https://arxiv.org/abs/1906.08253</a></p>
+<p class="bib-annotation">The practical reference for short trusted rollouts instead of blindly long model usage.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
-<p class="bib-annotation">PlaNet is a core reference for planning from learned latent dynamics. It is especially useful for understanding why prediction in state space can be more action-relevant than pixel reconstruction alone.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> Chua, K. et al.. "Deep Reinforcement Learning in a Handful of Trials using Probabilistic Dynamics Models." (2018). <a href="https://arxiv.org/abs/1805.12114" rel="noopener" target="_blank">https://arxiv.org/abs/1805.12114</a></p>
+<p class="bib-annotation">PETS is a canonical baseline for short-horizon planning under learned dynamics.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
-<p class="bib-annotation">DreamerV3 shows a general world-model agent operating across many domains with one configuration. It gives readers a concrete benchmark for connecting future prediction to policy improvement.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Wang, X., and Su, H.. "Temporal Difference Learning for Model Predictive Control." (2022). <a href="https://arxiv.org/abs/2203.04955" rel="noopener" target="_blank">https://arxiv.org/abs/2203.04955</a></p>
+<p class="bib-annotation">TD-MPC is a strong illustration of combining short-horizon planning with a learned terminal value.</p>
 </div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Todorov, E., Erez, T., and Tassa, Y.. "MuJoCo: A Physics Engine for Model-Based Control." (2012). <a href="https://mujoco.org/" rel="noopener" target="_blank">https://mujoco.org/</a></p>
-<p class="bib-annotation">MuJoCo remains a practical simulator for controlled prediction and planning experiments. Use it when the question requires contact dynamics, reproducible state traces, or fast perturbation sweeps.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Farama Foundation. "Gymnasium Documentation." (2026). <a href="https://gymnasium.farama.org/" rel="noopener" target="_blank">https://gymnasium.farama.org/</a></p>
-<p class="bib-annotation">Gymnasium supplies the environment interface used by many small prediction and control labs. It keeps reset, step, termination, and seeding semantics explicit, which is essential for fair horizon comparisons.</p>
-</div>
-</section>
-<nav class="chapter-nav">
-<a class="prev" href="section-36.2.html">Section 36.2: Forward/dynamics models; state vs. obs...</a>
-<a class="up" href="index.html">Chapter 36: Predicting the Future</a>
-<a class="next" href="section-36.4.html">Section 36.4: Uncertainty in prediction</a>
-</nav>
-<footer>
+        </section>
+        <nav class="chapter-nav">
+        <a class="prev" href="section-36.2.html">Section 36.2: Forward/dynamics models; state vs. observation prediction</a>
+        <a class="up" href="index.html">Back to Chapter</a>
+        <a class="next" href="section-36.4.html">Section 36.4: Uncertainty in prediction</a>
+        </nav>
+        <footer>
 <p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
-<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · <a href="../../toc.html">Contents</a></p>
+<p>&copy; 2026 Alexander Apartsin &amp; Yehudit Aperstein &middot; <a href="../../toc.html">Contents</a></p>
 <p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}))</script></p>
 </footer>
-</main>
+        </main>
 </body>
 </html>

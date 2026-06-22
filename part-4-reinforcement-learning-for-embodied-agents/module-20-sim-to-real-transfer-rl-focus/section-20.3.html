@@ -34,129 +34,144 @@
 <h1>Section 20.3: Domain randomization, system identification, adaptation (RMA)</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Domain randomization, system identification, adaptation (RMA) matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 20.3: Domain randomization, system identification, adaptation (RMA), showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-20-illustration-03.png"/>
-<figcaption><strong>Figure 20.3A</strong>: Section 20.3: Domain randomization, system identification, adaptation (RMA) is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration showing a robot policy trained across many simulated dynamics, then narrowed by system identification and adjusted online by an adaptation module." loading="lazy" src="images/chapter-20-illustration-03.png"/>
+<figcaption><strong>Figure 20.3A</strong>: Domain randomization widens the training world, system identification centers it on the real robot, and adaptation handles what still changes during deployment.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Domain randomization, system identification, adaptation (RMA)</strong> is one lens on sim-to-real transfer (RL focus). We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Domain randomization, system identification, residual randomization, and rapid motor adaptation</strong> are complementary answers to the same problem: the simulator parameters are wrong, but wrong in ways we can structure. Randomization trains robustness, system identification estimates the real parameters, residual randomization samples uncertainty around that estimate, and adaptation infers unobserved dynamics online.</p>
 </div>
-<p>It builds on domain randomization in <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/index.html">Chapter 13: Domain Randomization and Synthetic Data</a>, uses simulator details from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>, and hands off to demonstration learning in <a class="cross-ref" href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/index.html">Chapter 21: Imitation Learning Foundations</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a calibration ladder. Start broad enough that the policy cannot overfit one simulator, narrow the range with real measurements, keep residual uncertainty where measurement is weak, then let the deployed policy adapt from recent experience.</p>
+</div>
+<p>For Domain randomization, system identification, adaptation (RMA), sim-to-real transfer should name the randomized variables, simulator assumptions, real-world measurement, and demonstration-learning handoff in one transfer ledger.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for domain randomization, system identification, adaptation (RMA) into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for dynamics randomization. The parameters of interest include mass, inertia, center of mass, joint damping, motor strength, actuator delay, contact friction, restitution, sensor noise, and terrain geometry. Each parameter should have a reason for its range.</p>
+<p>The key question is practical: should we make the training distribution wider, identify the real parameter more carefully, or build an adaptation module that tracks the parameter during rollout?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In domain randomization, system identification, adaptation (RMA), the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>Blindly widening every randomization range is not robustness. It can teach a conservative policy that survives everything by doing too little. The useful range is wide enough to cover plausible reality and narrow enough to preserve the task's control structure.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Let $\theta$ denote simulator dynamics parameters such as mass, friction, damping, and delay. Domain randomization trains a policy over $\theta \sim p_{\text{train}}(\theta)$ rather than one fixed simulator. System identification estimates $\hat{\theta}$ from hardware traces. Residual randomization then trains or evaluates over $\theta \sim p(\theta\mid \hat{\theta}, \Sigma)$, where $\Sigma$ represents what the measurement still cannot pin down.</p>
+<p>Rapid motor adaptation adds an online inference loop. A base policy receives observations and an adaptation vector $z_t$ inferred from recent state-action history. If the floor becomes slippery or the payload changes, $z_t$ should move before the robot falls, giving the same base policy a different dynamics context.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism has three layers. Training variation teaches the policy not to depend on a single parameter setting. Identification pulls the distribution toward the measured robot. Adaptation handles remaining changes, such as battery voltage, surface friction, payload, damage, and temperature.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 20.3.1 computes residual randomization ranges after a simple identification pass. The measured robot centers the range, while uncertainty keeps the policy from becoming brittle.</p>
+<pre><code class="language-python"># Center randomization around identified hardware parameters.
+# Residual width records uncertainty instead of pretending calibration is exact.
+identified = {"friction": 0.62, "motor_scale": 0.91, "delay_ms": 34}
+residual_width = {"friction": 0.08, "motor_scale": 0.05, "delay_ms": 8}
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 20.3.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Domain randomization, system identification, adaptation (RMA) should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for parameter, center in identified.items():
+    width = residual_width[parameter]
+    low = center - width
+    high = center + width
+    print(f"{parameter}: sample from [{low:.2f}, {high:.2f}]")</code></pre>
+<div class="code-output">friction: sample from [0.54, 0.70]
+motor_scale: sample from [0.86, 0.96]
+delay_ms: sample from [26.00, 42.00]</div>
+<div class="code-caption">Code Fragment 20.3.1 builds residual randomization ranges for <code>friction</code>, <code>motor_scale</code>, and <code>delay_ms</code>. The ranges are centered on identified hardware values, which is more targeted than sampling every parameter from a broad hand-written interval.</div>
+<p><strong>Expected output:</strong> each randomized dynamics parameter has a center and a residual width. If the width is not justified by measurement noise, hardware variation, or unmodeled effects, the randomization range is a guess rather than an experimental design choice.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical systems, Isaac Lab and MuJoCo make dynamics randomization explicit, while Drake is useful for system identification and model-based checks. RSL-RL and rl_games can train policies across many randomized environments, but the critical artifact is the parameter manifest: what was randomized, why, over what range, and with what real-robot evidence.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Start with a parameter manifest: mass, inertia, friction, damping, motor strength, actuator delay, sensor noise, and terrain properties.</li>
+<li>Mark each parameter as measured, estimated, randomized, adapted online, or held fixed.</li>
+<li>Use system identification to center parameters that can be measured from hardware traces.</li>
+<li>Apply residual randomization only to the uncertainty left after identification.</li>
+<li>Evaluate policies on held-out dynamics combinations, then run a small real-robot gate before scaling hardware trials.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is "randomize everything" without a parameter audit. Overly broad randomization can produce a policy that avoids useful contact, moves slowly, or learns a behavior tuned to the average of impossible robots.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using domain randomization, system identification, adaptation (RMA) should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A quadruped team may identify motor strength and actuator delay on the real robot, randomize friction and terrain height because they vary by deployment site, and adapt online to payload shifts. Reporting those choices is more useful than saying the policy used domain randomization.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat domain randomization, system identification, and RMA like a control-room label. If the label does not tell a future debugger what was sampled, what was measured, and what was adapted, it is decoration rather than engineering knowledge.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>The frontier is moving from broad hand-tuned randomization toward measured and adaptive transfer. Important open problems include learning which parameters matter for a task, estimating them from short hardware traces, and preventing adaptation modules from compensating for unsafe policy behavior.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for domain randomization, system identification, adaptation (RMA)? If not, the system boundary is still too vague.</p>
+<p>For a robot policy you know, list five dynamics parameters. Which are measured, which are randomized, which are adapted online, and which are unsafe to randomize without a safety gate?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Sim-to-Real Transfer, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when it is tied to a parameter contract. The contract names each dynamics parameter, its unit, its source, its training distribution, its hardware estimate, and the reason its range is safe. Without that contract, a robust policy can be impossible to reproduce or diagnose.</p>
+<p>The graduate-level habit is to separate three claims. The robustness claim says training variation helps the policy tolerate dynamics change. The identification claim says hardware traces support a parameter estimate. The adaptation claim says recent rollout history contains enough information to infer the remaining latent dynamics.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Domain randomization, system identification, adaptation (RMA)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Domain randomization, system identification, adaptation (RMA)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Domain randomization, system identification, adaptation (RMA)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Domain randomization, system identification, adaptation (RMA)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Domain randomization, system identification, adaptation (RMA)</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Isaac Lab</td><td>Large-scale dynamics randomization</td><td>Use it to train across parameter panels while keeping the randomization manifest explicit.</td></tr><tr><td>MuJoCo</td><td>Transparent dynamics parameters</td><td>Use it when mass, inertia, joint damping, contact friction, and actuator settings must be inspected directly.</td></tr><tr><td>Drake</td><td>System identification</td><td>Use it when measured trajectories should update a physics model rather than only widen randomization.</td></tr><tr><td>RSL-RL</td><td>Locomotion policy training</td><td>Use it when many randomized environments are needed for robust legged control experiments.</td></tr><tr><td>ROS 2 bags</td><td>Identification traces</td><td>Use them to capture time-aligned command, state, contact, and actuator data from hardware.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with the parameter manifest, not the training command. The manifest states which parameters are randomized, which are identified from hardware, which have residual uncertainty, and which are inferred online by the adaptation module.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Write parameter ranges with units and evidence source.</li>
+<li>Run system identification for measurable quantities before widening ranges by hand.</li>
+<li>Train with held-out dynamics combinations that were not used for policy updates.</li>
+<li>Evaluate residual randomization separately from broad randomization.</li>
+<li>For RMA-style policies, log the adaptation vector and correlate it with measured terrain, payload, or actuator changes.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Domain randomization, system identification, adaptation (RMA).
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Store a dynamics parameter manifest for a transfer experiment.
+# Each field records whether robustness comes from measurement, sampling, or adaptation.
 from dataclasses import dataclass, asdict
 
 @dataclass
 class EvidenceRecord:
     section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+    parameter: str
+    source: str
+    training_range: str
+    deployment_check: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="20.3",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    parameter="actuator_delay_ms",
+    source="identified from ROS 2 command and encoder timestamps",
+    training_range="26 to 42 ms residual randomization",
+    deployment_check="policy remains stable when delay is replayed at 42 ms",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 20.3.2 records the method-specific evidence schema for testing Domain randomization, system identification, adaptation (RMA) with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '20.3', 'parameter': 'actuator_delay_ms', 'source': 'identified from ROS 2 command and encoder timestamps', 'training_range': '26 to 42 ms residual randomization', 'deployment_check': 'policy remains stable when delay is replayed at 42 ms'}</div>
+<div class="code-caption">Code Fragment 20.3.2 records the evidence behind <code>actuator_delay_ms</code>, including its source, training range, and deployment check. This is the minimum record needed to distinguish informed residual randomization from arbitrary dynamics noise.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the Domain randomization, system identification, adaptation (RMA) evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a randomized policy fails, first check whether the failing parameter was outside the training range, inside the range but underrepresented, measured incorrectly, or hidden from the adaptation module. Each answer leads to a different repair: widen, resample, identify, or change the adaptation input.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Domain randomization, system identification, adaptation (RMA), compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For dynamics randomization studies, compare only construct-matched metrics that are co-computed in one pass on one configuration: same policy checkpoint, same parameter panel, same identified hardware center, same residual widths, same seed set, and the same real-robot gate. Save the parameter manifest with the rollout traces so every robustness claim is backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Domain randomization, system identification, adaptation (RMA) is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Domain randomization builds robustness, system identification centers the simulator, residual randomization preserves uncertainty, and adaptation tracks what changes after deployment.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 20.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 20.3.1</div><p>Create a five-row dynamics manifest for a robot task. For each parameter, state whether it is measured, randomized, residual-randomized, adapted online, or held fixed, then justify the choice.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned domain randomization, system identification, adaptation (RMA) into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-20.4.html">Section 20.4</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

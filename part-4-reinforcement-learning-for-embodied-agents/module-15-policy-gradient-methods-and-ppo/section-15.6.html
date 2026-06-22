@@ -34,127 +34,161 @@
 <h1>Section 15.6: Reward shaping and its hazards</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"Reward shaping and its hazards matters when the next action changes the evidence you thought you had."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Reward shaping and its hazards</strong> is one lens on policy gradient methods and PPO. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Reward shaping</strong> adds intermediate learning signals so a policy can discover useful behavior before sparse task success appears. Its hazard is that the agent may optimize the shaped signal instead of the intended embodied task.</p>
 </div>
-<p>It builds on the RL framing from <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, contrasts with off-policy learning in <a class="cross-ref" href="../module-16-value-based-and-off-policy-methods/index.html">Chapter 16: Value-Based and Off-Policy Methods</a>, and becomes easier to scale in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as reward-design risk management: use shaping to expose progress, prefer potential-based shaping when possible, and evaluate with task success and failure labels that the shaped reward cannot game.</p>
+</div>
+<p>For Reward shaping and its hazards, the PPO dependency is concrete: trajectory collection, advantage estimation, policy update, entropy term, and evaluation seed must be recorded together.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for reward shaping and its hazards into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>Sparse rewards are hard for policy gradients because the rollout may contain thousands of actions before the first success signal. A robot might need to search, reach, align, grasp, lift, and place before seeing a final reward. Shaping adds smaller signals along the way, such as distance to a goal or uprightness.</p>
+<p>The danger is objective mismatch. If a mobile robot receives reward for being close to a doorway, it may learn to hover at the doorway instead of passing through. If a manipulator receives reward for high gripper force, it may crush objects. The shaped reward must be treated as a training instrument, not as the final task definition.</p>
+<p>Potential-based shaping is the safest standard form:</p>
+<p>$$F(s,a,s')=\gamma\Phi(s')-\Phi(s).$$</p>
+<p>Adding $F$ to the reward preserves the optimal policy under the usual discounted MDP assumptions because it changes trajectory returns by a telescoping potential term rather than changing which complete behavior is best.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In reward shaping and its hazards, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">The Reward Is A Proxy</div>
+<p>The agent optimizes the scalar it receives, not the intent in the designer's head. Shaping is useful only when the proxy remains aligned with the task under the policy's future behavior.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A shaped reward should be decomposed in logs. Instead of storing only total reward, record task reward, progress shaping, energy penalties, contact penalties, safety penalties, and terminal success separately. This lets the team see whether PPO is improving the task or merely harvesting one component.</p>
+<p>Embodied reward shaping also needs sensor humility. Distance-to-goal reward depends on pose estimation. Contact penalties depend on tactile or simulator contact models. Energy penalties depend on actuator measurements. If those signals are biased, the policy can learn the measurement artifact.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Shaping changes the advantage estimates that PPO sees. A dense shaping term can dominate sparse success, so the policy gradient follows the proxy unless component weights and evaluation metrics keep task success in charge.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 compares a potential-based shaping bonus with a naive distance bonus. The potential term rewards progress between states; the naive term can keep paying the agent for merely being near the goal.</p>
+<pre><code class="language-python"># Compare potential-based shaping with a naive proximity bonus.
+# Potential shaping pays for progress, while proximity can reward loitering.
+gamma = 0.99
+distances = [5.0, 3.0, 2.0, 2.0]
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 15.6.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Reward shaping and its hazards should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+def potential(distance: float) -> float:
+    return -distance
+
+for before, after in zip(distances, distances[1:]):
+    potential_bonus = gamma * potential(after) - potential(before)
+    proximity_bonus = 1.0 / (after + 1.0)
+    print(before, "to", after, "potential:", round(potential_bonus, 3), "proximity:", round(proximity_bonus, 3))</code></pre>
+<div class="code-output">5.0 to 3.0 potential: 2.03 proximity: 0.25
+3.0 to 2.0 potential: 1.02 proximity: 0.333
+2.0 to 2.0 potential: 0.02 proximity: 0.333</div>
+<p>The expected output makes the exploit visible in the last row. When the robot stops moving closer, the potential-based term collapses toward zero, but the proximity bonus keeps paying the same amount, which is exactly how a loitering behavior can become locally optimal.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>potential_bonus</code> becomes small when the agent stops making progress from distance 2.0 to 2.0. The <code>proximity_bonus</code> keeps paying at the same location, which can train a policy to loiter near the goal rather than finish the task.</div>
+<p>The final row is the warning. A shaped reward that keeps paying without task progress creates a local strategy the optimizer can exploit. PPO will faithfully improve that proxy unless the evaluation artifact separates shaped reward from true success.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Gymnasium-style wrappers are a clean place to implement reward decomposition because they can return shaped reward while also adding component diagnostics to <code>info</code>. CleanRL and Stable-Baselines3 can then log those <code>info</code> fields during PPO training.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Define true task success before adding shaped reward components.</li>
+<li>Prefer potential-based progress terms when a meaningful potential $\Phi(s)$ exists.</li>
+<li>Log every reward component separately and plot component totals beside task success.</li>
+<li>Run adversarial evaluations where the agent can exploit the shaping term without completing the task.</li>
+<li>Keep shaped reward out of final claims unless task success, safety, and robustness metrics improve in the same run.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A reward component can become a hidden controller. If the energy penalty is too large, the robot may learn to do nothing. If the speed bonus is too large, it may learn unsafe impacts. If the distance bonus is too large, it may stop at the edge of success.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using reward shaping and its hazards should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a pick-and-place policy, shaped components might include reaching progress, grasp stability, lift height, placement distance, action smoothness, and collision penalties. The evaluation should still report binary task completion and object damage separately from the shaped training reward.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A shaped reward is a note to the optimizer. Write it assuming the optimizer will read it literally and ignore every unstated intention.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Reward design remains a live research problem in robot learning because task success, safety, human preference, and hardware wear are difficult to compress into one scalar. Active systems increasingly combine learned rewards, demonstrations, constraints, and post-training evaluation suites to reduce reward hacking.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for reward shaping and its hazards? If not, the system boundary is still too vague.</p>
+<p>Can you separate the shaped training reward from the sparse success metric, and can you describe one episode where the shaped reward would be high but the task should fail?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Policy Gradient Methods and PPO, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Reward shaping is a curriculum encoded as numbers. It can make hard exploration possible, but it can also teach a policy to satisfy the curriculum without graduating to the task. The safest workflow is to design shaping terms as hypotheses, then try to break them with targeted evaluations.</p>
+<p>Potential-based shaping is valuable because it gives a formal condition for policy preservation, but the condition rests on assumptions. The potential must be a function of the Markov state used by the MDP, the discount convention must match the task, and the final evaluation must still use the real task objective. In partially observed embodied systems, the measured potential may be a noisy proxy for the true state potential.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Reward Shaping Failure Modes</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Shaping Term</th><th>Intended Help</th><th>Failure To Test</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Reward shaping and its hazards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Reward shaping and its hazards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Reward shaping and its hazards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Reward shaping and its hazards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Reward shaping and its hazards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Distance-to-goal bonus</td><td>Guide exploration toward the target.</td><td>Loitering near the goal without completing the task.</td></tr>
+<tr><td>Velocity or speed bonus</td><td>Encourage progress.</td><td>Unsafe impacts, overshoot, or unstable gait.</td></tr>
+<tr><td>Energy penalty</td><td>Encourage efficient motion.</td><td>Inaction when task reward is delayed.</td></tr>
+<tr><td>Contact penalty</td><td>Prevent collisions or damage.</td><td>Avoiding necessary contact in manipulation.</td></tr>
+<tr><td>Pose or style reward</td><td>Make motion look natural.</td><td>Style imitation at the expense of robustness.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>Code Fragment 2 sketches the logging pattern that keeps shaping auditable. The total reward is useful for PPO, but the component record is what lets the team discover reward hacking.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Start with sparse task success and add one shaping term at a time.</li>
+<li>For each term, write the exploit you expect the policy might discover.</li>
+<li>Log shaped components, terminal success, safety flags, and videos in the same artifact.</li>
+<li>Evaluate on scenarios where the shaping proxy and the task goal disagree.</li>
+<li>Keep the smallest reward that trains reliably under the target perturbation panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Reward shaping and its hazards.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Record reward components separately from the scalar reward.
+# Component logs reveal whether PPO is optimizing the task or exploiting a proxy.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class RewardComponents:
+    task_success: float
+    progress: float
+    energy_penalty: float
+    collision_penalty: float
+    true_success: bool
 
-record = EvidenceRecord(
-    section="15.6",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+components = RewardComponents(
+    task_success=0.0,
+    progress=0.8,
+    energy_penalty=-0.1,
+    collision_penalty=0.0,
+    true_success=False,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 15.6.2 records the method-specific evidence schema for testing Reward shaping and its hazards with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+total_reward = (
+    components.task_success
+    + components.progress
+    + components.energy_penalty
+    + components.collision_penalty
+)
+print(components.as_row())
+print("total_reward:", total_reward)</code></pre>
+<div class="code-output">{'task_success': 0.0, 'progress': 0.8, 'energy_penalty': -0.1, 'collision_penalty': 0.0, 'true_success': False}
+total_reward: 0.7000000000000001</div>
+<p>The expected output shows why shaped reward alone is unsafe as a headline metric. The policy earns a positive total reward from progress despite <code>true_success=False</code>, so the correct interpretation is partial progress without task completion, not a solved episode.</p>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>RewardComponents</code> record shows a high shaped <code>total_reward</code> even though <code>true_success</code> is false. This is the exact pattern to flag when a policy learns progress-shaped behavior without completing the embodied task.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to propose an exploit for every reward component they add. Good reward design starts by assuming the optimizer will find the shortcut.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a shaped-reward policy fails, do not only lower the learning rate or change PPO parameters. First inspect which reward component dominated the advantages before failure. Then run a disagreement test: construct episodes where high shaped reward is possible without true success, and verify that the policy does not prefer that shortcut.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Reward shaping and its hazards, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For reward-shaping claims, co-compute shaped return, sparse task success, safety violations, component totals, exploit-test outcomes, videos, and failure labels in one run on one configuration. A shaped-return improvement is only a paper-worthy result when true success and safety improve in that same artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Reward shaping and its hazards is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Reward shaping can make PPO learn faster, but it also expands the space of shortcuts. The final judge is task success under perturbations, not the shaped reward curve alone.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 15.6.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.6.1</div><p>Design a shaped reward for a pick-and-place task. List each component, the exploit it might create, the diagnostic that would catch the exploit, and the sparse success metric that remains the final evaluation target.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned reward shaping and its hazards into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="index.html">Chapter 15</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section closed the chapter by showing that PPO optimizes the reward it receives, not the task intention. Return to the <a href="index.html">Chapter 15 overview</a> to connect stochastic policies, policy gradients, GAE, PPO clipping, implementation details, and reward design into one training workflow.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

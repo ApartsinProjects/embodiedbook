@@ -34,46 +34,67 @@
 <h1>Section 14.3: Exploration vs. exploitation</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Exploration vs. exploitation matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 14.3: Exploration vs. exploitation, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-14-illustration-03.png"/>
-<figcaption><strong>Figure 14.3A</strong>: Section 14.3: Exploration vs. exploitation is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 14.3: Exploration vs. exploitation." loading="lazy" src="images/chapter-14-illustration-03.png"/>
+<figcaption><strong>Figure 14.3A</strong>: Exploration spends actions to learn what the current value estimates might be missing.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Exploration vs. exploitation</strong> is one lens on reinforcement learning refresher. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Exploration vs. exploitation</strong> names the cost of learning from action. A robot must gather information, but every exploratory action consumes time, reset labor, and safety margin.</p>
 </div>
-<p>This section links back to <a class="cross-ref" href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">Chapter 7: Control for AI Practitioners</a> and <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/index.html">Chapter 10: Environments with Gymnasium and PettingZoo</a>, then prepares the policy-gradient work in <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a data-distribution problem: the exploration rule decides which state-action pairs enter the replay buffer and which ones remain uncertain.</p>
+</div>
+<p>This section links back to <a class="cross-ref" href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">Chapter 7: Control for AI Practitioners</a> and <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/index.html">Chapter 10: Environments with Gymnasium and PettingZoo</a>, then prepares the policy-gradient work in <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>. Exploration is the part of RL where the agent buys information with real actions, so it matters more in robots than in most offline benchmarks.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for exploration vs. exploitation into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for exploration vs. exploitation. First we state the conflict, then we formalize an epsilon-greedy policy, then we compute the short-term cost of exploration with concrete numbers.</p>
+<p>The key question is practical: when should a robot use the action currently believed to be best, and when should it spend a trial on an action whose value is still uncertain?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In exploration vs. exploitation, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>Exploitation turns current value estimates into reward. Exploration improves the estimates that future exploitation will depend on.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The exploration problem appears because the agent only observes rewards for actions it actually takes. A grasping policy can estimate the value of side grasp, top grasp, and push only by trying them or by using data from a behavior policy that tried them earlier. Greedy action selection can freeze too early because the first lucky outcome for one action hides the true value of untested alternatives.</p>
+<p>An epsilon-greedy policy makes the tradeoff explicit. Let $A^\*(s)=\arg\max_a Q(s,a)$ be the greedy action under the current estimates. With $|\mathcal A|$ available actions,</p>
+<p>$$\pi_\epsilon(a\mid s)=
+\begin{cases}
+1-\epsilon+\epsilon/|\mathcal A|, & a=A^\*(s),\\
+\epsilon/|\mathcal A|, & a\ne A^\*(s).
+\end{cases}$$</p>
+<p>The parameter $\epsilon$ is not a free tuning knob. It is a budget for controlled ignorance. A high value gathers more information but may spend physical trials on poor or unsafe actions; a low value protects near-term reward but can lock the agent into a biased estimate.</p>
+<p>In embodied systems, exploration must be constrained by reset cost and safety. A simulated bandit arm can be pulled millions of times. A robot arm cannot collide with the table millions of times while calling the collisions "samples."</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a probability distribution over actions, not a slogan about curiosity. Changing $\epsilon$ changes the data distribution collected by the agent, which later changes the value estimates and policy updates.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 uses three estimated grasp values to compute the action probabilities and expected immediate reward under different exploration budgets. The example is deliberately small so the effect of $\epsilon$ is visible without a simulator.</p>
+<pre><code class="language-python"># Compare epsilon-greedy action probabilities for three grasp choices.
+# The expected reward shows the near-term price paid for exploration.
+actions = ["side_grasp", "top_grasp", "push_then_grasp"]
+estimated_values = [0.40, 0.80, 0.70]
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 14.3.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Exploration vs. exploitation should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for epsilon in [0.0, 0.2, 0.6]:
+    greedy_index = max(range(len(actions)), key=lambda i: estimated_values[i])
+    probabilities = [epsilon / len(actions)] * len(actions)
+    probabilities[greedy_index] += 1.0 - epsilon
+    expected_reward = sum(p * v for p, v in zip(probabilities, estimated_values))
+    print(f"epsilon={epsilon:.1f}, expected reward={expected_reward:.3f}")
+    print(dict(zip(actions, [round(p, 3) for p in probabilities])))</code></pre>
+<div class="code-output">epsilon=0.0, expected reward=0.800
+{'side_grasp': 0.0, 'top_grasp': 1.0, 'push_then_grasp': 0.0}
+epsilon=0.2, expected reward=0.767
+{'side_grasp': 0.067, 'top_grasp': 0.867, 'push_then_grasp': 0.067}
+epsilon=0.6, expected reward=0.700
+{'side_grasp': 0.2, 'top_grasp': 0.6, 'push_then_grasp': 0.2}</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The epsilon-greedy policy keeps `top_grasp` most likely because it has the largest estimated value. Increasing `epsilon` assigns more probability to `side_grasp` and `push_then_grasp`, which lowers immediate expected reward but collects broader evidence.</div>
+<p>The calculation exposes the design tradeoff. Exploration is not free, and in embodied systems the cost can include time, wear, human reset labor, and safety margin.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical experiments, Gymnasium wrappers and training libraries can schedule $\epsilon$ over time, but the schedule is only meaningful if it is tied to a task budget. For robot data collection, log exploration rate, reset count, safety stops, and failed contacts in the same artifact.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
@@ -85,81 +106,64 @@ for step in range(5):
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in Exploration vs. exploitation is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using exploration vs. exploitation should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A grasping team can begin with high exploration in simulation, replay the best candidates on hardware with a lower exploration rate, and keep a safety filter active throughout. The log should distinguish exploratory failures from policy failures because they require different fixes.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Exploration is the agent asking, "What if I am wrong?" Exploitation is the agent acting as if its current answer is good enough.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Safe exploration remains a live research problem for embodied agents. Current work often combines uncertainty estimates, offline datasets, simulation filters, and control barriers so that information gathering does not become an excuse for physically risky behavior.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for exploration vs. exploitation? If not, the system boundary is still too vague.</p>
+<p>Can you state what data distribution your exploration rule creates, and what physical cost each exploratory action can incur? If not, the exploration policy is underspecified.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Reinforcement Learning Refresher, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Exploration changes the data distribution, not only the immediate action. A policy that explores top grasps more often will collect more top-grasp failures and successes, which changes future value estimates. This feedback loop is why early exploration choices can shape the whole learning run.</p>
+<p>For embodied systems, exploration should be scheduled across risk zones. Use broad exploration in simulation, narrower exploration on hardware, and structured perturbation tests for states that matter to deployment. Randomness without a safety envelope is not a research method.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Exploration Mechanisms</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Mechanism</th><th>What It Changes</th><th>Embodied Use</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Exploration vs. exploitation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Exploration vs. exploitation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Exploration vs. exploitation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Exploration vs. exploitation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Exploration vs. exploitation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Epsilon-greedy</td><td>Injects uniform random actions with probability $\epsilon$.</td><td>Useful in discrete simulators; risky on hardware without an action shield.</td></tr>
+<tr><td>Entropy bonus</td><td>Rewards policies for keeping action distributions broad.</td><td>Useful for policy gradients, but needs action-limit and safety monitoring.</td></tr>
+<tr><td>Uncertainty-guided probing</td><td>Targets actions or states with uncertain value estimates.</td><td>Better aligned with costly robot trials when uncertainty is calibrated.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust exploration implementation logs both the chosen action and the reason it was chosen. Without that reason, a future debugger cannot tell whether a bad trial came from the greedy policy, injected randomness, uncertainty probing, or a safety override.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>State the exploration mechanism and its schedule before training.</li>
+<li>Constrain the exploratory action set for physical safety.</li>
+<li>Log whether each action was greedy, exploratory, shielded, or human-intervened.</li>
+<li>Track reward, safety cost, and reset count as co-equal evidence.</li>
+<li>Evaluate the final policy with exploration disabled or with the deployment stochasticity specified.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Exploration vs. exploitation.
-# The same schema should be used for the baseline and the library shortcut.
-from dataclasses import dataclass, asdict
-
-@dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
-
-record = EvidenceRecord(
-    section="14.3",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 14.3.2 records the method-specific evidence schema for testing Exploration vs. exploitation with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to compute the expected immediate reward under $\epsilon=0$, $\epsilon=0.1$, and $\epsilon=0.5$ for the same action values. The arithmetic turns the exploration tradeoff into something visible.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When exploration fails, separate insufficient exploration from unsafe exploration. Insufficient exploration leaves value estimates overconfident in narrow regions. Unsafe exploration creates failures the robot should never have been allowed to test physically.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Exploration vs. exploitation, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For exploration studies, compare policies with the same environment panel, seed set, exploration schedule, safety shield, and final evaluation mode. Report exploration cost and final performance from one artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Exploration vs. exploitation is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Exploration is a data-acquisition policy with a cost model, not a decorative source of randomness.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 14.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 14.3.1</div><p>Choose four action-value estimates for a robot task and compute the epsilon-greedy probabilities for $\epsilon=0.1$ and $\epsilon=0.4$. Then identify which exploratory action would need a safety shield.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned exploration vs. exploitation into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-14.4.html">Section 14.4</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section treated exploration as a distribution over physical experience. Next, <a href="section-14.4.html">Section 14.4</a> uses that idea to distinguish on-policy, off-policy, model-free, and model-based learning.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

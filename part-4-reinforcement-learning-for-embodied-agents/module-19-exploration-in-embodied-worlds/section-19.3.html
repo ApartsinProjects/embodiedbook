@@ -34,95 +34,115 @@
 <h1>Section 19.3: Safe exploration</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Safe exploration matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 19.3: Safe exploration, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-19-illustration-03.png"/>
-<figcaption><strong>Figure 19.3A</strong>: Section 19.3: Safe exploration is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 19.3, showing a robot choosing between informative actions while a safety boundary, recovery path, and intervention monitor remain visible." loading="lazy" src="images/chapter-19-illustration-03.png"/>
+<figcaption><strong>Figure 19.3A</strong>: Safe exploration keeps curiosity inside a recoverable envelope, where every informative action still leaves a path back.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Safe exploration</strong> is one lens on exploration in embodied worlds. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Safe exploration</strong> asks the agent to gather information without spending safety margin irresponsibly. In embodied systems, a bad exploratory action can damage hardware, enter an unrecoverable state, violate a human-space constraint, or teach the policy that risky behavior is an acceptable shortcut.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a constraint ledger. First name the state variables that must remain safe, then name the shield or recovery rule, then name the violation metric that another team could recompute from the trace.</p>
 </div>
 <p>It builds on reward specification in <a class="cross-ref" href="../module-18-reward-design-and-goal-specification/index.html">Chapter 18: Reward Design and Goal Specification</a>, reuses partial observability from <a class="cross-ref" href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2: The Agent-Environment Interface</a>, and prepares transfer testing in <a class="cross-ref" href="../module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20: Sim-to-Real Transfer</a>.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for safe exploration into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for exploration under constraints. The object of study is not only the reward-seeking policy, but the safety envelope that decides which exploratory actions are admissible.</p>
+<p>The key question is practical: what constraint must never be violated, which near-violation should trigger intervention, and how does the evaluation report reward and cost together?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In safe exploration, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A safety mechanism earns its place when it changes the action before damage occurs. In safe exploration, the reader should keep asking which action is vetoed, clipped, slowed, redirected, or converted into a recovery maneuver.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, proposing an action $a_t$, and passing that action through a constraint check before execution. A constrained objective tracks both reward $R$ and cost $C$, then requires a condition such as $E[C] \le d$ for a chosen limit $d$.</p>
+<p>The practical design rule is to make the safety channel explicit. Inputs, outputs, assumptions, timing, and failure modes should include distance to boundary, intervention count, recovery success, and whether the constraint is hard, statistical, or learned from data.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a sequence of transformations: observe, estimate risk, propose action, filter or shield action, execute, monitor, and recover. Each transformation should have a measurable contract, otherwise "safe" becomes a label rather than a testable property.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 19.3.1 implements a tiny action shield. The policy proposes exploratory actions, but the shield vetoes any action whose clearance is below the limit or whose recovery flag is false.</p>
+<pre><code class="language-python"># Filter exploratory actions through a simple safety shield.
+# The chosen action must be informative and still recoverable.
+candidates = [
+    {"action": "inspect shelf gap", "value": 0.70, "clearance": 0.22, "recoverable": True},
+    {"action": "squeeze behind shelf", "value": 0.95, "clearance": 0.07, "recoverable": False},
+    {"action": "rotate camera", "value": 0.50, "clearance": 0.40, "recoverable": True},
+]
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 19.3.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Safe exploration should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+safe = []
+for item in candidates:
+    allowed = item["clearance"] >= 0.15 and item["recoverable"]
+    print(item["action"], "allowed" if allowed else "vetoed")
+    if allowed:
+        safe.append(item)
+
+print("selected", max(safe, key=lambda item: item["value"])["action"])</code></pre>
+<div class="code-output">inspect shelf gap allowed
+squeeze behind shelf vetoed
+rotate camera allowed
+selected inspect shelf gap</div>
+<div class="code-caption"><strong>Code Fragment 19.3.1:</strong> This shield separates proposed exploration value from admissibility. The high-value shelf squeeze is vetoed because it violates clearance and recoverability, so the selected action remains informative without leaving the safety envelope.</div>
+<p><strong>Expected output:</strong> the printed trace should show both allowed and vetoed actions. If the run reports only reward, it cannot prove that exploration respected the constraint.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium wrappers for quick constraint checks, MuJoCo for contact and actuator limits, ROS 2 for hardware intervention traces, and Safety Gymnasium-style benchmark tasks when cost signals need to be logged beside reward. The shortcut removes boilerplate so the engineering attention goes to constraint design and recovery evidence.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Write the reward metric and cost metric before choosing a model.</li>
+<li>State the hard constraint, soft constraint, intervention rule, and recovery condition separately.</li>
+<li>Build a shielded baseline that is simple enough to debug by inspection.</li>
+<li>Record failures as structured cases: constraint miss, false veto, delayed intervention, unsafe recovery, or evaluation mismatch.</li>
+<li>Run at least one perturbation test that pushes the policy near the safety boundary.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to average reward over successful episodes and discard the near misses. Safe exploration needs the near misses, false vetoes, intervention timing, and recovery failures because those are the measurements that reveal whether the safety layer works.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using safe exploration should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A warehouse robot team should log final success, cost return, minimum clearance, human intervention, emergency stop, recovery action, and whether the same policy checkpoint was used for every comparison. The logs reveal whether the agent is learning safer exploration or merely receiving unreported help.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Safe exploration is the only place where "nothing happened" can be a result, as long as the log proves that the right risky thing did not happen.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>A core research frontier is learning safety envelopes that remain useful under distribution shift. The hard part is preserving exploration pressure while keeping constraint violations, false vetoes, and recovery failures visible in the same evidence artifact.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for safe exploration? If not, the system boundary is still too vague.</p>
+<p>Can you name the constraint, cost metric, intervention trigger, recovery rule, and most likely false sense of safety? If not, the safety boundary is still too vague.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Exploration in Embodied Worlds, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when it is tied to a closed-loop safety contract. In this chapter on Exploration in Embodied Worlds, the contract names the observation stream, the state estimate, the action representation, the cost signal, the intervention mechanism, and the evaluation artifact. Without that contract, a model can look capable in a notebook while violating a constraint that nobody logged.</p>
+<p>The graduate-level habit is to separate four claims. The reward claim explains what the policy tries to accomplish. The cost claim explains what must stay bounded. The shield claim explains which actions are modified before execution. The evidence claim records which measurements would convince a skeptical builder that safety held during exploration.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Safe exploration</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Safe exploration</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Safe exploration</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Safe exploration</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Safe exploration</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium</td><td>Constraint wrapper smoke tests</td><td>Use it to verify that reward, cost, termination, and truncation are logged separately.</td></tr><tr><td>Safety Gymnasium</td><td>Cost-aware benchmark tasks</td><td>Use it when safe RL baselines need explicit cost signals rather than post hoc labels.</td></tr><tr><td>ROS 2</td><td>Intervention and emergency traces</td><td>Use it to record vetoes, stops, controller status, and recovery actions on hardware.</td></tr><tr><td>MuJoCo</td><td>Contact and actuator constraints</td><td>Use it when clearance, joint limits, and recovery from near-contact are part of the safety envelope.</td></tr><tr><td>LeRobot</td><td>Safe demonstration replay</td><td>Use it to compare learned exploration against demonstrations that include cautious recovery behavior.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a tiny, inspectable safety wrapper and only then moves to a maintained learner. The baseline should log reward, cost, proposed action, executed action, veto reason, intervention timing, and recovery outcome. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Write a one-paragraph safety contract with reward, cost, constraint, intervention, recovery, and failure fields.</li>
+<li>Start with the smallest simulator or wrapper that exposes the constraint faithfully.</li>
+<li>Run one deterministic smoke test and one near-boundary perturbation before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, reward, cost, interventions, traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates reward and cost on the same task panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Safe exploration.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one safety evidence record for constrained exploration.
+# The same schema should be used for shielded and unshielded baselines.
 from dataclasses import dataclass, asdict
 
 @dataclass
@@ -132,7 +152,11 @@ class EvidenceRecord:
     observation: str
     action: str
     metric: str
+    cost_signal: str
     perturbation: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="19.3",
@@ -140,58 +164,60 @@ record = EvidenceRecord(
     observation="record after the perturbation run: sensor or state input",
     action="record after the perturbation run: control or decision output",
     metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    cost_signal="record after the perturbation run: violations, vetoes, or interventions",
+    perturbation="record after the perturbation run: reduced clearance, delay, noise, or contact change",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 19.3.2 records the method-specific evidence schema for testing Safe exploration with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '19.3', 'tool': 'Gymnasium', 'observation': 'record after the perturbation run: sensor or state input', 'action': 'record after the perturbation run: control or decision output', 'metric': 'record after the perturbation run: construct-matched success metric', 'cost_signal': 'record after the perturbation run: violations, vetoes, or interventions', 'perturbation': 'record after the perturbation run: reduced clearance, delay, noise, or contact change'}</div>
+<div class="code-caption"><strong>Code Fragment 19.3.2:</strong> The evidence record adds <code>cost_signal</code> so reward improvements cannot be reported without the matching safety trace. The perturbation field makes near-boundary tests part of the same comparison artifact.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the cost and perturbation fields before they touch model code. The exercise exposes safety claims that would otherwise hide behind average reward.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When safe exploration fails, avoid labeling the whole method as weak. First assign the failure to hazard sensing, constraint definition, false veto, late intervention, unsafe recovery, controller saturation, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Safe exploration, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For safe exploration, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same constraint threshold, same perturbation suite, and the same success definition. Save reward, cost, interventions, vetoes, recovery outcomes, traces, and failure labels in one artifact so every number in a later table is backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Safe exploration is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Safe exploration succeeds when reward improves inside the constraint envelope, with violations, vetoes, and recoveries reported beside success.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 19.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 19.3.1</div><p>Design a safe-exploration experiment in simulation. Specify the reward metric, cost metric, constraint threshold, intervention rule, recovery behavior, and one perturbation that moves the policy near the boundary.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned safe exploration into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-19.4.html">Section 19.4</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned safe exploration into a testable constraint contract: define reward, define cost, save one comparable artifact, and diagnose failures by the safety channel. Next, continue with <a href="section-19.4.html">Section 19.4</a>, where partial observability makes the same safety and exploration questions harder.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://www.sciencedirect.com/science/article/pii/S0022000008000767" rel="noopener" target="_blank">Strehl, A. L., and Littman, M. L. (2008). An analysis of model-based interval estimation for Markov decision processes. Journal of Computer and System Sciences.</a></p>
-<p class="bib-annotation">This work grounds optimism and uncertainty-driven exploration in tabular MDPs. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/1705.10528" rel="noopener" target="_blank">Achiam, J. et al. (2017). Constrained Policy Optimization. ICML.</a></p>
+<p class="bib-annotation">This paper is the natural anchor for reward maximization under expected cost constraints. Use it here to separate the reward claim from the safety-budget claim.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1606.01868" rel="noopener" target="_blank">Bellemare, M. G. et al. (2016). Unifying count-based exploration and intrinsic motivation. NeurIPS.</a></p>
-<p class="bib-annotation">The paper connects pseudo-counts to intrinsic rewards in high-dimensional spaces. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">The paper connects pseudo-counts to intrinsic rewards in high-dimensional spaces. In safe exploration, this source is useful for asking how novelty bonuses should be limited when visits consume risk budget.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1705.05363" rel="noopener" target="_blank">Pathak, D. et al. (2017). Curiosity-driven Exploration by Self-supervised Prediction. ICML.</a></p>
-<p class="bib-annotation">Intrinsic Curiosity Module rewards prediction progress in learned feature space. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Intrinsic Curiosity Module rewards prediction progress in learned feature space. Use it here as a reminder that curiosity needs a shield when prediction error would send the robot toward unsafe transitions.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1810.12894" rel="noopener" target="_blank">Burda, Y. et al. (2018). Exploration by Random Network Distillation. arXiv.</a></p>
-<p class="bib-annotation">RND is a practical intrinsic reward method based on prediction error. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">RND is a practical intrinsic reward method based on prediction error. In constrained settings, the same prediction-error trace should be logged with cost, vetoes, and interventions.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1911.00357" rel="noopener" target="_blank">Wijmans, E. et al. (2019). DD-PPO: Learning Near-Perfect PointGoal Navigators from 2.5 Billion Frames. ICLR.</a></p>
-<p class="bib-annotation">DD-PPO connects exploration to distributed simulation and navigation evaluation. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">DD-PPO connects exploration to distributed simulation and navigation evaluation. It is useful here because scale can improve coverage while still requiring constraint-matched evaluation.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://aihabitat.org/docs/habitat-lab/" rel="noopener" target="_blank">Habitat-Lab documentation.</a></p>
-<p class="bib-annotation">Habitat-Lab provides embodied navigation and interaction environments. For this section, connect the source to safe exploration and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Habitat-Lab provides embodied navigation and interaction environments. Use it to log collisions, path clearance, recovery behavior, and intervention events beside navigation success.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>

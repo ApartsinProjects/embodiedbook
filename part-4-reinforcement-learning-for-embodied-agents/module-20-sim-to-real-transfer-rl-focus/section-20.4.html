@@ -34,129 +34,145 @@
 <h1>Section 20.4: Fine-tuning on hardware; safe real-world RL</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Fine-tuning on hardware; safe real-world RL matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 20.4: Fine-tuning on hardware; safe real-world RL, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-20-illustration-04.png"/>
-<figcaption><strong>Figure 20.4A</strong>: Section 20.4: Fine-tuning on hardware; safe real-world RL is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration showing a real robot policy passing through safety gates before hardware fine-tuning, with monitors for speed, force, workspace, and human stop controls." loading="lazy" src="images/chapter-20-illustration-04.png"/>
+<figcaption><strong>Figure 20.4A</strong>: Hardware fine-tuning earns its extra performance only when exploration is filtered through explicit safety gates and recoverable test protocols.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Fine-tuning on hardware; safe real-world RL</strong> is one lens on sim-to-real transfer (RL focus). We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Fine-tuning on hardware</strong> is the step where simulation stops being the only teacher. It is also the step where exploration can damage equipment, create unsafe motions, and teach the policy to exploit hardware quirks. Safe real-world RL treats every policy update as a controlled experiment with limits, monitors, stop conditions, and rollback.</p>
 </div>
-<p>It builds on domain randomization in <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/index.html">Chapter 13: Domain Randomization and Synthetic Data</a>, uses simulator details from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>, and hands off to demonstration learning in <a class="cross-ref" href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/index.html">Chapter 21: Imitation Learning Foundations</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a safety case. Before collecting reward on hardware, define the envelope in which the robot may explore, the monitors that detect envelope violations, and the evidence required to widen that envelope.</p>
+</div>
+<p>For Fine-tuning on hardware; safe real-world RL, sim-to-real transfer should name the randomized variables, simulator assumptions, real-world measurement, and demonstration-learning handoff in one transfer ledger.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for fine-tuning on hardware; safe real-world rl into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops a hardware fine-tuning protocol. The protocol includes a frozen simulator-trained policy, a real-robot evaluation gate, a constrained update rule, a human or automated stop channel, and a rollback checkpoint. The point is to improve transfer without turning the robot into an uncontrolled training environment.</p>
+<p>The key question is practical: what evidence lets the team safely move from evaluation-only rollouts to limited policy updates on hardware?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In fine-tuning on hardware; safe real-world rl, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>Safe hardware RL is not only about preventing catastrophic actions. It is about controlling the distribution of data the learner is allowed to create, because unsafe exploration can bias learning long before it breaks the robot.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A hardware fine-tuning loop can be written as a constrained update: choose action $a_t \sim \pi_\phi(a_t\mid o_t)$ only if $g_i(o_t,a_t) \leq 0$ for every safety gate $i$. The gates may encode workspace limits, force limits, speed limits, joint-temperature limits, distance from humans, controller health, and intervention triggers.</p>
+<p>The update rule should be smaller than the safety case. A common pattern is to freeze the perception stack and low-level stabilizer, then adapt a residual policy, gain schedule, or high-level action bias. That limits the blast radius of learning while still allowing hardware-specific improvement.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a gated loop: propose an action, filter it through constraints, execute under a monitor, record reward and safety events, update only within the approved parameter subset, and roll back if the gate statistics degrade.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 20.4.1 implements a simple action gate for a residual pushing policy. The proposed residual is allowed only if speed, force, actuator delay, and workspace checks stay within the approved envelope.</p>
+<pre><code class="language-python"># Gate a residual action before it reaches the real robot.
+# A hardware fine-tuning loop updates only after safety checks pass.
+proposal = {"speed_mps": 0.18, "force_n": 14.0, "delay_ms": 38, "workspace_ok": True}
+limits = {"speed_mps": 0.20, "force_n": 15.0, "delay_ms": 45}
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 20.4.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Fine-tuning on hardware; safe real-world RL should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+passes_gate = (
+    proposal["workspace_ok"]
+    and proposal["speed_mps"] <= limits["speed_mps"]
+    and proposal["force_n"] <= limits["force_n"]
+    and proposal["delay_ms"] <= limits["delay_ms"]
+)
+
+print(f"passes_safety_gate={passes_gate}")</code></pre>
+<div class="code-output">passes_safety_gate=True</div>
+<div class="code-caption">Code Fragment 20.4.1 checks <code>speed_mps</code>, <code>force_n</code>, <code>delay_ms</code>, and <code>workspace_ok</code> before allowing a residual action. The point is to gate exploration before learning can turn a hardware quirk into a policy update.</div>
+<p><strong>Expected output:</strong> a hardware fine-tuning diagnostic reports whether the action passed the gate and which constraint would have blocked it. If blocked actions are not logged, the learner's data distribution cannot be audited.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical systems, the RL library is only one part of the safety stack. Use ROS 2 controllers, watchdogs, collision monitors, force limits, and emergency-stop hardware around the learner. Gymnasium-style wrappers can express gates in software, but software gates must agree with the robot controller and physical stop channel.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Begin with evaluation-only hardware rollouts from the frozen sim-trained policy.</li>
+<li>Define safety gates for workspace, speed, force, joint limits, temperature, actuator delay, human proximity, and controller health.</li>
+<li>Choose the smallest trainable subset: residual action, gain schedule, adapter, or high-level command bias.</li>
+<li>Set an intervention budget and rollback rule before the first update.</li>
+<li>Report learning progress together with safety events, blocked actions, human interventions, and hardware resets.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to report reward improvement without the safety denominator. A policy that gains 5 percent success while doubling intervention rate, overheating motors, or increasing blocked actions has not improved the deployable system.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using fine-tuning on hardware; safe real-world rl should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A manipulation team may fine-tune only a residual wrist motion while freezing perception and impedance control. The report should show the reward curve, the number of blocked actions, maximum force, recovery count, motor temperature range, and every human stop event.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A good hardware fine-tuning run is visible twice: once in the safety case and once in the replay artifact. The second view keeps the first one honest.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Safe real-world RL remains constrained by sample cost, risk, and evaluation scarcity. Active directions include residual policy learning, shielding, offline-to-online fine-tuning, intervention learning, and protocols that report safety events alongside task reward.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for fine-tuning on hardware; safe real-world rl? If not, the system boundary is still too vague.</p>
+<p>Before a hardware update, can you name the trainable parameters, frozen parameters, safety gates, rollback rule, intervention budget, and evidence needed to widen the gate?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Sim-to-Real Transfer, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when the hardware protocol is explicit enough to audit. The protocol names the frozen policy checkpoint, the trainable residual, the gate conditions, the monitoring frequency, the intervention policy, and the rollback checkpoint. Without these details, hardware fine-tuning becomes an anecdote.</p>
+<p>The graduate-level habit is to separate three claims. The improvement claim says the policy performs better. The safety claim says exploration stayed within the approved envelope. The deployment claim says the final policy remains robust under held-out initial conditions and delay tests.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Fine-tuning on hardware; safe real-world RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Fine-tuning on hardware; safe real-world RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Fine-tuning on hardware; safe real-world RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Fine-tuning on hardware; safe real-world RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Fine-tuning on hardware; safe real-world RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>ROS 2 controllers</td><td>Hardware command boundary</td><td>Use them to enforce action limits, controller state checks, and emergency stop integration outside the learner.</td></tr><tr><td>Gymnasium wrappers</td><td>Software safety gates</td><td>Use wrappers to block unsafe actions and record the blocked-action denominator during evaluation.</td></tr><tr><td>Stable-Baselines3</td><td>Small online updates</td><td>Use it only after freezing the policy parts that should not change on hardware.</td></tr><tr><td>LeRobot</td><td>Dataset and policy replay</td><td>Use it to archive hardware traces, interventions, and policy checkpoints for review.</td></tr><tr><td>MuJoCo or Isaac Lab</td><td>Pre-hardware gate rehearsal</td><td>Use simulation to replay proposed safety gates before allowing real-world updates.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a safety gate document and a logging schema. The gate document states what can stop an action. The schema records what was proposed, what was blocked, what was executed, and whether the policy was updated afterward.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Run the frozen policy under the same gates used for fine-tuning.</li>
+<li>Train only after the frozen-policy intervention rate is below the predeclared threshold.</li>
+<li>Update the smallest residual or adapter that can plausibly fix the observed gap.</li>
+<li>Checkpoint before every update batch and define automatic rollback triggers.</li>
+<li>Evaluate the final policy on held-out starts, delay perturbations, and safety-envelope edges.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Fine-tuning on hardware; safe real-world RL.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Store a hardware fine-tuning gate result.
+# Reward is reported together with blocked actions and interventions.
 from dataclasses import dataclass, asdict
 
 @dataclass
 class EvidenceRecord:
     section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+    update_scope: str
+    safety_gate: str
+    reward_delta: str
+    safety_denominator: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="20.4",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    update_scope="residual wrist action only",
+    safety_gate="force under 15 N, speed under 0.20 m/s, delay under 45 ms",
+    reward_delta="+6 percent success on 40 paired trials",
+    safety_denominator="0 human stops, 3 blocked actions, 0 thermal warnings",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 20.4.2 records the method-specific evidence schema for testing Fine-tuning on hardware; safe real-world RL with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '20.4', 'update_scope': 'residual wrist action only', 'safety_gate': 'force under 15 N, speed under 0.20 m/s, delay under 45 ms', 'reward_delta': '+6 percent success on 40 paired trials', 'safety_denominator': '0 human stops, 3 blocked actions, 0 thermal warnings'}</div>
+<div class="code-caption">Code Fragment 20.4.2 records <code>update_scope</code>, <code>safety_gate</code>, <code>reward_delta</code>, and <code>safety_denominator</code> in the same artifact. This prevents reward improvement from being separated from blocked actions, interventions, and hardware health.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the Fine-tuning on hardware; safe real-world RL evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When hardware fine-tuning fails, assign the failure to one of four categories: unsafe proposal, wrong gate, harmful update, or misleading reward. Then rerun the frozen checkpoint against the same starts to decide whether the update caused the failure or merely exposed a preexisting transfer gap.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Fine-tuning on hardware; safe real-world RL, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For hardware fine-tuning, compare only construct-matched metrics that are co-computed in one pass on one protocol: same frozen checkpoint, same trainable subset, same safety gates, same intervention policy, same initial-condition panel, and the same success definition. Save reward, blocked actions, interventions, resets, videos or state logs, and hardware health in one artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Fine-tuning on hardware; safe real-world RL is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Hardware fine-tuning is useful when it improves the deployable policy inside an audited safety envelope, not when it increases reward by spending hidden risk.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 20.4.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 20.4.1</div><p>Design a hardware fine-tuning gate for one robot task. Specify the frozen checkpoint, trainable subset, force limit, speed limit, delay limit, stop rule, rollback rule, and safety denominator to report with reward.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned fine-tuning on hardware; safe real-world rl into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-20.5.html">Section 20.5</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

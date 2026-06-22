@@ -34,132 +34,150 @@
 <h1>Section 15.2: The policy gradient theorem; REINFORCE</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The policy gradient theorem; REINFORCE matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 15.2: The policy gradient theorem; REINFORCE, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-15-illustration-02.png"/>
-<figcaption><strong>Figure 15.2A</strong>: Section 15.2: The policy gradient theorem; REINFORCE is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration linking sampled robot actions, delayed returns, and likelihood-ratio credit assignment in REINFORCE." loading="lazy" src="images/chapter-15-illustration-02.png"/>
+<figcaption><strong>Figure 15.2A</strong>: REINFORCE learns from actions it can score, even when the world between action and return is not differentiable.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>The policy gradient theorem; REINFORCE</strong> is one lens on policy gradient methods and PPO. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>The policy gradient theorem</strong> explains why we can improve a policy by multiplying the gradient of its log probability by a return signal. <strong>REINFORCE</strong> is the direct Monte Carlo version: sample trajectories, compute returns, and push up the probability of actions that appeared in successful trajectories.</p>
 </div>
-<p>It builds on the RL framing from <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, contrasts with off-policy learning in <a class="cross-ref" href="../module-16-value-based-and-off-policy-methods/index.html">Chapter 16: Value-Based and Off-Policy Methods</a>, and becomes easier to scale in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a derivation that explains an implementation contract: the likelihood-ratio identity removes the need to differentiate through physics, while baselines reduce estimator variance without changing the expected update direction.</p>
+</div>
+<p>For The policy gradient theorem; REINFORCE, the PPO dependency is concrete: trajectory collection, advantage estimation, policy update, entropy term, and evaluation seed must be recorded together.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for the policy gradient theorem; reinforce into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>The policy objective is still expected return, $J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}[G(\tau)]$. The obstacle is that the trajectory distribution contains environment dynamics, contact physics, resets, sensor noise, and reward delays. REINFORCE works because it differentiates the probability of the sampled trajectory with respect to the policy, while treating the environment as a source of samples.</p>
+<p>The key identity is the likelihood-ratio trick:</p>
+<p>$$\nabla_\theta J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}\left[G(\tau)\nabla_\theta \log p_\theta(\tau)\right].$$</p>
+<p>Because the environment transition probabilities do not depend on $\theta$, the policy-dependent part becomes a sum of action log probabilities:</p>
+<p>$$\nabla_\theta J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}\left[\sum_t \nabla_\theta \log \pi_\theta(a_t\mid s_t)G_t\right].$$</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In the policy gradient theorem; reinforce, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">The Derivative Stops At The Policy</div>
+<p>The theorem does not require a differentiable robot, a differentiable simulator, or a differentiable reward sensor. It requires the policy to report the log probability of the action it sampled.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>For a sampled step, $\nabla_\theta \log \pi_\theta(a_t\mid s_t)$ points in the direction that would make the sampled action more likely. Multiplying by $G_t$ says how strongly to move in that direction. Positive high return increases the action probability; low or negative return pushes it down.</p>
+<p>A baseline $b(s_t)$ can be subtracted from the return without biasing the expected gradient:</p>
+<p>$$\mathbb{E}_{a\sim\pi_\theta}\left[\nabla_\theta \log \pi_\theta(a\mid s)b(s)\right]=b(s)\nabla_\theta\sum_a \pi_\theta(a\mid s)=0.$$</p>
+<p>This result is the reason value functions can serve as variance-reduction baselines. They change the noise of the update, not its target direction in expectation.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>REINFORCE is an unbiased but noisy estimator. It waits until returns are known, assigns the same delayed evidence to many earlier sampled actions, and therefore needs many trajectories or a good baseline to become stable.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 computes a tiny REINFORCE-style update for a two-action policy. The numbers show why a good return attached to a low-probability action produces a large learning signal.</p>
+<pre><code class="language-python"># Compute REINFORCE loss terms for sampled actions.
+# The loss uses frozen log probabilities and advantage estimates from rollout data.
+import math
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 15.2.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for The policy gradient theorem; REINFORCE should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+actions = ["left", "right", "right"]
+action_probs = {"left": 0.25, "right": 0.75}
+returns = [1.2, 0.4, -0.3]
+baseline = 0.2
+
+for action, return_value in zip(actions, returns):
+    advantage = return_value - baseline
+    log_prob = math.log(action_probs[action])
+    loss_term = -log_prob * advantage
+    print(action, "advantage:", round(advantage, 2), "loss term:", round(loss_term, 3))</code></pre>
+<div class="code-output">left advantage: 1.0 loss term: 1.386
+right advantage: 0.2 loss term: 0.058
+right advantage: -0.5 loss term: -0.144</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>advantage</code> is the return after subtracting the baseline. The rare successful <code>left</code> action has a larger <code>loss_term</code>, which gives the optimizer a stronger reason to increase its future probability.</div>
+<p>The exact gradient depends on the policy parameterization, but the sign and scale are already visible. The first action was unlikely and better than baseline, so it receives a strong positive update. The final action was likely but worse than baseline, so its probability should decrease.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>CleanRL is especially useful for studying this section because its single-file implementations expose log probabilities, returns, baselines, and losses without hiding the estimator. Stable-Baselines3 and RSL-RL package the same bookkeeping for larger experiments once the estimator is understood.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Save the old log probability for every sampled action during rollout collection.</li>
+<li>Compute returns from rewards collected after the action, not from a reward prediction made before the action.</li>
+<li>Subtract a baseline or value estimate to reduce variance before multiplying by the log-probability gradient.</li>
+<li>Normalize advantages within a batch when reward scale changes across tasks or resets.</li>
+<li>Debug with a one-state bandit before applying the estimator to a contact-rich simulator.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The estimator becomes misleading if the stored log probability does not match the action that actually reached the environment. This can happen after action clipping, invalid-action masking, controller overrides, or unit conversions between policy output and robot command.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using the policy gradient theorem; reinforce should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a drone landing task, REINFORCE can increase the probability of descent-rate commands that led to smooth touchdowns. A baseline is essential because wind gusts and sensor noise can make two identical commands receive different returns.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>REINFORCE is the policy's accountability system: it asks what action the policy chose, how likely that action was, and whether the episode made that choice look wise.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>The policy-gradient theorem still underlies many modern robot-learning systems, even when the policy is initialized from demonstrations, pretrained encoders, or large action datasets. Active research asks how to combine low-variance on-policy gradients with data reuse, safety constraints, and real-world sample efficiency.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for the policy gradient theorem; reinforce? If not, the system boundary is still too vague.</p>
+<p>Can you explain why subtracting a state-dependent baseline leaves the expected policy gradient unchanged? Can you also name one embodied system layer that could break the match between stored log probability and executed action?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Policy Gradient Methods and PPO, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The theorem is often written compactly, but the cancellation is the teaching point. A trajectory probability factors into an initial-state term, transition terms, and policy terms. The initial-state and transition terms may decide which data you see, but they do not contain $\theta$ if the policy parameters do not change the simulator or world dynamics directly.</p>
+<p>That is why the gradient can be estimated from sampled rollouts. The price is variance: one unlucky slip can assign a poor return to several reasonable earlier actions. Actor-critic methods and GAE in the next section keep the same log-probability mechanism while replacing raw Monte Carlo returns with more local advantage estimates.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Likelihood-Ratio Terms In A Rollout</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Term</th><th>What It Means</th><th>Training Role</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>The policy gradient theorem; REINFORCE</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>The policy gradient theorem; REINFORCE</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>The policy gradient theorem; REINFORCE</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>The policy gradient theorem; REINFORCE</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>The policy gradient theorem; REINFORCE</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>$\log \pi_\theta(a_t\mid s_t)$</td><td>How likely the policy made the sampled action.</td><td>The differentiable part used for the update.</td></tr>
+<tr><td>$G_t$</td><td>Return observed after the action.</td><td>Scales whether the sampled action should become more likely.</td></tr>
+<tr><td>$b(s_t)$</td><td>State-dependent baseline.</td><td>Reduces variance because its expected score contribution is zero.</td></tr>
+<tr><td>$G_t-b(s_t)$</td><td>Advantage-like learning signal.</td><td>Rewards actions that performed better than expected from that state.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>Code Fragment 2 makes the baseline identity concrete with a two-action policy. The expected score contribution of the baseline sums to zero because the probability derivatives across all actions cancel.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Verify that action probabilities sum to one before computing log probabilities.</li>
+<li>Compute returns and baselines from the same reward convention and discount factor.</li>
+<li>Check that the mean advantage is close to zero after baseline subtraction on a stable batch.</li>
+<li>Track gradient norm because Monte Carlo returns can produce rare but very large updates.</li>
+<li>Keep rollout data on-policy for REINFORCE; old trajectories require importance correction or a different algorithm.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for The policy gradient theorem; REINFORCE.
-# The same schema should be used for the baseline and the library shortcut.
-from dataclasses import dataclass, asdict
+<pre><code class="language-python"># Verify that a state baseline has zero expected score contribution.
+# This is why baselines reduce variance without changing the policy-gradient target.
+prob_left = 0.25
+prob_right = 0.75
+baseline = 2.0
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+score_left = 1.0 - prob_left
+score_right = 0.0 - prob_left
 
-record = EvidenceRecord(
-    section="15.2",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+expected_baseline_term = (
+    prob_left * score_left * baseline
+    + prob_right * score_right * baseline
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 15.2.2 records the method-specific evidence schema for testing The policy gradient theorem; REINFORCE with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(round(expected_baseline_term, 6))</code></pre>
+<div class="code-output">0.0</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>expected_baseline_term</code> is zero for this two-action softmax score. The baseline can shrink noisy returns, but it cannot systematically push the policy left or right when averaged under the policy.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to prove the baseline identity first for two actions, then for a softmax over $K$ actions. The proof makes actor-critic variance reduction feel like a consequence of probability normalization rather than a trick.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When REINFORCE fails, classify the failure by estimator pathology before changing the policy network. High variance suggests better baselines, shorter-horizon shaping, or advantage normalization. Biased updates suggest stale log probabilities, off-policy data, action post-processing, or a reward convention mismatch.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For The policy gradient theorem; REINFORCE, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For REINFORCE, compare only construct-matched metrics co-computed in one pass on one configuration: same policy checkpoint, same rollout horizon, same baseline definition, same reward scale, and same seed set. Save returns, advantages, gradient norms, entropy, and failure labels in one artifact so estimator noise is not confused with embodied progress.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>The policy gradient theorem; REINFORCE is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>The policy-gradient theorem turns sampled actions into differentiable evidence. REINFORCE is conceptually clean because it only needs log probabilities and returns, but embodied agents need baselines and careful logging to keep that clean estimator usable.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 15.2.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.2.1</div><p>Take a three-action policy and show algebraically that a state-only baseline has zero expected score contribution. Then identify one robot-control preprocessing step that would invalidate the log probability saved during rollout.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned the policy gradient theorem; reinforce into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-15.3.html">Section 15.3</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section derived the REINFORCE estimator and showed why baselines reduce variance without biasing the expected update. Next, <a href="section-15.3.html">Section 15.3</a> replaces raw returns with actor-critic advantage estimates and GAE.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

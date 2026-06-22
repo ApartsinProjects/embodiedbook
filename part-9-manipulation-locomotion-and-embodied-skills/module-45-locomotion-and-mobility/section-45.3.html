@@ -34,139 +34,90 @@
 <h1>Section 45.3: Learning locomotion with massively parallel RL</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph">
+<p>"GPU hours are only useful when they purchase better disturbance behavior."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 45.3: Learning locomotion with massively parallel RL, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-45-illustration-03.png"/>
-<figcaption><strong>Figure 45.3A</strong>: Section 45.3: Learning locomotion with massively parallel RL is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Massively parallel reinforcement learning for locomotion across many simulated terrains." loading="lazy" src="images/chapter-45-illustration-03.png"/>
+<figcaption><strong>Figure 45.3A</strong>: Massive parallelism shortens iteration loops, but it can also scale mistakes unless reward, resets, and evaluation are audited.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
-<div class="callout big-picture">
-<div class="callout-title">Big Picture</div>
-<p><strong>Learning locomotion with massively parallel RL</strong> is a concrete locomotion and mobility skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
-</div>
+<cite>A Locomotion Training Postmortem</cite>
+</blockquote>
+<div class="callout big-picture"><div class="callout-title">Big Picture</div><p><strong>Massively parallel RL</strong> changed locomotion research because thousands of simulators can expose rare contact events quickly, but the throughput only matters if the reward and reset contracts are physically meaningful.</p></div>
+<div class="callout pathway"><div class="callout-title">Reader Pathway</div><p>Read this section from simulator throughput to deployment evidence: vectorized rollouts, PPO or actor-critic training, domain randomization, held-out terrain panels, then transfer checks.</p></div>
 <h2>What This Section Develops</h2>
-<p>This section develops massively parallel locomotion RL as a concrete embodied AI skill rather than a label. The core contract is: observe batched states, rewards, resets, terrain samples, and domain randomization, train thousands of simulated rollouts and evaluate on held-out terrain panels, and judge the result with same-panel return, fall rate, and transfer robustness.</p>
-<p>The reader should connect this contract to earlier material on <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/index.html">coordinate frames</a>, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">control foundations</a>, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">simulation stack</a>. Those links matter because Part IX skills fail at interfaces: a good model with the wrong frame, timing budget, or evaluation panel still produces a fragile robot.</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>Locomotion is controlled falling with evidence. The agent must keep balance while the ground, payload, and timing keep changing. For Learning locomotion with massively parallel RL, the decisive question is whether the loop can recover from training throughput hides a reward bug that all parallel environments share.</p>
-</div>
-<p>Figure 45.3.1 makes the section contract explicit: each box is an artifact the reader can inspect instead of a vague promise that the agent "understands" the task.</p>
-<figure class="illustration" id="fig-45-3-contract">
-<svg aria-labelledby="fig-45-3-title" height="230" role="img" viewbox="0 0 760 230" width="100%">
-<title id="fig-45-3-title">Closed-loop contract for Learning locomotion with massively parallel RL</title>
-<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="150" x="24" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="99" y="66">Observe</text>
-<text font-size="12" text-anchor="middle" x="99" y="94">batched states, rewards, resets, t</text>
-<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="150" x="218" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="293" y="66">Decide</text>
-<text font-size="12" text-anchor="middle" x="293" y="94">state and constraint check</text>
-<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="150" x="412" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="487" y="66">Act</text>
-<text font-size="12" text-anchor="middle" x="487" y="94">train thousands of simulated rollo</text>
-<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="130" x="606" y="34"></rect>
-<text font-size="15" font-weight="700" text-anchor="middle" x="671" y="66">Verify</text>
-<text font-size="12" text-anchor="middle" x="671" y="94">same-panel return, fall rate</text>
-<path d="M176 76 L214 76" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
-<path d="M370 76 L408 76" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
-<path d="M564 76 L602 76" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
-<path d="M671 121 C671 184 100 184 100 122" fill="none" marker-end="url(#arrow-45-3)" stroke="#555" stroke-width="2"></path>
-<defs><marker id="arrow-45-3" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"></path></marker></defs>
+<p>With batched simulators, the training objective is usually a clipped or trust-region policy update over many parallel trajectories. For PPO, one common objective is $L^{\mathrm{clip}}(\theta) = \mathbb{E}[\min(r_t(\theta) \hat A_t, \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat A_t)]$, where $r_t$ is the policy ratio and $\hat A_t$ is an advantage estimate.</p>
+<p>Parallelism changes the engineering problem. Correlated environment bugs, shared reward mistakes, and synchronized reset artifacts can make a policy appear strong across ten thousand workers while teaching the exact wrong behavior. The remedy is not less scale. It is better audit structure.</p>
+<div class="callout key-insight"><div class="callout-title">Throughput Does Not Equal Evidence</div><p>A fast RL stack is valuable only when the held-out terrain panel, transfer test, and failure taxonomy grow with it.</p></div>
+<figure class="illustration" id="fig-45-3-flow">
+<svg aria-labelledby="fig-45-3-title" height="250" role="img" viewBox="0 0 760 250" width="100%">
+<title id="fig-45-3-title">Figure 45.3.1 shows the true loop for large-scale locomotion RL: sample, update, randomize, and verify on held-out terrain rather than on the training panel alone.</title>
+<rect fill="#e8f3ff" height="88" rx="8" stroke="#1f5f99" width="156" x="20" y="42"></rect>
+<text font-size="15" font-weight="700" text-anchor="middle" x="98" y="72">Observe</text>
+<text font-size="12" text-anchor="middle" x="98" y="98">batched states, rewards, resets</text>
+<rect fill="#eef9f0" height="88" rx="8" stroke="#2e7d32" width="156" x="208" y="42"></rect>
+<text font-size="15" font-weight="700" text-anchor="middle" x="286" y="72">Model</text>
+<text font-size="12" text-anchor="middle" x="286" y="98">advantage and update statistics</text>
+<rect fill="#fff5e5" height="88" rx="8" stroke="#a85d00" width="156" x="396" y="42"></rect>
+<text font-size="15" font-weight="700" text-anchor="middle" x="474" y="72">Act</text>
+<text font-size="12" text-anchor="middle" x="474" y="98">update policy across thousands of envs</text>
+<rect fill="#f8ecff" height="88" rx="8" stroke="#6a1b9a" width="136" x="604" y="42"></rect>
+<text font-size="15" font-weight="700" text-anchor="middle" x="672" y="72">Verify</text>
+<text font-size="12" text-anchor="middle" x="672" y="98">held-out return and transfer</text>
+<path d="M178 86 L204 86" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
+<path d="M366 86 L392 86" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
+<path d="M554 86 L600 86" marker-end="url(#arrow-45-3)" stroke="#333" stroke-width="2"></path>
+<path d="M672 134 C672 205 95 205 95 134" fill="none" marker-end="url(#arrow-45-3)" stroke="#555" stroke-width="2"></path>
+<defs><marker id="arrow-45-3" markerHeight="8" markerWidth="10" orient="auto" refX="9" refY="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"></path></marker></defs>
 </svg>
-<figcaption>Figure 45.3.1 maps Learning locomotion with massively parallel RL in Locomotion and Mobility to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
+<figcaption>Figure 45.3.1 shows the true loop for large-scale locomotion RL: sample, update, randomize, and verify on held-out terrain rather than on the training panel alone.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Learning locomotion with massively parallel RL, the important state variables are batched states, rewards, resets, terrain samples, and domain randomization, while the action interface is to train thousands of simulated rollouts and evaluate on held-out terrain panels.</p>
-<p>The method is useful only if it improves a construct-matched measurement: same-panel return, fall rate, and transfer robustness. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is not a black box. It is a chain of observation encoding, state estimation, constraint checking, action selection, execution, and verification. Each link should emit a log record so a failure can be traced to perception, state, planning, control, timing, data coverage, or evaluation.</p>
-</div>
+<p>The main benefit of parallel RL in locomotion is coverage of contact events. Rare combinations of foot timing, terrain discontinuity, and actuator lag appear more often when the simulator fan-out is large.</p><p>The main risk is shared bias. If every environment uses the same flawed reward term, a thousand workers accelerate the same misunderstanding. This is why reward audits, termination audits, and observation audits belong in the same chapter as PPO code.</p><p>A solid locomotion training paper therefore reports both throughput numbers and construct-matched disturbance metrics on terrain not used to tune the controller.</p>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Large-Scale Locomotion RL Audit Loop</div><ol><li>Freeze an environment manifest that defines terrain seeds, friction ranges, actuator delays, and reset logic.</li><li>Train the policy with vectorized rollouts and log advantage statistics, termination reasons, and reward-term contributions.</li><li>Evaluate on a held-out terrain panel that the training loop never sees.</li><li>Replay at least one failed hardware or simulator trace inside the batch environment family.</li><li>Only claim progress when held-out disturbance metrics and transfer metrics improve together.</li></ol></div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 45.3.1 before implementing a model. It forces the section to state what is measured, which maintained tool can reproduce the experiment, and which failure deserves a deliberate test case.</p>
-<pre><code class="language-python"># Record one evidence artifact for Learning locomotion with massively parallel RL.
-# Use the same schema for the hand-built baseline and the library route.
-from dataclasses import dataclass, asdict
+<p>The smallest trustworthy artifact for large-scale locomotion RL is a run record that reports update count, sample count, held-out metrics, and transfer tags in one place.</p>
+<pre><code class="language-python">run = {
+    &quot;num_envs&quot;: 4096,
+    &quot;horizon&quot;: 24,
+    &quot;updates&quot;: 1200,
+    &quot;heldout_fall_rate&quot;: 0.08,
+    &quot;heldout_velocity_error&quot;: 0.11,
+    &quot;transfer_tags&quot;: [&quot;rough_terrain&quot;, &quot;payload_shift&quot;],
+}
 
-@dataclass
-class SkillEvidence:
-    section: str
-    observable: str
-    action_interface: str
-    metric: str
-    tool_route: str
-    expected_failure: str
-
-record = SkillEvidence(
-    section="45.3",
-    observable="batched states, rewards, resets, terrain samples, and domain randomization",
-    action_interface=(
-        "train thousands of simulated rollouts and evaluate on held-out terrain panels"
-    ),
-    metric="same-panel return, fall rate, and transfer robustness",
-    tool_route="Isaac Lab and MJX",
-    expected_failure="training throughput hides a reward bug that all parallel environments share",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 45.3.1 creates a reproducible evidence record for Learning locomotion with massively parallel RL, including the observation, action interface, metric, library route, and expected failure.</div>
-<p><strong>Expected output:</strong> the printed trace for Learning locomotion with massively parallel RL should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut</div>
-<p>The hand-built evidence record is about 25 lines. In practice, use Isaac Lab, MJX, Gymnasium, ROS 2, and Drake to handle interfaces, physics or datasets, logging, batching, and repeatable evaluation. The hand-built version remains useful because it states the contract that the library route must preserve.</p>
-</div>
+samples = run[&quot;num_envs&quot;] * run[&quot;horizon&quot;] * run[&quot;updates&quot;]
+print(f&quot;samples={samples}&quot;)
+print(
+    {
+        &quot;heldout_fall_rate&quot;: run[&quot;heldout_fall_rate&quot;],
+        &quot;heldout_velocity_error&quot;: run[&quot;heldout_velocity_error&quot;],
+        &quot;transfer_tags&quot;: run[&quot;transfer_tags&quot;],
+    }
+)</code></pre>
+<div class="code-output">samples=117964800
+{&#x27;heldout_fall_rate&#x27;: 0.08, &#x27;heldout_velocity_error&#x27;: 0.11, &#x27;transfer_tags&#x27;: [&#x27;rough_terrain&#x27;, &#x27;payload_shift&#x27;]}</div>
+<p><strong>Expected output interpretation.</strong> The sample count looks impressive, but the useful signal is the held-out fall rate and velocity error. A run with more samples but worse held-out disturbance behavior is not an upgrade.</p>
+<div class="code-caption"><strong>Code Fragment 45.3.1:</strong> Large-scale RL evidence should expose both scale and quality. Sample count alone is a resource report, not a locomotion result.</div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Use Isaac Lab for GPU throughput, MJX when JAX-native pipelines matter, and RSL-RL or equivalent PPO tooling when you need a maintained actor-critic training core rather than a handwritten optimizer.</p></div>
 <h2>Practical Recipe</h2>
-<ol>
-<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
-<li>Build the smallest baseline that can fail in an interpretable way.</li>
-<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
-<li>Add one perturbation aimed at the expected failure: training throughput hides a reward bug that all parallel environments share.</li>
-<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
-</ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example</div>
-<p>A robotics team using learning locomotion with massively parallel rl should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for learning locomotion with massively parallel rl? If not, the system boundary is still too vague.</p>
-</div>
+<ol><li>Freeze observation, reward, termination, and randomization manifests before sweeping hyperparameters.</li><li>Train with enough parallelism to cover rare terrain-contact cases, but log per-term rewards and termination reasons.</li><li>Hold out terrain classes, payload profiles, or sensor corruptions for evaluation.</li><li>Validate the controller in a second simulator or a reduced hardware replay when possible.</li><li>Promote only runs that improve both disturbance metrics and transfer evidence.</li></ol>
+<div class="callout warning"><div class="callout-title">Common Failure Mode</div><p>The most common failure is a reward term or reset rule that creates an easy exploit across every worker. Scale hides that exploit until transfer fails.</p></div>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A quadruped may learn to skim over termination thresholds by hopping in a brittle rhythm that looks effective in the training terrain family. A held-out curb panel or a small actuator-delay mismatch often exposes the weakness immediately.</p></div>
+<div class="callout fun-note"><div class="callout-title">Memory Hook</div><p>Parallel RL is a microscope and a funhouse mirror at the same time. It reveals more events, but it enlarges every bug you forgot to measure.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Current locomotion systems combine parallel RL with motion priors, vision, terrain encoders, and adaptation modules. The best stacks still treat evaluation manifests as first-class assets rather than as appendices.</p></div>
+<div class="callout self-check"><div class="callout-title">Self Check</div><p>Can you name one statistic that proves your RL loop scaled, and one statistic that proves the extra scale improved actual locomotion behavior rather than just training throughput?</p></div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>Learning locomotion with massively parallel rl becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
-<p>For Locomotion and Mobility, the important habit is to keep physics in the loop. Geometry, contact, timing, energy, and safety constraints should appear in the artifact, not in a later explanation after the experiment has already failed.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>Isaac Lab and MJX</td><td>Main practical route for Learning locomotion with massively parallel RL</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
-<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
-<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
-</tbody>
-</table>
-</div>
-<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section connects to <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/index.html">coordinate frames</a>, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">control foundations</a>, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">simulation stack</a>. It also prepares the evaluation and safety framing used in later deployment chapters.</p></div>
-<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for Learning locomotion with massively parallel RL, run the baseline and the Isaac Lab and MJX route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
+<p>This section should help readers connect reinforcement learning theory to the simulator and deployment stack. Parallel sampling is not just a compute trick. It changes the statistical shape of the data, the likelihood of correlated bugs, and the kinds of diagnostics you need to trust a result.</p><p>It is also a good place to teach construct-matched comparisons. If the baseline uses flat ground and the new method uses rough terrain plus curriculum plus actuator randomization, the numbers are not comparable no matter how impressive the learning curve looks.</p>
+<div class="comparison-table"><div class="comparison-table-title">Parallel RL Tool Map</div><table><thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Isaac Lab</td><td>GPU-parallel locomotion training</td><td>Use manifest files for reward, reset, and randomization.</td></tr><tr><td>MJX</td><td>Fast JAX-native physics for batched control experiments</td><td>Exploit JAX tooling, but keep evaluation manifests identical.</td></tr><tr><td>RSL-RL or similar PPO stack</td><td>Maintained on-policy training core</td><td>Patch your task logic, not the optimizer, unless there is a clear reason.</td></tr></tbody></table></div>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>Connect this section to <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/index.html">PPO and actor-critic theory</a>, <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-17-massively-parallel-and-gpu-rl/index.html">scalable RL systems</a>, and <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/index.html">sim-to-real transfer</a>.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Train a small locomotion controller at two parallelism levels, then compare not only wall-clock but also held-out disturbance metrics and failure traces.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When Learning locomotion with massively parallel RL fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
+<p>If a fast training run fails on transfer, inspect reward decomposition, reset clustering, observation leakage, and actuator mismatch before tuning the policy network. In locomotion RL, environment bugs often masquerade as optimization problems.</p>
 </section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Learning locomotion with massively parallel RL: MuJoCo, Drake, ManiSkill, ROS 2, MoveIt, CARLA, nuScenes, Waymo Open Dataset, tactile sensing, locomotion, manipulation, and AV evaluation literature.</p><p class="bib-annotation">Use these sources to verify dynamics, contact, sensors, planning, embodiment constraints, and evaluation panels.</p></div></section>
-<div class="callout key-takeaway">
-<div class="callout-title">Key Takeaway</div>
-<p>Learning locomotion with massively parallel RL is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
-</div>
-<div class="callout exercise">
-<div class="callout-title">Exercise 45.3.1</div>
-<p>Design a same-panel experiment for Learning locomotion with massively parallel RL. Specify the scenario set, the baseline, the Isaac Lab and MJX library route, the metric computation, and one perturbation that targets this failure: training throughput hides a reward bug that all parallel environments share.</p>
-</div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Isaac Lab documentation. <a href="https://isaac-sim.github.io/IsaacLab/" rel="noopener" target="_blank">https://isaac-sim.github.io/IsaacLab/</a></p><p class="bib-annotation">Primary documentation for current large-scale robot-learning workflows.</p></div><div class="bib-entry-card"><p class="bib-ref">Margolis, G. et al. "Rapid Locomotion via Reinforcement Learning." Code repository. <a href="https://github.com/Improbable-AI/rapid-locomotion-rl" rel="noopener" target="_blank">https://github.com/Improbable-AI/rapid-locomotion-rl</a></p><p class="bib-annotation">Concrete RL reference point for agile locomotion training.</p></div><div class="bib-entry-card"><p class="bib-ref">MuJoCo MJX documentation. <a href="https://mujoco.readthedocs.io/en/stable/mjx.html" rel="noopener" target="_blank">https://mujoco.readthedocs.io/en/stable/mjx.html</a></p><p class="bib-annotation">Primary source for batched MuJoCo workflows in JAX.</p></div></section>
+<div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>Large-scale RL becomes scientific when the throughput report and the disturbance evidence report travel together.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 45.3.1</div><p>Design a training ledger for a locomotion RL study. Include the environment manifest, update budget, reward terms, held-out panel, and one diagnostic that would catch a synchronized reward bug.</p></div>
 <nav class="chapter-nav">
 <a class="prev" href="section-45.2.html">Section 45.2: Balance, stability, and gait</a>
 <a class="up" href="index.html">Chapter 45: Locomotion and Mobility</a>

@@ -34,159 +34,176 @@
 <h1>Section 18.6: Safety-aware and constrained rewards</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"Safety-aware and constrained rewards matters when the next action changes the evidence you thought you had."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Safety-aware and constrained rewards</strong> is one lens on reward design and goal specification. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Safety-aware reward design separates what the robot wants from what it must not violate.</strong> A single scalar reward can hide risk by letting high task return compensate for collisions, near misses, force spikes, or human interventions. Constrained reinforcement learning keeps safety costs visible as their own contract.</p>
 </div>
-<p>It depends on the objective definitions in <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, interacts with safe exploration in <a class="cross-ref" href="../module-19-exploration-in-embodied-worlds/index.html">Chapter 19: Exploration in Embodied Worlds</a>, and connects to deployment safety in <a class="cross-ref" href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/index.html">Chapter 54: Safety in Embodied AI</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a constraint-design pass: define task reward, define safety cost, define the allowed budget, then report whether a policy is both high-performing and feasible.</p>
+</div>
+<p>For Safety-aware and constrained rewards, reward design must expose objective term, safety interaction, exploration effect, and deployment risk instead of hiding them inside one scalar return.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for safety-aware and constrained rewards into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the contract for constrained Markov decision processes in embodied agents. The policy still seeks task return, but it must satisfy one or more cost budgets, such as collision count, force threshold violations, off-road time, unsafe proximity, or intervention rate.</p>
+<p>The key question is practical: which requirements are negotiable performance objectives, and which are constraints that should not be traded away for more reward?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In safety-aware and constrained rewards, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Costs Are Not Negative Rewards</div>
+<p>A safety cost is a separate measurement with its own budget. If it is folded into reward too early, a policy can buy unsafe behavior with enough task success.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A constrained objective is usually written as</p>
+<p>$$\max_{\pi} \; J_R(\pi) = \mathbb{E}_{\pi}\left[\sum_t \gamma^t r_t\right] \quad \text{subject to} \quad J_C(\pi)=\mathbb{E}_{\pi}\left[\sum_t \gamma^t c_t\right] \le d.$$</p>
+<p>Here $r_t$ is task reward, $c_t$ is safety cost, and $d$ is the allowed cost budget. The important modeling move is that the constraint remains visible after training. A policy with high reward and cost above budget is not a successful safe policy; it is infeasible.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Many algorithms optimize a Lagrangian such as $J_R(\pi)-\lambda(J_C(\pi)-d)$, adapting $\lambda$ when cost exceeds the budget. The Lagrange multiplier is a training mechanism, not a reason to stop reporting the raw cost.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Suppose a mobile robot can choose between a fast route through a crowded aisle and a slower route around it. The fast route has higher task reward but more unsafe-proximity cost. Code Fragment 1 checks feasibility before choosing the winner.</p>
+<pre><code class="language-python"># Compare task return and safety cost under a fixed budget.
+# A high-reward policy is rejected when its cost is infeasible.
+policies = [
+    {"name": "fast_aisle", "return": 92, "cost": 7.5},
+    {"name": "wide_detour", "return": 78, "cost": 1.2},
+]
+cost_budget = 2.0
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 18.6.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Safety-aware and constrained rewards should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for policy in policies:
+    feasible = policy["cost"] <= cost_budget
+    print(policy["name"], "return=", policy["return"], "cost=", policy["cost"], "feasible=", feasible)</code></pre>
+<div class="code-output">fast_aisle return= 92 cost= 7.5 feasible= False
+wide_detour return= 78 cost= 1.2 feasible= True</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>fast_aisle</code> policy has higher <code>return</code> but violates the <code>cost_budget</code>. The feasibility check makes the safety constraint visible instead of letting task reward compensate for unsafe proximity.</div>
+<p><strong>Expected output:</strong> a policy should be reported with both return and feasibility. Ranking by reward alone would choose the wrong policy for a constrained deployment.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Safety Gymnasium exposes tasks with separate reward and cost channels, which is the right interface for constrained experiments. Use it or a similar wrapper when a project needs budgeted safety metrics rather than reward penalties hidden inside one scalar.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Write task reward and safety cost as separate functions.</li>
+<li>Set a cost budget before policy selection.</li>
+<li>Log reward return, cost return, budget violation rate, and intervention rate.</li>
+<li>Reject infeasible policies before comparing reward among feasible policies.</li>
+<li>Stress test constraints under sensor noise, actuation delay, and domain shift.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A penalty coefficient is not a safety requirement. If a collision penalty is too small, the policy collides. If it is too large, the policy may freeze. A constraint budget makes the requirement auditable and separates feasibility from reward tuning.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using safety-aware and constrained rewards should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a delivery robot, reward can measure progress to the destination while cost measures entering restricted zones, near-human proximity, and hard braking events. The deployment decision should first filter policies by the cost budgets, then compare delivery time among the feasible policies.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Reward says, "get there." Constraint cost says, "and do not knock over the furniture on the way."</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Safety-aware RL is moving toward richer cost models, shielded policies, runtime monitors, verification-inspired constraints, and benchmarks that separate reward from safety costs. The open challenge is transfer: a constraint that is measurable in simulation may need different sensors, margins, and enforcement on hardware.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for safety-aware and constrained rewards? If not, the system boundary is still too vague.</p>
+<p>Can you state the reward, the cost, the budget, and the rejection rule for an infeasible policy? If not, the safety requirement is still only a preference.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Reward Design and Goal Specification, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The hardest part is not writing a cost function. It is choosing a budget that corresponds to a real deployment requirement. A warehouse robot may allow zero emergency stops during evaluation, a bounded number of low-speed proximity warnings, and a maximum force threshold during contact-rich manipulation. Each budget needs a sensor source and a trace field.</p>
+<p>The graduate-level habit is to distinguish penalties, constraints, and shields. Penalties shape optimization. Constraints define feasibility. Shields or runtime monitors block actions online. A safety-aware system may use all three, but the evaluation must reveal which layer prevented unsafe behavior.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Safety-aware and constrained rewards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Safety-aware and constrained rewards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Safety-aware and constrained rewards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Safety-aware and constrained rewards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Safety-aware and constrained rewards</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Safety Gymnasium</td><td>Reward and cost channels</td><td>Use it when the experiment needs explicit cost budgets and hazard metrics.</td></tr><tr><td>Gymnasium wrappers</td><td>Custom constraints</td><td>Add cost fields for collisions, unsafe proximity, action saturation, and intervention.</td></tr><tr><td>MuJoCo</td><td>Physical cost signals</td><td>Compute contact, force, velocity, and pose-limit violations from simulator state.</td></tr><tr><td>ROS 2</td><td>Runtime safety logs</td><td>Record emergency stops, monitor interventions, and controller limit events on hardware.</td></tr><tr><td>CleanRL</td><td>Inspectable constrained loop</td><td>Use a short implementation to verify exactly where costs and multipliers enter training.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation treats the safety budget as part of the task contract. The policy artifact should be impossible to read without seeing its cost return and violation rate.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Define every safety cost with units and measurement source.</li>
+<li>Choose budgets before comparing candidate policies.</li>
+<li>Train with a constrained method or a clear penalty baseline.</li>
+<li>Save cost traces, violation events, monitor actions, and final task state.</li>
+<li>Compare rewards only among policies that satisfy the cost budget.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Safety-aware and constrained rewards.
-# The same schema should be used for the baseline and the library shortcut.
+<p>Code Fragment 2 creates a compact constrained-RL audit record.</p>
+<pre><code class="language-python"># Build one constrained-RL audit record for deployment review.
+# Reward, cost, budget, and rejection rule remain separate fields.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
+class ConstraintAudit:
     section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+    reward_metric: str
+    cost_metric: str
+    budget: float
+    rejection_rule: str
 
-record = EvidenceRecord(
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = ConstraintAudit(
     section="18.6",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    reward_metric="delivery success within time limit",
+    cost_metric="discounted unsafe-proximity events per episode",
+    budget=2.0,
+    rejection_rule="reject any policy with mean cost above budget on the shared seed panel",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 18.6.2 records the method-specific evidence schema for testing Safety-aware and constrained rewards with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '18.6', 'reward_metric': 'delivery success within time limit', 'cost_metric': 'discounted unsafe-proximity events per episode', 'budget': 2.0, 'rejection_rule': 'reject any policy with mean cost above budget on the shared seed panel'}</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>ConstraintAudit</code> record stores reward, cost, budget, and rejection rule as separate fields. That separation prevents a high task score from obscuring an infeasible safety result.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to sort policies in two stages: feasible first, highest reward second. This habit prevents safety from becoming an after-the-fact penalty discussion.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a constrained policy fails, decide whether the issue is cost observability, budget choice, optimization instability, monitor mismatch, or deployment transfer. Then rerun the same policy with cost traces and monitor events side by side.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Safety-aware and constrained rewards, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For constrained rewards, compare task return, cost return, violation rate, intervention rate, and feasibility only when they are co-computed in one pass on one configuration. Report infeasible policies separately from feasible ones, even when their rewards are higher.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Safety-aware and constrained rewards is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Safety constraints are meaningful only when their costs, budgets, and rejection rules remain visible in the final evaluation artifact.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 18.6.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 18.6.1</div><p>For a delivery, drone, or arm-control task, write one reward metric, two safety costs, a budget for each cost, and a rejection rule for policies that exceed either budget.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned safety-aware and constrained rewards into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="index.html">Chapter 18</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section closed the reward-design chapter by separating objectives from constraints. Next, <a href="../module-19-exploration-in-embodied-worlds/index.html">Chapter 19</a> studies exploration, where the same safety costs matter before the agent has learned what actions are useful.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://people.eecs.berkeley.edu/~russell/papers/icml99-shaping.pdf" rel="noopener" target="_blank">Ng, A. Y., Harada, D., and Russell, S. (1999). Policy invariance under reward transformations. ICML.</a></p>
-<p class="bib-annotation">This paper gives the potential-based shaping result that keeps optimal policies invariant. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Potential-based shaping is a useful contrast to constraints. Shaping changes training feedback, while constrained RL keeps safety cost and feasibility as separate quantities.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1707.01495" rel="noopener" target="_blank">Andrychowicz, M. et al. (2017). Hindsight Experience Replay. NeurIPS.</a></p>
-<p class="bib-annotation">HER converts failed attempts into goal-conditioned learning signal. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">HER shows how replay can become more sample-efficient, but constrained tasks still need cost budgets. Relabeled success should never hide unsafe exploration in the original task.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1606.06565" rel="noopener" target="_blank">Amodei, D. et al. (2016). Concrete Problems in AI Safety. arXiv.</a></p>
-<p class="bib-annotation">This paper gives durable categories for reward hacking, side effects, robustness, and safe exploration. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">This paper motivates treating side effects and unsafe exploration as first-class design problems. It supports the section's separation of reward from safety cost.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1706.03741" rel="noopener" target="_blank">Christiano, P. F. et al. (2017). Deep reinforcement learning from human preferences. NeurIPS.</a></p>
-<p class="bib-annotation">Preference-based reward learning is a core alternative when hand-written rewards are brittle. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Preference rewards can express soft human judgments, but hard safety budgets may still be needed. This reference helps distinguish learned preference from enforceable constraint.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://cdn.openai.com/safexp-short.pdf" rel="noopener" target="_blank">Ray, A., Achiam, J., and Amodei, D. (2019). Benchmarking Safe Exploration in Deep Reinforcement Learning. OpenAI.</a></p>
-<p class="bib-annotation">Safety Gym introduced benchmark tasks for constrained exploration and safety cost tracking. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Safety Gym is the main benchmark reference for reward-plus-cost evaluation. It is directly aligned with the constrained objective and feasibility reporting in this section.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://safety-gymnasium.farama.org/" rel="noopener" target="_blank">Farama Foundation Safety Gymnasium documentation.</a></p>
-<p class="bib-annotation">Safety Gymnasium supports testing constraint-aware reward and exploration recipes. For this section, connect the source to safety-aware and constrained rewards and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Safety Gymnasium is the maintained tool reference for experiments with explicit cost channels. It supports the section's recommendation to compare reward only among feasible policies.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>
