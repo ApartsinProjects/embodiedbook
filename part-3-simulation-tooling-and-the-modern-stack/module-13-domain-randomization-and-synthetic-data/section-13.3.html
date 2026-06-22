@@ -39,6 +39,10 @@
 <figcaption>Figure 13.3A: Automatic domain randomization (ADR) as an adaptive loop: the randomization range expands when the policy succeeds and contracts when it fails, maintaining a difficulty level just above the current skill horizon.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the randomization parameter types introduced in section 13.2: visual, physics, sensor, and task factors. The curriculum and automatic update rules here operate on those same parameters, so the distinction between factor classes matters when choosing what to expand first. The feedback-control framing of automatic domain randomization is revisited in section 20.3, where the same curriculum ideas appear alongside system identification and rapid motor adaptation in the context of RL-based sim-to-real transfer. Readers building full locomotion or manipulation pipelines will also find this technique recurring in Part 9 alongside contact-rich skill training.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Curriculum and automatic randomization solve a pacing problem. If the simulator starts too easy, the policy memorizes a narrow slice of the world; if it starts too hard, the policy never discovers useful behavior. A curriculum widens the domain as competence grows, while automatic randomization adjusts the domain to keep training informative.</p>
@@ -58,6 +62,22 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is difficulty regulation. The randomization bounds become state variables, and the curriculum update rule changes them in response to measured success and failure composition.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Automatic Domain Randomization (ADR) Update Loop</h4>
+<p><strong>Input:</strong> current parameter bounds $\Theta = \{(\theta_i^{\min}, \theta_i^{\max})\}$ for each randomized factor $i$; rolling success rate $s \in [0,1]$ measured over the last $W$ episodes; target success band $[s_{\mathrm{lo}}, s_{\mathrm{hi}}]$; expansion step $\alpha$; failure labels $\{f_i\}$ counting episodes dominated by factor $i$</p>
+<p><strong>Output:</strong> updated bounds $\Theta'$; logged curriculum phase record $(k, \Theta', s, \text{trigger})$</p>
+<ol>
+<li>Evaluate the policy on the current training distribution $p_k(\theta)$ and compute rolling success rate $s$ over the most recent $W$ episodes.</li>
+<li>If $s &gt; s_{\mathrm{hi}}$, set trigger = "expand": for each factor $i$, set $\theta_i^{\min} \leftarrow \theta_i^{\min} - \alpha$ and $\theta_i^{\max} \leftarrow \theta_i^{\max} + \alpha$, clamped to deployment limits.</li>
+<li>If $s &lt; s_{\mathrm{lo}}$, set trigger = "narrow": identify the dominant failure factor $i^* = \arg\max_i f_i$; shrink its range toward its center by $\alpha$ while leaving other factors unchanged.</li>
+<li>If $s_{\mathrm{lo}} \leq s \leq s_{\mathrm{hi}}$, set trigger = "hold": keep $\Theta' = \Theta$ unchanged.</li>
+<li>Increment phase counter $k \leftarrow k + 1$ and record $(k, \Theta', s, \text{trigger})$ to the curriculum ledger.</li>
+<li>Sample the next batch of episodes from the updated distribution $p_{k+1}(\theta) \sim \mathcal{U}(\Theta')$.</li>
+<li>Update the policy $\pi$ using gradient step $\pi \leftarrow \pi + \nabla_\pi J(\pi, p_{k+1})$.</li>
+<li>Repeat from step 1 until the bounds $\Theta$ cover the target deployment envelope or a maximum phase count is reached.</li>
+<li>Evaluate the final policy $\pi^*$ on the held-out transfer panel that was never used to trigger any curriculum update.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>The following snippet shows a small automatic randomization update. It expands the friction range when rolling success is high, keeps it fixed inside the target band, and narrows it when the learner is failing too often.</p>

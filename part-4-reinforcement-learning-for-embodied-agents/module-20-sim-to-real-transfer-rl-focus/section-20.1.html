@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 20.1A</strong>: The reality gap is not one crack in the simulator. It is the combined effect of perception, dynamics, timing, contact, and evaluation mismatches showing up in the same closed loop.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with Markov decision processes from section 2.6 and with physics simulator assumptions from section 6.3. The six gap types introduced here are addressed directly in section 20.2, which builds transfer strategies around each gap category. Domain randomization, one response to transition and contact mismatch, is treated in depth in section 13.2, and the visual observation gap is examined alongside sensor modeling in section 9.4.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>The reality gap</strong> is the difference between the <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.6.html">Markov decision process</a> used for training and the physical process that receives the deployed policy. In reinforcement learning, this gap matters because a policy exploits whatever regularities make reward easy in simulation, including regularities the real robot will never provide.</p>
@@ -58,6 +62,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a mismatch cascade. A camera pose estimate is late by two frames, the policy commands torque for the old pose, the motor clips the command, the contact model overestimates friction, and the evaluator counts a brief touch as success. The robot does not see five small errors. It sees one failed rollout.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Reality-Gap Localization via Paired Rollout Diagnosis</h4>
+<p><strong>Input:</strong> simulator transition model $P_{\text{sim}}(s_{t+1}\mid s_t,a_t)$, hardware transition model $P_{\text{real}}(s_{t+1}\mid s_t,a_t)$, trained policy $\pi_\theta$ with parameters $\theta$, shared initial-condition family $\mathcal{S}_0$</p>
+<p><strong>Output:</strong> dominant gap label $g^* \in \{\text{observation, transition, actuator, timing, contact, evaluation}\}$ and a targeted repair recommendation</p>
+<ol>
+<li>Write the simulator contract: record state variables, observation noise $\sigma_o$, transition parameters, actuator model, contact coefficients $\mu$, and termination rule $\mathcal{T}$.</li>
+<li>Define paired trace fields $\mathcal{F} = \{s_t, a_t, o_t, \tau_t, r_t, \text{done}_t\}$ with identical schema in both simulation and on hardware; include timestamps to the millisecond.</li>
+<li>Sample a batch of initial conditions $s_0 \sim \mathcal{S}_0$ and execute $\pi_\theta$ in simulation, collecting trace $\mathcal{D}_{\text{sim}} = \{(s_t, a_t, o_t, \tau_t)\}_{t=0}^{T}$.</li>
+<li>Execute the same policy checkpoint $\pi_\theta$ on hardware from matching $s_0$ and collect $\mathcal{D}_{\text{real}}$ using the same trace schema.</li>
+<li>Compute per-field divergence $\delta_f = \mathbb{E}[|f_{\text{real}} - f_{\text{sim}}|]$ for each field $f \in \mathcal{F}$.</li>
+<li>Identify the first time step $t^*$ at which $\delta_f$ exceeds a task-specific threshold; assign $g^* \leftarrow \arg\max_f \delta_f(t^*)$.</li>
+<li>Verify isolation: perturb only the parameter governing $g^*$ (e.g., friction coefficient $\mu$, actuator delay $\Delta\tau$, or rendering noise $\sigma_o$) and rerun step 3. If the policy gradient $\nabla_\theta J$ changes sign for the perturbed parameter, the gap is confirmed.</li>
+<li>Apply the narrowest repair: correct $\mu$, add an action-delay buffer $\alpha$ steps, or adjust the observation noise model; avoid full domain randomization until targeted repairs are exhausted.</li>
+<li>Rerun paired rollouts from step 3 and confirm that $\delta_{g^*}$ drops below threshold before advancing to policy retraining.</li>
+<li>Log the final artifact: configuration, seed, metrics, timing traces, gap label $g^*$, repair applied, and post-repair $\delta_{g^*}$ side by side.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 20.1.1 below shows a tiny diagnostic for a pushing policy. It compares the same commanded push in simulation and on hardware, then labels the dominant gap instead of hiding the failure behind one success rate.</p>
@@ -120,6 +141,9 @@ dominant_gap=contact and friction</div>
 <p>The idea in this section becomes useful when it is tied to a closed-loop contract. For reality-gap work, the contract names the simulator assumptions, the hardware measurements, and the alignment rule that says two rollouts are comparable. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
 <p>The graduate-level habit is to separate three claims. The modeling claim explains which part of $P_{\text{sim}}$ approximates $P_{\text{real}}$. The systems claim explains which observation, action, or timing interface exposes the approximation error. The evidence claim records which paired rollout would convince a skeptical builder.</p>
 <p>The six gap types are not equally likely across task families. Observation gaps dominate in vision-driven tasks where <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-09-why-simulation-is-central/section-9.4.html">rendered textures, lighting, and depth noise differ from real camera output</a>. Transition gaps dominate in tasks that involve deformable objects, liquids, or complex rigid-body chains, because simulator physics engines simplify these most aggressively. Actuator gaps dominate in high-speed or high-torque tasks where the simulated motor model omits back-EMF, thermal derating, and current limits. Timing gaps dominate in any fast closed-loop task where the real controller introduces latency that the simulated step function does not model. Contact gaps dominate in tasks requiring precise force regulation. Evaluation gaps dominate whenever the success criterion in simulation captures a proxy state (object within 5 cm of goal) rather than the operationally correct state (object stable and graspable by the next agent in the pipeline). Identifying which family a task belongs to before training is the fastest way to choose the right transfer strategy.</p>
+<div class="callout tip">
+<p>To catch timing mismatch before deploying to hardware, add an action-delay wrapper to your training environment: in MuJoCo set <code>model.opt.timestep</code> to your real controller period and apply a one-step action buffer so the policy sees lagged feedback; in Isaac Lab use <code>action_delay_range</code> in the environment config to randomize delay between 0 and 2 steps. If the policy collapses when delay is added in simulation, it will almost certainly collapse on the embedded controller before you ever plug in the robot. Fix the delay tolerance in sim first, then transfer.</p>
+</div>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>

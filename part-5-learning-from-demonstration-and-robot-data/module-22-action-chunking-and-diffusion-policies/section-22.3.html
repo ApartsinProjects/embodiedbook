@@ -39,6 +39,10 @@
 <figcaption>Figure 22.3A: The ALOHA hardware platform with two 6-DOF arms and a bimanual teleoperation setup, showing the low-cost joint-torque sensors that enable force-sensitive imitation of tasks like folding a shirt.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the ACT policy and the cVAE chunk formulation introduced in section 22.2, because the ALOHA hardware design is built around exactly those assumptions about chunk size, control frequency, and bimanual action spaces. The teleoperation protocols used to collect ALOHA demonstrations are developed further in section 23.2 (leader-follower teleoperation), and the data-scaling consequences of the ALOHA collection approach recur in section 24.1. If you are interested in the generative policy trained on this data rather than the hardware system itself, section 22.4 extends the action-chunking ideas to Diffusion Policy.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>ALOHA-style systems show that action chunking is inseparable from the robot-data system around it: teleoperation hardware, synchronized cameras, bimanual action streams, reset rules, and evaluation tasks.</p>
@@ -55,6 +59,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in ALOHA, ALOHA 2, and Mobile ALOHA is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+
+<div class="callout algorithm">
+<h4>Algorithm: ALOHA Bimanual Demonstration Collection and ACT Training</h4>
+<p><strong>Input:</strong> Task specification $\mathcal{T}$, teleoperation leader arms $\mathcal{L} = \{L_\text{left}, L_\text{right}\}$, follower robot with joint state $q \in \mathbb{R}^{14}$, camera set $\mathcal{C} = \{c_1, c_2, c_3, c_4\}$, chunk size $H$, number of demonstrations $N$</p>
+<p><strong>Output:</strong> Trained ACT policy $\pi_\theta$ mapping observations $o_t$ to action chunks $\hat{a}_{t:t+H}$; demonstration dataset $\mathcal{D} = \{(o_t, a_t)\}$</p>
+<ol>
+<li>Calibrate all four cameras $\mathcal{C}$ to a shared robot base frame; verify per-camera latency is below 5 ms before any data collection begins.</li>
+<li>For each demonstration episode $n = 1, \ldots, N$: reset the robot and objects to the canonical start distribution, then record synchronized tuples $(o_t, a_t)$ at 50 Hz, where $o_t = (q_t, \{I_t^{c}\}_{c \in \mathcal{C}})$ and $a_t \in \mathbb{R}^{14}$ is the bimanual joint-position command read from leaders $\mathcal{L}$.</li>
+<li>After collection, run a timestamp audit: compute $\delta_t = |t_\text{left} - t_\text{right}|$ for every timestep and reject episodes where $\max_t \delta_t > 5$ ms, because chunk predictions assume aligned action streams.</li>
+<li>Encode each observation $o_t$ into a latent style variable $z \sim q_\phi(z \mid a_{t:t+H}, o_t)$ using the cVAE encoder with parameters $\phi$, conditioning on the full ground-truth chunk.</li>
+<li>Train the ACT transformer $\pi_\theta$ by minimizing the chunk reconstruction loss $\mathcal{L}(\theta) = \mathbb{E}\bigl[\sum_{h=0}^{H-1} \|a_{t+h} - \hat{a}_{t+h}\|_2^2\bigr] + \beta \, D_\text{KL}(q_\phi \| p(z))$, where $\beta$ weights the KL regularizer and $p(z) = \mathcal{N}(0, I)$.</li>
+<li>At rollout, observe $o_t$ and sample $z \sim p(z)$; decode the full chunk $\hat{a}_{t:t+H} = \pi_\theta(o_t, z)$ in one forward pass, then execute all $H$ actions open-loop before re-querying the policy.</li>
+<li>After each chunk, log contact events, gripper force, and wrist-camera frames; if any force reading exceeds the hardware safety threshold $F_\text{max}$, halt execution and record the episode as a contact failure.</li>
+<li>For Mobile ALOHA: append base velocity $v_\text{base} \in \mathbb{R}^2$ to $a_t$ and add a fifth camera covering the base workspace; re-run steps 2 through 7 with the extended action space and whole-body teleoperation operator.</li>
+<li>Evaluate $\pi_\theta$ over at least 20 held-out rollouts; report success rate, mean completion time, and failure category (perception, contact, timing, or reset distribution) as separate scalars in the result artifact.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>For ALOHA, ALOHA 2, and Mobile ALOHA, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
@@ -88,6 +109,9 @@ print("max arm timestamp skew ms:", max_skew)
 print("sync pass:", max_skew &lt;= 5)</code></pre>
 <div class="code-output">max arm timestamp skew ms: 3<br/>sync pass: True</div>
 <div class="code-caption"><strong>Code Fragment 3:</strong> The left and right arm streams stay within three milliseconds of each other in this toy trace. That synchronization check matters before training ACT, because chunk predictions assume aligned observations and actions.</div>
+<div class="callout tip">
+<p>When converting ALOHA recordings to LeRobotDataset format, run <code>lerobot.scripts.visualize_dataset</code> with the <code>--episode-index</code> flag on at least three episodes before any training run. This script overlays wrist-camera frames with the corresponding joint-position timeline and immediately reveals dropped frames, camera-arm timestamp mismatches beyond 5 ms, or gripper-state offsets that are invisible in raw HDF5 files. A dataset that passes this visual audit but still trains poorly almost always has an inconsistent <code>fps</code> field in <code>meta/info.json</code>: ACT resamples actions based on that value, so a wrong fps silently stretches or compresses every chunk. Set <code>fps</code> to the actual hardware control frequency (50 Hz for standard ALOHA) and re-run <code>lerobot.scripts.push_dataset_to_hub</code> to overwrite the metadata before submitting any training job.</p>
+</div>
 </section>
 <h2>Practical Recipe</h2>
 <ol>

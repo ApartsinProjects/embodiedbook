@@ -39,6 +39,10 @@
 <figcaption>Figure 18.5A: Human preference learning for robot control: a human compares two short trajectory clips, their preference signal trains a reward model, and that reward model drives PPO fine-tuning of the robot policy.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with policy gradient optimization and PPO from section 15.4, since the reward model's scores are fed directly into a PPO fine-tuning loop. It also builds on the reward hacking failure modes catalogued in section 18.4, because a learned reward model is subject to all of those failure modes plus exploitation by the optimizing policy. The safety constraints introduced here are extended in section 18.6, which formalizes how preference-based rewards interact with hard constraint terms.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Preference learning replaces a brittle hand-written reward with a learned judgment model.</strong> Humans compare short clips, trajectories, or state summaries, and a reward model learns which behaviors people prefer. The policy then optimizes that learned model, so the model becomes part of the control loop.</p>
@@ -59,6 +63,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Preference learning moves reward design from equation writing to data design. The core artifacts are the rater protocol, the comparison dataset, the reward-model validation set, and the policy rollouts that test whether the model is being exploited.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: RLHF Reward-Model Training and Policy Fine-Tuning</h4>
+<p><strong>Input:</strong> reference policy $\pi_{\text{ref}}$, trajectory dataset $\mathcal{D}$, rater rubric $\rho$, KL coefficient $\beta$, learning rate $\alpha$, reward-model parameters $\theta$</p>
+<p><strong>Output:</strong> fine-tuned policy $\pi_\theta$, audited reward model $\hat{R}_\theta$</p>
+<ol>
+<li>Write rater rubric $\rho$ with ranked criteria and a tie-breaking rule before any data collection begins.</li>
+<li>Sample trajectory pairs $(\tau_A, \tau_B)$ from $\mathcal{D}$, covering successes, failures, near-misses, and recoveries; collect human label $y \in \{A, B\}$ for each pair.</li>
+<li>Train $\hat{R}_\theta$ by minimizing the Bradley-Terry negative log-likelihood: $\mathcal{L}(\theta) = -\mathbb{E}\bigl[\log P_\theta(\tau_y \succ \tau_{\neg y})\bigr]$ where $P_\theta(\tau_A \succ \tau_B) = \sigma\!\left(\hat{R}_\theta(\tau_A) - \hat{R}_\theta(\tau_B)\right)$.</li>
+<li>Validate $\hat{R}_\theta$ on a held-out comparison set; record pair accuracy, calibration, and inter-rater agreement rate.</li>
+<li>Probe the reward model with adversarial rollouts: score visually smooth trajectories that contain hidden contact or force violations to detect blind spots.</li>
+<li>Initialize fine-tuning policy $\pi$ from $\pi_{\text{ref}}$ and run PPO with reward $r(s,a) = \hat{R}_\theta(\tau) - \beta\, \mathrm{KL}\!\left[\pi(\cdot|s) \,\|\, \pi_{\text{ref}}(\cdot|s)\right]$.</li>
+<li>At each PPO update, compute policy gradient $\nabla_\phi J(\phi) = \mathbb{E}_{\tau \sim \pi_\phi}\!\left[\nabla_\phi \log \pi_\phi(a|s)\, r(s,a)\right]$ and update $\phi \leftarrow \phi + \alpha\,\nabla_\phi J(\phi)$.</li>
+<li>Save high-reward rollouts after each PPO epoch and inspect them with independent physical metrics (contact cost, force proxy, intervention rate).</li>
+<li>If any high-reward rollout fails an independent metric, flag reward-model exploitation: add targeted comparison pairs covering that failure mode and retrain $\hat{R}_\theta$.</li>
+<li>Report final policy $\pi_\theta$ using task success, safety cost, and human intervention rate, not reward-model score alone.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Suppose raters prefer a slower grasp that avoids scraping the table over a faster grasp that succeeds but collides. Code Fragment 1 computes the probability assigned to the preferred clip and the corresponding loss.</p>
@@ -92,6 +113,9 @@ preference_loss= 0.263</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>A learned reward model can be hacked by the policy that optimizes it. If the model learned that smooth-looking video implies safety, the policy may learn visually smooth motions that hide contact forces or damage. Always evaluate optimized policies with independent physical metrics.</p>
+</div>
+<div class="callout tip">
+<p>When running PPO against a learned reward model, set the <code>kl_coef</code> parameter (typically 0.01 to 0.1) to penalize large KL divergence from the reference policy. Without this penalty, the optimizer quickly pushes the policy into out-of-distribution territory where the reward model's Bradley-Terry scores become unreliable extrapolations rather than calibrated preferences. A common symptom is a rapid spike in reward-model score followed by catastrophic policy collapse: the model is being queried on behavior it never saw during the comparison-collection phase. Start with <code>kl_coef=0.05</code> and tighten it if you observe high-score rollouts that fail independent task metrics.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

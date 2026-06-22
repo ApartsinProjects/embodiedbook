@@ -40,6 +40,10 @@
 <figcaption><strong>Figure 44.3A</strong>: Tactile simulation is a pipeline from contact mechanics to synthetic sensor output, and the weak link depends on which tactile quantity the downstream task needs.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with rigid-body contact dynamics from section 6.3 and with the physics simulators (MuJoCo, Isaac Lab) introduced in sections 11.2 and 11.4. The sim-to-real gap framing developed here is extended in section 20.1, which covers domain randomization strategies for reinforcement-learning policies, and the visuo-tactile pretraining pipeline that consumes simulated tactile data is developed in section 44.4.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Tactile simulation matters because collecting large real tactile datasets is expensive, but the simulator must decide which parts of tactile reality it aims to preserve and which it approximates.</p>
@@ -57,7 +61,7 @@
 <figcaption><strong>Figure 44.3.1</strong>: Tactile simulation is a pipeline from contact mechanics to synthetic sensor output, and the weak link depends on which tactile quantity the downstream task needs.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>Many tactile simulators split the problem into rigid-body contact from a base physics engine and sensor rendering or deformation synthesis on top. That makes them fast, but it means their guarantees are task-specific rather than universal.</p>
+<p>Many tactile simulators split the problem into <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.3.html">rigid-body contact from a base physics engine</a> and sensor rendering or deformation synthesis on top. That makes them fast, but it means their guarantees are task-specific rather than universal.</p>
 <p>For optical tactile sensors, image realism can matter more than exact force fidelity if the downstream model reads local geometry from marker motion or shading. For force or compliance tasks, the opposite can be true.</p>
 <p>$$ \hat I_t = \mathcal{S}(x_t, c_t, \phi),\qquad \Delta_{\text{tactile}} = d(\hat I_t, I_t^{\text{real}}),\qquad \Delta_{\text{control}} = d(a_t^{\text{sim}}, a_t^{\text{real}}) $$</p>
 <div class="callout under-the-hood">
@@ -83,10 +87,14 @@ print({"mean_depth_gap": mean_gap, "usable_for_pretraining": mean_gap &lt; 0.03}
 <p>TACTO remains a standard optical tactile simulator, while MuJoCo forks and Isaac-based tactile projects extend the ecosystem. Each route saves effort only if the team records the sensor assumptions and real-world comparison panel.</p>
 </div>
 
-<p>Consider a specific case: TACTO renders a DIGIT sensor frame by ray-casting from a virtual light source through a gel elastomer mesh whose rest-state depth map is initialized from a calibrated real sensor scan. When a rigid peg contacts the gel, TACTO displaces the mesh vertices using a linear elastic model with a single stiffness parameter (typically tuned once on a flat-plate indentation experiment), then re-renders the illuminated frame. Wang et al. (2022, "TACTO: A Fast, Flexible, and Open-Source Simulator for High-Resolution Vision-Based Tactile Sensors") showed that policies trained on TACTO frames for a peg-in-hole task transferred to a real DIGIT sensor with a success rate above 80 percent, despite the simulated frames having visibly incorrect shading at contact edges. That result illustrates the core principle: the rendering step only needs to preserve the marker-displacement gradient that the downstream CNN uses to infer contact location, not produce photorealistic output.</p>
+<p>Consider a specific case: TACTO renders a DIGIT sensor frame by ray-casting from a virtual light source through a gel elastomer mesh whose rest-state depth map is initialized from a calibrated real sensor scan. When a rigid peg contacts the gel, TACTO displaces the mesh vertices using a linear elastic model with a single stiffness parameter (typically tuned once on a flat-plate indentation experiment), then re-renders the illuminated frame. Wang et al. (2022, "TACTO: A Fast, Flexible, and Open-Source Simulator for High-Resolution Vision-Based Tactile Sensors") showed that policies trained on TACTO frames for a peg-in-hole task transferred to a real DIGIT sensor with a success rate above 80 percent, despite the simulated frames having visibly incorrect shading at contact edges. That result illustrates the core principle: the rendering step only needs to preserve the marker-displacement gradient that the downstream CNN uses to infer contact location, not produce photorealistic output. This is an instance of the broader <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/section-20.1.html">reality gap</a> problem: the simulator need not be universally accurate, only accurate enough on the quantities the downstream policy uses.</p>
 <div class="callout key-insight">
 <div class="callout-title">How Simulator Choice Maps to Task Requirements</div>
-<p>The rendering step in optical tactile simulators (TACTO, TacSim) has three tunable parameters that dominate sim-to-real gap: gel stiffness (controls how far the mesh displaces per unit force), light source position (controls shading gradients that mark-tracking CNNs use), and background depth map (the unloaded gel profile from a real sensor scan). For tasks that need contact location, getting light position and background map right matters most. For tasks that need normal force magnitude, gel stiffness dominates. Force-torque or compliance tasks are better served by simulators built on a full contact dynamics model (MuJoCo's elliptic contact or Isaac's PhysX soft-contact), where the rendered image is secondary. Choosing the wrong simulator for the task quantity is the most common source of gap that domain randomization cannot fix, because randomizing the wrong parameter does not cover the missing physics.</p>
+<p>The rendering step in optical tactile simulators (TACTO, TacSim) has three tunable parameters that dominate sim-to-real gap: gel stiffness (controls how far the mesh displaces per unit force), light source position (controls shading gradients that mark-tracking CNNs use), and background depth map (the unloaded gel profile from a real sensor scan). For tasks that need contact location, getting light position and background map right matters most. For tasks that need normal force magnitude, gel stiffness dominates. Force-torque or compliance tasks are better served by simulators built on a full contact dynamics model (<a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.2.html">MuJoCo's elliptic contact</a> or <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.4.html">Isaac's PhysX soft-contact</a>), where the rendered image is secondary. Choosing the wrong simulator for the task quantity is the most common source of gap that <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/section-13.2.html">domain randomization</a> cannot fix, because randomizing the wrong parameter does not cover the missing physics.</p>
+</div>
+
+<div class="callout tip">
+<p>When using TACTO, the gel stiffness parameter (<code>elastomer_thickness</code> in the config) is typically tuned once on a flat-plate indentation experiment and then frozen. This works for flat contacts but introduces systematic force magnitude errors on curved or small-radius objects, because the linear elastic model underestimates lateral gel spread. Rather than treating stiffness as a fixed calibration constant, include it in your domain-randomization range (a uniform distribution over roughly 0.7x to 1.3x the calibrated value) so the downstream network learns to be invariant to it. This single change closes a common gap that no amount of image-noise randomization can fix.</p>
 </div>
 
 <h2>Practical Recipe</h2>
@@ -105,7 +113,7 @@ print({"mean_depth_gap": mean_gap, "usable_for_pretraining": mean_gap &lt; 0.03}
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Differentiable tactile simulation, faster GPU pipelines, and Isaac-integrated visuo-tactile stacks are improving quickly. The core systems job is still to define what realism means for the task at hand.</p>
+<p><a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.5.html">Differentiable tactile simulation</a>, faster GPU pipelines, and Isaac-integrated visuo-tactile stacks are improving quickly. The core systems job is still to define what realism means for the task at hand.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>

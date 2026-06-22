@@ -39,6 +39,10 @@
 <figcaption>Figure 16.3A: DDPG, TD3, and SAC compared on a continuous-control benchmark: the actor outputs a deterministic or stochastic action, the critic estimates Q-values, and twin critics in TD3/SAC reduce overestimation bias.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with replay buffers and target networks from section 16.2, and with the Q-function formulation introduced in section 16.1. The maximum-entropy objective that underlies SAC is developed further in section 16.4. The actor-critic architectures covered here recur in Part V alongside sim-to-real transfer, where section 20.2 examines which continuous-control policies survive the gap between simulation and hardware.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Continuous control: DDPG, TD3, SAC</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -59,6 +63,20 @@
 <p>SAC changes the objective by rewarding both task return and action entropy. The policy is stochastic, so the agent keeps useful diversity in its action choices:</p>
 <p>$$J(\pi)=\mathbb{E}\left[\sum_t r(o_t,a_t) + \alpha \mathcal{H}(\pi(\cdot|o_t))\right]$$</p>
 <p>The temperature $\alpha$ controls how much the policy values entropy. In contact-rich robotics, that entropy can help discover recovery actions that a deterministic actor would stop trying too early.</p>
+<div class="callout algorithm">
+<h4>Algorithm: TD3 Actor-Critic Update (Twin Delayed Deep Deterministic Policy Gradient)</h4>
+<p><strong>Input:</strong> replay buffer $\mathcal{D}$, actor $\mu_\phi$, twin critics $Q_{\theta_1}, Q_{\theta_2}$, target networks $\mu_{\phi^-}, Q_{\theta_1^-}, Q_{\theta_2^-}$, discount $\gamma$, noise clip $c$, policy delay $d$, learning rates $\alpha_\phi, \alpha_\theta$</p>
+<p><strong>Output:</strong> updated actor parameters $\phi$, updated critic parameters $\theta_1, \theta_2$</p>
+<ol>
+<li>Sample a minibatch $\{(o, a, r, o')\}$ of transitions from replay buffer $\mathcal{D}$.</li>
+<li>Draw target smoothing noise $\epsilon \sim \mathrm{clip}(\mathcal{N}(0, \sigma), -c, c)$ and compute the smoothed target action $\tilde{a} = \mathrm{clip}(\mu_{\phi^-}(o') + \epsilon, a_{\min}, a_{\max})$.</li>
+<li>Compute the clipped double-Q bootstrap target: $y = r + \gamma \min_{i \in \{1,2\}} Q_{\theta_i^-}(o', \tilde{a})$.</li>
+<li>Update each critic by minimizing its Bellman residual: $\theta_i \leftarrow \theta_i - \alpha_\theta \nabla_{\theta_i} \frac{1}{N}\sum (Q_{\theta_i}(o,a) - y)^2$ for $i \in \{1,2\}$.</li>
+<li>If the current step is a multiple of the delay $d$, update the actor by ascending the critic gradient: $\phi \leftarrow \phi + \alpha_\phi \nabla_\phi \frac{1}{N}\sum Q_{\theta_1}(o, \mu_\phi(o))$.</li>
+<li>If the actor was updated, perform a soft update of all target networks: $\theta_i^- \leftarrow \tau \theta_i + (1-\tau)\theta_i^-$ and $\phi^- \leftarrow \tau \phi + (1-\tau)\phi^-$.</li>
+<li>Log critic disagreement $|Q_{\theta_1}(o,a) - Q_{\theta_2}(o,a)|$, action saturation rate, and episode return after each evaluation rollout.</li>
+</ol>
+</div>
 <div class="callout paper-spotlight">
 <div class="callout-title">Paper Spotlight</div>
 <p><strong>Addressing Function Approximation Error in Actor-Critic Methods</strong> (Fujimoto et al., ICML 2018) — clipped double-Q targets and delayed actor updates reduce the overestimation bias that makes continuous-control policies brittle. For embodied agents, that bias is dangerous because an overvalued action becomes a high-torque command the actor learns to chase onto hardware.</p>
@@ -107,6 +125,9 @@ td3_target=1.18</div>
 <p>A continuous-action policy can exploit simulator details by choosing precise torques that are unavailable, unsafe, or unstable on hardware. If evaluation reports return without action-limit violations, actuator saturation, and critic disagreement, the result is incomplete.</p>
 </div>
 <p>Each algorithm breaks in a characteristic way. DDPG's single critic overestimates value for actions the actor has not visited often; the symptom is a rising Q-loss curve alongside a policy that saturates actuator limits and stops improving. TD3 can mask overestimation without curing it: if the two critics converge to similar (but jointly wrong) values, the clipped minimum offers no protection, and the actor chases a false peak; look for low critic disagreement paired with falling episode return after a stable plateau. SAC fails most often through entropy collapse: the temperature $\alpha$ decays to near zero during training, the policy becomes nearly deterministic, and the agent loses the ability to recover from novel contact states; the observable signal is entropy dropping below 0.1 nat while evaluation success variance spikes.</p>
+<div class="callout tip">
+<p>In Stable-Baselines3's SAC, the default <code>ent_coef='auto'</code> sets an entropy target of <code>-action_dim</code> and tunes temperature with its own Adam optimizer at <code>learning_rate=3e-4</code>. For contact-rich manipulation tasks where the reward signal is sparse and delayed, that learning rate is often too aggressive and causes the temperature to collapse within the first 50k steps, well before the policy has explored enough. Set <code>target_entropy</code> explicitly (for example, <code>-0.5 * action_dim</code>) and lower the entropy coefficient learning rate to <code>1e-4</code> via the <code>policy_kwargs</code> or a custom schedule. If entropy still drops below 0.1 nat before 100k steps, treat it as a tuning failure rather than a converged policy.</p>
+</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A manipulation team can compare TD3 and SAC on the same pushing task by co-computing success, contact force, action saturation, and recovery after an object slip. TD3 may produce crisp deterministic pushes, while SAC may preserve enough stochasticity to recover from surprising contact changes.</p>

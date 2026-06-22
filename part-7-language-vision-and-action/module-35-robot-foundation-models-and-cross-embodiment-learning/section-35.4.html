@@ -38,16 +38,38 @@
 <img alt="A leaderboard wall with one large average score peeling back to reveal smaller panels for different robots, tasks, and perturbations." loading="lazy" src="images/chapter-35-illustration-04.png"/>
 <figcaption><strong>Figure 35.4A:</strong> Large behavior models need sliced evaluation, because one glossy average can hide which robot, task family, or perturbation actually improved.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with cross-embodiment transfer introduced in section 35.2 and the dual-system action architectures described in section 35.3, as those explain why aggregate metrics hide embodiment-specific regressions. The evaluation discipline introduced here is extended in section 52.2, which formalizes intervention-cost and path-efficiency metrics, and in section 52.5, which covers simulation-backed evaluation panels. The same slice-aware reporting principle recurs in Part 11 alongside safety and robustness benchmarking.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Large behavior models promise broader coverage across tasks and embodiments, but their evidence can be surprisingly thin if evaluation collapses everything into one headline metric. This section is about the discipline needed to turn "larger model" into a real claim about behavior.</p></div>
 
 <h2>Why Aggregate Metrics Mislead</h2>
-<p>A foundation policy evaluated over many tasks can improve its mean success rate while regressing on the exact embodiment or perturbation regime that matters to you. This is not a statistical nuisance, it is a systems fact. Different embodiments stress different parts of the stack: action adapters, contact modeling, semantic grounding, or control latency.</p>
+<p>A foundation policy evaluated over many tasks can improve its mean success rate while regressing on the exact embodiment or perturbation regime that matters to you. This is not a statistical nuisance, it is a systems fact. Different embodiments stress different parts of the stack: action adapters, contact modeling, semantic grounding, or control latency. This is a direct consequence of <a href="../../part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/section-35.2.html">cross-embodiment transfer</a> being architecturally non-trivial.</p>
 <p>The right evaluation question is therefore not "what is the global success rate?" but "what changed on one matched scenario panel, and how do the slices distribute across robots, tasks, and perturbation types?"</p>
 <div class="callout key-insight"><div class="callout-title">One Panel, Many Views</div><p>All compared numbers should come from one fixed scenario panel, one metric script, and one artifact bundle. Slicing happens after measurement, not by mixing different evaluation runs into one story.</p></div>
 <h2>Matched Evaluation In Symbols</h2>
 <p>A simple notation for slice-aware evaluation is</p>
 <p>$$J(\pi, S)=\sum_{s \in S} w_s \; \mathbb{E}_{e \sim \mathcal{E}_s}[m(\pi,e)], \qquad \Delta_s = J(\pi_1, S_s)-J(\pi_0, S_s),$$</p>
 <p>where $S$ is a fixed set of slices, such as embodiment, task family, and perturbation category. The main scalar metric $J$ is useful only if the per-slice deltas $\Delta_s$ remain visible. Otherwise the evaluation is blind to where the model actually got better.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Slice-Aware Evaluation of a Large Behavior Model</h4>
+<p><strong>Input:</strong> Two policies $\pi_0$ (baseline) and $\pi_1$ (candidate); a fixed scenario panel $S = \{s_1, \dots, s_k\}$ with slice labels (embodiment, task family, perturbation type, latency band); per-slice weight vector $w$; scalar success metric $m$.</p>
+<p><strong>Output:</strong> Aggregate delta $\Delta J$ and per-slice delta table $\{\Delta_s\}_{s \in S}$; pass/fail verdict for each slice.</p>
+<ol>
+<li>Fix the panel: commit <code>eval_cfg.yaml</code> with episode count, seeds, and slice labels so every subsequent run uses an identical panel shape.</li>
+<li>Roll out $\pi_0$ on all episodes in $S$ using the fixed config; record per-episode outcome $m(\pi_0, e)$ and the slice label for each episode $e$.</li>
+<li>Roll out $\pi_1$ on the same panel and seeds; record $m(\pi_1, e)$ and log intervention counts separately from unaided successes.</li>
+<li>For each slice $s \in S$ compute $J(\pi, S_s) = \sum_{e \in S_s} w_s \, m(\pi, e)$ for both $\pi_0$ and $\pi_1$.</li>
+<li>Compute per-slice deltas: $\Delta_s = J(\pi_1, S_s) - J(\pi_0, S_s)$ for every slice $s$.</li>
+<li>Compute the aggregate delta: $\Delta J = \sum_s w_s \, \Delta_s$ (the headline number reported last, not first).</li>
+<li>Flag any slice where $\Delta_s < 0$ as a regression; a positive $\Delta J$ with at least one negative $\Delta_s$ is a hidden regression, not a win.</li>
+<li>Check that no intervention-assisted episodes inflate $\Delta_s$; if intervention rate rose between $\pi_0$ and $\pi_1$ on a slice, treat that slice as inconclusive.</li>
+<li>Verify that inference latency for $\pi_1$ stays within the deployment budget $\alpha_{\max}$ on each embodiment; a slice whose latency exceeds $\alpha_{\max}$ is excluded from the positive-delta count.</li>
+<li>Commit the full artifact bundle (metrics, videos, prompts, seeds, slice table) as a single versioned file; any future comparison must use this artifact as $\pi_0$'s baseline, not a fresh re-run.</li>
+<li>Report: list $\{\Delta_s\}$ first, then $\Delta J$; a claim that $\pi_1$ improves is valid only when at least the required slice set shows non-negative $\Delta_s$ with no latency or intervention violations.</li>
+</ol>
+</div>
 <p>Code Fragment 1 computes this kind of slice table from one shared result panel.</p>
 <pre><code class="language-python"># Compute matched slice metrics from one evaluation panel.
 results = [
@@ -70,7 +92,10 @@ for key, values in groups.items():
 ('mobile', 'drawer'): success=1.00</pre></div>
 <p>The expected output is a slice table that exposes embodiment-specific performance rather than burying it in one aggregate score. A reader should immediately see that the overall mean would overstate capability because the arm embodiment is still failing half the time on the same task family.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The aggregate score for this panel would be 0.75, but the slice table shows a much more important fact: the arm embodiment is still failing half the time on the same task. This is why slice visibility is non-negotiable.</div>
-<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The grouping code is short because the panel is tiny. In a real evaluation harness, LeRobot reports, LIBERO task panels, DROID-style replay logs, and your own benchmark runner should save one artifact with video, metrics, prompts, seeds, and slice labels, so you can regenerate the same table without re-running ad hoc notebook cells.</p></div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The grouping code is short because the panel is tiny. In a real evaluation harness, LeRobot reports, LIBERO task panels, <a href="../../part-5-learning-from-demonstration-and-robot-data/module-24-robot-datasets-and-data-scaling-laws/section-24.1.html">DROID-style replay logs</a>, and your own benchmark runner should save one artifact with video, metrics, prompts, seeds, and slice labels, so you can regenerate the same table without re-running ad hoc notebook cells.</p></div>
+<div class="callout tip">
+<p>When using LeRobot's <code>lerobot.eval</code> script, always pin <code>eval.n_episodes</code> and <code>eval.batch_size</code> explicitly in your config rather than relying on defaults. The default episode count is low enough that per-slice success rates carry high variance, and if you compare two checkpoints run on different machines or different dates without fixing these values, the slice counts will differ and the delta table becomes meaningless. A single <code>eval_cfg.yaml</code> committed alongside the checkpoint is the minimum reproducibility contract: anyone re-running evaluation gets the same panel shape, same seeds, and the same artifact file that your slice table was derived from.</p>
+</div>
 <h2>What To Slice By</h2>
 <div class="comparison-table">
 <div class="comparison-table-title">Minimum Evaluation Slices For Large Behavior Models</div>
@@ -80,17 +105,17 @@ for key, values in groups.items():
 <tr><td>Embodiment</td><td>Separates transfer quality from architecture hype.</td><td>The largest average gains come from the easiest robot.</td></tr>
 <tr><td>Task family</td><td>Different tasks stress different interface layers.</td><td>Pick-and-place improves while contact-rich insertion regresses.</td></tr>
 <tr><td>Perturbation type</td><td>Shows whether robustness is semantic, visual, or dynamical.</td><td>A model handles paraphrased instructions but fails shifted lighting.</td></tr>
-<tr><td>Intervention cost</td><td>Measures operator burden, not just headline success.</td><td>Success rises only because humans rescue more runs.</td></tr>
+<tr><td>Intervention cost</td><td>Measures operator burden, not just headline success.</td><td>Success rises only because humans rescue more runs — a failure that only <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.2.html">path efficiency and intervention-cost metrics</a> would expose.</td></tr>
 <tr><td>Latency band</td><td>Exposes whether improvements survive runtime constraints.</td><td>A stronger policy fails once inference is bounded to deployment speed.</td></tr>
 </tbody>
 </table>
 </div>
 <div class="callout key-insight"><div class="callout-title">A Named Case: Octo Across Embodiments</div><p>Octo (Ghosh et al., 2023) is a useful reference point for specificity. When evaluated across the WidowX arm and BridgeV2 manipulation tasks versus a Franka arm on different contact-rich tasks, the aggregate success numbers looked promising, but per-embodiment breakdowns revealed that transfer gains concentrated on lower-contact, higher-visual-similarity scenarios. Tasks requiring precise torque control on the Franka showed smaller or negligible improvement from pretraining. That pattern, strong gains on easy-transfer tasks, weaker gains on the harder slice, is exactly what a single aggregate score conceals. Always ask which embodiment is carrying the mean.</p></div>
 <div class="callout warning"><div class="callout-title">The Mean Can Lie Politely</div><p>If a larger model only helps on well-lit tabletop tasks but hurts on mobile tasks with delayed sensing, the mean score may still rise. That is not a contradiction. It is the reason slice-aware reporting exists.</p></div>
-<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A lab evaluating an adapted VLA on LIBERO-style tasks and a real mobile manipulator should not merge those outcomes into one undifferentiated bar chart. The real question is whether the transfer story holds in both regimes and whether the runtime budget changes the answer.</p></div>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A lab evaluating an adapted VLA on <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-12-benchmarks-and-task-suites/section-12.3.html">LIBERO-style tasks</a> and a real mobile manipulator should not merge those outcomes into one undifferentiated bar chart. The real question is whether the transfer story holds in both regimes and whether the runtime budget changes the answer.</p></div>
 <div class="callout fun-note"><div class="callout-title">Memory Hook</div><p>A giant average score is a trench coat. Make it open the coat and show you the slice labels.</p></div>
 <div class="callout self-check"><div class="callout-title">Self Check</div><p>Name the three slices you would demand before believing a claim that one robot foundation model "outperforms baselines." If latency or intervention count is absent, what deployment fact might still be hidden?</p></div>
-<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Recent work on simulation-backed evaluation, paraphrase robustness, and paired real-to-sim panels is trying to make generalist robot-policy evaluation cheaper and more honest. The open problem is correlation: which scalable benchmark slices best predict what happens on real hardware under deployment constraints?</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Recent work on <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.5.html">simulation-backed evaluation</a>, paraphrase robustness, and paired real-to-sim panels is trying to make generalist robot-policy evaluation cheaper and more honest. The open problem is correlation: which scalable benchmark slices best predict what happens on real hardware under deployment constraints?</p></div>
 <div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>Large behavior models deserve large evaluation discipline. The correct deliverable is not one global metric, it is one matched scenario panel with transparent slices that reveal where scale truly helped.</p></div>
 <div class="callout exercise"><div class="callout-title">Exercise 35.4</div><p>Design an evaluation panel for a cross-embodiment robot policy with at least four slices, one aggregate score, and one rule for handling intervention-assisted successes. Explain which deployment mistake your panel is trying to prevent.</p></div>
 <div class="whats-next"><h3>What's Next?</h3><p>Section 35.5 moves from evaluation back to adaptation and asks how a supposedly general policy should be prompted, conditioned, and locally retuned when you meet a new robot.</p></div>

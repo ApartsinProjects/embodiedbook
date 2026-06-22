@@ -41,6 +41,10 @@
 <figcaption><strong>Figure 48.5A</strong>: A driving world model rolls the scene forward in its imagination, letting the planner test maneuvers against predicted futures before committing a single real command.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with model-based control from section 37.1 and with latent world models from section 38.3; the occupancy representation used here is introduced in section 28.4. The closed-loop planning pattern developed in this section is applied directly to safety evaluation in section 48.9, and the video-diffusion generation techniques are extended alongside language-conditioned scene synthesis in section 48.8.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>A <strong>world model</strong> learns to predict how the scene will evolve, often as future video frames or future occupancy, conditioned on the ego action. Driving world models such as <strong>GAIA-1</strong>, <strong>UniSim</strong>, and <strong>DriveDreamer</strong> generate realistic future sensor streams, which serve two purposes: closed-loop planning (imagine and evaluate candidate actions) and data augmentation (synthesize rare or dangerous scenarios that are unsafe or expensive to collect on real roads). <strong>Occupancy flow prediction</strong> is a lighter-weight cousin that forecasts where space will be occupied and how it moves.</p>
@@ -48,15 +52,15 @@
 <p>This section develops the world-model contract: given a history of observations and a proposed action sequence, predict future observations (frames, occupancy, or flow) with enough fidelity that planning decisions made in imagination transfer to the real road. The recurring question is closed-loop validity: a model can produce beautiful video yet still be useless for planning if its predicted dynamics drift from real physics over the horizon.</p>
 <h2>Theory</h2>
 <h3>From prediction to imagination</h3>
-<p>A learned world model approximates the environment transition $p(o_{t+1} \mid o_{\le t}, a_t)$. Unrolling it produces an imagined rollout the planner can score, turning planning into search over action sequences inside a differentiable or sampleable simulator. This is the driving instance of the model-based control idea: plan in a learned model, act in the world.</p>
+<p>A learned world model approximates the environment transition $p(o_{t+1} \mid o_{\le t}, a_t)$. Unrolling it produces an imagined rollout the planner can score, turning planning into search over action sequences inside a differentiable or sampleable simulator. This is the driving instance of the <a href="../../part-8-world-models-and-model-based-embodied-ai/module-37-model-based-rl-and-mpc/section-37.1.html">model-based control idea</a>: plan in a learned model, act in the world.</p>
 <h3>Generative driving world models</h3>
 <ul>
 <li><strong>GAIA-1</strong> casts driving generation as next-token prediction over discretized video, text, and action tokens, producing controllable future driving videos.</li>
 <li><strong>UniSim</strong> aims for a general interactive simulator: condition on an action and render the resulting next observation, so an agent can be trained and tested entirely inside the learned simulator.</li>
-<li><strong>DriveDreamer</strong> conditions video diffusion on structured driving signals (HD map, 3D boxes, actions) to generate diverse, controllable scenarios for training perception and planning.</li>
+<li><strong>DriveDreamer</strong> conditions <a href="../../part-8-world-models-and-model-based-embodied-ai/module-39-generative-and-video-world-models/section-39.3.html">video diffusion</a> on structured driving signals (HD map, 3D boxes, actions) to generate diverse, controllable scenarios for training perception and planning.</li>
 </ul>
 <h3>Occupancy flow</h3>
-<p>Rather than render pixels, occupancy flow predicts a future occupancy grid plus a flow field describing how occupied cells move. It is cheaper, directly consumable by planning (the planner wants to know what space will be blocked), and avoids hallucinating photorealistic but dynamically wrong frames.</p>
+<p>Rather than render pixels, <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.4.html">occupancy flow</a> predicts a future occupancy grid plus a flow field describing how occupied cells move. It is cheaper, directly consumable by planning (the planner wants to know what space will be blocked), and avoids hallucinating photorealistic but dynamically wrong frames.</p>
 <div class="callout paper-spotlight">
 <div class="callout-title">Paper Spotlight: UniSim</div>
 <p><strong>"UniSim: Learning Interactive Real-World Simulators" (Yang et al., ICLR 2024).</strong> UniSim learns a single action-conditioned generative simulator from heterogeneous real-world data (robot trajectories, human activity, navigation), so that issuing an action produces a plausible next visual observation. For driving, the promise is to train and evaluate policies inside a learned simulator that captures real-world appearance and dynamics, reducing reliance on hand-built simulators and risky on-road testing. The paper's central evidence is that policies and perception models trained purely in the learned simulator transfer to real settings, which is the property a driving world model must have to be more than a video generator.</p>
@@ -67,7 +71,24 @@
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>For closed-loop planning the loop is: encode current observation, propose candidate action sequences, unroll the world model for each to get imagined futures, score each future with a reward or cost (collision, progress, comfort), and execute the first action of the best sequence (model predictive control in latent space). For data augmentation the loop is offline: sample diverse conditions (weather, agents, rare events), generate synthetic sensor data plus labels, and add it to the training set for downstream perception and planning.</p>
+<p>For closed-loop planning the loop is: encode current observation, propose candidate action sequences, unroll the world model for each to get imagined futures, score each future with a reward or cost (collision, progress, comfort), and execute the first action of the best sequence (<a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">model predictive control</a> in latent space). For data augmentation the loop is offline: sample diverse conditions (weather, agents, rare events), generate synthetic sensor data plus labels, and add it to the training set for downstream perception and planning.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Closed-Loop World-Model Planning (Imagined MPC)</h4>
+<p><strong>Input:</strong> current observation $o_t$, action candidate set $\mathcal{A} = \{a^{(1)}, \ldots, a^{(K)}\}$, world model $\hat{p}_\theta$, planning horizon $H$, cost function $c(\cdot)$, safety threshold $\delta$</p>
+<p><strong>Output:</strong> selected action $a^*$ to execute at time $t$</p>
+<ol>
+<li>Encode the current observation into a compact state: $z_t = f_\theta(o_t)$.</li>
+<li>For each candidate action $a^{(k)} \in \mathcal{A}$, initialize the imagined state $\hat{z}_0^{(k)} \leftarrow z_t$.</li>
+<li>Unroll the world model forward for $H$ steps: $\hat{z}_{h+1}^{(k)} = \hat{p}_\theta(\hat{z}_h^{(k)}, a^{(k)})$ for $h = 0, \ldots, H-1$.</li>
+<li>Decode each imagined state to an interpretable representation (occupancy grid, gap, or reward signal): $\hat{o}_h^{(k)} = g_\theta(\hat{z}_h^{(k)})$.</li>
+<li>Compute the worst-case safety margin over the horizon: $m^{(k)} = \min_{h=1}^{H} \text{margin}(\hat{o}_h^{(k)})$.</li>
+<li>Reject any candidate with $m^{(k)} < \delta$ (hard safety floor).</li>
+<li>Score each remaining candidate with the planning objective: $s^{(k)} = \sum_{h=1}^{H} \gamma^h \, c(\hat{o}_h^{(k)}, a^{(k)})$ where $\gamma \in (0,1]$ is a discount factor.</li>
+<li>Select the best safe action: $a^* = \arg\max_{k: \, m^{(k)} \ge \delta} s^{(k)}$.</li>
+<li>Execute $a^*$ in the real environment, observe $o_{t+1}$, and advance $t \leftarrow t+1$.</li>
+<li>Periodically recalibrate $\theta$ by measuring multi-step Average Displacement Error (ADE) on held-out data; cap $H$ at the horizon where ADE exceeds the lane-keeping tolerance.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>The example sketches the planning use of a world model: a toy action-conditioned predictor is unrolled for several candidate accelerations, and the planner selects the action whose imagined future keeps the largest safety margin. It mirrors the real closed-loop pattern without a learned network.</p>
@@ -106,7 +127,10 @@ print("chosen action (m/s^2):", best_a)
 </div>
 <div class="callout key-insight">
 <div class="callout-title">When to Choose Which Output Target</div>
-<p>The choice of world-model output format depends on the downstream consumer and available compute. <strong>Full video generation</strong> (GAIA-1, DriveDreamer) is best for data augmentation where perception models need realistic pixel inputs; it is too slow and hallucination-prone for real-time closed-loop planning. <strong>Occupancy plus flow</strong> is the right target when the consumer is a planner or trajectory predictor: it is computationally cheap, directly encodes what space will be blocked and how fast, and avoids the pixel-realism trap. <strong>Latent-state rollouts</strong> (Dreamer-style) suit online MPC inside a compact learned latent space, but require careful calibration because latent distances do not map cleanly to physical safety margins. A common mistake is training a video model and then trying to plan inside it; the correct sequence is to pick the output format from the planning interface first, then train accordingly.</p>
+<p>The choice of world-model output format depends on the downstream consumer and available compute. <strong>Full video generation</strong> (GAIA-1, DriveDreamer) is best for data augmentation where perception models need realistic pixel inputs; it is too slow and hallucination-prone for real-time closed-loop planning. <strong>Occupancy plus flow</strong> is the right target when the consumer is a planner or trajectory predictor: it is computationally cheap, directly encodes what space will be blocked and how fast, and avoids the pixel-realism trap. <strong>Latent-state rollouts</strong> (<a href="../../part-8-world-models-and-model-based-embodied-ai/module-38-latent-world-models/section-38.3.html">Dreamer-style</a>) suit online MPC inside a compact learned latent space, but require careful calibration because latent distances do not map cleanly to physical safety margins. A common mistake is training a video model and then trying to plan inside it; the correct sequence is to pick the output format from the planning interface first, then train accordingly.</p>
+</div>
+<div class="callout tip">
+<p>When using a Dreamer-style latent world model for driving MPC, compute the multi-step Average Displacement Error (ADE) on a held-out nuScenes split at 1 s, 2 s, and 3 s rollout horizons before you set the planning horizon. Cap the planning horizon at the first step where ADE exceeds your lane-keeping tolerance (typically 0.3 m for highway, 0.5 m for urban), because latent distances do not map linearly to metric space and the drift compounds silently. Skipping this calibration is the most common reason a latent-space planner performs well in imagination but triggers unsafe maneuvers on the road.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>

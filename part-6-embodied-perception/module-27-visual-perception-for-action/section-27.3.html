@@ -40,11 +40,15 @@
 <figcaption><strong>Figure 27.3A</strong>: Depth becomes robotics evidence when pixels, intrinsics, scale, and clearance all agree.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the pinhole camera model, coordinate frames, and the intrinsic/extrinsic matrix derivation covered in section 4.6. The metric-scale reasoning developed here carries directly into section 27.4, where optical flow provides a complementary motion-based cue that shares the same frame conventions. Both depth and flow recur in Part IX alongside grasp approach and collision clearance, particularly in section 42.4 on perception for manipulation.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p><strong>Depth estimation and metric scale</strong> turns visual evidence into distances that can support collision checking, grasp approach, landing, docking, and navigation. Depth is useful for action only when its scale, frame, and failure modes are explicit.</p></div>
 
 <h2>Problem First: Why This Representation Exists</h2>
 <p>A visually plausible depth map can be dangerous when metric scale, calibration, or uncertainty is wrong. Embodied use needs depth in a named frame with error bounds tied to the robot body.</p>
-<p>The contract here maps pixels to metric state: depth source, camera intrinsics, extrinsics, uncertainty, timestamp, and the planner or controller that consumes the resulting geometry.</p>
+<p>The contract here maps pixels to metric state: depth source, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.6.html">camera intrinsics, extrinsics</a>, uncertainty, timestamp, and the planner or controller that consumes the resulting geometry.</p>
 <div class="callout key-insight"><div class="callout-title">Action Is The Unit Of Meaning</div><p>Depth becomes embodied knowledge when an error bound changes clearance, grasp approach, foot placement, or stopping distance.</p></div>
 <p>Figure 27.3.1 should be read as a metric-scale contract: depth source, scale calibration, frame transform, uncertainty, and action consumer determine whether the robot can reach or avoid safely.</p>
 <figure class="technical-figure" id="fig-27-3-contract">
@@ -78,15 +82,18 @@
 <p>The pinhole camera model lifts a depth pixel into a 3D camera-frame point.</p>
 <div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$X_c=\frac{(u-c_x)z}{f_x},\quad Y_c=\frac{(v-c_y)z}{f_y},\quad Z_c=z,\quad z_{\mathrm{stereo}}=\frac{fB}{d}$</p></div>
 <p>The first three equations use metric depth directly. The stereo equation shows why small disparity errors become large distance errors when disparity $d$ is small, which is why far obstacles and reflective surfaces deserve extra caution.</p>
+<div class="callout tip">
+<p>When using a monocular depth model such as Depth Anything v2 or Metric3D v2, always verify metric scale against at least one known-size anchor in the scene (a calibration board, a robot link with known length, or a lidar sweep) before the depth estimate reaches the planner. The <code>scale_factor = z_lidar / z_mono</code> correction is a single scalar multiply and takes under one millisecond, but skipping it is the single most common source of silent clearance errors in manipulation pipelines. If no anchor is available at runtime, mark the depth estimate with a <code>scale_unchecked</code> flag and widen the planner's safety margin by the model's documented scale-error percentile for that range.</p>
+</div>
 <div class="callout algorithm"><div class="callout-title">Depth-to-action validation</div><ol><li>Check the camera intrinsics and depth units before any planning call.</li>
 <li>Reject missing, saturated, or physically impossible depth pixels.</li>
-<li>Back-project task-relevant pixels into the camera frame, then transform them into the robot frame.</li>
+<li>Back-project task-relevant pixels into the camera frame, then transform them into the <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.5.html">robot frame</a>.</li>
 <li>Compare the resulting clearance against controller limits and uncertainty margins.</li></ol></div>
 <div class="comparison-table"><div class="comparison-table-title">Depth Sources And Failure Modes</div><table><thead><tr><th>Design Choice</th><th>Use When</th><th>Control Risk</th></tr></thead><tbody><tr><td>Stereo</td><td>Outdoor robots and textured scenes</td><td>Low texture and far range create unstable disparity.</td></tr>
 <tr><td>RGB-D or time-of-flight</td><td>Indoor manipulation and tabletop mapping</td><td>Reflective, transparent, or black materials can corrupt depth.</td></tr>
 <tr><td>Monocular depth</td><td>Semantic priors and fallback estimates</td><td>Metric scale may drift without calibration or known references.</td></tr></tbody></table></div>
 <h2>Worked Miniature</h2>
-<p>Code Fragment 27.3.1 implements the back-projection equations with one pixel and one depth value. This is the smallest useful check before passing points into Open3D or a planner.</p>
+<p>Code Fragment 27.3.1 implements the back-projection equations with one pixel and one depth value. This is the smallest useful check before passing <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.2.html">points into Open3D</a> or a planner.</p>
 <pre><code class="language-python"># Back-project one depth pixel through camera intrinsics.
 # The output is a metric 3D point in the camera frame.
 fx, fy = 615.0, 615.0
@@ -110,7 +117,7 @@ print(point_c)</code></pre>
 <p>Perturb textureless surfaces, reflective materials, range, lighting, and calibration offsets, then check whether the planner margin catches the depth error before execution.</p>
 <div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Foundation depth models are improving fast, but robotics still needs calibrated scale, uncertainty, and temporal consistency. The open problem is not producing pretty depth, it is certifying when depth is good enough for contact or collision decisions.</p>
 <p>Two recent results push monocular depth toward metric reliability. Depth Anything v2 (Yang et al., 2024) achieves metric monocular depth estimation at ranges up to 70 m using a ViT-L backbone, with significant gains on fine-grained detail and robustness to challenging lighting. Metric3D v2 (Hu et al., 2024) enables zero-shot metric depth across arbitrary camera intrinsics by disentangling canonical depth prediction from camera-specific projection, making it practical for robots that change lenses or operate without precise calibration files. Both results narrow the gap between depth estimation and the scale-certified evidence that planners and contact controllers require.</p>
-<p>On the mapping side, 3D Gaussian-splatting representations are entering simultaneous localization and mapping. SplaTAM (Keetha et al., CVPR 2024) performs real-time 3D Gaussian-splatting SLAM with simultaneous tracking and map densification, yielding dense color and geometry at interactive rates. MonoGS (Matsuki et al., CVPR 2024) extends this to monocular cameras using photometric and depth loss, removing the need for a hardware depth sensor. The open problem shared across these systems is that Gaussian-splatting SLAM assumes a static scene; handling dynamic objects and moving cameras together in the same representation remains unsolved.</p></div>
+<p>On the mapping side, <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.6.html">3D Gaussian-splatting representations</a> are entering <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.6.html">simultaneous localization and mapping</a>. SplaTAM (Keetha et al., CVPR 2024) performs real-time 3D Gaussian-splatting SLAM with simultaneous tracking and map densification, yielding dense color and geometry at interactive rates. MonoGS (Matsuki et al., CVPR 2024) extends this to monocular cameras using photometric and depth loss, removing the need for a hardware depth sensor. The open problem shared across these systems is that Gaussian-splatting SLAM assumes a static scene; handling dynamic objects and moving cameras together in the same representation remains unsolved.</p></div>
 <div class="callout whats-next">
 <div class="callout-title">What's Next</div>
 <p>Section 27.4 adds the time dimension: once metric depth is established, optical flow reveals how quickly regions move and whether the robot needs to react before a slower reconstruction pipeline can respond.</p>

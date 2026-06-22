@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 19.3A</strong>: Safe exploration keeps curiosity inside a recoverable envelope, where every informative action still leaves a path back.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the constrained reward formulation introduced in section 18.6 (Safety-aware and constrained rewards), where cost signals are kept separate from reward signals. The shield design developed here is extended in section 19.4, which applies the same admissibility logic under partial observability. The constrained policy objective recurs in Part VIII alongside model-based planning, where safety envelopes must be maintained over imagined rollouts rather than real interactions.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Safe exploration</strong> asks the agent to gather information without spending safety margin irresponsibly. In embodied systems, a bad exploratory action can damage hardware, enter an unrecoverable state, violate a human-space constraint, or teach the policy that risky behavior is an acceptable shortcut.</p>
@@ -63,6 +67,24 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a sequence of transformations: observe, estimate risk, propose action, filter or shield action, execute, monitor, and recover. Each transformation should have a measurable contract, otherwise "safe" becomes a label rather than a testable property.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Constrained Exploration with Action Shielding</h4>
+<p><strong>Input:</strong> policy $\pi_\theta$, cost function $C$, cost budget $d$, clearance threshold $\delta_{\min}$, learning rate $\alpha$, exploration bonus weight $\beta$</p>
+<p><strong>Output:</strong> updated parameters $\theta$ with $E[C] \le d$; log of proposed actions, vetoed actions, and recovery events</p>
+<ol>
+<li>Observe $o_t$ and compute state estimate $\hat{s}_t$ from the agent's internal model.</li>
+<li>Propose a candidate action set $\mathcal{A}_t = \pi_\theta(\hat{s}_t)$ augmented with intrinsic bonus $\beta \cdot \nabla_\theta \log \pi_\theta(a|\hat{s}_t)$.</li>
+<li>For each $a \in \mathcal{A}_t$, evaluate clearance $\delta(a, \hat{s}_t)$ and recoverability flag $r(a, \hat{s}_t)$; mark $a$ admissible if $\delta(a, \hat{s}_t) \ge \delta_{\min}$ and $r(a, \hat{s}_t) = \text{True}$.</li>
+<li>If the admissible set is non-empty, select $a_t^* = \arg\max_{a \in \mathcal{A}_t^{\text{safe}}} Q_\theta(\hat{s}_t, a)$; otherwise trigger the recovery policy and log an intervention.</li>
+<li>Execute $a_t^*$, receive reward $R_t$ and cost signal $C_t$, and append both to the episode log.</li>
+<li>Update cumulative cost $\bar{C} \leftarrow \bar{C} + C_t$; if $\bar{C} > d$, raise the Lagrange multiplier $\lambda \leftarrow \lambda + \alpha_\lambda (\bar{C} - d)$.</li>
+<li>Compute the constrained policy gradient $\nabla_\theta J = \nabla_\theta E[R] - \lambda \nabla_\theta E[C]$ and apply the update $\theta \leftarrow \theta + \alpha \nabla_\theta J$.</li>
+<li>Record the tuple $(o_t, a_t^{\text{proposed}}, a_t^*, C_t, R_t, \delta_t, \text{veto\_reason})$ in the artifact log.</li>
+<li>At episode end, verify $E[C] \le d$ over the full episode; if violated, flag the checkpoint and do not promote it to the evaluation suite.</li>
+<li>Repeat from step 1 until the constraint multiplier $\lambda$ converges and reward $E[R]$ stabilises inside the safety envelope.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>Code Fragment 19.3.1 implements a tiny action shield. The policy proposes exploratory actions, but the shield vetoes any action whose clearance is below the limit or whose recovery flag is false.</p>
 <pre><code class="language-python"># Filter exploratory actions through a simple safety shield.
@@ -108,6 +130,9 @@ selected inspect shelf gap</div>
 <p>A warehouse robot team should log final success, cost return, minimum clearance, human intervention, emergency stop, recovery action, and whether the same policy checkpoint was used for every comparison. The logs reveal whether the agent is learning safer exploration or merely receiving unreported help.</p>
 </div>
 <p>Consider a specific case: the Safety Gymnasium benchmark "SafetyPointGoal1" trains a point-mass robot to reach goals while keeping cost (contact with hazard circles) below a budget of 25 per episode. Constrained Policy Optimization (Achiam et al., 2017) on this task achieves roughly 25 reward units while holding mean episode cost near the budget, whereas unconstrained PPO reaches 28 reward units but incurs 60+ cost events per episode. The difference shows that tracking cost separately is not a formality: an agent optimizing reward alone discovers that cutting through hazard zones is a shortcut, and the cost metric is the only signal that catches this.</p>
+<div class="callout tip">
+<p>When using Safety Gymnasium with Constrained Policy Optimization, set the cost budget <code>cost_limit</code> in the <code>CPOConfig</code> object before the first training step and never adjust it based on observed episode costs during training. A common gotcha is tightening <code>cost_limit</code> mid-run after noticing high violations: this resets the Lagrange multiplier history inside OmniSafe's <code>LagrangianMultiplier</code> and produces an optimistic constraint trace that makes the final policy look safer than it is. Fix the budget to the hardware or regulatory limit, let the multiplier converge, and change it only between full retrains with a fresh seed.</p>
+</div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>Safe exploration is the only place where "nothing happened" can be a result, as long as the log proves that the right risky thing did not happen.</p>

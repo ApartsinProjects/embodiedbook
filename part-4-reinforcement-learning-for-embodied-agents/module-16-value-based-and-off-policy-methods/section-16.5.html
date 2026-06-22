@@ -39,6 +39,10 @@
 <figcaption>Figure 16.5A: Sample efficiency curves for DQN, DDPG, TD3, and SAC on the same manipulation task, annotating the off-policy replay advantage and the catastrophic Q-overestimation failure mode that emerges without safeguards.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the replay buffer mechanics introduced in section 16.2 and the twin-critic correction covered in section 16.3. The distribution-mismatch problem examined here reappears in section 20.2 in the context of sim-to-real transfer, and the conservative critic techniques that directly address off-policy overestimation are developed in section 25.3 on offline RL and dataset-based robot learning.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Sample efficiency and off-policy failure modes</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -61,6 +65,9 @@
 <div class="callout key-insight">
 <div class="callout-title">When Overestimation Becomes Catastrophic</div>
 <p>Q-overestimation is benign early in training when all estimates are rough, but it becomes catastrophic once the actor has learned to exploit the critic. The danger window is when the actor is competent enough to reach out-of-distribution states but the replay buffer has not yet covered them. Fujimoto et al. (2018) showed that in continuous control, DDPG's single critic produced Q-values several times the true return in this window, causing the policy to collapse. The twin-critic minimum in TD3 closes the window by requiring two independent overestimates to align before the actor can be misled.</p>
+</div>
+<div class="callout tip">
+<p>In TD3, the <code>policy_delay</code> parameter (default: 2) controls how many critic updates run before each actor update, which is the primary lever for closing the overestimation danger window. On contact-rich manipulation tasks where the critic loss is still high variance early in training, raising <code>policy_delay</code> to 4 or 6 stabilizes learning by giving the critics more time to converge before the actor exploits them. If you observe the actor collapsing in the first 20,000 steps despite twin critics, check <code>policy_delay</code> before adjusting learning rate or batch size, because those changes address the wrong cause.</p>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
@@ -98,6 +105,22 @@ fast_recovery rho=10.0 clipped=2.0</div>
 <li>Track critic uncertainty or critic disagreement on target-policy actions.</li>
 <li>Report failure modes by distribution shift: observation, action, dynamics, reward, or termination.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Off-Policy Coverage Audit</h4>
+<p><strong>Input:</strong> replay buffer $\mathcal{D}$ with behavior policy tags $\mu$, current target policy $\pi_\theta$, critic $Q_\phi$, importance-ratio clip threshold $c$, coverage threshold $\tau$</p>
+<p><strong>Output:</strong> coverage verdict (SAFE / WARN / BLOCK) and per-action support report</p>
+<ol>
+<li>For each candidate action $a$ in the target policy's action distribution, retrieve all replay transitions $(s, a', r, s') \in \mathcal{D}$ where $a'$ is within distance $\delta$ of $a$.</li>
+<li>Compute the importance ratio $\rho(s, a) = \pi_\theta(a \mid s) / \mu(a \mid s)$ for each logged transition that covers $a$.</li>
+<li>Clip the ratio: $\hat\rho = \min(\rho, c)$. Flag any action where the raw ratio exceeds $c$ as a <em>weak-support candidate</em>.</li>
+<li>Compute the empirical support count $N(a) = |\{(s, a', r, s') \in \mathcal{D} : \|a' - a\| \le \delta\}|$. If $N(a) < \tau$, add $a$ to the <em>unsupported action set</em> $\mathcal{U}$.</li>
+<li>Estimate critic uncertainty for each unsupported action: record $\Delta Q(s, a) = Q_{\phi_1}(s, a) - Q_{\phi_2}(s, a)$ using the twin critics. Large $|\Delta Q|$ indicates extrapolation error.</li>
+<li>Classify each action: SAFE if $\rho \le c$ and $N(a) \ge \tau$; WARN if $\rho > c$ but $N(a) \ge \tau$; BLOCK if $a \in \mathcal{U}$ or $|\Delta Q|$ exceeds a preset threshold $\epsilon$.</li>
+<li>If any action is BLOCK, pause actor gradient updates and increase $\text{policy\_delay}$ by one until the replay buffer accumulates $\tau$ supporting transitions for the blocked action.</li>
+<li>Record the support report (action label, $\rho$, $\hat\rho$, $N(a)$, $\Delta Q$, verdict) as one row in the sample-efficiency audit artifact alongside return and gradient-update counts.</li>
+<li>If all actions are SAFE or WARN, resume normal training; return the aggregate verdict as the weakest classification across all candidate actions.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The common mistake is to report fewer environment steps without reporting coverage. A method can look sample efficient because it reuses data aggressively, while the learned critic is extrapolating over actions and states the robot never actually visited.</p>

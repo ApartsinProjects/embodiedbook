@@ -39,6 +39,10 @@
 <figcaption>Figure 26.5A: A skill library architecture for embodied agents: skills are indexed by name and precondition predicate, a task planner queries the library to sequence skills, and a verification layer checks each skill's postcondition before advancing.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the option tuple defined in section 26.2 and the skill discovery methods introduced in section 26.3; those two sections supply the formal vocabulary used throughout the library contract here. The composition problems covered in section 26.5 recur at larger scale in Part VI alongside perception uncertainty (section 30.3) and in Part VII alongside vision-language-action models (section 34.2), where the same precondition-postcondition discipline determines whether a learned policy can slot into a reusable skill slot.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Skill libraries for embodied agents</strong> treats action as a hierarchy rather than a flat stream of motor commands. A skill gives the planner a reusable temporal abstraction with an initiation condition, an internal policy, a termination rule, and a verification contract.</p>
@@ -84,6 +88,68 @@
 <h2>Worked Implementation</h2>
 <p>Code Fragment 1 for Skill libraries for embodied agents should expose initiation, progress, termination, verification, and failure reporting before connecting the skill to ROS 2, BehaviorTree.CPP, Drake, or a learned policy.</p>
 
+<pre><code class="language-python"># Skill library with precondition/postcondition contracts and cost-optimal selection
+import numpy as np
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
+
+@dataclass
+class Skill:
+    name: str
+    precondition: Callable[[Dict], bool]
+    postcondition: Callable[[Dict], bool]
+    cost: float          # seconds of execution time
+    risk: float          # probability of unsafe outcome in [0, 1]
+    execute: Callable[[Dict], Dict]  # returns updated state
+
+def build_library() -> List[Skill]:
+    return [
+        Skill(
+            name="navigate_to_station",
+            precondition=lambda s: s["path_clear"] and s["arm_tucked"],
+            postcondition=lambda s: s["at_station"],
+            cost=3.6, risk=0.05,
+            execute=lambda s: {**s, "at_station": True},
+        ),
+        Skill(
+            name="grasp_upright_object",
+            precondition=lambda s: s["at_station"] and s["object_within_reach"],
+            postcondition=lambda s: s["gripper_loaded"],
+            cost=2.1, risk=0.12,
+            execute=lambda s: {**s, "gripper_loaded": True},
+        ),
+        Skill(
+            name="change_lane",          # high-risk alternative path
+            precondition=lambda s: s["path_clear"],
+            postcondition=lambda s: s["at_station"],
+            cost=1.0, risk=0.45,
+            execute=lambda s: {**s, "at_station": True},
+        ),
+    ]
+
+def select_skill(state: Dict, library: List[Skill],
+                 risk_budget: float = 0.20) -> Optional[Skill]:
+    """Return cheapest feasible skill within the risk budget."""
+    candidates = [
+        sk for sk in library
+        if sk.precondition(state) and sk.risk <= risk_budget
+    ]
+    return min(candidates, key=lambda sk: sk.cost) if candidates else None
+
+if __name__ == "__main__":
+    state = {"path_clear": True, "arm_tucked": True,
+             "at_station": False, "object_within_reach": True,
+             "gripper_loaded": False}
+    library = build_library()
+    chosen = select_skill(state, library, risk_budget=0.20)
+    print(f"Selected: {chosen.name}  cost={chosen.cost}s  risk={chosen.risk}")
+    state = chosen.execute(state)
+    ok = chosen.postcondition(state)
+    print(f"Postcondition verified: {ok}  state={state}")
+</code></pre>
+<div class="code-output"><pre>Selected: navigate_to_station  cost=3.6s  risk=0.05
+Postcondition verified: True  state={'path_clear': True, 'arm_tucked': True, 'at_station': True, 'object_within_reach': True, 'gripper_loaded': False}</pre></div>
+<div class="code-caption">Code Fragment 26.5.1: Minimal skill library in pure Python: each skill carries a precondition, postcondition, cost, and risk score; the selector rejects the cheaper but high-risk <code>change_lane</code> skill and picks the safety-feasible minimum-cost option, then verifies the postcondition before advancing the state.</div>
 
 <p>The expected returned dictionary shows the selector is optimizing inside a safety-feasible subset, not across the whole library. Read the decision as "minimum cost subject to risk budget and satisfied preconditions," which is the right interpretation for hierarchical skill routing.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The selector demonstrates how a skill library supports route and task decomposition. It rejects the low-cost but high-risk lane change, then chooses the cheapest skill that satisfies the safety budget.</div>
@@ -105,6 +171,9 @@
 <li>Use <a href="../../part-5-learning-from-demonstration-and-robot-data/module-26-skills-hierarchy-and-task-decomposition/section-26.4.html">language as a planner</a> only after commands are grounded into a typed skill library with affordance checks.</li>
 <li>Evaluate composition, not only individual success. Many failures occur when two correct skills meet at a bad boundary.</li>
 </ol>
+<div class="callout tip">
+<p>When connecting skills in BehaviorTree.CPP, write each skill's postcondition result into a named Blackboard key using <code>setOutput</code>, and read the next skill's precondition from that same key using <code>getInput</code>. This forces both skills to agree on coordinate frame and units at the library level rather than relying on each skill to independently re-derive the state. A common gotcha: if the upstream skill writes a pose in <code>map</code> frame but the downstream skill silently assumes <code>base_link</code> frame when reading from the Blackboard, the precondition check passes with a numerically plausible but geometrically wrong value, producing the exact frame-drift failure described in the warning below. Explicitly tagging Blackboard keys with frame identifiers (for example, <code>grasp_target_pose_map</code> rather than <code>grasp_target_pose</code>) makes the mismatch a compile-time or startup error instead of a silent runtime failure.</p>
+</div>
 <p>Consider a specific case: a mobile manipulator must deliver a mug from a counter to a table 3 meters away. The skill library contains three entries: <code>navigate_to_pose</code> (precondition: <a href="../../part-6-embodied-perception/module-30-planning-and-navigation/section-30.3.html">path clear</a>, arm tucked; cost: 1.2 s/m), <code>grasp_upright_object</code> (precondition: object detected within 0.4 m, gripper open; cost: 2.1 s), and <code>place_on_surface</code> (precondition: gripper loaded, surface detected within 0.3 m; cost: 1.8 s). The planner selects the minimum-cost sequence that satisfies each precondition in order, yielding navigate (3.6 s) then grasp (2.1 s) then navigate again (0.6 s) then place (1.8 s). When the grasp verifier reports that the mug tipped 15 degrees beyond the acceptable roll threshold, the skill returns "retry" and the planner re-calls <code>grasp_upright_object</code> from a pose 5 cm to the left, without replanning the entire mission. This is the compounding benefit of explicit postconditions: local recovery without global replan.</p>
 <div class="callout fun-note">
   <p>Naming a skill <code>grasp_handle</code> instead of <code>do_thing_7</code> sounds obvious until you inherit a codebase where every skill is named after the engineer who wrote it: <code>dave_motion</code>, <code>dave_motion_v2</code>, and the ominous <code>dave_motion_final_REAL</code>. The verb-object convention is, quietly, one of the highest-leverage design decisions in the whole library.</p>
@@ -148,7 +217,7 @@
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Skill libraries for embodied agents is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Skill libraries for embodied agents is useful when it makes the <a href="../../part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.2.html">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 26.5.1</div><p>Design a method-matched experiment for Skill libraries for embodied agents. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
 <div class="whats-next">
@@ -194,4 +263,8 @@
 <footer>
 <p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · <a href="../../toc.html">Contents</a></p>
-<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateStri
+<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}))</script></p>
+</footer>
+</main>
+</body>
+</html>

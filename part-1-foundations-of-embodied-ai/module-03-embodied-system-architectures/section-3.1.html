@@ -39,6 +39,10 @@
 <figcaption>Figure 3.1A: The canonical sense-perceive-estimate-predict-plan-control-act stack shown as a data-flow pipeline, with each stage labeled by its input type, output type, and typical latency budget.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment interface introduced in section 2.1 and with the action-type taxonomy from section 2.3. The seven-stage stack described here is the shared backbone for the three architectural variants examined next: the classical modular pipeline in section 3.2, the end-to-end learned policy in section 3.3, and the hybrid hierarchical approach in section 3.4.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>The canonical stack: sense, perceive, estimate, predict, plan, control, act</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -82,6 +86,21 @@
 <p>The canonical stack is useful because it gives each transformation a job that can be tested independently without forgetting the closed loop. A compact version is:</p>
 <p>$$o_t \xrightarrow{\text{sense}} x_t \xrightarrow{\text{perceive}} y_t \xrightarrow{\text{estimate}} \hat{s}_t \xrightarrow{\text{predict}} \hat{s}_{t+1:t+H} \xrightarrow{\text{plan}} \tau_t \xrightarrow{\text{control}} a_t \xrightarrow{\text{act}} o_{t+1}.$$</p>
 <p>Here $o_t$ is the <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.2.html">raw observation</a>, $x_t$ is calibrated sensor data, $y_t$ is a semantic or geometric percept, $\hat{s}_t$ is the agent's best state estimate, $\hat{s}_{t+1:t+H}$ is the predicted future over horizon $H$, $\tau_t$ is the chosen trajectory or skill, and $a_t$ is the executable command. The important assumption is that each arrow preserves enough information for the next stage while reducing ambiguity for the decision. The stack breaks down when one stage silently changes units, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.5.html">coordinate frames</a>, latency, uncertainty, or success criteria.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Canonical Sense-Perceive-Estimate-Predict-Plan-Control-Act Loop</h4>
+<p><strong>Input:</strong> true world state $x_t^*$, prior state estimate $\hat{s}_{t-1}$, prior action $a_{t-1}$, goal state $x^*$, filter weight $\alpha \in (0,1)$, prediction horizon $H$, actuator limit $\delta_{\max}$</p>
+<p><strong>Output:</strong> updated state estimate $\hat{s}_t$, executed action $a_t$, next world state $x_{t+1}^*$</p>
+<ol>
+<li><strong>Sense.</strong> Draw a noisy observation: $o_t = x_t^* + \epsilon_t$, where $\epsilon_t \sim \mathcal{N}(0, \sigma^2)$.</li>
+<li><strong>Perceive.</strong> Remove known sensor bias $b$: $x_t = o_t - b$. Attach the coordinate frame label and timestamp to $x_t$.</li>
+<li><strong>Estimate.</strong> Fuse the new measurement with history via a low-pass filter: $\hat{s}_t = \alpha\, x_t + (1-\alpha)\,\hat{s}_{t-1}$.</li>
+<li><strong>Predict.</strong> Roll the dynamics model forward $H$ steps: $\hat{s}_{t+1:t+H} = \hat{s}_t + H \cdot a_{t-1}$. Flag any predicted state that violates safety bounds.</li>
+<li><strong>Plan.</strong> Compute the desired displacement to the goal: $\tau_t = x^* - \hat{s}_t$. If the predicted trajectory is unsafe, re-plan with a reduced horizon.</li>
+<li><strong>Control.</strong> Saturate the plan to respect actuator limits: $a_t = \operatorname{clip}(\tau_t,\, -\delta_{\max},\, \delta_{\max})$.</li>
+<li><strong>Act.</strong> Apply $a_t$ to the world and observe the transition: $x_{t+1}^* = x_t^* + a_t$.</li>
+<li>Increment $t$ and return to step 1. Terminate when $|x_t^* - x^*| \le \theta$ for convergence threshold $\theta$, when a maximum step budget is exceeded, or when any stage reports a fault.</li>
+</ol>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Why Seven Stages Instead of One?</div>
 <p>Each stage exists because the transformation it performs cannot safely be merged with its neighbor without hiding a testable assumption. Perception converts raw voltages to geometric or semantic objects: merging it with sensing would bury sensor-specific calibration inside semantic logic. Estimation runs a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">temporal filter across noisy percepts</a>: merging it with perception would lose the history needed to smooth outliers. Prediction rolls the state forward so the planner can reason about future cost, not just present position: without a separate predict stage, a planner horizon of H steps would silently assume the world is static. Control saturates and rate-limits the plan to respect actuator physics: merging planning and control means a planner can issue physically impossible commands that fail silently. Keeping the stages separate means each boundary is a named, loggable, unit-testable handoff. When the system misbehaves, you can freeze every stage downstream of the suspected one and replay its logged input to localize the fault in one experiment rather than seven.</p>
@@ -90,6 +109,9 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in The canonical stack: sense, perceive, estimate, predict, plan, control, act is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+<div class="callout tip">
+<p>When building the stack in ROS 2, attach a <code>std_msgs/Header</code> (with <code>frame_id</code> and <code>stamp</code>) to every message that crosses a stage boundary. The <code>frame_id</code> field forces you to name the coordinate frame explicitly, so a mismatch between a camera-frame percept and a world-frame state estimate raises an immediate, grep-able error rather than a silent numeric offset that only shows up as drift during a live run. If you later port to a non-ROS stack, preserve this discipline by encoding frame and timestamp as required fields in your dataclass or named tuple at every handoff.</p>
 </div>
 <h2>Worked Example</h2>
 <p>The cleanest way to make the canonical stack concrete is to give every arrow its own function and run one observation through all seven. The toy world below is a 1-D reaching task: the body is at position $x$, a target sits at $x^\star$, and the only actuator is a bounded velocity command. Each stage does its single job and hands a typed value to the next.</p>

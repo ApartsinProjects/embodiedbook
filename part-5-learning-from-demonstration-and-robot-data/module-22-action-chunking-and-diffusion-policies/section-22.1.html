@@ -39,6 +39,10 @@
 <figcaption>Figure 22.1A: Single-step prediction failure on a bimodal grasping task: the predicted action averages two valid grasp poses and collides with the object, motivating the need for multi-step action representations.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with behavioral cloning from section 21.2 and with receding-horizon control from section 7.5. The failure modes identified here motivate the two main remedies developed in this chapter: Action Chunking with Transformers in section 22.2 and diffusion-based action generation in section 22.4. The connection between multimodal action distributions and large-scale data collection recurs in Part VI alongside cross-embodiment generalization in section 35.1.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Single-step action prediction often fails because manipulation is temporally structured: reach, align, close, lift, and recover are coupled. Predicting only the next instant can erase intent and amplify jitter.</p>
@@ -74,10 +78,30 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <section class="course-depth-block">
 <h2>Why One-Step Actions Are Too Myopic</h2>
 <p>A single-step policy predicts $a_t$ from the current observation $o_t$. That is natural for low-level control, but imitation datasets often contain temporally extended intent: reach, align, close, lift, retreat. If the policy regresses one action at a time, small ambiguity in the next instant can create jitter, indecision, or mode averaging between incompatible futures.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Single-Step Policy Failure Diagnosis</h4>
+<p><strong>Input:</strong> demonstration dataset $\mathcal{D} = \{(o_t, a_t)\}$, trained single-step policy $\pi_\theta$, evaluation rollout of length $T$</p>
+<p><strong>Output:</strong> failure category label $\ell \in \{\text{mode-avg}, \text{compound-err}, \text{contact-jitter}, \text{recovery-gap}\}$ and corrective chunk size $H^*$</p>
+<ol>
+<li>Fit baseline policy $\pi_\theta$ by minimizing $\mathcal{L}(\theta) = \mathbb{E}_{(o,a)\sim\mathcal{D}}\|\pi_\theta(o) - a\|^2$; record training loss curve.</li>
+<li>Collect $N \ge 30$ closed-loop rollouts; log per-timestep predicted action $\hat{a}_t = \pi_\theta(o_t)$ and executed action $a_t$.</li>
+<li>Compute action-space variance $\sigma^2_t = \text{Var}_{(o,a)\in\mathcal{D},\,o'\approx o_t}(a)$ at each observation; flag timesteps where $\sigma^2_t > \epsilon$ as multimodal.</li>
+<li>For each multimodal timestep, check whether $\hat{a}_t$ lies between demonstrator modes: if $\|\hat{a}_t - \mu_1\| > \delta$ and $\|\hat{a}_t - \mu_2\| > \delta$ for cluster means $\mu_1, \mu_2$, assign $\ell = \text{mode-avg}$.</li>
+<li>Compute cumulative state-error drift $\Delta_t = \|s_t^{\pi} - s_t^{\text{demo}}\|$ over the rollout; if $\Delta_t$ grows monotonically for $t > t_\text{contact}$, assign $\ell = \text{compound-err}$.</li>
+<li>Measure end-effector velocity variance $\text{Var}(\dot{q}_t)$ during contact phase; if it exceeds the demonstration baseline by more than $2\sigma$, assign $\ell = \text{contact-jitter}$.</li>
+<li>Identify recovery windows (timesteps after an intervention or slip); record success rate $\rho_\text{recover}$; if $\rho_\text{recover} < 0.5$, assign $\ell = \text{recovery-gap}$.</li>
+<li>Set candidate chunk size $H^* = \lceil T_\text{contact} \cdot f_\text{ctrl} \rceil$ where $T_\text{contact}$ is median contact-phase duration and $f_\text{ctrl}$ is control frequency.</li>
+<li>Verify $H^*$: re-run rollouts with chunked policy using $\alpha = H^* / 2$ executed steps before replanning; confirm $\Delta_t$ no longer grows monotonically.</li>
+<li>Save a single artifact recording $\ell$, $H^*$, $\rho_\text{recover}$, and the action-variance trace for all future comparisons.</li>
+</ol>
+</div>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Bimodal mode averaging is the canonical failure of mean-regression on multimodal demonstration data. When two demonstrators grasp the same object from opposite sides, a mean-squared-error policy predicts the average gripper pose, which is directly above the object and collides with it on descent. Neither demonstrator would ever choose that action. This is not a data-quality problem: it is a structural failure of single-step regression whenever the training distribution has multiple valid next actions for the same observation. Action chunking alone does not solve this; it must be paired with a generative model (<a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.4.html">diffusion</a>, flow matching, or a mixture head) that can represent the full distribution over futures rather than collapsing it to a single prediction.</p></div>
 <p>Action chunking predicts a horizon of actions $A_t = (a_t, a_{t+1}, \ldots, a_{t+H-1})$. The deployment controller executes only part of the chunk, observes again, then replans. This is <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">receding-horizon</a> imitation: the model commits to a short temporal plan without losing feedback.</p>
 <div class="callout key-insight"><div class="callout-title">Temporal Intent</div><p>A chunk is not just more actions. It is a compact declaration of near-future intent, which lets the model represent coordinated moves such as approach, grasp, and lift as one coherent decision.</p></div>
 <p>Consider a specific case: the ACT policy trained on <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.3.html">ALOHA bimanual demonstrations</a> uses a chunk size of $H = 100$ at 50 Hz, meaning each inference call covers 2 seconds of planned motion. The controller executes only the first 20 actions (0.4 s), then replans. On a cup-transfer task, this kept the gripper trajectory smooth across the pick-to-place transition where single-step behavioral cloning produced oscillation at the handoff point (Zhao et al., 2023, Table 2). The same chunk size would be too coarse for a task requiring sub-centimeter fingertip repositioning, where $H = 10$ at 100 Hz is more typical.</p>
+<div class="callout tip">
+<p>When configuring ACT or Diffusion Policy, set <code>chunk_size</code> (the <code>action_horizon</code> parameter in the HuggingFace LeRobot config) to cover the longest uninterruptible sub-skill in your task, not the full episode. A practical starting rule: measure the median duration of the contact phase in your demonstrations and set <code>chunk_size = contact_duration_seconds * control_frequency_hz</code>. For a 0.4 s grasp at 50 Hz that is 20 steps, not 100. Over-long chunks force the policy to commit to stale plans after contact disturbances; under-short chunks reintroduce the single-step jitter this architecture is designed to cure.</p>
+</div>
 <p>Code Fragment 3 shows how a chunked policy can be executed in a receding-horizon loop while only applying the first few actions.</p>
 <pre><code class="language-python"># Execute only the first part of each predicted action chunk.
 # Replanning keeps feedback while the chunk carries short-horizon intent.

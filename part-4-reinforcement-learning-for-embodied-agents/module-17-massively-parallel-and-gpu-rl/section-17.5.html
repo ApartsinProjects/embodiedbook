@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 17.5A</strong>: Privileged-information distillation lets the teacher use simulator secrets during training while the student learns the policy it can actually execute at deployment.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with asymmetric actor-critic training from section 17.4, where the critic sees privileged state while the actor sees only deployable observations. The distillation pattern introduced here recurs in section 20.3 (domain randomization and RMA), where a privileged adaptation module is similarly distilled into a deployable history encoder, and in section 21.3 (DAgger), which formalizes the interactive relabeling strategy mentioned at the end of this section.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Teacher-student and privileged-information distillation</strong> turns simulator access into training guidance without making the deployed policy depend on simulator-only state. The teacher can see privileged variables; the student must act from onboard observations.</p>
@@ -55,6 +59,25 @@
 <h2>Theory</h2>
 <p>A simple distillation objective is $$\mathcal{L}_{\text{distill}} = \frac{1}{B}\sum_{i=1}^{B}\| \pi_s(o_i^{\text{deploy}}) - \pi_t(o_i^{\text{priv}}) \|_2^2,$$ where $\pi_t$ is the privileged teacher, $\pi_s$ is the student, $o_i^{\text{priv}}$ includes simulator-only information, and $o_i^{\text{deploy}}$ contains only signals available on the robot.</p>
 <p>The formula is easy to write and easy to misuse. The batch must cover the same command, terrain, contact, and disturbance distribution used for evaluation, and the loss should be reported alongside closed-loop student performance, not as a standalone success metric.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Privileged-Information Policy Distillation</h4>
+<p><strong>Input:</strong> privileged teacher policy $\pi_t(a \mid o^{\text{priv}})$ with parameters $\theta_t$; deployable student policy $\pi_s(a \mid o^{\text{deploy}})$ with parameters $\theta_s$; rollout buffer $\mathcal{D} = \{(o_i^{\text{priv}}, o_i^{\text{deploy}}, v_i)\}$ where $v_i \in \{0,1\}$ is the valid-step mask; learning rate $\alpha$; distillation epochs $K$</p>
+<p><strong>Output:</strong> student parameters $\theta_s^*$ whose policy $\pi_s$ acts from deployable observations only</p>
+<ol>
+<li>Freeze observation schema: partition all fields into teacher-only $O^{\text{priv}}$, student $O^{\text{deploy}}$, and critic-only $O^{\text{critic}}$ sets before any data collection.</li>
+<li>Train or load teacher: obtain $\theta_t$ by running PPO with the full privileged observation $o^{\text{priv}} = O^{\text{deploy}} \cup O^{\text{priv}}$ until the teacher reward converges.</li>
+<li>Collect teacher rollouts: execute $\pi_t$ in the simulator; record $(o_i^{\text{priv}}, o_i^{\text{deploy}}, a_i^t)$ for each step $i$ and set $v_i = 0$ for falls, resets, and saturated actions.</li>
+<li>Compute teacher action targets: $\hat{a}_i = \pi_t(o_i^{\text{priv}})$ for all $i$ with $v_i = 1$; discard steps where $v_i = 0$.</li>
+<li>Initialize student parameters $\theta_s$ (random or from a warm-start checkpoint).</li>
+<li>For each distillation epoch $k = 1, \ldots, K$: compute the masked imitation loss $$\mathcal{L}_{\text{distill}}(\theta_s) = \frac{\sum_{i} v_i \, \|\pi_s(o_i^{\text{deploy}}; \theta_s) - \hat{a}_i\|_2^2}{\sum_{i} v_i}$$</li>
+<li>Update student: $\theta_s \leftarrow \theta_s - \alpha \, \nabla_{\theta_s} \mathcal{L}_{\text{distill}}$.</li>
+<li>Optionally apply DAgger-style relabeling: roll out $\pi_s$ in the simulator to generate new states $o_i^{\text{deploy}}$, query $\pi_t$ for labels $\hat{a}_i$, append to $\mathcal{D}$, and repeat from step 6.</li>
+<li>Audit the student checkpoint: verify that $o^{\text{priv}}$ fields are absent from the actor input tensor by printing active observation terms and diffing against $O^{\text{deploy}}$.</li>
+<li>Evaluate student closed-loop on held-out seeds with privileged actor inputs disabled; report success rate, fall rate, and imitation loss together as one artifact.</li>
+</ol>
+</div>
+
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is two-stage: first train or select a teacher that uses privileged simulator state to produce strong actions, then train a student to match those actions from deployable observations. The final evaluation runs the student only, with privileged tensors removed from the actor path.</p>
@@ -170,6 +193,9 @@ schema = DistillationSchema(
 print(schema.as_row())</code></pre>
 <div class="code-output">{'teacher_only': ('exact_terrain_heights', 'contact_impulses'), 'student_obs': ('joint_pos', 'joint_vel', 'command', 'history'), 'critic_only': ('base_velocity',), 'mask_rule': 'exclude falls, timeouts, and saturated actions', 'eval_wrapper': 'student_actor_only'}</div>
 <div class="code-caption"><strong>Code Fragment 17.5</strong>.2 records the schema that prevents privileged-information leakage. The <code>student_obs</code> tuple is the deployed actor contract, while <code>teacher_only</code> and <code>critic_only</code> fields are allowed only during training.</div>
+<div class="callout tip">
+<p>In Isaac Lab, observation groups are defined in <code>ObservationsCfg</code> as separate inner classes (e.g., <code>PolicyCfg</code> and <code>CriticCfg</code>). The common gotcha is that the exported actor config must explicitly set <code>policy: PolicyCfg</code> and nothing else; if you copy a training config directly to the deployment wrapper without stripping the <code>CriticCfg</code> reference, Isaac Lab silently concatenates both groups into the actor tensor, injecting privileged fields that were never meant to reach hardware. Verify before export by printing <code>env.observation_manager.active_terms["policy"]</code> and confirming no <code>teacher_only</code> field names appear in the list.</p>
+</div>
 
 
 <p>When a distilled student fails, decide whether the issue is teacher quality, state coverage, observation insufficiency, or leakage removal. A student that imitates well offline but fails closed-loop usually needs recovery-state data, history, or an interactive relabeling loop, not another blind epoch over the same expert states.</p>

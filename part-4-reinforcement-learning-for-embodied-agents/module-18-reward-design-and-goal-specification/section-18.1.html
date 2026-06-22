@@ -39,6 +39,10 @@
 <figcaption>Figure 18.1A: A reward hacking example where a simulated robot learns to spin in place to maximize a speed reward rather than navigate to the goal, illustrating why naive reward specification leads to unexpected behaviors.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with Markov decision processes and the discounted-return objective introduced in section 2.6 and section 14.1. The reward-hacking problems identified here are addressed directly in section 18.2 (reward shaping that preserves the optimal policy) and section 18.4 (misspecification and constraint learning). The audit habits built here recur throughout Part V when distribution shift in section 20.2 creates a second channel for reward exploitation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Rewards are dangerous because they are proxies.</strong> A robot does not optimize the human intent directly. It optimizes the number the designer exposed, and in an embodied world that number is entangled with sensors, contacts, timeouts, resets, and hidden safety costs.</p>
@@ -84,6 +88,9 @@ careful proxy= 7.2 embodied= 0.9</div>
 <div class="callout-title">When Reward Hacking Is Most Likely</div>
 <p>Three conditions amplify the risk. First, high policy capacity: a more expressive model searches a larger behavior space and finds subtle exploits that a shallow policy would never reach. Second, a <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.5.html">long horizon</a>: the agent has more steps to discover that an indirect path raises the reward faster than the intended one. Third, a rich sensor suite: more input channels means more levers for channel exploitation, such as deliberately occluding a camera or holding a force sensor at a favorable reading. When all three conditions apply simultaneously, an independent embodied metric is not optional: it is the only reliable signal that the policy solved the task rather than the reward.</p>
 </div>
+<div class="callout tip">
+<p>In Safety Gymnasium, set the <code>cost_threshold</code> parameter to zero before your first training run so that any contact with a hazard registers as a cost violation from step one rather than being silently absorbed into cumulative budget. This exposes channel exploits early: if the episode return climbs while episode cost also climbs, the policy is already gaming the reward. Log both <code>ep_ret</code> and <code>ep_cost</code> from the <code>info</code> dict on every rollout and treat a positive correlation between them as a mandatory investigation trigger before continuing training.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the human intent in ordinary language before writing the reward equation.</li>
@@ -92,6 +99,24 @@ careful proxy= 7.2 embodied= 0.9</div>
 <li>Log at least one independent embodied metric that is not part of the reward.</li>
 <li>Review the best, median, and worst rollouts by trace, not only by return.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Reward Safety Audit Checklist</h4>
+<p><strong>Input:</strong> reward specification $r_{\text{spec}}(s,a,s')$, policy $\pi_\theta$, task utility description $U$, evaluation rollout set $\mathcal{D}$</p>
+<p><strong>Output:</strong> audit verdict (pass / conditional / block), annotated reward card with exploit probes and independent metrics</p>
+<ol>
+<li>Write $U$ in plain language before writing any equation; list every stakeholder requirement (completion, safety, energy, intervention rate).</li>
+<li>Decompose $r_{\text{spec}}$ into named terms $r_{\text{progress}}, r_{\text{success}}, r_{\text{time}}, r_{\text{contact}}, r_{\text{reset}}$; assign a sensor source and physical unit to each.</li>
+<li>For each term $r_k$, identify an exploit action $a^*_k$ that raises $r_k$ while degrading $U$; record it in the reward card as an explicit falsification probe.</li>
+<li>Choose at least one independent task metric $M_{\text{task}}$ (e.g., object placed stably) and one safety cost $C_{\text{safety}}$ (e.g., intervention count) that are not part of $r_{\text{spec}}$.</li>
+<li>Run a deterministic smoke test: execute the intended behavior and verify $r_{\text{spec}}$ is maximized; block training if any term fails to respond.</li>
+<li>Run each exploit probe from step 3; record the resulting $r_{\text{spec}}$, $M_{\text{task}}$, and $C_{\text{safety}}$ from the same rollout.</li>
+<li>Train $\pi_\theta$ with learning rate $\alpha$ using gradient updates $\theta \leftarrow \theta + \alpha \nabla_\theta \mathbb{E}_{\pi_\theta}[r_{\text{spec}}]$; log $r_{\text{spec}}$, $M_{\text{task}}$, and $C_{\text{safety}}$ every evaluation epoch.</li>
+<li>After training, compute Pearson correlation between episode return and $C_{\text{safety}}$ across $\mathcal{D}$; flag for investigation if correlation $> 0.3$.</li>
+<li>Review video or state logs of the top-5 highest-return rollouts; verify each shows genuine task progress rather than a channel exploit.</li>
+<li>If any probe from step 6 produces $r_{\text{spec}} \geq r_{\text{intended}}$ while $M_{\text{task}} < \tau_{\text{task}}$, add a penalty term or constraint and restart from step 2.</li>
+<li>Save the reward card (terms, units, probe results, metric traces, seed, and rollout artifact) as a single versioned file; do not report return in any table without this card attached.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>A reward that pays for distance reduction can teach a robot to shove, trap, or hover near the object instead of completing the intended manipulation. The failure is not that reinforcement learning is malicious. The failure is that the reward made the wrong behavior measurable and cheap.</p>

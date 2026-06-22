@@ -31,6 +31,10 @@
 <figcaption><strong>Figure 11.4A</strong>: Isaac Lab is strongest when assets, sensors, randomization, training traces, and replayable evaluation stay connected.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with basic MuJoCo environment setup from section 11.2 and with GPU-parallel simulation concepts introduced in section 11.3. The Isaac Lab task-config pattern introduced here is applied directly in section 13.2, where domain randomization events are added to the same scene and asset structure. The massively parallel training workflows enabled by Isaac Lab's vectorized environments are developed further in section 17.1 alongside GPU-based policy optimization.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Isaac Sim is NVIDIA's simulation application built around high-fidelity scenes, rendering, sensors, and the OpenUSD ecosystem. Isaac Lab is the robot-learning framework built on top of Isaac Sim. If MuJoCo is the small sharp tool, Isaac Lab is the heavier workbench for GPU RL, imitation learning, synthetic perception, and sim-to-real studies with rich assets.</p></div>
 
 <div class="callout key-insight"><div class="callout-title">Throughput Changes The Experiment</div><p>Parallel simulation is not only faster. It changes which research questions become practical by making sweeps, ablations, and failure replay cheap enough to run routinely.</p>
@@ -92,6 +96,23 @@ print(reach_task)</code></pre>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Isaac Lab's default observation pipeline can silently expose privileged ground-truth state (exact object pose, contact forces, hidden joint targets) that will not be available on a real robot. A manipulation policy trained on 4096 parallel environments with full state access can reach near-perfect success in simulation while failing on the first real grasp attempt because depth noise, occlusion, and RGB-to-depth calibration error were never in the loop. The fix is to configure separate "proprioceptive" and "camera" observation groups from the start and train with the noisy sensor branch active, not patched in post-hoc.</p></div>
 <p>Choose a lighter tool when you need a small control experiment, quick model inspection, or a minimal reproducible dynamics loop. Heavy tools can hide mistakes if the team cannot inspect the physics contract.</p>
 <div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A legged locomotion team might choose Isaac Lab because it needs GPU-parallel terrain randomization, domain randomization, camera or depth observations, and compatibility with RL libraries. The same team might keep a small MuJoCo model for debugging a single gait controller before launching thousands of worlds.</p></div>
+<div class="callout algorithm">
+<h4>Algorithm: Isaac Lab Experiment Setup and Validation</h4>
+<p><strong>Input:</strong> task specification (robot morphology, observation space $\mathbf{o} \in \mathbb{R}^n$, action space $\mathbf{a} \in \mathbb{R}^m$), reward function $r(\mathbf{o}, \mathbf{a}, \theta_{\text{env}})$, randomization ranges $\Delta\theta$</p>
+<p><strong>Output:</strong> validated Isaac Lab task config, replayable evaluation seeds, training-ready vectorized environment with $N$ parallel worlds</p>
+<ol>
+<li>Define the task contract: fix robot identity, observation groups (proprioceptive $\mathbf{o}_p$ and sensor $\mathbf{o}_s$ separately), action terms, and success metric $\mathcal{S}(\mathbf{o})$.</li>
+<li>Author the scene configuration: load USD assets, set physics material parameters $\theta_{\text{env}}$ (friction $\mu$, restitution $e$, mass $m$), and record asset provenance.</li>
+<li>Configure the reward function $r = \sum_i w_i r_i(\mathbf{o}, \mathbf{a})$ with explicit weight vector $\mathbf{w}$; log each component separately to catch sign or scale errors before training.</li>
+<li>Define termination conditions (joint limit violation, collision count threshold, time horizon $T$) and set early-termination flags in the task config.</li>
+<li>Specify randomization events $\Delta\theta$ over physics parameters, object poses, and lighting; confirm that each randomized variable has a documented range and distribution.</li>
+<li>Set observation noise model $\epsilon \sim \mathcal{N}(0, \sigma^2)$ on sensor branch $\mathbf{o}_s$; verify that the proprioceptive branch $\mathbf{o}_p$ does not include privileged ground-truth state unavailable on the real robot.</li>
+<li>Instantiate $N$ parallel environments on GPU device; confirm per-environment step rate $f_{\text{sim}}$ (Hz) and that total throughput $N \cdot f_{\text{sim}}$ meets the experiment's data-collection budget.</li>
+<li>Run a short smoke-test rollout (500 steps, random policy $\pi_{\text{rand}}$); inspect reward histogram, termination rate, and physics contact forces for numerical anomalies.</li>
+<li>Record the full task config, USD asset references, $\mathbf{w}$, $\Delta\theta$, $\sigma$, $N$, GPU device ID, and random seeds as a single replayable artifact before launching training.</li>
+<li>After training converges, replay the best policy $\pi^*(\mathbf{a} \mid \mathbf{o}; \alpha)$ under held-out evaluation seeds with the sensor-noisy observation branch active; report $\mathcal{S}(\mathbf{o})$ and safety metrics jointly.</li>
+</ol>
+</div>
 <p><strong>Expected output:</strong> An Isaac Lab experiment record should include the task config, asset and USD references, observation groups, action space, reward terms, termination rules, randomization events, sensor settings, number of parallel environments, GPU device, and replayable evaluation seeds.</p>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

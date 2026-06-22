@@ -39,6 +39,10 @@
 <figcaption>Figure 31.4A: Object- and region-centric grounding compared: object-centric grounding anchors the instruction to a detected instance bounding box while region-centric grounding anchors it to a 3D point cloud cluster.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with referring-expression grounding from section 31.3, which establishes how language phrases are resolved to perceived entities. The distinction introduced here, between anchoring an action to a discrete object versus a continuous spatial region, is applied directly in section 31.5, where task planners must choose the right world-state representation before resolving ambiguity. The object-versus-region split also recurs in Part 9 alongside manipulation skill selection, particularly when placement and avoidance targets require region geometry rather than object identity.</p>
+</div>
+
 <p>For Object- and region-centric grounding, read the figure as an interface check: identify the language input, grounding evidence, action representation, safety gate, and logged result before accepting the agent behavior described below.</p>
 <figure class="diagram" id="fig-31-4">
 <svg aria-labelledby="fig-31-4-title fig-31-4-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -85,6 +89,26 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A practical system often composes both. It may first resolve an object category, then derive a contact region or free region from a mask, depth map, or occupancy estimate. Language therefore selects both a target and the representation layer at which that target should be expressed.</p>
+</div>
+<div class="callout tip">
+<p>When you derive a placement region from a SAM 2 mask, pass the mask through <code>open3d.geometry.PointCloud.transform()</code> with the robot-base-to-camera extrinsic at the exact capture timestamp before storing the region. If you store the mask in camera frame and the robot moves even 5 cm before the planner queries the region, the coordinates are stale and the placement controller will target the wrong surface patch. A safe pattern is to attach a <code>stamp</code> and <code>frame_id</code> field to every region record immediately after extraction, then re-project via the TF tree if more than one control cycle has elapsed before execution.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Object-or-Region Grounding Selection</h4>
+<p><strong>Input:</strong> language instruction $o_t$, scene observation $x$ (RGB-D + point cloud), skill primitive $\pi$, candidate object set $\{z_1, \ldots, z_n\}$, candidate region set $\{R_1, \ldots, R_m\} \subset \mathbb{R}^3$</p>
+<p><strong>Output:</strong> grounding record $\hat{u}$ containing target handle or region geometry, coordinate frame, confidence $\alpha$, and representation type</p>
+<ol>
+<li>Parse $o_t$ to extract entity noun phrase $e$ and spatial predicate $p$ (e.g., "the red mug" vs. "the clear area beside the plate").</li>
+<li>Query the skill registry to retrieve the representation contract $\rho(\pi) \in \{\text{object-id}, \text{mask}, \text{point-set}, \text{free-region}\}$ expected by $\pi$.</li>
+<li>Run Grounding DINO or OWL-ViT on $x$ with $e$ to obtain candidate bounding boxes $\{b_k\}$ with scores $\{\alpha_k\}$; select $z^* = \arg\max_k \alpha_k$.</li>
+<li>If $\rho(\pi) = \text{object-id}$, set $\hat{u} \leftarrow (z^*, \alpha^*, \text{frame}_{\text{base}})$ and skip to step 9.</li>
+<li>Run SAM 2 on $x$ seeded with $b_{z^*}$ to extract mask $M \subset \mathbb{R}^2$; project $M$ into 3-D via the depth map and camera extrinsic $T_{\text{cam} \to \text{base}}$ recorded at timestamp $\tau$.</li>
+<li>If $p$ encodes free-space placement, subtract obstacle occupancy from the projected point set to yield $R^* = \text{free}(M_{\text{3D}}) \setminus \text{occupied}(x)$.</li>
+<li>Score each candidate $R_j$ via $Q_{\text{skill}}(R_j \mid x, o_t)$; select $\hat{R} = \arg\max_j Q_{\text{skill}}$ and assign confidence $\hat{\alpha}$.</li>
+<li>Attach spatial frame $\theta_{\text{frame}} = (\text{frame\_id}, \tau)$ to $\hat{R}$; if more than one control cycle has elapsed since $\tau$, re-project via the TF tree before storing.</li>
+<li>Validate: confirm $\hat{u}$ is non-empty (region cell count $> 0$ for regions; pose reachable for objects); if invalid, flag for clarification and halt.</li>
+<li>Emit grounding record $\hat{u} = (\text{target}, \hat{\alpha}, \theta_{\text{frame}}, \rho(\pi))$ and pass it to $\pi$; log the record for later construct-matched evaluation.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 compares an object-centric and region-centric interpretation of the same scene. The point is not the geometry itself, but the controller contract each interpretation enables.</p>

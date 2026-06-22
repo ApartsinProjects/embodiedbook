@@ -39,6 +39,9 @@
 <figcaption>Figure 3.4A: A hybrid hierarchical architecture where a high-level task planner issues subgoal commands to a mid-level skill selector, which delegates to low-level reactive controllers that close the loop at high frequency.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the basic perception-action loop from section 1.2 and with the end-to-end learned policy pipeline introduced in section 3.3. The option framework developed here reappears in section 26.2 (hierarchical reinforcement learning) and section 26.5 (skills and task decomposition), where it is extended to learned initiation sets and data-driven termination conditions. Readers interested in how language models slot into the top tier of a hierarchy should continue to section 33.2.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Hybrid and hierarchical architectures</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -87,6 +90,22 @@ A useful formal model is the option view from <a href="../../part-5-learning-fro
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Hybrid and hierarchical architectures is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Hierarchical Option Execution</h4>
+<p><strong>Input:</strong> state $s_t$, option library $\Omega = \{\omega_1, \ldots, \omega_n\}$ where each $\omega_i = (I_{\omega_i}, \pi_{\omega_i}, \beta_{\omega_i})$, learning rate $\alpha$, high-level policy parameters $\theta$</p>
+<p><strong>Output:</strong> executed action sequence $a_{0:T}$, updated policy parameters $\theta'$, termination log</p>
+<ol>
+<li>Observe current state $s_t$ from sensor stack; verify all required fields are non-null.</li>
+<li>Query each option's initiation set: compute $\mathcal{A}(s_t) = \{ \omega_i \in \Omega : s_t \in I_{\omega_i} \}$; if $\mathcal{A}(s_t) = \emptyset$, log a precondition failure and halt.</li>
+<li>Select option $\omega^* = \arg\max_{\omega \in \mathcal{A}(s_t)} \pi_\theta(\omega \mid s_t)$ using the high-level policy with parameters $\theta$.</li>
+<li>Enter the low-level loop: while $\beta_{\omega^*}(s_t) = \text{false}$, emit action $a_t = \pi_{\omega^*}(s_t)$, apply $a_t$, observe $s_{t+1}$, log $(s_t, a_t, s_{t+1})$, and set $t \leftarrow t+1$.</li>
+<li>On termination ($\beta_{\omega^*}(s_t) = \text{true}$), record termination cause, residual state error $\|s_t - s^*\|$, and wall-clock duration.</li>
+<li>Compute high-level reward $r_H$ from the task objective evaluated at the post-option state $s_t$.</li>
+<li>Update $\theta \leftarrow \theta + \alpha \nabla_\theta \log \pi_\theta(\omega^* \mid s_0) \cdot r_H$ (REINFORCE update over the option selection).</li>
+<li>If the task success condition is satisfied, terminate and return $\theta' = \theta$ and the full execution log.</li>
+<li>Otherwise, set $s_t \leftarrow s_t$ (post-option state) and return to step 2 for the next option selection.</li>
+</ol>
+</div>
 <h2>Worked Example</h2>
 <p>The option triple $\omega = (I_\omega, \pi_\omega, \beta_\omega)$ becomes concrete when each part is a function. The example runs a two-level controller on a reach-then-grasp task: a high-level policy picks an option, the option's low-level policy emits millisecond actions, and the option's termination function decides when control returns upward. The trace logs every boundary, which is exactly the evidence a hierarchy needs to be debuggable.</p>
 <pre><code class="language-python">import numpy as np
@@ -131,6 +150,9 @@ for t in range(20):
 </code></pre>
 <div class="code-caption"><strong>Code Fragment 3.4</strong>.1 implements the options framework explicitly. The high-level policy selects an option only when its initiation set holds, and each option reports when it terminates, so every level boundary is visible in the trace.</div>
 <p><strong>Expected output:</strong> the controller runs <code>reach</code> until the gripper is within tolerance, the high level then switches to <code>grasp</code> because its precondition is finally satisfied, and the task completes. The characteristic hierarchy bug is a precondition violation: delete the <code>can_start</code> guard on <code>grasp</code> and it will try to close on empty space at <code>x=0</code>. The logged precondition and termination fields are what let you assign that failure to the right level instead of blaming the whole stack.</p>
+<div class="callout tip">
+<p>When debugging a precondition violation like the one above, add a hard assertion at each skill entry point rather than relying on soft logging. In Python, <code>assert opt.can_start(s), f"{opt.name} precondition failed: state={s}"</code> placed before the first <code>low_policy</code> call turns a silent wrong-skill execution into an immediate traceback that names the offending option and the state that triggered it. In ROS 2 action servers, set the goal-rejection callback to publish a <code>diagnostic_msgs/DiagnosticStatus</code> with the violated precondition field: this surfaces in <code>rqt_robot_monitor</code> without requiring a custom visualization. Reserve <code>assert</code> for development and swap it for a logged rejection in production code, because a hard crash inside a real-time control loop is worse than a graceful no-op.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Hybrid and hierarchical architectures, the hand-built fragment is a visibility tool. Production work should move to maintained stacks such as Hugging Face Transformers, open VLMs, OpenVLA, openpi, LeRobot, and tool-calling planners once the section has made the interface, logging contract, and failure recovery path explicit.</p>

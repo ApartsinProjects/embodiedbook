@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 14.2A</strong>: A policy chooses the next move, while a value function estimates the future that move commits the agent to.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The ideas here are extended directly in section 15.1, which turns the stochastic policy $\pi(a\mid s)$ defined below into an optimizable parameterized object, and in section 15.2, which derives the policy gradient theorem using the action-value function $Q^\pi(s,a)$ introduced in this section. The Bellman structure developed here also underpins the temporal-difference methods in section 14.3, so readers who skip ahead to Chapter 15 should return to section 14.3 before working through the PPO derivation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Policies and value functions</strong> split behavior from forecasting. This matters in embodied systems because a robot can choose a locally attractive action while still entering a low-value physical situation.</p>
@@ -61,7 +65,26 @@
 <p>These functions obey Bellman expectation equations because the return can be split into immediate reward plus discounted future value:</p>
 <p>$$V^\pi(s)=\sum_a \pi(a\mid s)\sum_{s'}P(s'\mid s,a)\left[R(s,a,s')+\gamma V^\pi(s')\right].$$</p>
 <p>The equation is recursive, not circular. It says the value of a state under policy $\pi$ equals the policy-weighted average of one-step outcomes plus the discounted value of the next state. For embodied systems, the hidden assumption is strong: the state or belief must contain enough physical information for the transition model to be meaningful.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Iterative Policy Evaluation (Bellman Expectation Backup)</h4>
+<p><strong>Input:</strong> policy $\pi(a \mid s)$, transition model $P(s' \mid s, a)$, reward function $R(s, a, s')$, discount factor $\gamma \in [0, 1)$, convergence threshold $\delta_{\min} > 0$</p>
+<p><strong>Output:</strong> value function $V^\pi(s)$ for all states $s \in \mathcal{S}$</p>
+<ol>
+<li>Initialize $V^\pi(s) \leftarrow 0$ for all $s \in \mathcal{S}$.</li>
+<li>Set $\delta \leftarrow \infty$ (tracks the largest change in any state value this sweep).</li>
+<li>While $\delta > \delta_{\min}$, repeat steps 4 through 7.</li>
+<li>Set $\delta \leftarrow 0$.</li>
+<li>For each state $s \in \mathcal{S}$, compute the Bellman backup target: $v \leftarrow \sum_a \pi(a \mid s) \sum_{s'} P(s' \mid s, a)\bigl[R(s, a, s') + \gamma V^\pi(s')\bigr]$.</li>
+<li>Update $\delta \leftarrow \max(\delta,\; |v - V^\pi(s)|)$ and set $V^\pi(s) \leftarrow v$.</li>
+<li>After sweeping all states, if $\delta \leq \delta_{\min}$, stop; otherwise return to step 3.</li>
+<li>Return $V^\pi$ as the converged state-value estimate under $\pi$.</li>
+</ol>
+</div>
 <p>The Bellman equation converges to the correct values under two conditions: the discount factor $\gamma$ must be less than 1, and the Markov property must hold, meaning the current state must capture all information relevant to future returns. In embodied systems, both conditions are routinely violated. A discount factor of 1 makes the backup sum diverge for continuing tasks. A robot state that omits gripper force, contact normal, or task progress breaks the Markov property, so the "state" is really a partial observation and the backup targets carry systematic error. When policy evaluation diverges or produces physically implausible values, check these two conditions before suspecting the learning algorithm.</p>
+<div class="callout tip">
+<p>Gymnasium returns two separate boolean flags, <code>terminated</code> and <code>truncated</code>, from every <code>env.step()</code> call. When computing Bellman bootstrap targets, only set the bootstrap weight to zero on <code>terminated</code> episodes (the agent actually reached a terminal state); leave it at one for <code>truncated</code> episodes (the time limit fired but the task continues). Conflating the two by using a single <code>done = terminated or truncated</code> flag causes the value function to treat every timeout as episode death, producing systematically pessimistic estimates for long-horizon robot tasks. In Stable-Baselines3, the <code>handle_timeout_termination=True</code> flag in <code>ReplayBuffer</code> applies this correction automatically; in CleanRL, pass <code>next_done = terminated</code> rather than <code>terminated | truncated</code> into the GAE computation.</p>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
 <p>Bellman backups silently fail when the state representation omits a physically relevant variable. Consider a robot arm policy evaluated on joint angles alone: two configurations with identical joint angles but different contact forces receive identical value estimates, even though one is about to slip and the other is stable. The iteration converges to a numerically consistent answer, but that answer is wrong for the physical task. The symptom is a value function that looks smooth in training but assigns confidently incorrect values to out-of-distribution contact states at test time.</p>

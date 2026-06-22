@@ -40,6 +40,10 @@
 <figcaption>Figure 2.2A: Partial observability illustrated as a spotlight: the true world state is a full room, but the agent sees only the lit region. Hidden variables (object positions behind walls) connect the unseen state to future observations.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment loop introduced in section 2.1. The belief-state representations introduced here are developed further in section 2.7, which covers particle filters for multi-modal distributions, and in section 8.6, which treats Kalman-filter fusion for sensor streams. The state-observation distinction recurs throughout Part 8 alongside learned latent world models.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>State, observation, hidden variables, partial observability</strong> separates what exists in the world from what the agent senses. Embodied agents rarely receive complete state. They receive noisy, delayed, partial observations and must infer the variables that matter for action.</p>
@@ -86,9 +90,29 @@
 <div class="callout-title">Mechanism</div>
 <p>Partial observability turns the loop into observe, update belief, choose action, execute, and revise. In simulation, privileged state can be logged for diagnostics while keeping the agent restricted to observations. This separation is essential for honest evaluation.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Partial-Observability Belief Update</h4>
+<p><strong>Input:</strong> prior belief $b_{t-1}$, new observation $o_t$, action $a_{t-1}$, observation model $P(o \mid s)$, transition model $P(s' \mid s, a)$</p>
+<p><strong>Output:</strong> updated belief $b_t$ over hidden state $s_t$; policy action $a_t = \pi(b_t)$</p>
+<ol>
+<li>Predict: propagate $b_{t-1}$ through the transition model to obtain the prior $\bar{b}_t(s') = \sum_s P(s' \mid s, a_{t-1})\, b_{t-1}(s)$.</li>
+<li>Observe: receive observation $o_t$ from the environment or sensor wrapper.</li>
+<li>Update: weight the prior by the likelihood, $b_t(s) \propto P(o_t \mid s)\, \bar{b}_t(s)$, then normalize so $\sum_s b_t(s) = 1$.</li>
+<li>Classify each state variable as observed, estimated, delayed, hidden, or evaluator-only; update only the relevant components of $b_t$.</li>
+<li>Check whether any evaluator-only variable has entered the policy observation channel; if so, flag a privileged-state leak before continuing.</li>
+<li>Compute uncertainty: record the entropy $H(b_t) = -\sum_s b_t(s)\log b_t(s)$ or covariance trace $\operatorname{tr}(\Sigma_t)$ alongside the point estimate $\hat{s}_t = \arg\max_s b_t(s)$.</li>
+<li>Select action: query policy $\pi$ with belief summary $b_t$ to obtain $a_t = \pi(b_t)$; when $H(b_t)$ exceeds threshold $\theta$, allow an information-gathering action (reobserve).</li>
+<li>Log the full triplet $(o_t,\, \hat{s}_t,\, H(b_t))$ to the diagnostic record for offline analysis.</li>
+<li>Execute $a_t$ in the environment to complete one step of the observe-update-act loop.</li>
+<li>Stress-test: after $N$ steps, replay the diagnostic log under simulated occlusion and sensor delay to confirm $H(b_t)$ rises appropriately and policy degrades gracefully.</li>
+</ol>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Why Belief State, Not Just the Last Observation</div>
 <p>Using only the current observation fails because a single frame discards causal history: an object that was visible two steps ago and is now occluded has not disappeared. A belief state aggregates evidence across time so the agent can act rationally even when the present frame is ambiguous. The choice of representation determines what uncertainty can be tracked. A Kalman filter is exact when noise is Gaussian and dynamics are linear, which suits joint-encoder fusion. A <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">particle filter handles multi-modal distributions</a>, which suits place recognition where several locations are plausible. A <a href="../../part-8-world-models-and-model-based-embodied-ai/module-38-latent-world-models/section-38.2.html">learned recurrent state</a> (GRU, LSTM, or a transformer key-value memory) is appropriate when the relevant history is long and the structure of the hidden state cannot be designed by hand, as in language-conditioned manipulation. The key question is not which is best in general, but which uncertainty model matches the failure modes that matter for your specific deployment.</p>
+</div>
+<div class="callout tip">
+<p>When using Gymnasium's <code>FrameStack</code> wrapper to carry observation history, the stacked output is a <code>LazyFrames</code> object, not a NumPy array. Passing it directly to PyTorch or a policy network raises a silent shape error or produces unexpected results. Call <code>np.array(obs)</code> immediately after <code>env.step()</code> or <code>env.reset()</code> to force materialization before any tensor conversion. Alternatively, pass <code>frame_stack_kwargs={"lz4_compress": False}</code> and wrap with <code>gymnasium.wrappers.TransformObservation(env, lambda o: np.array(o))</code> once at environment creation so every downstream consumer receives a plain array.</p>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 2.2.1 updates a tiny belief state from a partial observation. The hidden variable is slip risk, which the camera cannot directly see.</p>

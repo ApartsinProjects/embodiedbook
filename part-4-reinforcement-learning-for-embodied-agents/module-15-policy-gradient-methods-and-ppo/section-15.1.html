@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 15.1A</strong>: A stochastic policy turns exploration into evidence by saving what it sampled, how likely it was, and what happened afterward.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment loop and the expected discounted return introduced in section 2.5, and with probability distributions over action spaces covered in section 3.2. The log-probability mechanism defined here is the direct prerequisite for section 15.2, which derives the REINFORCE gradient estimator, and for section 15.3, which extends it to PPO. The stochastic-policy framing also recurs in Part IX alongside locomotion controllers where exploration over contact configurations is essential.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Direct policy optimization</strong> trains the policy itself, not a value table that later chooses actions. Stochastic policies matter because an embodied robot must explore contact-rich behavior, represent uncertainty in perception, and keep a usable log probability for every action it took.</p>
@@ -61,6 +65,24 @@
 <h2>Theory</h2>
 <p>The policy is a distribution, not a lookup table. For a discrete mobile robot action set, $\pi_\theta$ might be a softmax over forward, left, right, and stop. For a manipulation controller, it might be a Gaussian over joint velocity commands with a learned mean and standard deviation. In both cases, the policy must expose two things for training: the sampled action and the log probability of that exact action.</p>
 <p>The central intuition is credit assignment through sampling. If a robot nudges a drawer handle and the drawer opens later, the update cannot differentiate through the drawer physics, contact impulses, camera exposure, or environment reset. It can still differentiate through the policy's own probability of the sampled motion. That is the foothold used by REINFORCE and PPO.</p>
+
+<div class="callout algorithm">
+<h4>Algorithm: Stochastic Policy Action-Sample Loop</h4>
+<p><strong>Input:</strong> Policy parameters $\theta$, observation $o_t$ at step $t$, action distribution family (e.g., Gaussian or categorical)</p>
+<p><strong>Output:</strong> Sampled action $a_t$, log probability $\log \pi_\theta(a_t \mid o_t)$, and rollout record for one step</p>
+<ol>
+<li>Pass observation $o_t$ through the policy network to obtain distribution parameters (mean $\mu_\theta$ and standard deviation $\sigma_\theta$ for continuous actions, or logits for discrete actions).</li>
+<li>Construct the action distribution $\pi_\theta(\cdot \mid o_t)$ from those parameters (e.g., $\mathcal{N}(\mu_\theta, \sigma_\theta^2)$ or $\text{Categorical}(\text{softmax}(\text{logits}))$).</li>
+<li>Draw one sample: $a_t \sim \pi_\theta(\cdot \mid o_t)$.</li>
+<li>Compute $\log \pi_\theta(a_t \mid o_t)$ from the same distribution object used to sample, before any clipping or squashing correction is applied.</li>
+<li>If a tanh squashing transform is used, subtract the Jacobian correction $\sum_i \log(1 - \tanh^2(a_t^{(i)}) + \epsilon)$ from the raw log probability.</li>
+<li>Clip $a_t$ to actuator limits to produce the executed command $\hat{a}_t$; record both $a_t$ and $\hat{a}_t$ separately.</li>
+<li>Send $\hat{a}_t$ to the environment; receive reward $r_t$ and next observation $o_{t+1}$.</li>
+<li>Store the tuple $(o_t,\; a_t,\; \hat{a}_t,\; \log \pi_\theta(a_t \mid o_t),\; r_t,\; \text{clipped})$ as one rollout row.</li>
+<li>Repeat steps 1 through 8 for each step in the episode until termination or horizon $T$.</li>
+<li>Return the full rollout buffer; each row carries the log probability $\log \pi_\theta(a_t \mid o_t)$ that the gradient estimator $\nabla_\theta J(\theta)$ requires.</li>
+</ol>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Direct policy optimization turns rollout data into pairs of log probabilities and returns. The update says, in effect, "actions that appeared in high-return trajectories should become more likely in similar observations, and actions from low-return trajectories should become less likely."</p>
@@ -139,6 +161,10 @@ sampled action: move_right log_prob: -0.353</div>
 <tr><td>High-level skill selection</td><td>Hierarchical categorical policy</td><td>Log the selected skill and the low-level controller outcome together.</td></tr>
 </tbody>
 </table>
+</div>
+
+<div class="callout tip">
+<p>When using a tanh-squashed Gaussian (common in SAC and squashed-Gaussian PPO variants), you must subtract the log of the Jacobian correction term from the pre-squash log probability: <code>log_prob -= torch.log(1 - action_squashed**2 + 1e-6).sum(-1)</code>. Omitting this step makes the stored <code>old_log_prob</code> incorrect, which corrupts the importance-sampling ratio and silently destabilizes training. The small epsilon <code>1e-6</code> prevents a <code>log(0)</code> at the boundary; without it, actions that saturate to exactly 1 or -1 produce NaN gradients that are hard to trace back to this source.</p>
 </div>
 
 <p>A robust implementation treats action sampling as part of the evidence artifact. Code Fragment 2 sketches the fields a rollout buffer needs before PPO or REINFORCE can make a valid policy-gradient update.</p>

@@ -40,6 +40,10 @@
 <figcaption>Figure 2.1A: The formal agent-environment boundary, labeling observation o_t, action a_t, next state s_{t+1}, and reward r_t as distinct typed signals crossing that boundary each timestep.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The formal agent-environment contract introduced here is extended in section 2.2, which distinguishes hidden environment state from the observations the agent actually receives, and in section 2.3, which covers action spaces and their constraints. The Gymnasium and PettingZoo patterns referenced in sections 10.1 and 10.7 implement this same contract in production-ready code. Multi-agent variants of the interface recur in Part 10 alongside coordination and communication concepts.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Agents and environments formally</strong> gives the perception-action loop a contract. The agent is the decision-making process, the environment is everything that produces observations and consequences, and the interface is the boundary where evidence, action, reward, and timing pass. This contract formalizes the <a href="../../part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.2.html">perception-action loop</a> introduced in Section 1.2.</p>
@@ -82,6 +86,26 @@
 <h2>Theory</h2>
 <p>At time $t$, an agent receives an observation $o_t$, chooses an action $a_t$, and receives a consequence that usually includes a new observation $o_{t+1}$, a <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.4.html">reward or score</a> $r_{t+1}$, and episode status. The environment owns the transition dynamics. The agent owns the decision rule. The evaluator owns the claim about whether behavior was good.</p>
 <p>For a fully specified single-agent environment, the minimal contract is close to the <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.1.html">Gymnasium pattern</a>: <code>reset</code> starts an episode and returns an initial observation plus metadata; <code>step(action)</code> advances the world and returns observation, reward, terminated, truncated, and info. Terminated means the task reached a natural end. Truncated means an external limit, such as a time limit, stopped the episode.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Agent-Environment Interaction Loop</h4>
+<p><strong>Input:</strong> policy $\pi(a \mid o; \theta)$, environment transition $T(s_{t+1} \mid s_t, a_t)$, reward function $R(s_t, a_t)$, episode horizon $H$</p>
+<p><strong>Output:</strong> trajectory $\tau = \{(o_t, a_t, r_t)\}_{t=0}^{H}$, cumulative return $G = \sum_{t=0}^{H} \alpha^t r_t$</p>
+<ol>
+<li>Call <code>reset()</code> to obtain initial observation $o_0$ and clear episode state.</li>
+<li>Set $t \leftarrow 0$, $G \leftarrow 0$, <code>terminated</code> $\leftarrow$ False, <code>truncated</code> $\leftarrow$ False.</li>
+<li>Select action $a_t \sim \pi(\cdot \mid o_t; \theta)$ using the current policy parameters $\theta$.</li>
+<li>Call <code>step($a_t$)</code> to receive $(o_{t+1},\, r_{t+1},\, \text{terminated},\, \text{truncated},\, \text{info})$ from the environment.</li>
+<li>Accumulate discounted return: $G \leftarrow G + \alpha^t \cdot r_{t+1}$, where $\alpha \in [0,1]$ is the discount factor.</li>
+<li>Append $(o_t, a_t, r_{t+1})$ to trajectory $\tau$ and record <code>info</code> fields (latency, clipping, wrapper version).</li>
+<li>If <code>terminated</code>: episode reached a natural goal; set final flag and stop.</li>
+<li>If <code>truncated</code>: episode hit an external limit; bootstrap the value estimate for $o_{t+1}$ using $V^\pi(o_{t+1})$ before stopping.</li>
+<li>Set $o_t \leftarrow o_{t+1}$, $t \leftarrow t + 1$; return to step 3 if neither flag is set.</li>
+<li>Verify $\nabla_\theta$ can be computed over $\tau$ only if action clipping, wrapper order, and reset distribution are logged in <code>info</code>.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When writing a custom Gymnasium environment, never set both <code>terminated</code> and <code>truncated</code> to <code>True</code> in the same <code>step</code> return. Gymnasium's <code>TimeLimit</code> wrapper sets <code>truncated=True</code> after a fixed step budget; if your inner environment also sets <code>terminated=True</code> on that same step, the bootstrap correction in most RL libraries (which uses <code>truncated</code> to decide whether to add a value estimate for the final observation) will be applied incorrectly, quietly inflating returns. Always let natural goal-reaching drive <code>terminated</code> and let the <code>TimeLimit</code> wrapper (or your own step counter) drive <code>truncated</code>, and keep the two mutually exclusive.</p>
+</div>
 <p>For <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-49-multi-agent-embodied-ai/section-49.1.html">multi-agent settings</a>, the contract also needs turn order or simultaneous actions. <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.7.html">PettingZoo</a> makes that distinction explicit through sequential and parallel APIs. This matters for embodied systems with people, other robots, traffic participants, or adversarial agents.</p>
 <p>The single-agent contract is sufficient when exactly one decision process controls all actions and no other agent's behavior changes the transition function. It breaks down as soon as another agent's policy is part of the dynamics: a delivery robot sharing a corridor with humans cannot treat human motion as fixed environment noise, because human paths respond to the robot's trajectory. In those cases, the interface must expose whose turn it is, which agents are active, and whose observation includes evidence about other agents' recent actions. A practical heuristic: if removing one agent from the scene would change the optimal policy of another agent, the single-agent contract is wrong.</p>
 <div class="callout under-the-hood">

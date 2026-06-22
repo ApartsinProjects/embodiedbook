@@ -31,6 +31,10 @@
 <figcaption><strong>Figure 11.3A</strong>: Accelerator simulation helps when many worlds move together under a backend choice that remains reproducible and debuggable.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with MuJoCo's model structure and the MJCF format introduced in section 11.2. The vectorized simulation ideas developed here are applied directly in section 17.1 and section 17.2, where massively parallel GPU environments become the foundation for fast locomotion training. Section 11.4 then shows how Isaac Lab uses a comparable parallelism strategy within a different ecosystem.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>MJX and MuJoCo Warp keep the MuJoCo modeling mindset but move execution toward accelerator-native workloads. MJX exposes MuJoCo-style simulation through JAX, which makes vectorization and differentiable computation natural. MuJoCo Warp implements MuJoCo in NVIDIA Warp for high-throughput GPU simulation and is now part of the broader Newton story.</p>
 <p>This section links simulator math to accelerator execution: vectorized dynamics is useful only when contact behavior, gradients or finite differences, and reset logic remain comparable to the reference simulator.</p>
 </div>
@@ -90,6 +94,23 @@ print(np.round(heights, 4))</code></pre>
 <li>Run the same seed, model, and metric across backends before comparing speed.</li>
 <li>Report throughput and behavior, not throughput alone.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Accelerator-Backend Selection and Validation for Parallel MuJoCo Simulation</h4>
+<p><strong>Input:</strong> MuJoCo model file (MJCF/URDF), policy parameters $\theta$, target batch size $N$, accelerator type (GPU/TPU/CPU), desired gradient flag $\nabla$</p>
+<p><strong>Output:</strong> Validated backend choice, per-step throughput estimate, solver-parity report, rollout metric $\hat{R}$ across $N$ parallel worlds</p>
+<ol>
+<li>Run a single CPU MuJoCo rollout with the chosen model and a fixed seed $s_0$ to establish a reference trajectory $\tau_{\text{ref}}$; record joint positions $q$, velocities $\dot{q}$, and contact forces $f$.</li>
+<li>Decide: if the learning stack is JAX-first or $\nabla$ is required, select MJX. If NVIDIA GPU throughput and Warp/Newton integration are the bottleneck, select MuJoCo Warp.</li>
+<li>Instantiate the chosen backend with the same model file and matching solver parameters (iteration count, tolerance $\epsilon$, contact margin $\delta$).</li>
+<li>Apply <code>vmap</code> (MJX) or equivalent kernel batching (Warp) over batch dimension $N$: construct state array $S \in \mathbb{R}^{N \times d_s}$ and action array $A \in \mathbb{R}^{N \times d_a}$ from domain-randomized parameter distributions $p(\phi)$ (masses, friction $\mu$, damping $\alpha$).</li>
+<li>Step all $N$ worlds for $T$ timesteps; accumulate per-world rollout metrics $R_i$ and mean $\hat{R} = \frac{1}{N}\sum_{i=1}^{N} R_i$.</li>
+<li>If $\nabla$ is required, compute $\nabla_\theta \hat{R}$ via automatic differentiation; validate against finite differences $\frac{\hat{R}(\theta + \epsilon) - \hat{R}(\theta - \epsilon)}{2\epsilon}$ on a contact-free scene.</li>
+<li>Compare the accelerator trajectory $\tau_{\text{acc}}$ against $\tau_{\text{ref}}$ on the same seed $s_0$: compute max positional deviation $\|q_{\text{acc}} - q_{\text{ref}}\|_\infty$ and flag if it exceeds a tolerance $\delta_q$.</li>
+<li>Repeat step 7 on at least one contact-heavy scene (foot strike or gripper close); if divergence exceeds $\delta_q$, adjust solver parameters and re-run.</li>
+<li>Measure throughput: steps per second and wall-clock time per batch; report alongside backend version, device, batch size $N$, and seed.</li>
+<li>If all parity and throughput checks pass, promote the backend for training; otherwise revert to CPU MuJoCo and document the divergence cause.</li>
+</ol>
+</div>
 <div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A locomotion researcher can use MJX to train thousands of randomized walkers inside a JAX RL pipeline, then compare selected policies against CPU MuJoCo for sanity. A GPU systems researcher may use MuJoCo Warp when the question is how far NVIDIA acceleration can push contact-rich rollout throughput.</p></div>
 <p><strong>Expected output:</strong> An accelerator-backend comparison should report model identity, backend versions, batch size, seeds, device, throughput, rollout metric, and a small CPU MuJoCo sanity trace. Speed without behavior matching is not enough evidence.</p>
 <div class="callout fun-note">

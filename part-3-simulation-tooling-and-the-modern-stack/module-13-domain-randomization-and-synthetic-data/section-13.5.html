@@ -39,6 +39,10 @@
 <figcaption>Figure 13.5A: The real2sim2real pipeline: a real object is scanned, a mesh is imported into the simulator, the policy is trained there with randomization, and the trained policy is deployed back on the physical object.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with domain randomization fundamentals from section 13.1 and the simulator fidelity concepts introduced in section 13.3. The reconstruction and calibration-split discipline introduced here is extended in section 13.6, which compares randomization, realism, and hybrid strategies on a shared transfer-readiness panel. The real2sim2real loop also recurs in Part V alongside hardware-in-the-loop deployment, where the same calibration-versus-holdout split governs final physical validation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>real2sim2real starts from real measurements, reconstructs a simulator from them, trains or evaluates inside that simulator, then returns to the real system for validation. Asset and scene reconstruction reduce guesswork, but they also create a leakage risk if the same real objects, rooms, camera paths, or episodes are used for both calibration and final evaluation.</p>
@@ -56,6 +60,24 @@
 <p>Consider a specific case: in the OpenAI dexterous hand project (Andrychowicz et al., 2019, "Learning Dexterous In-Hand Manipulation"), the team measured a physical Rubik's cube with calipers and structured light, anchored the simulator mesh to those measurements (face length 57 mm, corner radius 3 mm), then randomized residual friction (coefficient 0.5 to 1.5), mass, and appearance around those anchors. The held-out evaluation used cubes from a different production batch. Transfer succeeded on foam cubes and gilded cubes the policy had never seen, because residual randomization covered manufacturing variation while the anchored geometry kept the contact model plausible. That sequence, measure, anchor, randomize residual, evaluate on held-out objects, is the real2sim2real loop in practice.</p>
 <p>The real2sim2real loop has four steps. First, measure the real environment: geometry, material appearance, camera calibration, object dimensions, mass, friction, and task layout. Second, reconstruct an asset or scene representation. Third, randomize residual uncertainty around the reconstruction, because the scan is never the whole world. Fourth, evaluate transfer on real conditions held out from reconstruction.</p>
 <p>The critical split is calibration versus evaluation. Calibration data may tune mesh scale, camera intrinsics, contact parameters, and lighting priors. Evaluation data must remain separate, otherwise the digital twin can memorize the test room, test object, or test camera path.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Real2Sim2Real Calibration and Transfer Loop</h4>
+<p><strong>Input:</strong> Real sensor data $\mathcal{D}_\text{cal}$ (scans, contact logs, images) for calibration; held-out real episodes $\mathcal{D}_\text{hold}$ never used during reconstruction; simulator with parameter vector $\theta$; policy class $\pi_\phi$</p>
+<p><strong>Output:</strong> Deployed policy $\pi_\phi^*$ with transfer metric $\eta$ measured on $\mathcal{D}_\text{hold}$</p>
+<ol>
+<li>Split real data: assign $\mathcal{D}_\text{cal}$ for calibration and reserve $\mathcal{D}_\text{hold}$ as the final holdout. Record the split provenance before any reconstruction begins.</li>
+<li>Reconstruct anchored parameters: fit geometry, camera intrinsics, mass, and friction by minimising reconstruction loss $\mathcal{L}(\theta; \mathcal{D}_\text{cal})$, yielding anchor $\hat{\theta} = \arg\min_\theta \mathcal{L}(\theta; \mathcal{D}_\text{cal})$.</li>
+<li>Define residual randomization ranges: for each parameter $\theta_i$ set an interval $[\hat{\theta}_i - \delta_i,\; \hat{\theta}_i + \delta_i]$ where $\delta_i$ covers estimated scan error and manufacturing variation not captured by the fit.</li>
+<li>Sample simulator instances: at each training rollout draw $\theta \sim \mathcal{U}[\hat{\theta} - \delta,\; \hat{\theta} + \delta]$ and run the simulator with those parameters.</li>
+<li>Train policy: update $\phi \leftarrow \phi - \alpha \nabla_\phi \mathcal{J}(\pi_\phi)$ over $N$ rollouts, where $\mathcal{J}$ is the task return averaged across randomized simulator instances.</li>
+<li>Validate on debug split: evaluate $\pi_\phi$ on a small real validation set drawn from $\mathcal{D}_\text{cal}$ to check for obvious miscalibration. Do not adjust the final holdout at this step.</li>
+<li>Tighten reconstruction only if the debug validation exposes a calibration miss: refit $\hat{\theta}$ on $\mathcal{D}_\text{cal}$ and repeat steps 3 to 6. Log each refitting iteration.</li>
+<li>Freeze the policy and evaluate transfer: run $\pi_\phi^*$ on $\mathcal{D}_\text{hold}$ and record transfer metric $\eta$ (real task success rate, pose error, or slip rate). Do not adjust $\hat{\theta}$, $\delta$, or $\phi$ after this step.</li>
+<li>Label failures by source: for each failed episode assign a failure label in $\{\text{scan error},\; \text{residual range miss},\; \text{contact physics miss},\; \text{perception mismatch},\; \text{policy capacity}\}$.</li>
+<li>Report the complete evidence record: calibration set identifier, reconstructed $\hat{\theta}$, residual ranges $\delta$, holdout set identifier, transfer metric $\eta$, and failure label distribution. A real2sim2real result is only valid evidence when all five fields are present.</li>
+</ol>
+</div>
+
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is measured anchoring plus residual uncertainty. Reconstruction narrows the randomization range, and residual randomization covers what the reconstruction did not capture.</p>

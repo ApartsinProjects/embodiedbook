@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 2.8A</strong>: Why embodiment is usually partially observable</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on the POMDP formalism introduced in section 2.7, where belief states were defined as the agent's tool for reasoning under partial observability. The physical causes of partial observability explored here are revisited in section 8.5 and section 8.7, which show how sensor-fusion filters handle latency and bandwidth limits in real hardware. The idea that agents should act to reduce uncertainty, not merely around it, is developed fully in section 27.6 on active perception for action.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Why embodiment is usually partially observable</strong> explains why partial observability is the default physical condition rather than a corner case. Bodies occlude sensors, contacts reveal information only after action, actuators lag behind commands, and other agents have intentions the robot cannot read directly.</p>
@@ -83,6 +87,24 @@
 <p>This does not make action impossible. It means the interface must support memory, uncertainty, and information-gathering actions. Sometimes the correct action is not "move toward the goal" but "move the camera," "touch gently," "wait one step," or "ask for clarification."
 
 The decision of when to probe versus when to act depends on two quantities: the cost of being wrong and the information gain available from a probing action. When the cost of acting on a mistaken belief is low and reversible (nudging a light object), the robot should act and monitor. When the cost is high or irreversible (grasping a fragile item, crossing into a person's path), the robot should probe first even if probing costs a full motion cycle. This is the operational content of the <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">POMDP insight from Section 2.7</a>: uncertainty is not a nuisance to filter away, it is a decision input that changes which action is optimal.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Probe-or-Act Decision Checklist for Partially Observable Embodiment</h4>
+<p><strong>Input:</strong> hidden-variable inventory $H = \{h_1, \dots, h_n\}$, cost-of-error estimate $C(h_i)$, information gain of probe $IG(h_i)$, reversibility flag $r(h_i) \in \{0,1\}$, current belief state $b(\theta)$ over world parameters $\theta$</p>
+<p><strong>Output:</strong> action mode $\alpha_i \in \{\texttt{probe\_first}, \texttt{act\_with\_monitor}\}$ for each $h_i$, updated policy $\pi$</p>
+<ol>
+<li>Enumerate all hidden variables in the current timestep: occlusion, contact friction, sensor latency, calibration drift, internal hardware state, and other-agent intent.</li>
+<li>For each $h_i$, estimate $C(h_i)$: the cost of committing the task action while $h_i$ is unresolved. Set $C(h_i)$ high if the outcome is irreversible (fragile grasp, crossing a person's path).</li>
+<li>For each $h_i$, estimate $IG(h_i) = H(b(\theta)) - \mathbb{E}[H(b(\theta) \mid o_{\text{probe}})]$: the entropy reduction a probing action would deliver to the belief state.</li>
+<li>Assign action mode: if $C(h_i)$ is high OR $r(h_i) = 0$ (irreversible), set $\alpha_i = \texttt{probe\_first}$; otherwise set $\alpha_i = \texttt{act\_with\_monitor}$.</li>
+<li>For every $\alpha_i = \texttt{probe\_first}$, select the lowest-cost probing action from the set: move camera, guarded touch, wait-and-observe, or request clarification.</li>
+<li>Execute the probing action and collect observation $o_{\text{probe}}$; update belief via $b'(\theta) \propto P(o_{\text{probe}} \mid \theta, a_{\text{probe}}) \cdot b(\theta)$.</li>
+<li>Re-evaluate $C(h_i)$ under the updated belief $b'(\theta)$. If uncertainty is still above threshold $\delta$, return to step 5 with a different probe.</li>
+<li>For every $\alpha_i = \texttt{act\_with\_monitor}$, execute the task action and log evidence field $e_i$ (e.g., force trend, timestamp age in ms) at each control step.</li>
+<li>During monitored execution, check $e_i$ against safety bound $\nabla C_{\max}$. If the bound is exceeded, interrupt and escalate to $\alpha_i = \texttt{probe\_first}$.</li>
+<li>After task completion, record $(\alpha_i, h_i, e_i, \text{outcome})$ for each variable to build a reusable diagnostic artifact linking hidden-variable source to recovery behavior.</li>
+</ol>
+</div>
+
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.6.html">active perception</a>. The agent chooses actions that both change the world and change what can be known about the world. This is why observations, action history, timestamps, and recovery events should be stored together.</p>
@@ -109,6 +131,9 @@ human_intent: probe_first using motion_cue
 </div>
 <div class="code-caption"><strong>Code Fragment 2.8</strong>.1 maps four physical sources of hidden state to evidence fields and action modes. The <code>probe_first</code> rows show where uncertainty should change behavior before the robot commits to the task action.</div>
 <p><strong>Expected output:</strong> the printed checklist should distinguish hidden variables that call for probing from hidden variables that can be handled by monitored execution. If every row uses the same action mode, the interface is not yet using uncertainty.</p>
+<div class="callout tip">
+<p>When logging <code>timestamp_age_ms</code> in a ROS 2 system, compute it as <code>(rclpy.clock.Clock().now() - msg.header.stamp).nanoseconds / 1e6</code> at the point the message enters your policy node, not when it was published. A common mistake is stamping the observation at publication time and forgetting that queuing, deserialization, and thread scheduling can add 20-80 ms before the policy sees it. Set a staleness threshold in your policy's parameters file (e.g., <code>max_obs_age_ms: 150</code>) and short-circuit to a hold or stop action when the threshold is exceeded, rather than letting a stale observation silently drive a motion command.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The from-scratch checklist is for understanding. In a practical system, ROS 2 diagnostics, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.7.html">sensor-fusion filters</a>, world-model rollouts, and robot data tools can publish the same uncertainty fields at runtime. The shortcut removes logging boilerplate, but the system designer still must decide which hidden variables require probing, slowing, or stopping.</p>

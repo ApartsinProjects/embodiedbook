@@ -40,6 +40,10 @@
 <figcaption>Figure 1.4A: Physical vs. simulated embodiment side by side, showing how a real robot accumulates wear and latency while its simulated twin runs faster-than-real time with identical policy code.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section uses the task functional $J(\pi)$ introduced in section 1.1 and the agent-environment loop from section 1.3; review those before continuing if either feels unfamiliar. The reality gap and domain randomization introduced here are developed in full in section 13.2 (domain randomization algorithms and curriculum strategies), section 20.3 (sim-to-real transfer for manipulation), and section 43.1 (large-scale transfer in locomotion). The neural-scene and world-model approaches mentioned at the end of this section are treated in section 28.6 and section 39.1 respectively.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>A simulator and a robot run the same policy, but they are not the same instrument. Simulation is a world with declared equations: it gives wall-clock speed, massive parallelism, perfect resets, ground-truth state, safety, and failures that cost nothing. Hardware is a world with undeclared physics: contact, friction, compliance, sensor noise, latency, actuation limits, calibration drift, and wear. The distance between a policy's behavior in those two worlds is the <strong>reality gap</strong>, and it is a measurable quantity, not a disclaimer. Almost every deployment decision in this book reduces to one question: which conclusions does the cheap world support, and how large is the gap to the expensive one.</p>
@@ -105,6 +109,23 @@
   <p><strong>Result:</strong> Hardware success rate rose from 61% to 89%, closing the reality gap from Delta = 0.33 to Delta = 0.05, with no sensor additions and no per-robot calibration step.</p>
   <p><strong>Lesson:</strong> <strong>When the gap lives in a parameter you cannot measure exhaustively, randomizing over its plausible range beats identifying a single point estimate, and the speed advantage of simulation makes that sweep nearly free.</strong></p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Sim-to-Real Deployment Decision Checklist</h4>
+<p><strong>Input:</strong> policy $\pi$, task definition with reward $r$, simulator $T_{\text{sim}}$, physical robot $T_{\text{real}}$, fidelity budget (compute hours), deployment threshold $\theta_{\text{deploy}}$</p>
+<p><strong>Output:</strong> deployment decision $d \in \{\text{deploy}, \text{randomize}, \text{identify}, \text{abort}\}$, reality gap estimate $\hat{\Delta}$</p>
+<ol>
+<li>Evaluate $J_{\text{sim}}(\pi)$ by running $N \geq 50$ rollouts in $T_{\text{sim}}$ and computing the mean task return; record the success rate as your simulated baseline.</li>
+<li>For each fidelity dimension (physical, visual, behavioral, temporal), name the single most likely gap source and classify it as identifiable (you can measure it directly) or randomizable (you cannot).</li>
+<li>For all identifiable parameters $\phi$ (masses, friction $\mu$, motor constants, latency $\alpha$), run system identification: fit $\phi^*$ to minimize $\|\log T_{\text{sim}}(\phi) - \log T_{\text{real}}\|$ over a set of hardware rollouts.</li>
+<li>For all randomizable parameters $\psi$, define a prior distribution $p(\psi)$ over a plausible range; apply domain randomization by sampling $\psi \sim p(\psi)$ each episode and retraining or fine-tuning $\pi$ until $J_{\text{sim}}$ stabilizes.</li>
+<li>Run $M \geq 10$ closed-loop hardware rollouts on the same policy $\pi$ and the same task definition; compute $J_{\text{real}}(\pi)$ and estimate the reality gap $\hat{\Delta} = J_{\text{sim}}(\pi) - J_{\text{real}}(\pi)$.</li>
+<li>If $\hat{\Delta} \leq \nabla_{\text{tol}}$ (your tolerated gap, typically 0.05 to 0.10 on a $[0,1]$ success scale) and $J_{\text{real}}(\pi) \geq \theta_{\text{deploy}}$, set $d = \text{deploy}$ and stop.</li>
+<li>If $\hat{\Delta} &gt; \nabla_{\text{tol}}$ and the dominant gap source is identifiable, return to step 3 with more hardware data and a tighter $\phi$ estimate; set $d = \text{identify}$.</li>
+<li>If $\hat{\Delta} &gt; \nabla_{\text{tol}}$ and the dominant gap source is randomizable, widen $p(\psi)$ or increase training diversity; return to step 4; set $d = \text{randomize}$.</li>
+<li>If $J_{\text{real}}(\pi) &lt; \theta_{\text{deploy}}$ after three identify/randomize cycles, inspect the behavioral fidelity dimension for simulator artifacts (interpenetration, noise-free sensors, zero latency) that inflate $J_{\text{sim}}$; fix or disable the artifact and rerun from step 1.</li>
+<li>Report the final triplet $(J_{\text{sim}}, J_{\text{real}}, \hat{\Delta})$ on the same policy, same task, and same hardware configuration; never report $J_{\text{sim}}$ alone as a capability claim.</li>
+</ol>
+</div>
 <h2>A reality gap you can run</h2>
 <p>The code below is the smallest honest demonstration of $\Delta$. A 1D braking controller must stop a sliding mass before a wall. It plans its braking distance from an <em>assumed</em> friction coefficient (the value it was tuned on, $\mu = 0.8$) and brakes accordingly. We then evaluate the identical controller, with no retuning, on hardware-like surfaces where the true friction is lower. The controller is correct in its own world and crashes in the other, and we read off the reality gap as the drop in success rate.</p>
 <pre><code class="language-python"># Reality gap for a 1D braking controller tuned to one friction coefficient.
@@ -161,6 +182,9 @@ reality gap  Delta         = 0.98</div>
 <tr><td>Behavioral (decisions)</td><td>Logic, planning, high-level task sequencing, discrete mode switches</td><td>Same-action, different-outcome divergence under unmodeled physics or perception</td><td>Closed-loop hardware panels that target the failure labels, not demos</td></tr>
 <tr><td>Temporal (timing)</td><td>Nominal control rate and episode horizon</td><td>Sensor and actuation latency, jitter, dropped frames, clock skew</td><td>Inject measured delay distributions into the simulator</td></tr>
 </tbody></table>
+</div>
+<div class="callout tip">
+<p>Temporal fidelity is the most frequently skipped row in the table above. MuJoCo MJX and Isaac Lab both default to zero-latency control, meaning the action computed at step <em>t</em> takes effect at step <em>t</em>, whereas real motor drivers typically introduce a 1 to 3 control-cycle delay. Add this delay explicitly by buffering actions in a <code>collections.deque(maxlen=n_delay)</code> and applying the oldest entry each step; even a single-step delay (about 5 ms at 200 Hz) is enough to destabilize a stiff locomotion policy on hardware. Measure your robot's actual round-trip command latency with a logic analyzer or timestamped joint-encoder logs before you set this parameter, not after your first hardware crash.</p>
 </div>
 <div class="callout warning">
 <div class="callout-title">"Sim success" is not capability</div>

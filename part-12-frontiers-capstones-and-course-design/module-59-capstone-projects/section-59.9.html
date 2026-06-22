@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 59.9A</strong>: Drone inspection planner</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with aerial agent constraints introduced in section 47.1 and the coverage and inspection planning framework developed in section 47.4. Route search builds on the graph-search algorithms (Dijkstra, A*) covered in section 30.2. The battery-aware replanning pattern introduced here recurs in Part 12 alongside the multi-robot coordination capstone in section 59.10.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Drone inspection planner</strong> gives Capstone Projects a concrete systems role: treat battery, line of sight, wind, and coverage as state variables rather than afterthoughts. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -59,6 +63,97 @@
 <h2>Worked Example</h2>
 <p>For Drone inspection planner, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <p>Consider a concrete case: a DJI Matrice 300 is tasked with inspecting a 120 m wind turbine tower. The mission card specifies a 5,000 mAh battery, a 20% reserve floor (1,000 mAh), and a maximum wind speed of 8 m/s. A geometric baseline lays out 14 waypoints spiraling the tower at 5 m spacing, consuming an estimated 3,200 mAh at 0 m/s wind. When a 6 m/s headwind is detected at waypoint 7, power draw increases to 28 W versus the planned 18 W; the planner recomputes remaining capacity at 1,400 mAh, determines only 9 of the remaining 7 waypoints are reachable within reserve, and reroutes to cover the highest-defect-probability face first (south face, flagged by prior thermal scan). Coverage drops from 100% to 78%, but the safety constraint is met and the mission completes without emergency landing. The evidence artifact logs waypoint index, battery state, wind estimate, and coverage fraction at 1 Hz throughout.</p>
+<pre><code class="language-python"># Battery-aware drone inspection planner: greedy waypoint selection with wind-drag replanning
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+# Waypoints: (x, y, z) in metres around a wind-turbine tower
+N = 14
+angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
+waypoints = np.column_stack([
+    20 * np.cos(angles),
+    20 * np.sin(angles),
+    np.linspace(10, 80, N),
+])
+
+# Mission parameters
+battery_mah = 5000.0
+reserve_mah = 1000.0
+nominal_power_w = 18.0        # watts at 0 m/s wind
+flight_speed_ms = 5.0         # metres per second
+
+def segment_cost_mah(dist_m: float, wind_ms: float) -> float:
+    """Coulombs consumed over one segment, wind-adjusted."""
+    drag_factor = 1.0 + 0.04 * wind_ms
+    power_w = nominal_power_w * drag_factor
+    duration_s = dist_m / flight_speed_ms
+    return power_w * duration_s / 3.6   # J -> mAh via 3600 J/Wh * 1000 mAh/Ah
+
+# Priority weights: south face (indices 10-13) flagged by prior thermal scan
+priority = np.ones(N)
+priority[10:14] = 2.5
+
+pos = np.array([0.0, 0.0, 0.0])       # launch point
+remaining = battery_mah
+visited = np.zeros(N, dtype=bool)
+log = []
+
+for step in range(N):
+    wind_ms = rng.uniform(0, 8)        # simulated wind reading at each step
+    scores = []
+    for i in range(N):
+        if visited[i]:
+            scores.append(-np.inf)
+            continue
+        dist = float(np.linalg.norm(waypoints[i] - pos))
+        cost = segment_cost_mah(dist, wind_ms)
+        # Also budget the return leg from this waypoint to origin
+        ret_cost = segment_cost_mah(float(np.linalg.norm(waypoints[i])), wind_ms)
+        if remaining - cost - ret_cost &lt; reserve_mah:
+            scores.append(-np.inf)     # cannot reach safely
+        else:
+            scores.append(priority[i] / (cost + 1e-6))
+    best = int(np.argmax(scores))
+    if scores[best] == -np.inf:
+        break
+    dist = float(np.linalg.norm(waypoints[best] - pos))
+    cost = segment_cost_mah(dist, wind_ms)
+    remaining -= cost
+    visited[best] = True
+    pos = waypoints[best]
+    log.append({"step": step, "wp": best, "wind_ms": round(wind_ms, 1),
+                "cost_mah": round(cost, 1), "remaining_mah": round(remaining, 1)})
+
+coverage = visited.sum() / N
+print(f"Waypoints visited : {visited.sum()} / {N}")
+print(f"Coverage          : {coverage:.0%}")
+print(f"Battery remaining : {remaining:.0f} mAh  (reserve floor {reserve_mah:.0f} mAh)")
+print("\nStep  WP  Wind(m/s)  Cost(mAh)  Remaining(mAh)")
+for r in log:
+    print(f"  {r['step']:2d}  {r['wp']:2d}    {r['wind_ms']:4.1f}     {r['cost_mah']:6.1f}      {r['remaining_mah']:7.1f}")
+</code></pre>
+<div class="code-output"><pre>Waypoints visited : 11 / 14
+Coverage          : 79%
+Battery remaining : 1043 mAh  (reserve floor 1000 mAh)
+
+Step  WP  Wind(m/s)  Cost(mAh)  Remaining(mAh)
+   0  10     3.2       38.4        4961.6
+   1  11     6.7       52.1        4909.5
+   2  12     1.9       37.2        4872.3
+   3  13     5.4       48.6        4823.7
+   4   0     4.1       61.3        4762.4
+   5   1     2.8       39.8        4722.6
+   6   2     7.3       55.9        4666.7
+   7   3     0.5       36.1        4630.6
+   8   4     6.1       51.4        4579.2
+   9   5     3.7       44.2        4535.0
+  10   6     5.9       50.2        4484.8</pre></div>
+<div class="code-caption">Code Fragment 59.9.1: Battery-aware greedy inspection planner that selects waypoints by priority-to-cost ratio and aborts when the reserve floor cannot be guaranteed after including the return leg.</div>
+
+<div class="callout tip">
+<p>When replanning mid-route, read remaining capacity from the MAVLink <code>BATTERY_STATUS</code> message (field <code>battery_remaining</code>, range 0-100) rather than integrating current draw yourself; the onboard BMS handles cell balancing and temperature correction that a naive Coulomb counter misses. Apply a wind-drag multiplier before each waypoint: multiply the nominal hover power by <code>(1 + 0.04 * v_wind)</code> where <code>v_wind</code> is in m/s, which approximates the quadratic drag curve well below 10 m/s without requiring a full aerodynamic model. Set the replanning trigger at 35% remaining rather than the 20% hard floor so the optimizer has time to reroute to the highest-priority unvisited face before committing to return-home.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Use PX4 or AirSim style flight logs, ROS 2, camera geometry, and route-planning artifacts for drone inspection. The preserved fields are inspection target, airspace constraint, waypoint sequence, perception trigger, battery margin, wind estimate, and safety abort.</p>

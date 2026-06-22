@@ -40,6 +40,9 @@
 <figcaption><strong>Figure 1.1A</strong>: A prediction error in a static model ends at the output; in a closed loop it becomes a state change that the next observation inherits.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The closed-loop formalism introduced here is grounded in section 2.6, which defines the controlled Markov process and observation model precisely. The compounding-error problem resurfaces in section 21.2, where behavior cloning is treated in full, and section 21.3, which introduces DAgger as the canonical on-policy correction. Evaluation tools for measuring closed-loop performance appear in section 10.1 alongside the Gymnasium episode contract.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>A static model maps an input to an output and is scored on that output. An embodied agent maps a stream of observations to actions that change the next stream of observations, and is scored on the resulting behavior over time. This is not a difference of degree. A predictor is a function on a fixed distribution; an agent is a policy in a controlled Markov process whose state distribution is induced by the policy itself. Almost everything that makes embodied AI hard, and almost every technique in this book, follows from that one change.</p>
@@ -49,6 +52,23 @@
 <p>An embodied agent acts inside a <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.6.html">controlled Markov process</a>. At step $t$ it receives an observation $o_t$, maintains a belief or internal state $b_t$, chooses an action $a_t \sim \pi(\cdot \mid b_t)$, and the world transitions $s_{t+1} \sim P(\cdot \mid s_t, a_t)$, emitting $o_{t+1}$. The unit of analysis is the trajectory $\tau = (o_0, a_0, o_1, a_1, \ldots, o_T)$, and the score is a functional of the policy,</p>
 <p>$$J(\pi) = \mathbb{E}_{\tau \sim \pi}\!\left[\sum_{t=0}^{T} r_t - \lambda \sum_{t=0}^{T} c_t\right],$$</p>
 <p>where $r_t$ measures task progress, $c_t$ measures cost such as collision risk, energy, or recovery effort, and $\lambda$ encodes how much the evaluator penalizes unsafe or expensive behavior. The decisive term is the subscript on the expectation: $\tau \sim \pi$. The distribution of states the agent is judged on is <em>produced by the agent</em>. Improve the policy and you change the test set. This single coupling, absent from $f(x)=y$, is the source of distribution shift, compounding error, exploration cost, and the need for closed-loop evaluation.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Closed-Loop Agent Decision Cycle</h4>
+<p><strong>Input:</strong> policy $\pi_\theta$ with parameters $\theta$, environment with transition kernel $P$, reward $r$, cost $c$, penalty weight $\lambda$, horizon $T$</p>
+<p><strong>Output:</strong> trajectory $\tau = (o_0, a_0, o_1, a_1, \ldots, o_T)$, return estimate $\hat{J}(\pi_\theta)$</p>
+<ol>
+<li>Receive initial observation $o_0$ from environment; initialize belief $b_0 \leftarrow o_0$.</li>
+<li>For each step $t = 0, 1, \ldots, T-1$:</li>
+<li><span style="margin-left:1.5em">Sample action $a_t \sim \pi_\theta(\cdot \mid b_t)$ from the current policy.</span></li>
+<li><span style="margin-left:1.5em">Execute $a_t$; receive next observation $o_{t+1}$ and scalar signals $r_t$, $c_t$.</span></li>
+<li><span style="margin-left:1.5em">World transitions: $s_{t+1} \sim P(\cdot \mid s_t, a_t)$ (internal to environment, not observed directly).</span></li>
+<li><span style="margin-left:1.5em">Update belief: $b_{t+1} \leftarrow \text{encode}(b_t, a_t, o_{t+1})$.</span></li>
+<li><span style="margin-left:1.5em">Detect irreversible-state flag; if triggered, log for trajectory-level audit.</span></li>
+<li>After episode ends, compute discounted return: $\hat{J} = \sum_{t=0}^{T}(r_t - \lambda c_t)$.</li>
+<li>Compare $\hat{J}$ against any offline proxy metric (e.g., action MSE on held-out data); a gap between the two flags distribution shift.</li>
+<li>If $\nabla_\theta \hat{J}$ is available (on-policy), update $\theta \leftarrow \theta + \alpha \nabla_\theta \hat{J}$; otherwise flag for offline correction via DAgger or behavior cloning.</li>
+</ol>
+</div>
 <figure aria-labelledby="fig-1-1-title" class="concept-diagram">
 <svg aria-labelledby="fig-1-1-title fig-1-1-desc" role="img" viewbox="0 0 760 250" xmlns="http://www.w3.org/2000/svg">
 <title id="fig-1-1-title">Concept map for Section 1.1</title>
@@ -126,6 +146,9 @@ for horizon in (10, 40, 160, 640):
 <div class="callout warning">
 <div class="callout-title">A common and expensive mistake</div>
 <p>Reporting offline metrics (action MSE, top-1 grasp accuracy, validation loss) as if they predicted on-robot reliability. They are necessary, not sufficient. A policy can minimize offline loss and still be unsafe in the loop because offline data does not contain the off-distribution states the policy will visit once it is in control. Always pair an offline number with at least one closed-loop rollout metric co-computed on the same checkpoint.</p>
+</div>
+<div class="callout tip">
+<p>To pair an offline checkpoint with a closed-loop rollout metric without writing a separate eval script, wrap your Gymnasium environment with <code>gymnasium.wrappers.RecordEpisodeStatistics</code> before the training loop begins. It accumulates <code>episode["r"]</code> (return) and <code>episode["l"]</code> (length) in the <code>info</code> dict returned by <code>step()</code> on each terminal step, so you can log both metrics from the same rollout pass that generates your offline training data. The common mistake is adding this wrapper only at eval time: because the wrapper resets its internal accumulators on each <code>reset()</code>, attaching it mid-run produces a return estimate over only the tail of the episode.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research frontier</div>

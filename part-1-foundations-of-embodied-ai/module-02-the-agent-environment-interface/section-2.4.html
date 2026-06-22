@@ -40,6 +40,10 @@
 <figcaption>Figure 2.4A: Reward, goal, cost, and constraint signals for a navigation task: the agent receives a sparse +1 on reaching the goal, a per-step cost for energy use, and a hard constraint that keeps it away from humans.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the observation and action spaces introduced in section 2.2 and the action taxonomies from section 2.3. The reward signal defined here feeds directly into the discounting and trajectory machinery covered in section 2.5. The concepts of reward hacking, constraint satisfaction, and learned reward models are revisited at length in Part 4, particularly in sections 18.4 and 18.5.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Rewards, goals, costs, constraints</strong> turn desired behavior into measurable signals. Reward is a scalar training or evaluation signal, a goal is a desired condition, a cost measures undesirable behavior, and a constraint marks behavior that should not be traded away.</p>
@@ -106,6 +110,9 @@ print(fast_unsafe)</code></pre>
 <div class="callout-title">Library Shortcut</div>
 <p>The 10-line scorer becomes a callback or metric logger in Gymnasium, Isaac Lab, LeRobot evaluation scripts, or a Weights &amp; Biases table. The tool handles batching, charts, and comparisons. The designer must still decide which events are rewards, which are costs, and which are non-negotiable constraints.</p>
 </div>
+<div class="callout tip">
+<p>In Gymnasium, the <code>info</code> dict returned by <code>env.step()</code> is the correct place to surface cost fields and constraint flags without corrupting the reward signal. Pass fields such as <code>info["collision"]</code>, <code>info["keepout_entered"]</code>, and <code>info["energy_j"]</code> and record them in your logger alongside the scalar reward. If you instead add a small penalty to <code>reward</code>, Stable-Baselines3 and CleanRL will average those penalties into training curves and make it impossible to distinguish learning progress from constraint degradation. The <code>RecordEpisodeStatistics</code> wrapper captures <code>info</code> fields automatically when you prefix them with <code>episode/</code>, so <code>info["episode/collision"]</code> appears as a separate chart in TensorBoard with no extra code.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the goal in task language before writing a scalar reward.</li>
@@ -114,6 +121,23 @@ print(fast_unsafe)</code></pre>
 <li>Add counterexample episodes that target <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-18-reward-design-and-goal-specification/section-18.4.html">reward hacking</a>.</li>
 <li>Report success with constraint violations, not success alone.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Reward Specification Design Checklist</h4>
+<p><strong>Input:</strong> task description in natural language, candidate policy $\pi_\theta$ parameterized by $\theta$, environment transition model</p>
+<p><strong>Output:</strong> factorized specification $(r, \mathbf{c}, \mathcal{C})$ where $r$ is the scalar reward, $\mathbf{c}$ is the cost vector, and $\mathcal{C}$ is the constraint set</p>
+<ol>
+<li>Write the goal condition $g$ in task language before writing any scalar expression.</li>
+<li>Define the scalar reward $r_t = f(s_t, a_t, s_{t+1})$ to measure progress toward $g$; record its domain and expected magnitude.</li>
+<li>Enumerate cost dimensions: for each undesirable-but-tradeable quantity (time, energy, jerk, distance to humans), define $c_i(s_t, a_t)$ and collect them into cost vector $\mathbf{c}_t$.</li>
+<li>For each hard boundary (force limit $F_{\max}$, keepout zone $\mathcal{Z}$, operator intervention rate $\lambda$), write an explicit constraint $C_j$; mark it non-negotiable so it cannot be folded into $r$.</li>
+<li>Compute the shaping gradient $\nabla_\theta r$ on a sample trajectory and verify it points toward $g$, not toward exploiting a proxy.</li>
+<li>Generate at least one counterexample episode where reward increases while a constraint $C_j$ is violated.</li>
+<li>Record the tuple $(r_t, \mathbf{c}_t, \text{constraints\_ok})$ per timestep in a structured log; never merge them into a single scalar before storage.</li>
+<li>Run a reward audit: sort episodes by $\sum_t r_t$ and separately by deployability (all $C_j$ satisfied); flag any episode ranked higher by reward than by deployability.</li>
+<li>If the learning rate $\alpha$ or policy update causes constraint violations to rise while mean return rises, convert the offending penalty term into a hard episode-terminating constraint.</li>
+<li>Publish the final spec as the four-field artifact: task success, scalar return, cost vector, constraint status, co-computed on one configuration and one seed.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Failure Mode</div>
 <p>Average reward can improve while rare unsafe events increase. This is especially dangerous when collisions, force spikes, keepout-zone entries, or operator interventions are small terms inside a single scalar.</p>

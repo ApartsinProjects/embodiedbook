@@ -40,6 +40,10 @@
 <figcaption>Figure 4.1A: A robot operating in a kitchen scene annotated with three nested coordinate frames (world, robot base, end-effector), showing why every distance and angle is meaningless without specifying the reference frame.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment interface introduced in section 2.1 and the action-type taxonomy from section 2.3. The coordinate-frame contract established here is developed formally in section 4.4 (rigid transforms and SE(3)) and applied in section 5.1 (twists and velocity kinematics). The same frame-labeling discipline recurs throughout Part VIII alongside sensor models and state estimation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Why space is the substrate of embodiment</strong> matters because every useful action has a where. A policy can name an object, a detector can return pixels, and a planner can propose a path, but a robot needs spatial quantities with units, frames, timestamps, and uncertainty before it can act.</p>
@@ -58,6 +62,23 @@
 <p>$$p^A = T_{AB}\, p^B, \qquad p^B = T_{BA}\, p^A = (T_{AB})^{-1} p^A.$$</p>
 <p>The transform is built from a rotation $R_{AB} \in SO(3)$ and a translation $t_{AB} \in \mathbb{R}^3$, the origin of frame $B$ expressed in frame $A$. Acting on a point this reads $p^A = R_{AB}\,p^B + t_{AB}$, so two frames give two coordinate triples for one physical target.</p>
 <p>This notation is not decorative. It prevents a common production failure: an array crosses a subsystem boundary with no frame label, and the next subsystem silently assumes a different convention. The bug may survive unit tests because the numbers have the right shape.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Coordinate-Frame Contract Verification</h4>
+<p><strong>Input:</strong> a spatial quantity $q$ (point, vector, or pose) and the subsystem boundary it must cross; the candidate transform $T_{AB}$ with claimed parent frame $A$ and child frame $B$</p>
+<p><strong>Output:</strong> verified frame-labeled quantity $q^A$ ready for the downstream consumer, or a rejection with a labeled failure reason</p>
+<ol>
+<li>Name the physical quantity and its consumer: record what $q$ represents (e.g., grasp target position), which subsystem produces it, and which controller or planner will consume it.</li>
+<li>Label the source frame: confirm the producer has tagged $q$ with a frame identifier $B$ (e.g., <code>camera_optical</code>). Reject unlabeled arrays immediately.</li>
+<li>Check timestamp freshness: compare the timestamp $\tau_q$ of $q$ to the current time $\tau_{now}$. If $|\tau_{now} - \tau_q| &gt; \Delta_{\max}$ for the control loop period $\Delta_{\max}$, mark the quantity stale and request a new observation.</li>
+<li>Verify units and scale: confirm $q$ is expressed in meters (or radians for angles $\theta$, $\alpha$) and that no implicit unit conversion is assumed across the boundary.</li>
+<li>Retrieve the transform: look up $T_{AB}$ from the transform graph (e.g., tf2 buffer or a calibration file), confirm parent frame $A$ and child frame $B$ match the labels in steps 2 and the consumer's expected input frame.</li>
+<li>Apply the transform: compute $q^A = T_{AB}\, q^B$ using homogeneous coordinates. For a rotation-only direction vector, apply only $R_{AB}$ and omit the translation $t_{AB}$.</li>
+<li>Verify the round trip: compute $\hat{q}^B = T_{BA}\, q^A = (T_{AB})^{-1} q^A$ and check the residual $\|q^B - \hat{q}^B\|_2 &lt; \varepsilon$ (e.g., $\varepsilon = 10^{-9}$ m). A non-zero residual signals a numerical or convention error.</li>
+<li>Check covariance consistency: if $q$ carries a covariance $\Sigma^B$, propagate it as $\Sigma^A = R_{AB}\,\Sigma^B\,R_{AB}^\top$ and confirm the maximum eigenvalue stays within the sensor specification.</li>
+<li>Log the full record: write frame_id, timestamp $\tau_q$, units, transform source, and round-trip residual to the diagnostic log before passing $q^A$ downstream.</li>
+<li>Pass or reject: if all checks pass, deliver the labeled $q^A$ to the consumer. If any check fails, raise a typed error (stale, wrong-frame, numerical, or unit mismatch) and do not execute the action.</li>
+</ol>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A spatial interface should carry five fields: value, frame_id, timestamp, units, and validity. For probabilistic estimates, add covariance or another uncertainty description. For actuator commands, add limits and the controller frame.</p>
@@ -102,6 +123,9 @@ round-trip residual:   0.0</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>A vision model can localize an object perfectly in image space and still fail the task if camera-to-base calibration is stale, if the controller consumes the wrong frame, or if the pose arrives after the object has moved. In practice, a 2-degree rotational error in a camera mount translates to roughly 17 mm of positional error at 500 mm depth: well within typical grasp tolerance when calibrated, fatal when accumulated across two or three such errors. The symptom is a consistent directional bias in grasp failures, not random scatter, which points to a transform error rather than perception noise. Check the transform chain before tuning the vision model.</p>
+</div>
+<div class="callout tip">
+<p>When calling <code>tf2_ros.Buffer.lookup_transform</code> in ROS 2, always pass an explicit <code>timeout</code> (for example, <code>rclpy.duration.Duration(seconds=0.1)</code>) as the fourth argument. Without it the call returns immediately with whatever transform is cached, which may be hundreds of milliseconds old; a camera remounted or a robot base that drifted will silently supply a stale pose. Pair this with a staleness check: compare <code>transform.header.stamp</code> to <code>node.get_clock().now()</code> and reject any transform older than your control loop period before passing it downstream.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

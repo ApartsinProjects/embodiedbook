@@ -40,6 +40,10 @@
 <figcaption><strong>Figure 42.7A</strong>: A mobile manipulation loop must co-design route choice, base staging, arm reachability, and recovery rather than treating grasping as a final afterthought.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section synthesizes the failure detection policies from section 42.6 and the arm reachability geometry from section 5.7 into a single whole-body staging loop. The mobile manipulation architecture developed here is extended in Chapter 43, where section 43.1 applies the same perception-plan-recover structure to grasp synthesis for dexterous hands.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Mobile manipulation couples navigation, perception, reachability, grasping, and recovery into one long-horizon control problem. The base pose is part of the grasp plan, not just a precondition for it.</p>
@@ -57,16 +61,19 @@
 <figcaption><strong>Figure 42.7.1</strong>: A mobile manipulation loop must co-design route choice, base staging, arm reachability, and recovery rather than treating grasping as a final afterthought.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The central object is a coupled cost over base pose, arm configuration, visibility, collision risk, and task progress. Local arm planning cannot be optimal if the base pose destroys reachability or line of sight.</p>
+<p>The central object is a coupled cost over base pose, arm configuration, visibility, collision risk, and task progress. Local arm planning cannot be optimal if the base pose destroys <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.7.html">reachability</a> or line of sight.</p>
 <p>This coupling is why mobile manipulation is a natural benchmark for embodied AI. It forces a policy or planner to reason across spatial scales and across multiple failure channels in one episode.</p>
 <p>$$ (q_b^\star, q_a^\star) = \arg\min_{q_b, q_a} C_{\text{route}}(q_b)+C_{\text{reach}}(q_b,q_a)+C_{\text{view}}(q_b)+C_{\text{risk}}(q_b,q_a) $$</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The robot builds a semantic map, chooses candidate base poses that preserve arm reachability and visibility, executes a staged manipulation plan, and routes to retreat or reobserve when local evidence disagrees with the global map. A good evidence artifact contains route, base pose, arm plan, and recovery branch together.</p>
+<p>The robot builds a <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.4.html">semantic map</a>, chooses candidate base poses that preserve arm reachability and visibility, executes a staged manipulation plan, and routes to retreat or reobserve when local evidence disagrees with the global map. A good evidence artifact contains route, base pose, arm plan, and recovery branch together.</p>
 </div>
 <div class="callout algorithm">
 <div class="callout-title">Algorithm: Whole-Body Staging Score</div>
 <ol><li>Generate candidate base poses near the target region and reject ones with poor reachability or visibility.</li><li>Plan a local whole-body sequence: base settle, arm approach, contact action, and retreat corridor.</li><li>Refresh local perception after base arrival before committing the arm plan.</li><li>If the grasp or contact fails, retreat to a safe standoff pose before replanning.</li></ol>
+</div>
+<div class="callout tip">
+<p>When using Nav2 with MoveIt 2 for base staging, set the <code>goal_checker_plugins</code> tolerance in the Nav2 controller server to a tight value (0.05 m position, 0.05 rad yaw) rather than the default 0.25 m. A loose stopping tolerance lets the base settle 20+ cm off the scored pose, invalidating the reachability and visibility scores computed before navigation. After arrival, trigger one fresh depth frame at standoff (0.3-0.5 m from the target) by inserting a <code>WaitForTransform</code> plus a <code>TriggerReplanning</code> BehaviorTree.CPP node before the arm motion begins; without this explicit sync point, the arm plan still runs against the stale costmap snapshot captured at route-plan time.</p>
 </div>
 <h2>Worked Example</h2>
 <pre><code class="language-python"># Score candidate base poses for reachability, view, and risk.
@@ -96,7 +103,7 @@ print(scores)</code></pre>
 <div class="callout-title">Common Failure Mode</div>
 <p>Treating mobile manipulation as navigation followed by grasping usually creates hidden dead ends. The base may arrive in a place where the target is visible but not reachable, or reachable but unsafe to recover from.</p>
 </div>
-<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Perception goes stale between route planning and contact. A robot that builds its grasp plan from the map captured 2 meters away will often find that the object has shifted, the cabinet door is at a different angle, or a person has stepped into the retreat corridor. Systems that do not refresh local perception after base arrival (a depth scan or wrist-camera frame at standoff distance, typically 0.3-0.5 m) fail silently: the arm plan executes against a stale model and the first sign of trouble is a collision or a missed grasp, not a planning error. Mobile ALOHA and the Habitat 3.0 rearrangement benchmark both expose this failure channel because tasks require re-observing the scene at multiple scales before committing to contact.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Perception goes stale between route planning and contact. A robot that builds its grasp plan from the map captured 2 meters away will often find that the object has shifted, the cabinet door is at a different angle, or a person has stepped into the retreat corridor. Systems that do not refresh local perception after base arrival (a depth scan or wrist-camera frame at standoff distance, typically 0.3-0.5 m) fail silently: the arm plan executes against a stale model and the first sign of trouble is a collision or a missed grasp, not a planning error. <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.3.html">Mobile ALOHA</a> and the <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-12-benchmarks-and-task-suites/section-12.5.html">Habitat 3.0</a> rearrangement benchmark both expose this failure channel because tasks require re-observing the scene at multiple scales before committing to contact.</p></div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>Household robots opening cabinets, carrying dishes, or picking objects from cluttered floors routinely need to re-stage the base to obtain a better wrist approach and a safer retreat corridor.</p>
@@ -115,7 +122,7 @@ print(scores)</code></pre>
 </div>
 
 
-<p>Mobile manipulation is a clean example of multi-timescale reasoning. Global route planning runs over meters and seconds, while contact control runs over centimeters and milliseconds. Whole-body success depends on passing the right abstractions between those scales.</p>
+<p>Mobile manipulation is a clean example of multi-timescale reasoning. <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.3.html">Global route planning</a> runs over meters and seconds, while <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.6.html">contact control</a> runs over centimeters and milliseconds. Whole-body success depends on passing the right abstractions between those scales.</p>
 <p>It is also a useful place to teach coupled evaluation. A navigation benchmark and a grasp benchmark can both look strong while the combined system fails because the interfaces between them were never optimized together.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>

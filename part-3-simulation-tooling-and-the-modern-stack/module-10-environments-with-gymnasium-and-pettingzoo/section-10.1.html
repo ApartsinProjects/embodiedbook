@@ -39,6 +39,10 @@
 <figcaption>Figure 10.1A: A migration guide from the deprecated gym.make() API to the current gymnasium.make() interface, annotating the changed return signature (obs, info) and the new step() tuple (obs, reward, terminated, truncated, info).</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the role of simulation in embodied experiments introduced in section 9.2. The terminated/truncated distinction set up here is used directly by the PPO bootstrapping logic in section 15.4, and the same reset and step contract is extended to wrapper composition in section 10.4 and to multi-agent settings in section 10.7.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Gym is dead; Gymnasium is the standard defines the contract an embodied experiment exposes to learning code: observations, actions, rewards, termination, truncation, rendering, and diagnostic info. Gymnasium handles the single-agent version of that contract, while PettingZoo extends the same discipline to multi-agent interaction.</p>
@@ -92,6 +96,23 @@ env.close()</code></pre>
 <li>Reset when <code>terminated or truncated</code> is true, but log which flag caused the reset.</li>
 <li>Store <code>env.spec.id</code>, wrapper stack, seed, render mode, and library versions with the result artifact.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Gymnasium Migration and Episode-Boundary Audit</h4>
+<p><strong>Input:</strong> legacy Gym environment loop with policy $\pi$, episode horizon $T$, seed $s$, discount factor $\gamma$</p>
+<p><strong>Output:</strong> migrated loop producing per-episode counts $(N_\text{term}, N_\text{trunc})$, bootstrapped return estimate $\hat{G}$, and reproducibility trace</p>
+<ol>
+<li>Replace <code>import gym</code> with <code>import gymnasium as gym</code> and record the library version in the artifact header.</li>
+<li>Rewrite <code>obs = env.reset()</code> as <code>obs, info = env.reset(seed=s)</code>; call <code>env.action_space.seed(s)</code> immediately after to bind $\pi$'s sampling to the same seed.</li>
+<li>At each timestep $t$, select action $a_t \sim \pi(\cdot \mid o_t)$ and call <code>o_{t+1}, r_t, \text{terminated}, \text{truncated}, \text{info} = env.step(a_t)</code>, unpacking all five fields.</li>
+<li>Accumulate discounted return: $G_t = r_t + \gamma G_{t+1}$, where the recursion uses $\hat{V}(o_{t+1})$ from the current value head when <code>truncated</code> is true (time limit reached, task ongoing).</li>
+<li>When <code>terminated</code> is true, set the bootstrap target to zero: $\hat{V}(o_{t+1}) \leftarrow 0$, because the episode ended at a genuine task boundary.</li>
+<li>Increment $N_\text{term}$ if <code>terminated</code> is true; increment $N_\text{trunc}$ if <code>truncated</code> is true. Never merge the two counters.</li>
+<li>Reset the environment when <code>terminated or truncated</code>, log the triggering flag, and append <code>info</code> to the episode record.</li>
+<li>After $E$ episodes, assert $N_\text{term} + N_\text{trunc} = E$ as an integrity check; a mismatch indicates a loop that exits without reaching either boundary.</li>
+<li>Re-run the loop with the same seed $s$ and confirm that the first-episode trace is bit-for-bit identical (actions, observations, boundary flags).</li>
+<li>Save the artifact with <code>env.spec.id</code>, wrapper stack, seed, Gymnasium version, $N_\text{term}$, $N_\text{trunc}$, and $\hat{G}$ as separate named fields.</li>
+</ol>
+</div>
 <div class="callout tip"><div class="callout-title">Gymnasium And PettingZoo Practice</div><p>A usable environment wrapper for this section records Gymnasium API compatibility, reset and step signatures, termination versus truncation, and wrapper behavior, plus observation and action spaces, reset seed, info dictionary fields, and reproducible evidence artifacts.</p></div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>

@@ -40,13 +40,17 @@
 <figcaption>Figure 40.4A: Self-supervised pretraining for control as a closed prediction loop: the encoder maps the current frame to a latent, a predictor rolls the latent forward by one action, and the prediction is verified against the next encoded frame before the planner commits to a longer horizon.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with JEPA-style latent prediction from section 40.3 and with reward-sparse reinforcement learning from section 14.5. The transfer interface patterns introduced here (frozen encoder, adapter tuning, full fine-tuning) are applied directly to real robot tasks in section 42.3, and the question of which objectives generalize across embodiments resurfaces in section 35.5 alongside cross-embodiment foundation models.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Self-supervised Pretraining For Control</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
 </div>
 
 
-<p>Self-supervised pretraining becomes useful for control only when the frozen or lightly adapted encoder exposes the state variables the controller cannot cheaply relearn from sparse robot rewards. In practice, those variables are often object permanence, coarse geometry, temporal continuity, and action-relevant scene changes.</p>
+<p>Self-supervised pretraining becomes useful for control only when the frozen or lightly adapted encoder exposes the state variables the controller cannot cheaply relearn from <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-18-reward-design-and-goal-specification/section-18.2.html">sparse robot rewards</a>. In practice, those variables are often object permanence, coarse geometry, temporal continuity, and action-relevant scene changes.</p>
 <p>The engineering question is therefore not "should we pretrain?" but "which objective, transfer interface, and adaptation budget give the controller the highest return per hour of robot data?"</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
@@ -67,6 +71,25 @@ $$</p>
 <div class="callout-title">Mechanism</div>
 <p>The practical loop is pretrain, freeze or adapt, attach a control head, then compare against a no-pretraining baseline on the same rollout panel. If the representation only improves offline probes but not control data-efficiency, it has not yet earned deployment cost.</p>
 </div>
+
+<div class="callout algorithm">
+<h4>Algorithm: JEPA Encoder Pretraining and Control Transfer</h4>
+<p><strong>Input:</strong> Unlabeled observation dataset $\mathcal{D}_{\text{ssl}}$, robot interaction dataset $\mathcal{D}_{\text{ctrl}}$, encoder $\phi_\theta$ with parameters $\theta$, predictor $f_\psi$, target encoder $\bar{\phi}$ (EMA copy), policy $\pi_\omega$, learning rates $\alpha_{\text{ssl}}$ and $\alpha_{\text{ctrl}}$, mask ratio $m$, EMA decay $\tau$</p>
+<p><strong>Output:</strong> Pretrained encoder $\phi_{\theta^\star}$ and control policy $\pi_{\omega^\star}$ achieving high task success rate $J(\omega^\star; \theta^\star)$</p>
+<ol>
+<li>Sample a context-target pair $(o_c, o_t)$ from $\mathcal{D}_{\text{ssl}}$ by applying random spatiotemporal masks at ratio $m$ to observation $o$.</li>
+<li>Compute context embedding $z_c = \phi_\theta(o_c)$ and target embedding $\bar{z}_t = \bar{\phi}(o_t)$ using the online encoder and the EMA target encoder respectively.</li>
+<li>Predict the target latent from context: $\hat{z}_t = f_\psi(z_c)$.</li>
+<li>Minimize the JEPA SSL loss $\mathcal{L}_{\text{ssl}} = \| \hat{z}_t - \text{sg}(\bar{z}_t) \|_2^2$ with gradient step $\theta \leftarrow \theta - \alpha_{\text{ssl}} \nabla_\theta \mathcal{L}_{\text{ssl}}$, where $\text{sg}(\cdot)$ is stop-gradient.</li>
+<li>Update the target encoder via EMA: $\bar{\theta} \leftarrow \tau \bar{\theta} + (1 - \tau)\theta$.</li>
+<li>Repeat steps 1-5 over $\mathcal{D}_{\text{ssl}}$ until $\mathcal{L}_{\text{ssl}}$ converges, yielding $\phi_{\theta^\star}$.</li>
+<li>Choose a transfer interface: freeze $\phi_{\theta^\star}$ entirely, add lightweight LoRA adapters $\Delta_\phi$ (updating only 1-5% of parameters), or fully fine-tune depending on the available robot data budget.</li>
+<li>Attach a policy head $\pi_\omega(a_t \mid \phi_{\theta^\star}(o_t), g_t)$ and initialize $\omega$ randomly.</li>
+<li>Optimize the control objective $J(\omega; \theta^\star) = \mathbb{E}[\sum_{t=0}^{T-1} \gamma^t r(s_t, a_t)]$ via gradient ascent $\omega \leftarrow \omega + \alpha_{\text{ctrl}} \nabla_\omega J$ using rollouts from $\mathcal{D}_{\text{ctrl}}$.</li>
+<li>Evaluate closed-loop task success against a from-scratch baseline trained on identical robot data; accept $\pi_{\omega^\star}$ only if the pretrained variant yields a measurable improvement in task success rate.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>The following probe compares two control-learning curves under a simple transfer model. The point is to inspect what a pretraining gain looks like numerically before it gets buried in a larger robot stack.</p>
 <pre><code class="language-python"># Compute a JEPA-style representation prediction loss.
@@ -97,11 +120,11 @@ print({
 </div>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
-<p>The most common failure is a representation that scores well on offline probes (linear classification accuracy, reconstruction PSNR) but does not improve closed-loop task success. This happens when the pretraining objective rewards features that are semantically rich but geometrically coarse: a V-JEPA encoder trained purely on internet video learns that a cup is a cup across lighting conditions, but the latent may discard the millimeter-scale handle pose the gripper needs. The symptom is a high probe accuracy paired with a flat or degraded learning curve when the controller is attached. The fix is to add a contact-scale auxiliary signal during adaptation, or to switch to a finer-grained masking strategy that forces the predictor to resolve object boundaries rather than scene categories.</p>
+<p>The most common failure is a representation that scores well on <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.2.html">offline probes</a> (linear classification accuracy, reconstruction PSNR) but does not improve closed-loop task success. This happens when the pretraining objective rewards features that are semantically rich but geometrically coarse: a V-JEPA encoder trained purely on internet video learns that a cup is a cup across lighting conditions, but the latent may discard the millimeter-scale handle pose the gripper needs. The symptom is a high probe accuracy paired with a flat or degraded learning curve when the controller is attached. The fix is to add a contact-scale auxiliary signal during adaptation, or to switch to a finer-grained masking strategy that forces the predictor to resolve object boundaries rather than scene categories.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Self-supervised Pretraining For Control</div>
-<p>A warehouse-picking team pretrains on thousands of hours of unlabeled wrist-camera and overhead-camera video, then fine-tunes only a small grasp-ranking head on hard-negative robot episodes. The benefit is not abstract representation quality. The benefit is that the controller starts with features that already separate handle geometry, occlusion boundaries, and object persistence, so the robot spends its scarce interaction budget on contact refinement rather than relearning the scene from scratch.</p>
+<p>A warehouse-picking team pretrains on thousands of hours of unlabeled wrist-camera and overhead-camera video, then fine-tunes only a small grasp-ranking head on hard-negative robot episodes. The benefit is not abstract representation quality. The benefit is that the controller starts with features that already separate handle geometry, occlusion boundaries, and object persistence, so the robot spends its <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.5.html">scarce interaction budget</a> on contact refinement rather than relearning the scene from scratch.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
@@ -117,7 +140,10 @@ print({
 </div>
 
 
-<p>In production, the decisive question is where the representation enters the controller. Frozen latents are attractive because they stabilize training and simplify debugging, adapter-based tuning is often the best compromise when the task differs from pretraining, and full fine-tuning should be reserved for cases where the embodiment mismatch is large enough that a fixed encoder blocks performance. Consider a specific case: a team pretrained a V-JEPA encoder on 500 hours of manipulation video, then attached a 3-layer MLP controller for a tabletop stacking task. With the encoder frozen, the controller reached 61% success in 2 hours of robot data. Adding a 4-layer adapter (LoRA-style, 2% of parameters unfrozen) pushed success to 74% in the same budget, because the adapter recovered contact-scale detail that the video-trained encoder had smoothed away. Full fine-tuning of the encoder collapsed to 38% success: without a large robot dataset to anchor it, the encoder drifted away from the geometry features the controller depended on. The rule of thumb that falls out is: freeze when robot data is under roughly 5 hours; use lightweight adapters between 5 and 50 hours; reserve full fine-tuning for cases where you have hundreds of hours of on-robot experience and the source embodiment is genuinely different.</p>
+<div class="callout tip">
+<p>When attaching LoRA-style adapters to a frozen V-JEPA encoder in PyTorch, call <code>encoder.requires_grad_(False)</code> first, then instantiate the adapter modules and confirm they are trainable with <code>assert any(p.requires_grad for p in adapter.parameters())</code> before the training loop. If you load the full checkpoint with <code>load_state_dict</code> and then add adapters without this check, PyTorch inherits <code>requires_grad=False</code> from the checkpoint manifest on some versions, and the adapter silently receives zero gradient updates. A run that logs a non-zero loss but shows identical adapter weights after epoch 1 is the telltale symptom.</p>
+</div>
+<p>In production, the decisive question is where the representation enters the controller. Frozen latents are attractive because they stabilize training and simplify debugging, <a href="../../part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/section-35.5.html">adapter-based tuning</a> is often the best compromise when the task differs from pretraining, and full fine-tuning should be reserved for cases where the embodiment mismatch is large enough that a fixed encoder blocks performance. Consider a specific case: a team pretrained a V-JEPA encoder on 500 hours of manipulation video, then attached a 3-layer MLP controller for a <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.3.html">tabletop stacking task</a>. With the encoder frozen, the controller reached 61% success in 2 hours of robot data. Adding a 4-layer adapter (LoRA-style, 2% of parameters unfrozen) pushed success to 74% in the same budget, because the adapter recovered contact-scale detail that the video-trained encoder had smoothed away. Full fine-tuning of the encoder collapsed to 38% success: without a large robot dataset to anchor it, the encoder drifted away from the geometry features the controller depended on. The rule of thumb that falls out is: freeze when robot data is under roughly 5 hours; use lightweight adapters between 5 and 50 hours; reserve full fine-tuning for cases where you have hundreds of hours of on-robot experience and the source embodiment is genuinely different.</p>
 <p>V-JEPA 2 is a useful anchor because it separates broad passive pretraining from smaller embodiment-specific adaptation. That pattern generalizes beyond JEPA: whenever robot data is expensive, treat pretraining as a way to purchase state abstraction early, then verify the win with matched closed-loop evidence.</p>
 <ol>
 <li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>

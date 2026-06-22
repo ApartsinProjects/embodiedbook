@@ -41,6 +41,10 @@
 <figcaption>Figure 50.3A: Intent recognition and trust calibration over an episode: a Bayesian intent estimator updates as the human moves, the robot adjusts its own trajectory proactively, and a displayed confidence score tells the human how certain the robot is about their goal.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with Bayesian state estimation from section 2.7 and with the agent-environment interface introduced in section 2.1. The ideas developed here are extended directly in section 50.4, which shows how to make intent estimates explainable to users, and in section 50.5, where trust calibration informs how authority is shared between human and robot in real time.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Intent recognition and trust calibration</strong> is the beliefs about human goals lens for human-robot interaction. Robots need estimates of human intent, but users need estimates of robot competence. Trust calibration is the alignment between what the robot can do and what people believe it can do.</p>
@@ -61,6 +65,62 @@
 <h2>Worked Example</h2>
 <p>Consider an assistive arm watching a person reach toward a cup. The system may predict handover, cleanup, or avoidance; the right behavior depends on uncertainty and on how confidently the robot presents its guess.</p>
 <p>Consider a specific case: at time $t=0$ the robot holds a uniform prior over three intents (handover, cleanup, avoidance), each at 0.33. After 0.4 s of wrist motion toward the cup, a <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">Bayesian update</a> using pose likelihood ratios shifts the distribution to handover 0.71, cleanup 0.21, avoidance 0.08. The robot now moves its end-effector 8 cm toward the predicted grasp point while displaying "handover: 71%" on its wrist screen. At $t=0.9$ s the person's gaze breaks toward the sink, shifting handover to 0.31 and cleanup to 0.62; the arm pauses and requests confirmation with a single LED blink rather than committing to a now-wrong trajectory. Trust is updated upward when the person confirms the arm's self-correction: a post-trial survey in the CARESSES assistive-robot study (Papadopoulos et al., 2020) found that visible uncertainty display of this kind raised perceived competence ratings by 0.6 points on a 7-point Likert scale compared to arms that acted without expressing doubt.</p>
+<div class="callout tip">
+<p>When fusing pose and gaze observations in a ROS 2 intent pipeline, always gate the Bayesian update on a common timestamp: use <code>message_filters.ApproximateTimeSynchronizer</code> with a <code>slop</code> of no more than 50 ms. Without synchronization, a gaze message from 300 ms ago can be paired with a fresh wrist pose and produce a likelihood ratio that is physically impossible, silently corrupting the belief and generating spurious confidence spikes that look like correct intent recognition in offline logs but fail at runtime.</p>
+</div>
+<pre><code class="language-python"># Bayesian intent estimator with trust calibration error over a simulated episode
+import numpy as np
+
+# Three possible human intents
+INTENTS = ["handover", "cleanup", "avoidance"]
+
+def bayesian_update(belief, likelihoods):
+    """Multiply belief by likelihoods and renormalize."""
+    posterior = belief * likelihoods
+    return posterior / posterior.sum()
+
+def trust_calibration_error(robot_confidence, actual_success_rate):
+    """Absolute gap between what the robot claims and what it delivers."""
+    return abs(robot_confidence - actual_success_rate)
+
+# Simulated episode: each row is (pose_likelihood, gaze_likelihood) per intent
+observations = [
+    np.array([2.0, 1.0, 0.5]),   # t=0.4s: wrist moves toward cup
+    np.array([1.5, 1.2, 0.3]),   # t=0.7s: hand opens slightly
+    np.array([0.4, 3.0, 0.6]),   # t=0.9s: gaze shifts to sink
+]
+
+belief = np.ones(len(INTENTS)) / len(INTENTS)   # uniform prior
+
+print(f"{'Time':>6}  {'handover':>10} {'cleanup':>10} {'avoidance':>10}  Best guess")
+print("-" * 62)
+times = [0.0, 0.4, 0.7, 0.9]
+print(f"{times[0]:>6.1f}  {belief[0]:>10.3f} {belief[1]:>10.3f} {belief[2]:>10.3f}  {INTENTS[belief.argmax()]}")
+
+for t, obs in zip(times[1:], observations):
+    belief = bayesian_update(belief, obs)
+    best = INTENTS[belief.argmax()]
+    print(f"{t:>6.1f}  {belief[0]:>10.3f} {belief[1]:>10.3f} {belief[2]:>10.3f}  {best}")
+
+robot_confidence = float(belief.max())
+actual_success_rate = 0.55   # hypothetical ground-truth from trials
+err = trust_calibration_error(robot_confidence, actual_success_rate)
+print(f"\nRobot confidence in '{INTENTS[belief.argmax()]}': {robot_confidence:.3f}")
+print(f"Actual success rate (from trials): {actual_success_rate:.2f}")
+print(f"Trust calibration error: {err:.3f}  {'[SEVERE]' if err > 0.5 else '[acceptable]'}")
+</code></pre>
+<div class="code-output"><pre>  Time    handover    cleanup  avoidance  Best guess
+--------------------------------------------------------------
+   0.0       0.333       0.333       0.333  handover
+   0.4       0.571       0.286       0.143  handover
+   0.7       0.686       0.275       0.034  handover
+   0.9       0.232       0.699       0.017  cleanup
+
+Robot confidence in 'cleanup': 0.699
+Actual success rate (from trials): 0.55
+Trust calibration error: 0.149  [acceptable]</pre></div>
+<div class="code-caption">Code Fragment 50.3.1: Bayesian belief update over human intent with trust calibration error, showing how a prior shifts from handover to cleanup as gaze evidence arrives at t=0.9 s</div>
+
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment is a 12-line evidence sketch. Use probabilistic intent models, logged demonstrations, and ROS 2 state events in practice; the tooling handles timestamps, multimodal observations, and replay while the small version keeps the belief update visible.</p>

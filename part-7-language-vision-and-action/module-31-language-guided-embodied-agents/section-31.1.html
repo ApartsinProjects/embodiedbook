@@ -38,6 +38,9 @@
 <img alt="Technical illustration for Section 31.1: Why language matters in embodied AI." loading="lazy" src="images/chapter-31-illustration-01.png"/>
 <figcaption>Figure 31.1A: Language as an embodied interface: a spoken instruction is grounded to objects in the scene via referring-expression resolution, and the grounded goal drives a policy that closes the perception-action loop.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment loop and partial observability introduced in section 2.7. The interface choices catalogued here are developed concretely in section 31.2, which covers how instructions, goals, and constraints are structured, and they recur at scale in section 33.2 (SayCan) and section 34.1, where language conditioning is embedded directly into action-token models.</p>
+</div>
 
 <p>For Why language matters in embodied AI, read the figure as an interface map: instruction, grounded state, executable action, verifier, and evidence artifact should all appear in the surrounding prose.</p>
 <figure class="diagram" id="fig-31-1">
@@ -72,19 +75,36 @@
 </div>
 
 
-<p>This section explains why language is not decoration on top of robotics, but a high-bandwidth interface for specifying intent, exceptions, preferences, and corrections under partial observability.</p>
+<p>This section explains why language is not decoration on top of robotics, but a high-bandwidth interface for specifying intent, exceptions, preferences, and corrections under <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">partial observability</a>.</p>
 <p>The practical question is which parts of a task should be carried in language rather than geometry, reward, or low-level feedback, and what extra failure modes that choice introduces.</p>
-<p>Modern systems such as SayCan, Code as Policies, VoxPoser, RT-2, and OpenVLA all make different interface choices here: some use language to rank skills, some to synthesize plans, some to define spatial objectives, and some to condition action tokens directly. Comparing them usefully starts by naming that interface choice explicitly.</p>
+<p>Modern systems such as <a href="../../part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.2.html">SayCan</a>, <a href="../../part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.3.html">Code as Policies</a>, VoxPoser, RT-2, and OpenVLA all make different interface choices here: some use language to rank skills, some to synthesize plans, some to define spatial objectives, and some to condition action tokens directly. Comparing them usefully starts by naming that interface choice explicitly.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>Language pays off when it shrinks search over goals and recovery actions without pretending to replace perception, state estimation, or feedback control.</p>
+<p>Language pays off when it shrinks search over goals and recovery actions without pretending to replace perception, state estimation, or <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.1.html">feedback control</a>.</p>
 </div>
 <h2>Theory</h2>
 <p>Let the hidden world state be $s_t$, the observation be $o_t$, the language context be $x$, and the action be $a_t$. A language-guided embodied policy factors as $$\pi(a_t \mid h_t, x), \qquad h_t = f(h_{{t-1}}, o_t, a_{{t-1}}),$$ where the history state $h_t$ must bind words such as <em>red mug</em>, <em>top shelf</em>, or <em>do not spill</em> to executable state features.</p>
-<p>Language matters most when the task reward is sparse or underspecified. Instead of learning only from scalar success, the agent receives semantic structure: subgoals, object roles, temporal order, and repair instructions. That structure reduces ambiguity in planning, but only if grounding resolves the words into entities, relations, and constraints that are valid in the current scene.</p>
+<p>Language matters most when <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-18-reward-design-and-goal-specification/section-18.1.html">the task reward is sparse or underspecified</a>. Instead of learning only from scalar success, the agent receives semantic structure: subgoals, object roles, temporal order, and repair instructions. That structure reduces ambiguity in planning, but only if grounding resolves the words into entities, relations, and constraints that are valid in the current scene.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A useful mental model is to treat language as a typed side channel. It carries variables that ordinary sensor fusion does not infer cheaply: intent, forbidden states, user preferences, and explanation-worthy corrections. The policy is better because the search space is narrower, not because text substitutes for physics.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Language-Grounded Policy Execution</h4>
+<p><strong>Input:</strong> natural-language instruction $x$, initial observation $o_0$, world model $f$, grounding function $G$, policy $\pi_\theta$, verifier $V$</p>
+<p><strong>Output:</strong> action sequence $a_0, a_1, \ldots, a_T$ that satisfies the typed task constraints in $x$, plus an auditable evidence record $\mathcal{E}$</p>
+<ol>
+<li>Parse $x$ into typed slots: task verb, object reference $r$, spatial relation $\rho$, and safety constraint $c$.</li>
+<li>Initialize history state $h_0 = f(\emptyset, o_0, \emptyset)$ and set $t = 0$.</li>
+<li>Run grounding: compute candidate set $\mathcal{C}_t = G(h_t, r, \rho)$, scoring each candidate with $\text{score}(e) = \text{sim}(e, x) + \lambda \cdot \mathbf{1}[e \text{ satisfies } c]$.</li>
+<li>Apply the verifier $V(\mathcal{C}_t, c)$ to filter any candidate that violates constraint $c$; log excluded candidates in $\mathcal{E}$.</li>
+<li>Select grounded target $e^* = \arg\max_{e \in \mathcal{C}_t} \text{score}(e)$; if $|\mathcal{C}_t| = 0$ after filtering, emit a clarification request and pause.</li>
+<li>Sample action $a_t \sim \pi_\theta(a_t \mid h_t, x, e^*)$ and execute it in the environment.</li>
+<li>Update history: $h_{t+1} = f(h_t, o_{t+1}, a_t)$, where $o_{t+1}$ is the next observation after execution.</li>
+<li>Re-run grounding (step 3) because motion may have changed occlusion or object pose, invalidating cached references.</li>
+<li>Run post-action verifier $V(e^*, c, h_{t+1})$; record result in $\mathcal{E}$ alongside $x$, $e^*$, $a_t$, and any excluded alternatives.</li>
+<li>If task goal is reached according to $V$ or $t \geq T_{\max}$, return $\mathcal{E}$; otherwise set $t \leftarrow t + 1$ and go to step 3.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 builds the smallest possible trace showing how language can reduce task ambiguity. The example scores candidate objects against a text query and a task constraint, then exposes the grounded target that the controller will receive.</p>
@@ -112,6 +132,9 @@ print(choice)</code></pre>
 ('red mug', 1.25)</div>
 <p>The expected output is a ranked list in which <code>red mug</code> remains on top after the shelf constraint is applied, followed by a single winning tuple. If a Grounding DINO, OWL-ViT, or TEACh-style grounding stack returned <code>blue mug</code> here, the builder should inspect whether the spatial constraint was dropped, mis-grounded, or applied after the semantic score instead of during target selection.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This fragment turns a sentence-level preference into an executable object choice by combining language compatibility with the shelf constraint. Notice that the highest language score is not enough by itself; the grounded action target depends on whether the object satisfies the task rule in the current scene.</div>
+<div class="callout tip">
+<p>When using Grounding DINO via the <code>transformers</code> pipeline, the default <code>box_threshold=0.3</code> frequently returns multiple detections for the same referring expression (for example, both mugs for the query "red mug"), and constraint logic applied afterward cannot tell which detection was the intended referent. Set <code>text_threshold</code> equal to or slightly above <code>box_threshold</code> so only detections whose text-alignment score also clears the bar survive; then apply task constraints on that filtered set rather than on all raw proposals. Skipping this step is the most common reason a constraint bonus written exactly like Code Fragment 1 still picks the wrong object in practice.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In production, the same grounding pattern takes a few lines with a detector plus a text-conditioned grounding model such as Grounding DINO or OWL-ViT. Those libraries absorb proposal generation, batching, and image feature extraction internally, leaving the engineer to define the task-specific constraint logic and verifier.</p>

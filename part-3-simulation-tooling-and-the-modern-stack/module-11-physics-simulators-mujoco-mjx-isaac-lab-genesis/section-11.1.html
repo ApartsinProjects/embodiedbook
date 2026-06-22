@@ -31,6 +31,10 @@
 <figcaption><strong>Figure 11.1A</strong>: A simulator is trustworthy only when state, action, contact, observation, and validation evidence are treated as one contract.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with rigid-body dynamics from section 6.2 and the agent-environment loop from section 2.1. If you are already comfortable with how integrators and constraint solvers work, you can skim to section 11.2 for simulator-specific design tradeoffs. The physical modeling concepts introduced here recur in Part III alongside domain randomization in section 13.1 and GPU-parallel rollouts in section 12.1.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Before choosing MuJoCo, Isaac Lab, Genesis, or any other simulator, we need to know what a physics simulator actually promises. It updates a state through time by applying forces, constraints, contacts, and actuator commands, then exposes part of that state as observations for the agent loop introduced in <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2</a>.</p>
 <p>This section connects rigid-body and contact math to simulator design choices: integrator, contact solver, constraint stabilization, and sensor abstraction. It prepares later GPU workflows by making the modeled physics explicit.</p>
 </div>
@@ -40,6 +44,23 @@
 <p>$$s_{t+1} = \operatorname{step}(s_t, a_t, \Delta t, \theta)$$</p>
 <p>The parameters $\theta$ contain masses, inertias, joint limits, friction coefficients, damping, solver tolerances, sensor noise, and contact settings. This equation looks compact, but each term is a modeling choice that can decide whether a learned policy transfers to reality.</p>
 <p>The solver settings deserve special attention because they are not cosmetic. Timestep, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.4.html">integrator choice</a>, constraint softness, contact margin, and solver iteration count decide how much penetration, bounce, jitter, and energy drift the simulator permits. A good experiment records these values next to the policy checkpoint because changing them can change the learned behavior as much as changing a reward term.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Physics Simulator State-Step</h4>
+<p><strong>Input:</strong> current state $s_t = (q, \dot{q}, x_\text{contacts})$, action $a_t \in \mathcal{A}$, timestep $\Delta t$, model parameters $\theta$ (masses, inertias, friction $\mu$, solver tolerances)</p>
+<p><strong>Output:</strong> next state $s_{t+1}$, observation $o_{t+1}$</p>
+<ol>
+<li><strong>Apply actuator model.</strong> Map $a_t$ through the actuator transfer function to generalized forces $\tau = \pi_\text{act}(a_t, \dot{q}, \theta)$.</li>
+<li><strong>Compute free acceleration.</strong> Solve $M(q)\ddot{q} = \tau + \tau_\text{gravity}(q, \theta) - C(q, \dot{q})\dot{q}$ for unconstrained $\ddot{q}$, where $M$ is the mass matrix and $C$ captures Coriolis and centripetal terms.</li>
+<li><strong>Detect contacts.</strong> Find all body pairs with signed distance $d_i \leq \epsilon_\text{margin}$; record contact points, normals $\hat{n}_i$, and penetration depths $\delta_i$.</li>
+<li><strong>Formulate constraint problem.</strong> Assemble the linear complementarity problem (LCP): find contact forces $\lambda_i \geq 0$ such that $\delta_i = 0$ and friction forces satisfy $\|\lambda_i^\text{tan}\| \leq \mu \lambda_i^\text{norm}$ (Coulomb cone).</li>
+<li><strong>Solve constraints.</strong> Run the projected Gauss-Seidel (or Newton) solver for up to $N_\text{iter}$ iterations until residual $\|\nabla_\lambda \mathcal{L}\| \leq \epsilon_\text{solver}$.</li>
+<li><strong>Integrate velocities.</strong> Update $\dot{q}_{t+1} = \dot{q}_t + (\ddot{q} + M^{-1}J^\top\lambda)\,\Delta t$, where $J$ is the contact Jacobian.</li>
+<li><strong>Integrate positions.</strong> Advance $q_{t+1} = q_t + \dot{q}_{t+1}\,\Delta t$ using the chosen integrator (semi-implicit Euler or Runge-Kutta).</li>
+<li><strong>Stabilize constraints.</strong> Apply Baumgarte stabilization or impulse correction to reduce residual penetration $\alpha \delta_i$ accumulated over previous steps.</li>
+<li><strong>Sample sensors.</strong> Compute observation $o_{t+1} = g(q_{t+1}, \dot{q}_{t+1}, \lambda, \theta_\text{sensor})$, optionally adding noise $\mathcal{N}(0, \sigma^2)$.</li>
+<li><strong>Record and return.</strong> Set $s_{t+1} = (q_{t+1}, \dot{q}_{t+1}, \lambda)$; log $(\theta, \Delta t, N_\text{iter}, \epsilon_\text{solver})$ alongside the state for reproducibility.</li>
+</ol>
+</div>
 <div class="comparison-table">
 <div class="comparison-table-title">What The Simulator Models</div>
 <table>

@@ -39,6 +39,9 @@
 <figcaption>Figure 3.5A: Reactive vs. deliberative agents compared on a shared obstacle-avoidance scenario: the reactive agent acts in microseconds with no world model; the deliberative agent plans a path but pays a latency cost.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The reactive/deliberative split introduced here is formalized as a dual-system architecture in section 3.6, where System 1 corresponds to reactive reflexes and System 2 to deliberative planning. The same trade-off recurs in Part 6 alongside full navigation stacks: section 29.4 shows how a semantic map supports deliberative path planning, and section 30.2 examines breadth-first planning in environments where reactive control alone fails.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Reactive vs. deliberative agents</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments, all of which arise directly from the <a href="../../part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.2.html">perception-action loop</a>.</p>
@@ -82,6 +85,24 @@
 <p>The reactive and deliberative split is a timing decision, not a personality type for agents. A reactive policy chooses $a_t = \pi(o_t)$ from the current observation or a short memory. A deliberative agent evaluates possible futures and chooses an action or plan that scores well under a model using <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.5.html">discounted cumulative reward over a finite horizon</a>, often written as:</p>
 <p>$$a_t = \arg\max_{a \in \mathcal{A}} \mathbb{E}\left[\sum_{k=0}^{H} \gamma^k r(s_{t+k}, a_{t+k}) \mid \hat{s}_t, a\right].$$</p>
 <p>The horizon $H$ measures how far the agent looks ahead, $\gamma$ discounts later rewards, and $r$ encodes the task objective. Reactive control is appropriate when the deadline is shorter than the planning time or when the local cue is sufficient. Deliberation is appropriate when the immediate best action can trap the agent, such as pushing an object into a corner before grasping it. The practical design is usually a mixture: reflexes guard safety while planning handles irreversible choices. Consider a specific case: the autonomous vehicle stack used in Waymo's production fleet separates a reactive obstacle-avoidance module (running at roughly 100 Hz on lidar returns) from a deliberative route planner (running at 10 Hz over a <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.4.html">semantic map</a>). When a cyclist cuts in front of the vehicle, the reactive layer applies braking within 10 ms without waiting for the planner; the planner then reroutes around the disruption over the next few hundred milliseconds. This split is not a software convenience: the reactive layer operates within the braking distance window (roughly 7 m at city speeds), where a 100 ms planning delay would already mean a collision.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Reactive-or-Deliberate Decision Checklist</h4>
+<p><strong>Input:</strong> task deadline $d$, estimated planning time $t_\pi$, lookahead horizon $H$, policy $\pi$, reward function $r$, discount $\gamma \in (0,1)$, observation $o_t$</p>
+<p><strong>Output:</strong> selected action $a_t$ and architecture label (reactive or deliberative)</p>
+<ol>
+<li>Measure the environment's mean time-to-change $\Delta t_{\text{env}}$; set the planning budget $t_{\text{budget}} = \Delta t_{\text{env}} / 2$.</li>
+<li>If $d \leq t_\pi$, label the mode as <em>reactive</em> and go to step 6; otherwise proceed to step 3.</li>
+<li>Check whether $o_t$ alone determines a safe $a_t$ without lookahead: if $\nabla_a r(o_t, a) > 0$ for a local greedy move and no irreversibility constraint is active, go to step 6.</li>
+<li>Compute the deliberative value estimate over horizon $H$: $V(o_t) = \max_{a \in \mathcal{A}} \mathbb{E}\bigl[\sum_{k=0}^{H} \gamma^k r(s_{t+k}, a_{t+k}) \mid \hat{s}_t, a\bigr]$.</li>
+<li>If the planning cycle completed within $t_{\text{budget}}$, select $a_t = \arg\max_{a} V(o_t)$, label as <em>deliberative</em>, and go to step 7; otherwise fall back to step 6.</li>
+<li>Select $a_t = \pi(o_t)$ using the reactive policy (greedy or reflex rule); label as <em>reactive</em>.</li>
+<li>Execute $a_t$; log $o_t$, $a_t$, mode label, and elapsed planning time $t_\pi$ for validity-window tracking.</li>
+<li>If the mode was deliberative and the world changed before execution completed, mark the plan as stale and re-enter at step 1 on the next timestep.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When tuning the planning horizon $H$ in a deliberative controller, start by measuring the environment's mean time-to-change (the average interval between significant state transitions) and set $H$ so that one planning cycle completes in under half that interval. In ROS 2's <code>nav2_bt_navigator</code>, the parameter <code>max_planning_duration</code> defaults to 5000 ms; in dynamic environments this routinely produces plans that are stale before execution begins, and lowering it to 200-500 ms is usually the first fix. A non-obvious shortcut is to run the deliberative planner on a coarsened occupancy grid (cell size roughly 2x the robot footprint) for the initial path search, then refine only the selected segment at full resolution, which cuts planning latency by 60-80% without meaningfully increasing path length.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Reactive vs. deliberative agents is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>

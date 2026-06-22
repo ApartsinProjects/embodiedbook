@@ -39,6 +39,10 @@
 <figcaption>Figure 10.3A: Reward shaping design for a door-opening task: the sparse terminal reward fires only on success, a dense potential-based shaping term provides gradient throughout, and an early-termination condition cuts failed episodes short.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Gymnasium step API and the observation and action space conventions introduced in section 10.2. The reward shaping ideas here are extended substantially in section 18.2, which covers potential-based shaping and goal-conditioned rewards, and in section 18.4, which dissects reward hacking and proxy misalignment in depth. The terminated/truncated distinction recurs throughout Part 4 alongside value function estimation and TD bootstrapping, particularly in section 14.2.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Reward design and termination defines the contract an embodied experiment exposes to learning code: observations, actions, rewards, termination, truncation, rendering, and diagnostic info. Gymnasium handles the single-agent version of that contract, while PettingZoo extends the same discipline to multi-agent interaction.</p>
@@ -94,6 +98,23 @@ env.close()</code></pre>
 <li>Log reward components in <code>info</code> during debugging, even if the trainer only consumes the scalar reward.</li>
 <li>Report success rate, truncation rate, and failure category counts together.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: Reward Decomposition and Episode Termination Design</h4>
+<p><strong>Input:</strong> task specification $\mathcal{T}$, state $s_t$, action $a_t$, policy $\pi_\theta$, shaping potential $\Phi(s)$, step budget $T_{\max}$</p>
+<p><strong>Output:</strong> scalar reward $r_t$, flags <code>terminated</code> and <code>truncated</code>, diagnostic dictionary <code>info</code></p>
+<ol>
+<li>Define the success predicate $\sigma(s_t)$ from $\mathcal{T}$ (e.g., $\|s_t - s^*\| \leq \epsilon$) and the failure predicate $\phi(s_t)$ (e.g., constraint violation or irreversible state). Write both before any reward term.</li>
+<li>Compute the sparse terminal bonus: $r_{\text{success}} = R^+ \cdot \mathbf{1}[\sigma(s_t)]$ where $R^+$ is the task-scale bonus magnitude.</li>
+<li>Compute the dense potential-based shaping term: $r_{\text{shape}} = \gamma \Phi(s_t) - \Phi(s_{t-1})$ to provide gradient without changing the optimal policy $\pi^*$.</li>
+<li>Compute auxiliary penalty terms (collision cost $r_{\text{col}}$, control cost $r_{\text{ctrl}} = -\alpha \|a_t\|^2$, safety penalty $r_{\text{safe}}$) and store each in a named variable.</li>
+<li>Sum all terms into one scalar: $r_t = r_{\text{success}} + r_{\text{shape}} + r_{\text{col}} + r_{\text{ctrl}} + r_{\text{safe}}$.</li>
+<li>Set <code>terminated</code> $= \sigma(s_t) \lor \phi(s_t)$. When <code>terminated</code> is true, the TD target for critic update $\nabla_\theta$ uses $r_t$ alone with no bootstrap.</li>
+<li>Set <code>truncated</code> $= (t \geq T_{\max})$ and <code>terminated</code> is still false. When <code>truncated</code> is true, the TD target adds a bootstrapped value estimate $V_\psi(s_t)$ for the final observation.</li>
+<li>Write reward term names and values into <code>info["reward_terms"]</code> and the ending reason (success, failure, or timeout) into <code>info["episode_end"]</code>.</li>
+<li>Verify that summing <code>info["reward_terms"].values()</code> reproduces $r_t$ exactly; flag any mismatch as a decomposition error before logging.</li>
+<li>After evaluation, report success rate $\bar{\sigma}$, task-failure rate $\bar{\phi}$, and truncation rate $\bar{\tau}$ as separate columns; never merge them into a single episode-end count.</li>
+</ol>
+</div>
 <div class="callout tip"><div class="callout-title">Gymnasium And PettingZoo Practice</div><p>A usable environment wrapper for this section records reward terms, termination flags, truncation flags, and hidden failure incentives, plus observation and action spaces, reset seed, info dictionary fields, and reproducible evidence artifacts.</p></div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>

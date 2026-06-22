@@ -43,8 +43,11 @@
 <img alt="Cartoon autonomous car following a curved road with transparent wheel geometry and tire-force shadows." loading="lazy" src="images/chapter-48-illustration-07.png"/>
 <figcaption><strong>Figure 48.7A</strong>: The driving planner must respect curvature, friction, speed, and actuator limits before a geometric path becomes a physical vehicle trajectory.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section builds directly on the non-holonomic constraint introduced in section 5.2, the friction circle from section 6.3, and the LQR and MPC formulations in sections 7.4 and 7.5. The vehicle models and control choices developed here feed into section 48.8, where route-level and behavior-level planning must respect exactly the curvature, friction, and actuator limits derived below.</p>
+</div>
 <h2>Kinematic Bicycle Model</h2>
-<p>Before a planner can turn a route into steering commands, it needs a model that relates the steering angle to the resulting path curvature and heading change. The simplest model that captures the non-holonomic constraint (the car cannot slide sideways) is the kinematic bicycle model: two axles collapsed to a single track, no tire slip, and no inertial forces. This is the right starting point because it is analytically tractable, requires only wheelbase and steering angle as parameters, and produces the curvature and heading constraints that planners must respect even at low speed. With position $(x,y)$, heading $\psi$, speed $v$, wheelbase $L$, and steering angle $\delta$:</p>
+<p>Before a planner can turn a route into steering commands, it needs a model that relates the steering angle to the resulting path curvature and heading change. The simplest model that captures the <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.2.html">non-holonomic constraint</a> (the car cannot slide sideways) is the kinematic bicycle model: two axles collapsed to a single track, no tire slip, and no inertial forces. This is the right starting point because it is analytically tractable, requires only wheelbase and steering angle as parameters, and produces the curvature and heading constraints that planners must respect even at low speed. With position $(x,y)$, heading $\psi$, speed $v$, wheelbase $L$, and steering angle $\delta$:</p>
 <p>$$\dot x = v\cos\psi, \qquad \dot y = v\sin\psi, \qquad \dot\psi = \frac{v}{L}\tan\delta, \qquad \dot v = a.$$</p>
 <p>This model exposes non-holonomic motion and curvature limits. It is not enough for high-speed handling, but it is the right bridge between geometric planning and controller design.</p>
 <div class="callout key-insight">
@@ -52,7 +55,7 @@
 <p>A route polyline is not a drivable trajectory. The vehicle needs curvature, speed, acceleration, jerk, tire friction, and actuator limits that match the road and the platform.</p>
 </div>
 <h2>Dynamic Bicycle Model</h2>
-<p>The dynamic bicycle model adds lateral velocity, yaw rate, tire slip, and lateral tire forces. It matters when speed, friction, braking, and evasive maneuvers dominate. A planner that ignores these effects can choose trajectories that are geometrically collision-free but dynamically unsafe. In practice this usually appears first as an interaction between curvature and the friction circle: the demanded lateral acceleration $a_y = v^2 \kappa$ exceeds what the tire-road pair can deliver, so the "successful" geometric plan arrives at the controller already broken.</p>
+<p>The dynamic bicycle model adds lateral velocity, yaw rate, tire slip, and lateral tire forces. It matters when speed, friction, braking, and evasive maneuvers dominate. A planner that ignores these effects can choose trajectories that are geometrically collision-free but dynamically unsafe. In practice this usually appears first as an interaction between curvature and the <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.3.html">friction circle</a>: the demanded lateral acceleration $a_y = v^2 \kappa$ exceeds what the tire-road pair can deliver, so the "successful" geometric plan arrives at the controller already broken.</p>
 <p>The model boundary should be explicit. At low speeds and modest curvature, the kinematic bicycle model is often enough. At higher speeds, low friction, emergency braking, or evasive steering, tire slip angle, lateral stiffness, yaw inertia, and friction limits become part of the planning problem.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Vehicle Models For Embodied AI</div>
@@ -67,10 +70,30 @@
 </table>
 </div>
 <h2>Control Choices</h2>
-<p>Pure pursuit and Stanley control are useful geometric baselines. LQR and MPC expose the state-space and constrained-optimization view. MPC becomes especially important when the controller must trade route progress, comfort, lane keeping, collision margins, and actuator limits in one horizon.</p>
+<p>Pure pursuit and Stanley control are useful geometric baselines. <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.4.html">LQR</a> and <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">MPC</a> expose the state-space and constrained-optimization view. MPC becomes especially important when the controller must trade route progress, comfort, lane keeping, collision margins, and actuator limits in one horizon.</p>
 <div class="callout key-insight">
 <div class="callout-title">Choosing a Controller</div>
 <p>The selection follows a simple ladder of complexity. Pure pursuit works well for low-speed paths (under roughly 20 km/h) where lookahead distance can be fixed; it needs only the current position and a target point on the path. Stanley adds a heading-error term and handles higher-speed lane following on highways, as demonstrated in the Stanford Racing DARPA Urban Challenge entry. LQR is appropriate when the deviation from a reference is small enough to linearize around, and the cost matrices can be tuned once offline. MPC is worth the added compute when constraints are hard: for example, a 60 km/h lane change on a wet road requires the controller to simultaneously respect a lateral-acceleration limit of roughly 0.3 g (compared to 0.8 g on dry asphalt), a steering-rate limit, and a preview of the upcoming curve, none of which fit a single-step feedback law.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: MPC Trajectory Feasibility Check for Lane Changes</h4>
+<p><strong>Input:</strong> reference path $\mathbf{r}(t)$, vehicle state $(x, y, \psi, v)$, wheelbase $L$, friction limit $\mu$, prediction horizon $N$, timestep $\Delta t$, steering-rate limit $\dot\delta_{\max}$</p>
+<p><strong>Output:</strong> control sequence $\{(\delta_k, a_k)\}_{k=0}^{N-1}$ satisfying dynamics, comfort, and friction constraints, or infeasibility flag</p>
+<ol>
+<li>Compute heading error $e_\psi = \psi_{\text{ref}} - \psi$ and lateral error $e_y$ relative to the nearest reference point on $\mathbf{r}(t)$.</li>
+<li>Linearize the kinematic bicycle model around the current state to obtain the discrete-time state matrix $A_k$ and input matrix $B_k$ at each step $k$.</li>
+<li>For each horizon step $k = 0, \ldots, N-1$, propagate the predicted state: $\mathbf{x}_{k+1} = A_k \mathbf{x}_k + B_k \mathbf{u}_k$.</li>
+<li>Evaluate the demanded lateral acceleration $a_y^{(k)} = v_k^2 \kappa_k$ where curvature $\kappa_k = \tan(\delta_k)/L$.</li>
+<li>Check the friction circle constraint: $\sqrt{(a_y^{(k)})^2 + (a_x^{(k)})^2} \leq \mu g$ at every step $k$; if violated for any $k$, tighten $\kappa_{\max}$ and return to step 3.</li>
+<li>Enforce actuator limits: $|\delta_k| \leq \delta_{\max}$ and $|\delta_k - \delta_{k-1}| \leq \dot\delta_{\max} \Delta t$.</li>
+<li>Minimize the cost $J = \sum_{k=0}^{N-1} \bigl( w_y e_{y,k}^2 + w_\psi e_{\psi,k}^2 + w_a a_k^2 + w_{\dot\delta}(\delta_k - \delta_{k-1})^2 \bigr) + w_N e_{y,N}^2$ subject to steps 3 through 6.</li>
+<li>Solve the quadratic program to obtain the optimal control sequence $\{(\delta_k^*, a_k^*)\}$.</li>
+<li>Apply the first control $(\delta_0^*, a_0^*)$ to the vehicle and discard the rest (receding-horizon principle).</li>
+<li>At the next timestep, shift the horizon by one step, update $(x, y, \psi, v)$ from sensors, and return to step 1.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When tuning an MPC controller for lane changes, set the prediction horizon to cover at least the full maneuver duration plus one braking distance at the target speed. A horizon shorter than the lane-change geometry forces the optimizer to act as if the curve ahead does not exist, so constraint violations appear at the end of the maneuver rather than being avoided from the start. For a 60 km/h lane change lasting roughly 4 seconds, a 5-second horizon (50 steps at 0.1 s) is a practical minimum; shorter horizons systematically underestimate the peak lateral acceleration and cause the solver to return plans that saturate the friction circle mid-maneuver. The <code>N</code> parameter in do-mpc and Acados follows this convention directly.</p>
 </div>
 <pre><code class="language-python"># Kinematic bicycle rollout for a local planner sanity check.
 # Roll out a constant-curvature lane-following segment.
@@ -90,7 +113,7 @@ print(round(x, 2), round(y, 2), round(math.degrees(psi), 2))</code></pre>
 <p><strong>Expected output:</strong> the final heading should increase smoothly and the lateral displacement should stay consistent with a shallow arc rather than a sudden sideways jump. If the numbers imply an unrealistically sharp turn for the chosen steering angle and speed, the planner, units, or wheelbase model is inconsistent before closed-loop evaluation even starts.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>Use CommonRoad for motion-planning scenarios, CARLA for closed-loop simulation, ROS 2 for stack integration, and vehicle-dynamics libraries or simulator models when tire forces, stability, latency, actuator limits, and parameter identification matter.</p>
+<p>Use CommonRoad for motion-planning scenarios, CARLA for <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-09-why-simulation-is-central/section-9.2.html">closed-loop simulation</a>, ROS 2 for stack integration, and vehicle-dynamics libraries or simulator models when tire forces, stability, latency, actuator limits, and parameter identification matter.</p>
 </div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>

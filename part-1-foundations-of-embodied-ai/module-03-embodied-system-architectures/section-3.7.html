@@ -39,6 +39,9 @@
 <figcaption><strong>Figure 3.7A</strong>: Where LLMs, VLMs, and VLAs sit in the stack</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent loop and layered control introduced in sections 3.1 and 3.2, and with the dual-system framing from section 3.6, which explains why LLMs naturally occupy the slow-reasoning role. The interface-risk column in the comparison table here is extended in section 3.8, which catalogs how each architecture fails when its interface contract is violated. For production-depth treatment, section 31.5 covers LLMs as task decomposers, section 33.2 examines the SayCan pattern of keeping language planning separate from execution, and sections 34.2 and 34.5 trace how VLAs collapse or separate those interfaces in RT-2 and its successors.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Where LLMs, VLMs, and VLAs sit in the stack</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -92,6 +95,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Where LLMs, VLMs, and VLAs sit in the stack is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Assigning Foundation Models to Stack Interfaces</h4>
+<p><strong>Input:</strong> task goal $g$, observation space $\mathcal{O}$, action space $\mathcal{A}$, latency budget $\tau$, set of candidate models $\mathcal{M} = \{\text{LLM}, \text{VLM}, \text{VLA}\}$</p>
+<p><strong>Output:</strong> interface assignment $\pi: \text{layer} \to \mathcal{M}$, per-layer contract $C$, and audit log $\mathcal{L}$</p>
+<ol>
+<li>Define the layer boundaries: planning layer $\ell_P$ (goal $\to$ subgoals), grounding layer $\ell_G$ (subgoal $\times$ image $\to$ state), and execution layer $\ell_E$ (state $\times$ goal $\to$ action $a \in \mathcal{A}$).</li>
+<li>For each layer $\ell$, record its input type (text, image, state vector), output type, maximum tolerated latency $\tau_\ell \leq \tau$, and the failure label set $F_\ell$.</li>
+<li>Check whether $\ell_P$ requires cross-domain language generalization; if yes, assign $\pi(\ell_P) = \text{LLM}$. If the goal is purely reactive with no symbolic decomposition, record that an LLM adds latency without benefit and note the decision in $\mathcal{L}$.</li>
+<li>Check whether $\ell_G$ requires visual grounding; if yes, assign $\pi(\ell_G) = \text{VLM}$. Record the grounding contract: object identity, 3-D pose estimate $\hat{x} \in \mathbb{R}^6$, confidence threshold $\theta_G$, and frame of reference.</li>
+<li>Check whether $\ell_E$ must produce low-level motor commands directly from vision and language; if yes, assign $\pi(\ell_E) = \text{VLA}$. If a classical controller suffices, record that a VLA adds embodiment assumptions $\alpha_{\text{emb}}$ that must be matched at inference time.</li>
+<li>For each assigned model, define the explicit interface contract $C_\ell$: input schema, output schema, units, timeout, and the log entry written on every call.</li>
+<li>Identify every boundary $(\ell_i, \ell_{i+1})$ where a model output becomes the next model input. For each boundary, name the representation mismatch risk (e.g., symbolic plan assumes objects that the VLM cannot localize).</li>
+<li>Run an oracle substitution test: replace the output of each layer in turn with a ground-truth value and observe whether downstream recovery succeeds. Record which layer's oracle unblocks the pipeline; that layer is the primary failure point.</li>
+<li>If the oracle test reveals that a single model collapse (e.g., VLM grounding $\to \emptyset$) propagates to full task failure, add a fallback path: $a_{\text{safe}}$ (hold, retract, or query operator) triggered when $\pi(\ell_G)$ returns confidence below $\theta_G$.</li>
+<li>Save the final assignment $\pi$, contracts $C$, oracle results, and all fallback conditions as a single artifact before any hyperparameter $\alpha$ or policy parameter $\theta$ is tuned.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>The three model families compose into one pipeline: an LLM decomposes the goal, a VLM grounds each subgoal in the image, and a VLA turns a grounded subgoal into an action. The example uses stand-in functions for each model so the structure is visible, then runs the section's key diagnostic, oracle substitution, to locate which interface caused a failure. This is the executable form of the Fun Note: the plan and the pointing only matter if the action survives contact.</p>
@@ -171,6 +191,9 @@ print("oracle   :", run("put apple in bowl", scene_fixed))
 <ol><li>Write a one-paragraph task contract with observation, action, success, failure, and safety fields.</li><li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li><li>Run one deterministic smoke test and one perturbation test before scaling.</li><li>Save one artifact containing configuration, seed, metrics, traces, and failure labels.</li><li>Compare methods only when the same script evaluates the same panel, split, seed set, and metric.</li></ol>
 <p>When Where LLMs, VLMs, and VLAs sit in the stack fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 <p>The quickest diagnostic is to replace one model output with a verified oracle value. If the system succeeds when the LLM plan is manually corrected, the language-level decomposition is the first suspect. If it succeeds only when the VLM grounding is corrected, the problem is scene understanding. If it still fails after both are corrected, inspect action scaling, controller limits, and embodiment-specific assumptions before changing the foundation model.</p>
+<div class="callout tip">
+<p>When loading a pretrained VLA such as OpenVLA or any RT-2 checkpoint into a new robot setup, print the model's stored <code>norm_stats</code> dictionary (action mean and standard deviation per dimension) before running a single rollout. These statistics were computed on the training embodiment, so mismatched joint ranges or gripper scaling will produce actions that look syntactically valid but saturate at the first timestep. The fix is to recompute <code>norm_stats</code> from a small set of demonstrations on your own hardware and pass them explicitly at inference time rather than relying on the checkpoint defaults.</p>
+</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Where LLMs, VLMs, and VLAs sit in the stack is useful when it makes the <a href="../../part-1-foundations-of-embodied-ai/module-01-from-static-ai-to-embodied-ai/section-1.2.html">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>

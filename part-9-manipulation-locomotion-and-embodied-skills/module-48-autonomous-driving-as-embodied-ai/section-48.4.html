@@ -41,25 +41,49 @@
 <figcaption><strong>Figure 48.4A</strong>: In the Frenet frame the road becomes a straight ruler: progress along the lane is one axis, lateral offset is the other, and curved-road planning collapses into simple polynomial shaping.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the predicted occupancy fields introduced in section 48.3 and assumes familiarity with coordinate frame transformations from section 4.2. The kinematic vehicle model used by Hybrid A* is developed in full in section 48.7. The Frenet planning approach introduced here is revisited in Part X alongside learned trajectory scoring in section 48.5, where the same feasibility constraints are enforced on neural planner outputs.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Local planning turns predicted actors and a route into a concrete, drivable trajectory. The key trick is the <strong>Frenet frame</strong>, which re-expresses position relative to a reference path (the lane centerline) as along-track distance $s$ and lateral offset $d$. In Frenet coordinates a lane change is just a smooth curve in $d$, and a comfortable trajectory is a low-jerk polynomial. For unstructured maneuvers (parking, U-turns), <strong>Hybrid A*</strong> searches a discretized space while respecting the car's turning radius.</p>
 </div>
-<p>This section develops local planning as a measurable contract: given a reference path and a Frenet start and goal, generate a trajectory that is feasible (curvature and acceleration within limits), comfortable (bounded jerk), and safe (clear of predicted occupancy). The worked example converts a Cartesian waypoint into Frenet $(s, d)$ and shapes a polynomial lateral profile.</p>
+<p>This section develops local planning as a measurable contract: given a reference path and a Frenet start and goal, generate a trajectory that is feasible (curvature and acceleration within limits), comfortable (bounded jerk), and safe (clear of <a href="section-48.3.html">predicted occupancy</a>). The worked example converts a Cartesian waypoint into Frenet $(s, d)$ and shapes a polynomial lateral profile.</p>
 <h2>Theory</h2>
 <h3>The Frenet frame</h3>
 <p>Given a smooth reference path $r(s)$ parameterized by arc length $s$, any nearby point $p$ is described by its projection's arc length $s$ (along-track, how far along the lane) and its signed perpendicular distance $d$ (lateral, how far off-center, positive to the left). The mapping decouples the two problems that matter for driving: longitudinal behavior (speed, gaps) lives in $s$, and lane positioning lives in $d$.</p>
 <h3>Polynomial paths and boundary conditions</h3>
 <p>A comfortable lateral maneuver is a polynomial $d(t)$ chosen to satisfy boundary conditions. A <strong>quintic (5th-degree) polynomial</strong> can fix position, velocity, and acceleration at both the start and the end, six conditions for six coefficients, which is the standard choice for jerk-optimal lane changes. A lower-degree (cubic) polynomial fixes fewer conditions and is enough when only endpoint positions and slopes matter. Longitudinal motion $s(t)$ is shaped the same way against speed and acceleration targets.</p>
 <h3>Hybrid A* for structured search</h3>
-<p>Polynomial sampling assumes a usable reference path. When there is none (a parking lot, a tight unprotected turn), <strong>Hybrid A*</strong> searches a grid of poses but expands successors using a kinematic vehicle model, so every node is reachable by a real steering command. It blends grid search (completeness) with continuous motion (feasibility) and uses a non-holonomic-with-obstacles heuristic to stay efficient.</p>
+<p>Polynomial sampling assumes a usable reference path. When there is none (a parking lot, a tight unprotected turn), <strong>Hybrid A*</strong> searches a grid of poses but expands successors using a <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-48-autonomous-driving-as-embodied-ai/section-48.7.html">kinematic vehicle model</a>, so every node is reachable by a real steering command. It blends <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.2.html">grid search</a> (completeness) with continuous motion (feasibility) and uses a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.2.html">non-holonomic</a>-with-obstacles heuristic to stay efficient.</p>
 <div class="callout key-insight">
 <div class="callout-title">The Frame Does The Work</div>
-<p>The same lane change that is an awkward, curvature-coupled problem in $(x, y)$ becomes a one-dimensional polynomial in $d(s)$ once you adopt the Frenet frame. Picking the coordinate system that matches the constraint structure is often more powerful than picking a fancier optimizer.</p>
+<p>The same lane change that is an awkward, curvature-coupled problem in $(x, y)$ becomes a one-dimensional polynomial in $d(s)$ once you adopt the Frenet frame. Picking the <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.2.html">coordinate system</a> that matches the constraint structure is often more powerful than picking a fancier optimizer.</p>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>Frenet planning typically samples a fan of candidate trajectories: several lateral end-offsets $d$ crossed with several longitudinal speed or time targets, each realized as a polynomial. Every candidate is checked for kinematic feasibility and collision against predicted occupancy, then scored by a cost (jerk, deviation from lane center, proximity to obstacles). The lowest-cost feasible candidate is sent to control. The conversion back from $(s, d)$ to $(x, y)$ for execution requires the reference path geometry.</p>
+<p>Frenet planning typically samples a fan of candidate trajectories: several lateral end-offsets $d$ crossed with several longitudinal speed or time targets, each realized as a polynomial. Every candidate is checked for kinematic feasibility and collision against <a href="section-48.3.html">predicted occupancy</a>, then scored by a cost (jerk, deviation from lane center, proximity to obstacles). The lowest-cost feasible candidate is sent to control. The conversion back from $(s, d)$ to $(x, y)$ for execution requires the reference path geometry.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Frenet Optimal Trajectory Selection</h4>
+<p><strong>Input:</strong> reference path $r(s)$, current state $(s_0, d_0, \dot{s}_0, \dot{d}_0)$, goal speed $v^*$, predicted occupancy grid $\mathcal{O}$, feasibility bounds $(\kappa_{\max}, a_{\max}, j_{\max})$</p>
+<p><strong>Output:</strong> optimal trajectory $\pi^* = \{(s(t), d(t))\}_{t=0}^{T}$ and its Cartesian realization $\{(x(t), y(t), \theta(t))\}$</p>
+<ol>
+<li>Project the vehicle's Cartesian state onto $r(s)$ to obtain the Frenet start state $(s_0, d_0, \dot{s}_0, \dot{d}_0, \ddot{d}_0)$.</li>
+<li>Sample a grid of lateral goal offsets $\{d_f^{(i)}\}$ centered on the lane (e.g., $d_f \in \{-1.5, 0, 1.5\}$ m) and longitudinal horizon durations $\{T^{(j)}\}$ (e.g., $T \in \{3, 4, 5\}$ s).</li>
+<li>For each pair $(d_f^{(i)}, T^{(j)})$, fit a quintic polynomial $d(t)$ that satisfies the six boundary conditions: $d(0)=d_0$, $\dot{d}(0)=\dot{d}_0$, $\ddot{d}(0)=\ddot{d}_0$, $d(T)=d_f$, $\dot{d}(T)=0$, $\ddot{d}(T)=0$.</li>
+<li>Fit a quartic polynomial $s(t)$ matching $s(0)=s_0$, $\dot{s}(0)=\dot{s}_0$, $\ddot{s}(0)=\ddot{s}_0$, $\dot{s}(T)=v^*$, $\ddot{s}(T)=0$.</li>
+<li>Compute curvature $\kappa(t) = \ddot{d}(t) / (1 + \dot{d}(t)^2)^{3/2}$ and lateral acceleration $a_y(t) = \dot{s}(t)^2 \kappa(t)$; reject any candidate where $\max_t |\kappa(t)| > \kappa_{\max}$, $\max_t |a_y(t)| > a_{\max}$, or $\max_t |\dddot{d}(t)| > j_{\max}$.</li>
+<li>Convert each surviving $(s(t), d(t))$ back to Cartesian $(x(t), y(t), \theta(t))$ using the reference path tangent and normal at each arc-length sample.</li>
+<li>Reject candidates whose Cartesian tube overlaps occupied cells in $\mathcal{O}$ (inflate by half the vehicle width $w/2$).</li>
+<li>Score remaining candidates with cost $J = \alpha \int_0^T \dddot{d}^2 \, dt + \beta (d_f - 0)^2 + \gamma \int_0^T (\dot{s} - v^*)^2 \, dt$, where $\alpha, \beta, \gamma$ are tunable weights.</li>
+<li>Select $\pi^* = \arg\min J$ over all feasible, collision-free candidates.</li>
+<li>Return $\pi^*$ in Cartesian form; re-plan at the next control cycle using the updated state and occupancy grid.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When sampling a fan of Frenet candidates, apply the kinematic feasibility filter (curvature limit $\kappa_{\max} = 1/r_{\min}$, peak lateral acceleration $a_{y,\max}$, and jerk bound) <em>before</em> evaluating the collision or comfort cost. In PythonRobotics' <code>frenet_optimal_trajectory.py</code>, the relevant threshold parameters are <code>MAX_CURVATURE</code> and <code>MAX_ACCEL</code>; tightening them to your vehicle's actual turning radius and powertrain limits eliminates infeasible candidates early and can cut the per-step planning time by more than half on a dense sample grid. Skipping this ordering is the single most common source of a planner that is slow in curves but fast on straights.</p>
 </div>
 <h2>Worked Example</h2>
 <p>The example converts a Cartesian waypoint to Frenet $(s, d)$ against a reference path, then generates a 3rd-degree polynomial that moves $d$ from 0 to 1 m over 3 seconds (a gentle nudge toward the lane's left).</p>
@@ -129,7 +153,7 @@ for t in [0.0, 0.75, 1.5, 2.25, 3.0]:
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Learning-based planners and differentiable optimization aim to replace hand-tuned cost weights with trajectories scored against human driving, while keeping the hard feasibility guarantees that sampling and Hybrid A* provide. The open challenge is certifiable safety for learned planners.</p>
+<p>Learning-based planners and differentiable optimization aim to replace hand-tuned cost weights with trajectories scored against human driving, while keeping the hard feasibility guarantees that sampling and Hybrid A* provide. The open challenge is certifiable safety for <a href="section-48.5.html">learned planners</a>.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>

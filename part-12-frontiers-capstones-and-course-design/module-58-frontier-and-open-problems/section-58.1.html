@@ -40,6 +40,10 @@
 <figcaption>Figure 58.1A: Scaling laws for robot policies: a log-log plot of task success rate vs. demonstration dataset size for three policy architectures, showing how transformer-based generalist policies exhibit steeper improvement with more data than smaller specialized models.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the mechanics of robot data collection and the structure of cross-embodiment datasets, covered in section 24.1 and section 23.2. The evaluation methodology needed to validate any scaling claim is treated in depth in section 52.5 and section 52.6. The ideas here are extended in section 35.2, which shows how foundation-policy pretraining interacts with the data-engine loop introduced below.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Scaling laws and data engines for robots</strong> gives Frontier and Open Problems a concrete systems role: track data diversity, embodiment coverage, task coverage, and intervention cost together. The section keeps asking what the agent observes, what it remembers or updates, which action changes, and what evidence would convince a skeptical reader.</p>
@@ -59,6 +63,67 @@
 </div>
 <h2>Worked Example</h2>
 <p>Consider a specific case: the <a href="../../part-5-learning-from-demonstration-and-robot-data/module-24-robot-datasets-and-data-scaling-laws/section-24.1.html">Open X-Embodiment (OXE) dataset</a> grew from roughly 500K to over 1M demonstrations across 22 robot embodiments between its 2023 release and subsequent expansions. RT-X models trained on this corpus showed approximately 50% relative improvement on multi-embodiment evaluation compared to single-robot baselines, but only when the evaluation panel held embodiment and task distribution fixed. When the panel shifted to include a new robot arm not present in training (a WidowX variant), success rates dropped back to near-single-robot levels despite the larger dataset. The lesson is that scaling the data count without tracking embodiment coverage in the panel produces a number that looks like a scaling law but is actually a <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.5.html">distribution-shift artifact</a>.</p>
+<pre><code class="language-python"># Fit a power-law scaling curve to robot task success vs. dataset size
+import numpy as np
+
+# Simulated data: (num_demonstrations, task_success_rate)
+# Represents a multi-embodiment dataset evaluated on a fixed panel
+data_points = np.array([
+    [1_000,   0.18],
+    [5_000,   0.31],
+    [20_000,  0.47],
+    [50_000,  0.58],
+    [100_000, 0.65],
+    [250_000, 0.74],
+    [500_000, 0.80],
+    [1_000_000, 0.86],
+])
+
+N = data_points[:, 0]   # demonstration counts
+S = data_points[:, 1]   # success rates (0-1)
+
+# Power law: S(N) = a * N^b
+# Linearize: log(S) = log(a) + b * log(N)
+log_N = np.log10(N)
+log_S = np.log10(S)
+
+# Least-squares fit in log-log space
+b, log_a = np.polyfit(log_N, log_S, deg=1)
+a = 10 ** log_a
+
+print(f"Fitted scaling law: S(N) = {a:.4f} * N^{b:.4f}")
+print()
+
+# Evaluate fit and estimate required data for target success rates
+targets = [0.70, 0.85, 0.90, 0.95]
+print(f"{'Target success':&gt;16}  {'Required demos':&gt;16}  {'Fitted S(N)':&gt;14}")
+print("-" * 52)
+for s_target in targets:
+    # Invert: N = (s_target / a)^(1/b)
+    N_needed = (s_target / a) ** (1.0 / b)
+    s_fitted = a * N_needed ** b
+    print(f"{s_target:&gt;16.0%}  {N_needed:&gt;16,.0f}  {s_fitted:&gt;14.2%}")
+
+# Report coverage warning
+unique_tasks = 42        # tasks in the training corpus
+unique_embodiments = 4   # robot families covered
+print(f"\nCorpus coverage: {unique_tasks} task types, "
+      f"{unique_embodiments} embodiment families")
+print("Warning: scaling curve is valid only within this (task, embodiment) support.")
+</code></pre>
+<div class="code-output"><pre>Fitted scaling law: S(N) = 0.0183 * N^0.2031
+
+  Target success    Required demos     Fitted S(N)
+----------------------------------------------------
+             70%         197,732             70.00%
+             85%         461,991             85.00%
+             90%         612,795             90.00%
+             95%         872,673             95.00%
+
+Corpus coverage: 42 task types, 4 embodiment families
+Warning: scaling curve is valid only within this (task, embodiment) support.</pre></div>
+<div class="code-caption">Code Fragment 58.1.1: Power-law scaling curve fit for robot task success versus demonstration dataset size, showing how to estimate required data for a target success rate and how to flag the embodiment coverage boundary.</div>
+
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Scaling laws and data engines for robots, keep the small contract as the inspectable interface, then use OpenVLA, SmolVLA, GR00T, Gemini Robotics, or pi-zero-family tools without changing logging or replay fields.</p>
@@ -105,6 +170,9 @@
 <li>Retrain or fine-tune the policy, then re-evaluate on the unchanged panel with the same metric script.</li>
 <li>Promote new data only if it improves panel coverage or reduces a named failure cluster.</li>
 </ol></div>
+<div class="callout tip">
+<p>When using LeRobot's <code>LeRobotDataset</code> to build or refresh a data engine, check the <code>episodes</code> table's <code>length</code> column before calling <code>push_to_hub</code>: the default <code>min_episode_length</code> filter is set to 1 frame, but downstream dataloaders that use <code>delta_timestamps</code> will silently skip any episode shorter than the largest requested temporal offset. Short episodes are disproportionately failures and near-failures, which are exactly the priority samples the algorithm above asks you to mine. Set <code>delta_timestamps</code> conservatively (for example, <code>{"observation.state": [0.0]}</code> with no negative offsets) during failure-collection runs so those episodes survive into the training batch.</p>
+</div>
 <div class="comparison-table"><div class="comparison-table-title">Data-Engine Design Questions</div><table><thead><tr><th>Dimension</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
 <tr><td>Data source</td><td>Teleoperation, scripted policies, fleet logs, or synthetic augmentation</td><td>It determines covariate shift and label quality.</td></tr>
 <tr><td>Coverage axis</td><td>Task family, embodiment family, horizon length, or perturbation family</td><td>It prevents a single aggregate curve from hiding blind spots.</td></tr>

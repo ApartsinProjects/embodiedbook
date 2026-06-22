@@ -39,6 +39,10 @@
 <figcaption>Figure 18.3A: Hindsight experience replay in action: a failed trajectory (agent reached the wrong block) is relabeled with the wrong block as the goal, turning the failure into a successful transition for that relabeled goal.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with experience replay and the replay buffer abstraction introduced in section 16.2, and with the sparse-versus-dense reward tradeoff covered in section 18.2. The goal-conditioned framing developed here is extended to language goals and grounding in section 31.1, where natural-language instructions replace geometric goal vectors as the conditioning signal.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Goal-conditioned reinforcement learning asks one policy to solve many tasks.</strong> Instead of training a separate policy for every target pose, the agent receives the desired goal as part of the input and learns what action is useful for the current state-goal pair.</p>
@@ -86,6 +90,9 @@ push g= 10 r= 0 her_g= 7 her_r= 1</div>
 <div class="callout-title">Library Shortcut</div>
 <p>Use goal-aware Gymnasium environments and replay buffers that expose <code>observation</code>, <code>desired_goal</code>, and <code>achieved_goal</code>. Stable-Baselines3 and related RL libraries can handle the replay mechanics, but the builder must ensure reward recomputation matches the environment's goal semantics.</p>
 </div>
+<div class="callout tip">
+<p>When using Stable-Baselines3's <code>HerReplayBuffer</code>, set the <code>n_sampled_goal</code> parameter explicitly rather than accepting the default of 4. For tasks where achieved goals cluster tightly near the start state (low-exploration robotic pushing, for example), raising <code>n_sampled_goal</code> to 8 or higher increases the diversity of relabeled goals per transition and noticeably improves requested-goal success. Also verify that your environment's <code>compute_reward(achieved_goal, desired_goal, info)</code> accepts batched NumPy arrays: SB3 calls it on entire buffer chunks, and a scalar-only implementation will raise a silent shape error that produces all-zero rewards during relabeling.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Define the goal representation in task coordinates, not only in pixels.</li>
@@ -94,6 +101,23 @@ push g= 10 r= 0 her_g= 7 her_r= 1</div>
 <li>Relabel replay entries with achieved goals from the same episode.</li>
 <li>Evaluate only on held-out requested goals, with the original success threshold.</li>
 </ol>
+
+<div class="callout algorithm">
+<h4>Algorithm: Hindsight Experience Replay (HER) with Goal-Conditioned Policy Update</h4>
+<p><strong>Input:</strong> Goal-conditioned policy $\pi_\theta(a \mid s, g)$ with parameters $\theta$; replay buffer $\mathcal{B}$; goal-conditioned reward $r_g(s, a, s')$; relabeling fraction $k$; learning rate $\alpha$; episode horizon $T$</p>
+<p><strong>Output:</strong> Updated policy parameters $\theta$ that transfer across goals; populated replay buffer $\mathcal{B}$ with original and relabeled transitions</p>
+<ol>
+<li>Sample a desired goal $g \sim p(g)$ from the task goal distribution and reset the environment to state $s_0$.</li>
+<li>Roll out one episode of length $T$ under $\pi_\theta(\cdot \mid s_t, g)$, collecting transitions $(s_t, a_t, s_{t+1}, \hat{g}_t)$ where $\hat{g}_t$ is the achieved goal reported by the environment at each step.</li>
+<li>For each transition $(s_t, a_t, s_{t+1}, \hat{g}_t)$, compute the original reward $r_g(s_t, a_t, s_{t+1})$ and store the tuple $(s_t, a_t, s_{t+1}, g, r_g)$ in $\mathcal{B}$.</li>
+<li>For each transition in the episode, sample $k$ future achieved goals $\{\tilde{g}_1, \ldots, \tilde{g}_k\}$ from $\{\hat{g}_{t'} : t' \geq t\}$ (the "future" HER strategy).</li>
+<li>Recompute the reward for each relabeled goal: $\tilde{r}_j = r_{\tilde{g}_j}(s_t, a_t, s_{t+1})$, then store $(s_t, a_t, s_{t+1}, \tilde{g}_j, \tilde{r}_j)$ in $\mathcal{B}$ without modifying the original entries.</li>
+<li>Sample a minibatch $\{(s, a, s', g^*, r^*)\}$ uniformly from $\mathcal{B}$ (mixing original and relabeled transitions).</li>
+<li>Compute the TD target: $y = r^* + \gamma \max_{a'} Q_\theta(s', a', g^*)$ and update $\theta$ by gradient descent on the Bellman loss: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathbb{E}[(Q_\theta(s, a, g^*) - y)^2]$.</li>
+<li>Repeat steps 1 through 7 for the prescribed number of training episodes.</li>
+<li>At evaluation time, sample desired goals from $p(g)$ only, never from the relabeled distribution, and compute success as $\mathbf{1}[\hat{g}_T \approx g]$ under the original tolerance.</li>
+</ol>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>HER can create a misleading sense of progress if the relabeled goals are much easier than the requested goals. A robot that often bumps the block somewhere learns many hindsight successes, but it still may not learn precise placement unless evaluation remains tied to the original goal distribution.</p>

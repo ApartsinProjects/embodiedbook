@@ -41,11 +41,15 @@
 <figcaption><strong>Figure 48.2A</strong>: Camera, LiDAR, and radar each measure a different physical quantity; fusion is the art of making their disagreements informative rather than dangerous.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with coordinate frames and rigid-body transforms from section 4.6, and with the basics of 3D point-cloud representation from section 28.2. The calibration concepts introduced here are extended in section 8.5, which covers sensor synchronization and state estimation in depth. The fused detections produced by this pipeline feed directly into the tracking and prediction methods developed in section 48.3.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>The AV perception stack rests on three complementary modalities. <strong>Cameras</strong> give dense color and texture but no direct range. <strong>LiDAR</strong> gives precise 3D geometry but is sparse and weather-sensitive. <strong>Radar</strong> gives direct Doppler velocity and works in rain and fog but is angularly coarse. Sensor fusion combines them so that the weakness of one is covered by the strength of another, and 3D object detectors turn the fused evidence into tracked actors.</p>
 </div>
-<p>This section develops the perception stack as a concrete contract: ingest synchronized and calibrated sensor streams, produce 3D objects with class, pose, extent, and velocity, and quantify the result against a labeled benchmark. The recurring discipline is calibration. Fusion is only meaningful when every sensor's measurement can be expressed in a shared coordinate frame, and the worked example projects a LiDAR point into the camera image to make that frame transformation explicit.</p>
+<p>This section develops the perception stack as a concrete contract: ingest synchronized and calibrated sensor streams, produce 3D objects with class, pose, extent, and velocity, and quantify the result against a labeled benchmark. The recurring discipline is calibration. Fusion is only meaningful when every sensor's measurement can be expressed in a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.6.html">shared coordinate frame</a>, and the worked example projects a LiDAR point into the camera image to make that frame transformation explicit.</p>
 <h2>Theory</h2>
 <h3>Sensor modalities</h3>
 <table>
@@ -64,14 +68,30 @@
 <li><strong>Late (object-level) fusion</strong> runs an independent detector per modality and merges the resulting object lists. Robust and modular, but discards cross-modal cues that only exist before detection.</li>
 </ul>
 <h3>3D object detection</h3>
-<p>Given fused inputs, a detector outputs oriented 3D boxes. Representative families: <strong>PointPillars</strong> voxelizes the LiDAR point cloud into vertical pillars and runs a 2D backbone for speed; <strong>CenterPoint</strong> detects object centers in a bird's-eye-view heatmap and regresses box and velocity; <strong>BEVFormer</strong> lifts multi-camera features into a shared bird's-eye-view grid using spatial and temporal attention, enabling camera-only or camera-LiDAR detection in one frame.</p>
+<p>Given fused inputs, a detector outputs oriented 3D boxes. Representative families: <strong>PointPillars</strong> voxelizes the <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.2.html">LiDAR point cloud</a> into vertical pillars and runs a 2D backbone for speed; <strong>CenterPoint</strong> detects object centers in a bird's-eye-view heatmap and regresses box and velocity; <strong>BEVFormer</strong> lifts multi-camera features into a shared <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.4.html">bird's-eye-view grid</a> using spatial and temporal attention, enabling camera-only or camera-LiDAR detection in one frame.</p>
 <div class="callout key-insight">
 <div class="callout-title">Calibration Is The Real Subject</div>
-<p>Every fusion method assumes the extrinsic transform between sensors and the camera intrinsics are known and stable. A 1-degree extrinsic error at 50 m is roughly a 0.9 m lateral error: enough to place a LiDAR return for a pedestrian onto the empty road beside them. Most "fusion failures" are calibration or time-synchronization failures in disguise.</p>
+<p>Every fusion method assumes the extrinsic transform between sensors and the camera intrinsics are known and stable. A 1-degree extrinsic error at 50 m is roughly a 0.9 m lateral error: enough to place a LiDAR return for a pedestrian onto the empty road beside them. Most "fusion failures" are <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.5.html">calibration or time-synchronization failures</a> in disguise.</p>
 </div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>To express a LiDAR point in the camera image you chain three transforms. The extrinsic matrix $T_{\text{cam}\leftarrow\text{lidar}}$ (a 4x4 rotation plus translation) moves the point from the LiDAR frame to the camera frame; the intrinsic matrix $K$ (focal lengths $f_x, f_y$ and principal point $c_x, c_y$) projects the 3D camera-frame point to pixel coordinates; finally you divide by depth (the perspective division). Points behind the camera ($z \le 0$) must be discarded before division.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: LiDAR-to-Camera Projection with Validity Check</h4>
+<p><strong>Input:</strong> LiDAR point $\mathbf{p}_L = (x, y, z)^\top$ in the LiDAR frame; extrinsic rotation $R \in \mathbb{R}^{3 \times 3}$ and translation $\mathbf{t} \in \mathbb{R}^3$ mapping LiDAR to camera frame; camera intrinsic matrix $K$ with focal lengths $(f_x, f_y)$ and principal point $(c_x, c_y)$; distortion tolerance $\theta_{\max}$.</p>
+<p><strong>Output:</strong> Pixel coordinate $(u, v)$ of the projected point, or $\varnothing$ if the point is behind or outside the image plane.</p>
+<ol>
+<li>Transform the point into the camera frame: $\mathbf{p}_C = R\,\mathbf{p}_L + \mathbf{t}$, yielding $(X_c, Y_c, Z_c)^\top$.</li>
+<li>Discard invalid geometry: if $Z_c \le 0$, return $\varnothing$ (point is at or behind the optical center).</li>
+<li>Apply the perspective projection: compute the normalized image coordinates $\tilde{u} = X_c / Z_c$ and $\tilde{v} = Y_c / Z_c$.</li>
+<li>Check the angular incidence: if $\alpha = \arctan\!\bigl(\sqrt{\tilde{u}^2 + \tilde{v}^2}\bigr) > \theta_{\max}$, flag the point as outside the valid field of view.</li>
+<li>Apply the intrinsic matrix via the homogeneous product $[u', v', w']^\top = K\,\mathbf{p}_C$.</li>
+<li>Perform the perspective division: $u = u'/w'$, $v = v'/w'$.</li>
+<li>Clamp to image bounds: if $u \notin [0, W)$ or $v \notin [0, H)$, return $\varnothing$.</li>
+<li>Optionally, attach the depth value $d = Z_c$ and the gradient $\nabla_{\mathbf{p}_L} (u, v)$ for downstream uncertainty propagation.</li>
+<li>Return $(u, v, d)$ as the valid projection.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>The example projects a LiDAR point $(x, y, z)$ into a camera image using the calibration matrices, the single most common operation in any fusion pipeline.</p>
@@ -104,6 +124,9 @@ pix = project_lidar_to_image(pt, R, t, K)
 print("pixel (u, v):", None if pix is None else (round(pix[0], 1), round(pix[1], 1)))
 </code></pre>
 <p><strong>Expected output:</strong> a pixel coordinate near the image center-left, around <code>(u, v) = (894.8, 592.2)</code>. Swap in a point with LiDAR-forward distance set negative and the function returns <code>None</code>, the guard that prevents projecting points behind the camera onto the image.</p>
+<div class="callout tip">
+<p>The pinhole projection above (<code>K @ p_cam</code>) is correct only for rectilinear lenses. For the fisheye cameras that appear in the sensor table, use <code>cv2.fisheye.projectPoints</code> with the four-parameter distortion vector <code>D</code> stored in your calibration file; applying the pinhole formula to a fisheye image silently misplaces LiDAR returns near the frame edges by tens of pixels, which is undetectable on center objects but produces meter-scale lateral errors for pedestrians in the peripheral field of view. Check your calibration file for a non-zero <code>D[3]</code> (the tangential term) as a quick test of whether the pinhole model is safe to use.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In practice use the dataset SDKs that ship calibrated transforms: the <strong>nuScenes devkit</strong> and the <strong>Waymo Open Dataset</strong> tools expose per-sensor intrinsics and extrinsics and handle ego-motion compensation. For detectors, <strong>MMDetection3D</strong> and <strong>OpenPCDet</strong> provide reference PointPillars, CenterPoint, and BEVFormer implementations. Keep the same projection convention (frame order, distortion model) across your pipeline.</p>
@@ -134,7 +157,7 @@ print("pixel (u, v):", None if pix is None else (round(pix[0], 1), round(pix[1],
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Bird's-eye-view fusion (BEVFormer and successors) and occupancy networks are pushing toward a unified scene representation that detection, prediction, and planning can all read. The frontier question is robustness: do these dense representations degrade gracefully under sensor dropout and calibration drift, or do they fail silently?</p>
+<p>Bird's-eye-view fusion (BEVFormer and successors) and <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.7.html">occupancy networks</a> are pushing toward a unified scene representation that detection, prediction, and planning can all read. The frontier question is robustness: do these dense representations degrade gracefully under sensor dropout and calibration drift, or do they fail silently?</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>

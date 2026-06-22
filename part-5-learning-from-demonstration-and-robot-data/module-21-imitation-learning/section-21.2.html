@@ -39,6 +39,9 @@
 <figcaption>Figure 21.2A: Behavior cloning distribution shift: the policy's own compounding errors push the state off the demonstrated manifold, and the cloned policy, trained only on expert states, has no recovery signal.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with supervised learning loss functions and the Markov decision process formulation introduced in section 14.1. The distribution-shift problem diagnosed here is resolved through dataset aggregation in section 21.3, and the same covariate-shift challenge recurs in Part VII alongside vision-language-action models in section 34.2, where large pretrained policies face identical out-of-distribution recovery demands.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Behavior cloning is the supervised-learning baseline for imitation: fit expert actions from expert observations, then ask whether the learned policy stays competent after it starts creating its own states. The section makes the distribution-shift problem mathematical and testable.</p>
@@ -76,9 +79,29 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>Behavior cloning turns imitation into supervised learning. Given expert pairs $\mathcal{D}_E = \{(o_i, a_i^E)\}_{i=1}^N$, the learner fits $\pi_\theta$ by minimizing an action loss under the expert visitation distribution:</p>
 <p>$$\min_\theta \; \mathbb{E}_{(o,a^E) \sim \mathcal{D}_E}\left[\ell\left(\pi_\theta(o), a^E\right)\right].$$</p>
 <p>For continuous robot actions, $\ell$ is often mean squared error or negative log likelihood under a Gaussian policy. For discrete actions, it is usually cross entropy. The hidden assumption is stronger than it looks: test-time observations must remain close to the expert observations used during training. Once the learned policy makes an error, it can visit observations that the dataset barely covers, and the next prediction is made out of distribution.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Behavior Cloning with Distribution-Shift Audit</h4>
+<p><strong>Input:</strong> Expert demonstration dataset $\mathcal{D}_E = \{(o_i, a_i^E)\}_{i=1}^N$, policy network $\pi_\theta$ with parameters $\theta$, learning rate $\alpha$, horizon $T$, number of closed-loop rollouts $R$</p>
+<p><strong>Output:</strong> Trained policy $\pi_\theta^*$ and per-rollout distribution-shift diagnostic (first off-expert timestep, compounding error length)</p>
+<ol>
+<li>Preprocess $\mathcal{D}_E$: normalize observations and action targets; record the expert state mean $\mu_E$ and covariance $\Sigma_E$ for later drift detection.</li>
+<li>Initialize $\pi_\theta$ (e.g., a MLP or RNN over observation history); set epoch counter $k = 0$.</li>
+<li>For each training epoch, sample a minibatch $\mathcal{B} \subset \mathcal{D}_E$ and compute the supervised action loss: $\mathcal{L}(\theta) = \frac{1}{|\mathcal{B}|}\sum_{(o,a^E)\in\mathcal{B}} \ell\!\left(\pi_\theta(o),\, a^E\right)$.</li>
+<li>Update parameters via gradient descent: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)$.</li>
+<li>Repeat steps 3 and 4 until validation action loss converges; record the final held-out loss $\mathcal{L}^*$.</li>
+<li>Deploy $\pi_\theta$ in closed-loop for $R$ rollouts of horizon $T$. At each timestep $t$, execute $a_t = \pi_\theta(o_t)$ and record $o_{t+1}$.</li>
+<li>For each rollout, compute the Mahalanobis distance $d_t = \sqrt{(o_t - \mu_E)^\top \Sigma_E^{-1}(o_t - \mu_E)}$ to detect when the state leaves the expert manifold.</li>
+<li>Record the first timestep $t^*$ where $d_t$ exceeds a threshold $\delta$; this marks the onset of covariate shift for that rollout.</li>
+<li>Compute task success rate $S$ across all $R$ rollouts; compare $S$ against $\mathcal{L}^*$ to quantify the supervised-to-closed-loop performance gap.</li>
+<li>If $S$ is unacceptably low relative to $\mathcal{L}^*$, flag the policy for dataset aggregation (DAgger) or recovery-state augmentation rather than additional supervised training on the original $\mathcal{D}_E$.</li>
+</ol>
+</div>
 <div class="callout warning"><div class="callout-title">Compounding Error</div><p>If the policy has a per-step error rate $\epsilon$ under expert states, a horizon-$T$ rollout can accumulate roughly $O(T^2\epsilon)$ cost under naive behavior cloning because early mistakes change the future state distribution. This is the central reason a high validation score on demonstration frames can still produce poor closed-loop robot behavior.</p></div>
 <div class="callout warning"><div class="callout-title">Common Pitfall: BC Failure in Practice</div><p>A classic failure mode appears in robotic block-stacking: a policy trained on 50 human teleop demonstrations achieves under 5% action MSE on held-out frames, yet completes the task in fewer than 20% of closed-loop rollouts. The breakdown is not perception failure; it is positional drift. The gripper arrives at the block 3 to 4 cm off-center, a state the demonstrator never produced, and the policy has no recovery signal for that region. The fix is not more data of the same kind; it is either interactive correction (DAgger) or explicit recovery demonstrations seeded from failure states.</p></div>
 <p>Consider a specific case: in the robomimic Can task (a pick-and-place benchmark with 200 human demonstrations), a behavior-cloning policy trained with BC-RNN achieves roughly 70% task success when demonstrations come from proficient operators, but drops to under 30% with multi-human mixed-quality data. The gap is not model capacity; it is covariate shift amplified by inconsistent operator styles. States produced by one operator's recovery moves are out of distribution for another operator's nominal trajectory, and the policy interpolates between them incorrectly under closed-loop execution. This result, reported in the robomimic paper (Mandlekar et al., 2021), is the clearest published benchmark showing that dataset composition, not just dataset size, determines where BC breaks.</p>
+<div class="callout tip">
+<p>In robomimic, use the <code>filter_key</code> field in your training config (set it to <code>"train"</code> for proficient-only splits, available as <code>worse_operator</code>, <code>better_operator</code>, or <code>all</code> in the provided HDF5 files) to train on proficient demonstrations only before exposing the policy to mixed-quality data. This single parameter swap reproduces the 40-percentage-point success gap from the Can benchmark without changing any model hyperparameter, making it the fastest way to confirm that your failure is data composition rather than architecture. Do not pool all demonstrations by default; always inspect the per-operator action variance in your HDF5 file with <code>h5py</code> before setting <code>filter_key</code>, because silent concatenation of recovery and nominal trajectories is the most common source of unexplained covariate shift in offline imitation experiments.</p>
+</div>
 <p>Code Fragment 3 computes a tiny behavior-cloning loss and then shows how a one-step position error changes the next observation region.</p>
 <pre><code class="language-python"># Compute a behavior-cloning loss and expose the distribution-shift issue.
 # The second line shows how a small action error moves the next observation.

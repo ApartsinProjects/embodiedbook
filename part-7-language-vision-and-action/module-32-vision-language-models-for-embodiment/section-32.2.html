@@ -39,6 +39,10 @@
 <figcaption>Figure 32.2A: CLIP, SigLIP, and DINOv2 embedding spaces compared on robot-scene queries: CLIP aligns language and vision globally, SigLIP uses sigmoid contrastive loss for better multi-label matching, and DINOv2 produces spatially rich patch features.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with image-text alignment and the contrastive training setup introduced in section 32.1. The encoder choices examined here feed directly into section 32.3, which extends CLIP and DINOv2 features to open-vocabulary object detection, and into section 32.4, where the same representations support visual question answering in robot environments.</p>
+</div>
+
 <p>Inspect the diagram as an embedding audit. The useful question is whether CLIP, SigLIP, or DINOv2 features remain stable across viewpoint, lighting, distractors, and prompt wording while still preserving the action-relevant distinction.</p>
 <figure class="diagram" id="fig-32-2">
 <svg aria-labelledby="fig-32-2-title fig-32-2-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -88,6 +92,22 @@ $$
 <div class="callout-title">Embodied Consequence</div>
 <p>A robot that must choose between "the smaller mug" and "the larger mug" benefits from language alignment. A robot that must keep track of the same mug while its own camera moves may benefit more from patch-stable visual features. That is why OpenVLA fuses SigLIP and DINOv2 rather than pretending one embedding space solves every perception problem.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: Visual Representation Selection for Embodied Tasks</h4>
+<p><strong>Input:</strong> Image observation $I$, text prompt $T$, encoder set $\{\theta_{\text{CLIP}}, \theta_{\text{SigLIP}}, \theta_{\text{DINO}}\}$, task type $\tau \in \{\text{retrieve}, \text{track}, \text{ground}\}$</p>
+<p><strong>Output:</strong> Embedding vector $z$ routed to the appropriate downstream controller $\pi$</p>
+<ol>
+<li>Extract language-aligned image embedding: $z_{\text{lang}} = f_I(I;\,\theta_{\text{CLIP}})$, then compute text embedding $z_T = f_T(T;\,\theta_{\text{CLIP}})$ and similarity $s_{\text{lang}} = \tau \cdot z_{\text{lang}}^\top z_T$.</li>
+<li>Evaluate SigLIP score if multi-label matching is required: $s_{\text{sig}} = \sigma\!\left(\tau \cdot f_I(I;\,\theta_{\text{SigLIP}})^\top f_T(T;\,\theta_{\text{SigLIP}})\right)$, where $\sigma$ is the sigmoid function.</li>
+<li>Extract DINOv2 patch tokens: $Z_{\text{patch}} = f_I(I;\,\theta_{\text{DINO}})[1:,:]$ (strip CLS token at index 0), yielding a $256 \times d$ spatial feature map.</li>
+<li>Compute patch consistency score across two views $I, I'$: $s_{\text{dense}} = \frac{1}{N}\sum_{n=1}^{N} \cos\!\bigl(Z_{\text{patch}}^{(n)},\, Z_{\text{patch}}^{\prime(n)}\bigr)$.</li>
+<li>Route by task type: if $\tau = \text{retrieve}$, return $z = z_{\text{lang}}$ (or $z_{\text{sig}}$ when batch size is small); if $\tau = \text{track}$, return $z = Z_{\text{patch}}$.</li>
+<li>For $\tau = \text{ground}$ (open-vocabulary detection), fuse both spaces: $z = \alpha \cdot z_{\text{lang}} + (1-\alpha) \cdot \bar{Z}_{\text{patch}}$, where $\bar{Z}_{\text{patch}}$ is the mean-pooled patch vector and $\alpha \in [0,1]$ is a learned or heuristic blending weight.</li>
+<li>Pass $z$ to the policy $\pi$ or downstream head; log $s_{\text{lang}}$, $s_{\text{dense}}$, and the routing decision for each inference step to diagnose future representation drift.</li>
+<li>If $s_{\text{lang}}$ and $s_{\text{dense}}$ disagree by more than a threshold $\delta$, raise a routing conflict flag: let language confirm object class but let dense features maintain identity across viewpoint change.</li>
+<li>Update $\alpha$ via gradient $\nabla_\alpha \mathcal{L}_{\text{task}}$ if end-to-end fine-tuning is active; otherwise freeze $\theta_{\text{CLIP}}$, $\theta_{\text{SigLIP}}$, and $\theta_{\text{DINO}}$ and tune only the fusion head.</li>
+</ol>
+</div>
 <h2>Worked Comparison</h2>
 <p>Code Fragment 1 uses toy embeddings to show the selection logic. The important idea is not the exact numbers, but the routing decision: semantic retrieval can prefer one candidate while dense visual consistency prefers another.</p>
 <pre><code class="language-python"># Compare semantic similarity against dense-feature consistency for two objects.
@@ -133,6 +153,9 @@ torch.Size([1, 257, 768])
 </div>
 <p>The expected output is a tensor shape with batch size 1, 257 tokens, and 768 channels, which the reader should interpret as one global token plus a 16 by 16 grid of patch tokens. That patch structure is the reason DINOv2 is useful for correspondence and tracking: the output preserves spatially distributed evidence instead of only one scene-level classification vector.</p>
 <div class="code-caption"><strong>Code Fragment 2:</strong> This maintained DINOv2 path returns one class token plus 256 patch tokens with 768 channels each. Those patch tokens are exactly what make DINOv2 appealing for correspondence, tracking, and geometry-aware retrieval inside an embodied stack.</div>
+<div class="callout tip">
+<p>When indexing DINOv2 patch tokens from <code>outputs.last_hidden_state</code>, use <code>[:, 1:, :]</code> to strip the CLS token at position 0; passing the full 257-token tensor into a convolutional or spatial module that expects a 16x16 grid will produce an off-by-one shape error that is easy to miss. For <code>facebook/dinov2-base</code> the resulting patch tensor reshapes cleanly to <code>(B, 16, 16, 768)</code> via <code>.reshape(B, 16, 16, -1)</code>, which is the format expected by most dense prediction heads. If your downstream head uses <code>nn.functional.grid_sample</code> or a spatial cross-attention layer, call <code>.contiguous()</code> after the reshape because non-contiguous views from indexing operations can cause silent incorrect results on some CUDA kernels.</p>
+</div>
 <h2>Decision Table For Builders</h2>
 <div class="comparison-table">
 <div class="comparison-table-title">When To Prefer Each Representation</div>

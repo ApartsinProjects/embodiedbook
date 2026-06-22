@@ -39,6 +39,9 @@
 <figcaption>Figure 3.3A: An end-to-end learned policy: raw camera pixels enter a neural network that directly outputs motor torques, with the learned representation layers replacing every explicit intermediate module.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>The ideas introduced here are extended in section 3.4, which shows how learned policies are embedded inside hybrid and hierarchical architectures. The behavior-cloning formulation used in the worked example is treated in full in section 21.2, and the action-chunking and diffusion variants that address compounding errors are developed in section 22.2. Vision-language-action models, including RT-2 cited below, are examined as a class in section 34.2.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>End-to-end learned policy pipeline</strong> is one lens on embodied system architectures. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
@@ -82,6 +85,26 @@
 <p>An end-to-end policy is motivated by the handoff problem in <a href="../../part-1-foundations-of-embodied-ai/module-03-embodied-system-architectures/section-3.2.html">modular stacks</a>: if perception produces exactly the wrong abstraction, the planner never sees the information it needed. Instead of committing to intermediate symbols, the policy learns a direct map from observations and goals to actions:</p>
 <p>$$a_t = \pi_\theta(o_{\le t}, g), \qquad \theta^\star = \arg\min_\theta \sum_{(o,g,a^\star)} \ell(\pi_\theta(o,g), a^\star).$$</p>
 <p>The loss $\ell$ is often a regression loss for continuous actions, a cross-entropy loss for discrete action tokens, or a diffusion-style denoising loss for action chunks. The benefit is representation freedom: the model can keep visual, temporal, and language cues that a hand-written state estimator might discard. The cost is diagnostic opacity. When the policy fails, the builder must probe data coverage, action scaling, temporal context, embodiment mismatch, and distribution shift rather than opening a single broken module.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Behavior-Cloning Policy Training and Coverage Audit</h4>
+<p><strong>Input:</strong> demonstration dataset $\mathcal{D} = \{(o_i, g_i, a_i^\star)\}_{i=1}^{N}$, learning rate $\alpha$, policy network $\pi_\theta$ with parameters $\theta$, query observation $o_q$ at deployment time</p>
+<p><strong>Output:</strong> trained parameters $\theta^\star$, predicted action $\hat{a} = \pi_{\theta^\star}(o_q, g)$, coverage score $c(o_q)$</p>
+<ol>
+<li>Compute per-dimension mean $\mu_a$ and standard deviation $\sigma_a$ over all $a_i^\star \in \mathcal{D}$; normalize actions as $\tilde{a}_i = (a_i^\star - \mu_a) / \sigma_a$. Store $(\mu_a, \sigma_a)$ alongside the checkpoint.</li>
+<li>Initialize $\theta$ (e.g., random or from a pretrained backbone). Set iteration counter $t \leftarrow 0$.</li>
+<li>Sample a mini-batch $\mathcal{B} \subset \mathcal{D}$. Compute the imitation loss: $\mathcal{L}(\theta) = \frac{1}{|\mathcal{B}|} \sum_{(o,g,\tilde{a}^\star) \in \mathcal{B}} \ell\!\left(\pi_\theta(o, g),\, \tilde{a}^\star\right)$.</li>
+<li>Compute gradient $\nabla_\theta \mathcal{L}(\theta)$ via backpropagation.</li>
+<li>Update parameters: $\theta \leftarrow \theta - \alpha\, \nabla_\theta \mathcal{L}(\theta)$. Increment $t$.</li>
+<li>Repeat steps 3-5 until convergence or the iteration budget is exhausted. Record $\theta^\star \leftarrow \theta$.</li>
+<li>At deployment, obtain query $o_q$. Predict raw action $\hat{a}_{\text{raw}} = \pi_{\theta^\star}(o_q, g)$; recover physical units: $\hat{a} = \sigma_a \cdot \hat{a}_{\text{raw}} + \mu_a$.</li>
+<li>Compute coverage score: $c(o_q) = \frac{1}{k}\sum_{j=1}^{k} \|o_q - o_{(j)}\|_2$, where $o_{(1)}, \ldots, o_{(k)}$ are the $k$ nearest training observations to $o_q$.</li>
+<li>If $c(o_q)$ exceeds a threshold $\tau$, flag the query as out-of-distribution before accepting $\hat{a}$.</li>
+<li>Log $(o_q, g, \hat{a}, c(o_q))$ as a structured failure record if the rollout does not succeed, to distinguish coverage failures from representation-alignment failures.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>Before training, normalize every action dimension to zero mean and unit variance using statistics computed over the full demonstration dataset, then store those statistics alongside the model checkpoint. LeRobot's <code>normalize_action</code> utility and ACT's reference implementation both do this automatically, but custom pipelines routinely skip it. A policy trained on raw joint-angle targets (which span different ranges per joint) will saturate the output head on joints with large variance and produce near-zero commands on joints with small variance, causing the robot to appear "frozen" on some axes while overcorrecting on others. The fix at inference time is to apply the inverse transform using the saved mean and std before sending commands to the controller.</p>
+</div>
 <p>Consider a specific case: <a href="../../part-7-language-vision-and-action/module-34-vision-language-action-models/section-34.2.html">RT-2</a> (Brohan et al., 2023) fine-tunes a 55-billion-parameter vision-language model to output robot joint commands as text tokens, achieving 62% success on novel objects and categories not present in the robot training data by transferring web-scale visual semantics. <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.2.html">Action Chunking with Transformers (ACT</a>, Zhao et al., 2023) takes a different point on the design curve: a smaller 80-million-parameter transformer trained on 50 human demonstrations per task achieves 80-90% success on precise bimanual manipulation by predicting 100-millisecond action chunks that smooth out compounding errors. OpenVLA (Kim et al., 2024) shows the same VLA recipe scales to open weights at 7 billion parameters, reaching comparable manipulation success to RT-2 at roughly one-tenth the inference cost. These three systems span the specificity-versus-cost tradeoff the formula above leaves open: the observation space and action tokenization differ, but the direct $o \to a$ mapping is constant across all three.</p>
 <div class="callout key-insight">
 <div class="callout-title">When End-to-End Wins (and When It Does Not)</div>

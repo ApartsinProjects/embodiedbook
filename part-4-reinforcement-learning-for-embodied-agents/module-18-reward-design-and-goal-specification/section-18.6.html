@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 18.6A</strong>: Safety-aware and constrained rewards</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on the constrained Markov decision process formulation introduced in section 2.6. The Lagrangian training mechanism covered here is revisited in section 20.1, where sim-to-real transfer exposes budget mismatches between simulated and hardware cost sensors. The ideas reach their deployment-time conclusion in section 54.4, which covers shielded policies and runtime monitors that enforce constraints online rather than through training alone.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Safety-aware reward design separates what the robot wants from what it must not violate.</strong> A single scalar reward can hide risk by letting high task return compensate for collisions, near misses, force spikes, or human interventions. Constrained reinforcement learning keeps safety costs visible as their own contract.</p>
@@ -59,6 +63,25 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>Many algorithms optimize a Lagrangian such as $J_R(\pi)-\lambda(J_C(\pi)-d)$, adapting $\lambda$ when cost exceeds the budget. The Lagrange multiplier is a training mechanism, not a reason to stop reporting the raw cost.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Lagrangian Constrained Policy Optimization</h4>
+<p><strong>Input:</strong> task reward function $r(s,a)$, safety cost function $c(s,a)$, cost budget $d$, policy parameters $\theta$, multiplier $\lambda \ge 0$, learning rates $\alpha_\theta$ and $\alpha_\lambda$, number of iterations $T$</p>
+<p><strong>Output:</strong> feasible policy $\pi_\theta$ satisfying $J_C(\pi) \le d$, with maximized task return $J_R(\pi)$</p>
+<ol>
+<li>Initialize policy parameters $\theta_0$ and Lagrange multiplier $\lambda_0 = 0$.</li>
+<li>For each training iteration $t = 1, \ldots, T$, collect rollout trajectories $\tau$ under current policy $\pi_{\theta_{t-1}}$; record per-step $(r_t, c_t)$ pairs.</li>
+<li>Estimate task return $\hat{J}_R = \mathbb{E}_\tau\!\left[\sum_t \gamma^t r_t\right]$ and cost return $\hat{J}_C = \mathbb{E}_\tau\!\left[\sum_t \gamma^t c_t\right]$ from rollouts.</li>
+<li>Form the Lagrangian objective: $\mathcal{L}(\theta, \lambda) = \hat{J}_R(\pi_\theta) - \lambda\,(\hat{J}_C(\pi_\theta) - d)$.</li>
+<li>Update policy parameters via gradient ascent on $\mathcal{L}$ with respect to $\theta$: $\theta_t \leftarrow \theta_{t-1} + \alpha_\theta \nabla_\theta \mathcal{L}$.</li>
+<li>Update multiplier via dual ascent: $\lambda_t \leftarrow \max\!\left(0,\; \lambda_{t-1} + \alpha_\lambda\,(\hat{J}_C - d)\right)$, using $\alpha_\lambda \ll \alpha_\theta$ to prevent oscillation.</li>
+<li>Log $\hat{J}_R$, $\hat{J}_C$, $d$, $\lambda_t$, and violation rate (fraction of episodes where $\hat{J}_C > d$) as separate fields every iteration.</li>
+<li>If $\hat{J}_C \le d$ and $\lambda_t$ has stabilized for at least 200 updates, mark $\pi_{\theta_t}$ as a feasible candidate.</li>
+<li>After all iterations, select the feasible candidate with the highest $\hat{J}_R$; reject any policy where $\hat{J}_C > d$ regardless of its reward.</li>
+</ol>
+</div>
+<div class="callout tip">
+<p>When using CleanRL's constrained PPO implementation, set the Lagrange multiplier learning rate (<code>lagrange_lr</code>) to at least ten times smaller than the policy learning rate. A multiplier that updates too fast relative to the policy causes the oscillation described in the "When Constrained RL Breaks Down" callout below, where cost spikes on odd iterations and the policy overcorrects on even ones. A ratio of <code>policy_lr = 3e-4</code> to <code>lagrange_lr = 3e-5</code> is a reliable starting point; tighten from there once cost traces are stable for at least 200 updates.</p>
 </div>
 <p>Consider how this plays out over training on the crowded-aisle task. At iteration 1, $\lambda = 0$; the policy ignores cost and takes the fast aisle, accumulating a cost return of 7.5 against a budget of 2.0. The Lagrangian update increases $\lambda$ (say, to 0.8) because cost exceeded the budget. At iteration 2, the penalized objective now makes the detour more attractive; the policy shifts toward the slower route and cost drops to 1.8, which is within budget. The update decreases $\lambda$ slightly. This dual gradient loop continues until the policy settles on the detour with cost near the budget and $\lambda$ stabilized. Critically, reporting only the final reward (78) without reporting the cost (1.2) and the multiplier trajectory would hide whether convergence was clean or oscillatory.</p>
 <h2>Worked Example</h2>

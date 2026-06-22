@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 19.4A</strong>: Partial observability makes exploration a memory problem: the agent must decide whether it found a new place or merely forgot an old one.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with belief states and the POMDP formulation introduced in section 2.7 and the reward structures defined in Chapter 18. The active-sensing ideas developed here are extended in Chapter 20, where partial observability complicates sim-to-real transfer, and they recur in Part V alongside learned memory architectures for manipulation and navigation.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Exploration under partial observability</strong> addresses the case where the agent cannot directly see the state it needs to reason about. A hallway can look identical from two places, an object can be hidden behind a cabinet door, and a risky contact state can be invisible until the robot moves.</p>
@@ -59,6 +63,23 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a sequence of transformations: observe, update belief, score information-gathering actions, execute an active-sensing move, and check whether uncertainty fell. Each transformation should have a measurable contract, otherwise a recurrent policy can appear competent while storing the wrong history.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Belief-Entropy Active Sensing</h4>
+<p><strong>Input:</strong> prior belief $b_t(s)$ over aliased hidden states $s \in \mathcal{S}$, observation $o_t$, likelihood model $P(o \mid s)$, entropy threshold $\tau = \alpha \log_2 |\mathcal{S}|$, learning rate $\alpha \in (0,1)$, policy $\pi_\theta$</p>
+<p><strong>Output:</strong> updated belief $b_{t+1}$, selected action $a_t$, entropy trace $H_t$</p>
+<ol>
+<li>Receive observation $o_t$ from the environment sensor.</li>
+<li>Compute the unnormalized posterior: $\tilde{b}(s) \leftarrow b_t(s) \cdot P(o_t \mid s)$ for all $s \in \mathcal{S}$.</li>
+<li>Normalize to obtain the updated belief: $b_{t+1}(s) \leftarrow \tilde{b}(s) / \sum_{s'} \tilde{b}(s')$.</li>
+<li>Compute belief entropy: $H_t \leftarrow -\sum_{s} b_{t+1}(s) \log_2 b_{t+1}(s)$.</li>
+<li>Compare $H_t$ against the scaled threshold $\tau = \alpha \log_2 |\mathcal{S}|$.</li>
+<li>If $H_t > \tau$, select an information-gathering action $a_t \leftarrow \arg\max_{a} I(S; O' \mid b_{t+1}, a)$ (active sensing toward the most disambiguating landmark).</li>
+<li>Otherwise, select a frontier action $a_t \leftarrow \pi_\theta(b_{t+1})$ to advance exploration coverage.</li>
+<li>Execute $a_t$, observe $o_{t+1}$, and record the tuple $(o_t, b_{t+1}, a_t, H_t)$ in the belief trace log.</li>
+<li>If $H_{t+1} \geq H_t$ after an active-sensing step, flag a belief-collapse warning: the landmark did not disambiguate and the memory horizon or likelihood model may need adjustment.</li>
+<li>Repeat from step 1 until episode termination or belief entropy falls below a convergence floor $H_{\min}$.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 19.4.1 shows a tiny belief update for two visually aliased corridors. When the belief remains uncertain, the agent chooses an information-gathering action rather than pretending the observation fully identifies the state.</p>
@@ -82,6 +103,9 @@ print("entropy", round(entropy, 2), "action", action)</code></pre>
 entropy 0.7 action inspect landmark</div>
 <div class="code-caption"><strong>Code Fragment 19.4.1:</strong> This belief update converts a landmark observation into probabilities for two hidden corridor states. The entropy check makes active sensing explicit, so exploration responds to uncertainty rather than to raw observation novelty alone.</div>
 <p><strong>Expected output:</strong> the belief should move toward one hidden state while still reporting uncertainty. If the trace contains only the latest observation, the agent has no audit trail for partial observability.</p>
+<div class="callout tip">
+<p>The entropy threshold that triggers active sensing (0.7 in the fragment above) is not universal: for $N$ aliased states the maximum possible entropy is $\log_2 N$, so a threshold of 0.7 bits is appropriate for two states but far too low for four or more. Set your threshold as a fraction of $\log_2 N$, for example 0.6 times the maximum, and expose it as a named hyperparameter (such as <code>active_sensing_entropy_ratio</code>) rather than a bare float. In Habitat-Lab experiments, forgetting to rescale this value when adding a third corridor type is a common reason an agent stops issuing any inspection moves at all, because every belief distribution now comfortably clears the old two-state ceiling.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The from-scratch fragment is for understanding. In a practical system, use <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.4.html">Gymnasium wrappers</a> for observation masking, <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-12-benchmarks-and-task-suites/section-12.5.html">Habitat-Lab for embodied navigation</a> with limited sensors, recurrent policy implementations when memory is required, and ROS 2 logs when hidden hardware state must be reconstructed after a run. The shortcut removes boilerplate so the engineering attention goes to aliasing, memory, and active sensing diagnostics.</p>

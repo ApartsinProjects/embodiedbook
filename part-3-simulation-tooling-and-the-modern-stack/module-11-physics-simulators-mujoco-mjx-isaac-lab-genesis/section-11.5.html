@@ -31,6 +31,10 @@
 <figcaption><strong>Figure 11.5A</strong>: Frontier physics engines become engineering tools only after baselines, solver checks, and reproducible scenes make their claims testable.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Isaac Lab and Omniverse USD pipeline introduced in section 11.4, particularly how OpenUSD scene prims carry physics annotations. The GPU-accelerated and differentiable simulation concepts from section 11.3 (MJX) reappear here in the context of Warp kernels. The Newton and OpenUSD ideas carry forward directly into section 11.6 on Genesis, which extends GPU multi-physics with generative scene workflows, and into section 11.7, where Drake and SAPIEN provide the mature-simulator baselines that Newton comparisons require.</p>
+</div>
+
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>Newton is an open-source GPU-accelerated physics engine developed by NVIDIA, Google DeepMind, and Disney Research, with Linux Foundation governance. It is built on NVIDIA Warp and OpenUSD, and it is positioned as a flexible engine for robot learning. Because it is newer than MuJoCo and Isaac Lab, this section treats it as a frontier tool: important to understand, but not something to adopt blindly.</p></div>
 
 <div class="callout key-insight"><div class="callout-title">Rendering Is Part Of The Policy</div><p>When observations are images, the renderer becomes part of the learning system. Lighting, camera placement, textures, and sensor noise all shape what the policy learns to trust.</p>
@@ -49,6 +53,24 @@
 <p>Scene interchange is not the same as physical validity. A USD asset can preserve hierarchy, materials, and semantics while still leaving collision geometry, inertial properties, joint limits, or contact parameters under-specified for learning. Treat OpenUSD as the scene backbone, then audit which simulator-specific assumptions get attached before the policy sees the world.</p>
 <p>To make this concrete: the OpenUSD Physics schema (part of the USD specification since version 21.11) defines prim types such as <code>PhysicsRigidBodyAPI</code>, <code>PhysicsCollisionAPI</code>, and <code>PhysicsMassAPI</code> that attach mass, friction, and restitution values directly to scene prims. A Newton or Isaac scene that fully populates these schemas can be exchanged between tools without re-specifying contact parameters. A scene imported from a graphics pipeline that skips these schemas will arrive in the simulator with engine-default values, which for contact-rich tasks can mean friction coefficients of 0.5 instead of the intended 0.8, silently changing grasping or locomotion behavior.</p>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>USD assets exported from graphics tools (Omniverse, Blender, Maya) frequently omit physics-schema annotations because those tools target rendering, not simulation. When Newton imports such an asset, it fills missing mass and friction values with engine defaults. A policy trained on these defaults will behave differently from one trained after a physics-schema audit, and the discrepancy rarely surfaces as an obvious error: the simulation runs, but contact behavior is quietly wrong. Always inspect <code>PhysicsCollisionAPI</code> and <code>PhysicsMassAPI</code> attributes on imported USD prims before using a scene for policy training.</p></div>
+
+<div class="callout algorithm">
+<h4>Algorithm: OpenUSD Physics Schema Audit for Simulator Ingestion</h4>
+<p><strong>Input:</strong> USD scene file $\mathcal{S}$, target simulator $\sigma$ (e.g. Newton or Isaac Lab), task contact parameters $\theta_{\text{task}} = \{\mu, e, m_i\}$ (friction coefficients $\mu$, restitution $e$, per-body masses $m_i$)</p>
+<p><strong>Output:</strong> Audited scene $\mathcal{S}^*$ with verified physics annotations, discrepancy report $\Delta$, go/no-go decision $d \in \{0,1\}$</p>
+<ol>
+<li>Traverse all prims in $\mathcal{S}$; collect the set $P = \{p : p \text{ has geometry or articulation}\}$.</li>
+<li>For each prim $p \in P$, check whether <code>PhysicsRigidBodyAPI</code>, <code>PhysicsCollisionAPI</code>, and <code>PhysicsMassAPI</code> are applied; record any missing schema as a gap $g_p$.</li>
+<li>For each prim with <code>PhysicsMassAPI</code>, read $m_p$ and compare to $m_i$ from $\theta_{\text{task}}$; flag $p$ if $|m_p - m_i| / m_i > \alpha_m$ where $\alpha_m = 0.05$.</li>
+<li>For each prim with <code>PhysicsCollisionAPI</code>, read friction $\mu_p$ and restitution $e_p$; flag $p$ if $|\mu_p - \mu| > \alpha_\mu$ or $|e_p - e| > \alpha_e$ (use $\alpha_\mu = \alpha_e = 0.05$).</li>
+<li>For every flagged or gap prim, fill missing attributes using $\theta_{\text{task}}$; log each substitution into discrepancy report $\Delta$ with the original engine default $\theta_\sigma$ alongside the assigned value.</li>
+<li>Recompute the aggregate contact parameter distance $\|\theta_\sigma - \theta_{\text{task}}\|_1$ across all prims; if this exceeds a project threshold $\tau$, append a severity annotation to $\Delta$.</li>
+<li>Verify that all articulation joints have <code>PhysicsRevoluteJoint</code> or <code>PhysicsPrismaticJoint</code> prims with explicit limit attributes $[\theta_{\min}, \theta_{\max}]$; add missing limits from the robot URDF specification.</li>
+<li>Run a single-step dry simulation in $\sigma$ on $\mathcal{S}^*$; record contact-force vector $\mathbf{f}_0$ and compare against the analytical quasi-static prediction $\mathbf{f}_{\text{static}} = \nabla_q V(q_0)$ where $V$ is the potential energy at initial configuration $q_0$.</li>
+<li>If $\|\mathbf{f}_0 - \mathbf{f}_{\text{static}}\|_2 / \|\mathbf{f}_{\text{static}}\|_2 > \epsilon$ (use $\epsilon = 0.1$), reopen $\Delta$ and mark the scene as requiring solver-parameter review before policy training.</li>
+<li>Set $d = 1$ (approved) if $|\Delta| = 0$ or all substitutions are within tolerance and step 9 passes; otherwise set $d = 0$ and surface $\Delta$ to the team before proceeding.</li>
+</ol>
+</div>
 <div class="comparison-table">
 <div class="comparison-table-title">Newton Decision Questions</div>
 <table>
@@ -63,6 +85,78 @@
 </div>
 <h2>A Recency-Aware Adoption Score</h2>
 <p>Code Fragment 1 implements a tiny adoption checklist. It does not decide for you. It forces a team to separate frontier value from project risk before adding a new engine to a research dependency chain.</p>
+
+<pre><code class="language-python"># Newton simulator adoption scorecard: weighted criteria scoring
+# Demonstrates recency-aware decision logic for frontier physics engine selection.
+
+import numpy as np
+
+criteria = {
+    "usd_scene_interchange": {
+        "weight": 0.20,
+        "description": "Project uses OpenUSD scene graphs for asset composition",
+    },
+    "custom_gpu_kernels": {
+        "weight": 0.20,
+        "description": "Task needs Warp-based custom physics kernels",
+    },
+    "open_governance": {
+        "weight": 0.10,
+        "description": "Linux Foundation stewardship reduces vendor lock-in risk",
+    },
+    "gpu_throughput": {
+        "weight": 0.25,
+        "description": "Need &gt;1M physics steps/second on a single GPU node",
+    },
+    "mature_baseline_available": {
+        "weight": -0.20,
+        "description": "A mature engine (MuJoCo, Isaac Lab) already covers the task",
+        "note": "negative weight: availability of a proven baseline raises the bar",
+    },
+    "reproducible_benchmark": {
+        "weight": 0.05,
+        "description": "Existing Newton benchmark matches project robot and task",
+    },
+}
+
+# Score each criterion 0.0 (no) to 1.0 (yes, fully) for a hypothetical project.
+project_scores = {
+    "usd_scene_interchange": 0.8,
+    "custom_gpu_kernels": 0.6,
+    "open_governance": 1.0,
+    "gpu_throughput": 0.9,
+    "mature_baseline_available": 0.7,
+    "reproducible_benchmark": 0.3,
+}
+
+total = sum(
+    criteria[k]["weight"] * project_scores[k] for k in criteria
+)
+
+print("Newton Adoption Scorecard")
+print("-" * 44)
+for k, meta in criteria.items():
+    contrib = meta["weight"] * project_scores[k]
+    sign = "+" if contrib &gt;= 0 else ""
+    print(f"  {k:35s}  {sign}{contrib:+.3f}")
+print("-" * 44)
+print(f"  {'TOTAL ADOPTION SCORE':35s}   {total:.3f}")
+threshold = 0.40
+verdict = "Prototype Newton" if total &gt;= threshold else "Stay with mature simulator"
+print(f"  Threshold = {threshold}  =>  {verdict}")
+</code></pre>
+<div class="code-output"><pre>Newton Adoption Scorecard
+--------------------------------------------
+  usd_scene_interchange                   +0.160
+  custom_gpu_kernels                      +0.120
+  open_governance                         +0.100
+  gpu_throughput                          +0.225
+  mature_baseline_available               -0.140
+  reproducible_benchmark                  +0.015
+--------------------------------------------
+  TOTAL ADOPTION SCORE                    +0.480
+  Threshold = 0.4  =>  Prototype Newton</pre></div>
+<div class="code-caption">Code Fragment 11.5.1: Weighted adoption scorecard for the Newton physics engine, scoring six criteria including a negative-weight penalty when a mature baseline already covers the task. Adjust weights and scores to match your project before treating Newton as a dependency.</div>
 
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The scorecard is a few lines of governance-aware project planning. In practice, a Newton prototype should use the official Newton repository and examples rather than a hand-built wrapper. The maintained tooling handles Warp integration and scene conventions, while your audit handles whether the tool belongs in the project.</p></div>
 <h2>When To Use Newton</h2>

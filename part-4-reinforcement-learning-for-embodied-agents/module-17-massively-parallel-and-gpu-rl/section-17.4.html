@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 17.4A</strong>: MJX and Brax reward the builder who thinks in batched arrays first: fixed shapes, explicit random keys, and rollout buffers sized before the first compile.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the parallel-environment abstraction introduced in section 17.1 and the PPO rollout recipe from section 17.2. If you are coming from the Isaac Lab path covered in section 17.3, note that the JAX compilation contract here differs from the SKRL and rl_games interfaces. The ideas developed in this section are extended in section 17.5, which applies the same compiled rollout loop to teacher-student distillation, and in section 17.6, which turns the throughput and cost levers visible here into concrete engineering decisions.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>MJX, Brax, and JAX RL</strong> move the entire reinforcement-learning loop toward accelerator-native arrays. The simulator step, policy inference, advantage computation, and update can all be expressed as compiled transformations over batched state.</p>
@@ -51,6 +55,9 @@
 <div class="callout key-insight">
 <div class="callout-title">Compile Once, Vary By Data</div>
 <p>JAX rewards programs whose control flow and tensor shapes stay stable. Vary terrain, commands, and seeds through arrays, not through Python branches that force recompilation.</p>
+</div>
+<div class="callout tip">
+<p>Use <code>jax.lax.scan</code> rather than a Python for-loop to collect rollout timesteps. A Python loop over horizon steps forces JAX to unroll the entire loop at trace time, inflating compile time and binary size for long horizons. With <code>lax.scan</code>, the carry (simulator state, PRNG key, policy params) and the output slice (observation, action, reward, done) must have fully static shapes before the first <code>jit</code> call; fix these shapes in the manifest before training starts. As a diagnostic, wrap your scan body with <code>jax.make_jaxpr</code> on a single step first to confirm no Python-side shape changes leak through.</p>
 </div>
 <p>The motivation for this approach is throughput and reproducibility. A conventional Python RL loop calling a C++ simulator spends a large fraction of its wall-clock time on Python overhead, data copies between host and device, and sequential environment stepping. With 8,192 environments running on a GPU, each Python call becomes a bottleneck. MJX and Brax eliminate this by expressing physics and RL as JAX array transformations that compile into a single device kernel: no Python loop in the hot path, no host-to-device copy per step, and a rollout that runs entirely on the accelerator until the update is done. The practical gain is that experiments that previously required overnight runs can complete in under an hour, which directly changes what research is feasible to iterate on.</p>
 <h2>Theory</h2>
@@ -103,6 +110,24 @@ rollout buffer total: 82.8 MB</div>
 <li>Profile compile time separately from steady-state training throughput.</li>
 <li>Evaluate on a separate key stream and a separate task panel, then save both key roots.</li>
 </ol>
+<div class="callout algorithm">
+<h4>Algorithm: JAX-Native Compiled Rollout with MJX/Brax</h4>
+<p><strong>Input:</strong> policy parameters $\theta$, simulator model $\mathcal{M}$, batch size $N$, horizon $T$, learning rate $\alpha$, PRNG root key $k_{\text{train}}$</p>
+<p><strong>Output:</strong> updated parameters $\theta'$, rollout buffer $(s_{1:T}, a_{1:T}, r_{1:T}, d_{1:T})$, per-step throughput estimate</p>
+<ol>
+<li>Fix static shapes: observation dim $d_o$, action dim $d_a$, batch $(T, N)$. Allocate device-resident rollout buffer of size $T \times N \times (d_o + d_a + 2)$ before compilation.</li>
+<li>Split $k_{\text{train}}$ into $N$ per-environment keys $\{k_i\}_{i=1}^{N}$ and a separate evaluation root $k_{\text{eval}}$ so training and evaluation randomness never share a key stream.</li>
+<li>Initialize batched simulator state $s_0 = \text{vmap}(\mathcal{M}.\text{reset})(k_{1:N})$ using <code>jax.vmap</code> over the $N$ environment keys.</li>
+<li>Compile the rollout body as a <code>lax.scan</code> step: carry $= (s_t, \theta, k_t)$; emit $(s_{t+1}, a_t, r_t, d_t)$ where $a_t \sim \pi_\theta(s_t)$ and $s_{t+1} = \text{vmap}(\mathcal{M}.\text{step})(s_t, a_t)$.</li>
+<li>Execute <code>jax.jit(lax.scan)(rollout\_body, init\_carry, xs=None, length=T)</code> to collect the full horizon in one device-resident kernel; record compile time separately from step 6 onward.</li>
+<li>Compute advantages $\hat{A}_t = \sum_{l=0}^{T-t} (\gamma \lambda)^l (r_{t+l} + \gamma V_\theta(s_{t+l+1}) - V_\theta(s_{t+l}))$ over the buffer using vectorized array operations, no Python loop.</li>
+<li>Compute the clipped surrogate loss $L^{\text{CLIP}}(\theta) = \mathbb{E}_t[\min(r_t(\theta)\hat{A}_t,\, \text{clip}(r_t(\theta), 1-\varepsilon, 1+\varepsilon)\hat{A}_t)]$ and the value loss $L^V$.</li>
+<li>Update parameters: $\theta' \leftarrow \theta - \alpha \nabla_\theta (L^{\text{CLIP}} + c_1 L^V - c_2 H[\pi_\theta])$ via <code>jax.grad</code> and an Optax optimizer step.</li>
+<li>Verify no recompilation occurred: assert that shape and dtype of carry and output slices are identical to those seen at trace time before logging any throughput number.</li>
+<li>Evaluate on a held-out episode batch using $k_{\text{eval}}$ and save compile time, steady-state steps per second, rollout buffer bytes, $\theta'$ checkpoint, and both PRNG roots as one artifact.</li>
+</ol>
+</div>
+
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The common mistake is to benchmark after the first call and include compilation time in one result but not another. Another common mistake is to change batch shape during curriculum updates, causing silent recompilation and confusing wall-clock comparisons.</p>

@@ -40,6 +40,9 @@
 </figure>
 
 <p>Read the figure as a safety envelope for language agents. The LLM should never be the final authority on actuation; typed interfaces, guards, monitors, and human escalation define what commands can reach the robot.</p>
+<div class="callout pathway">
+<p>This section assumes familiarity with the state-estimation pipeline introduced in section 2.2 and the layered control architecture from section 7.1, because the safety filter $\sigma$ operates over estimated state and hands rejected proposals back to the controller. The typed-interface patterns developed here recur in section 54.4 (action shielding under conformal risk bounds) and the full deployment safety case in section 54.6, where every layer discussed here must be evidenced under realistic operating conditions.</p>
+</div>
 <figure class="diagram" id="fig-33-8">
 <svg aria-labelledby="fig-33-8-title fig-33-8-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
 <title id="fig-33-8-title">Closed-loop interface for Safe LLM-agent interfaces</title>
@@ -79,11 +82,28 @@
 <p>The safest place to catch a bad plan is before it becomes an actuator command. Interface safety is cheaper than recovery.</p>
 </div>
 <h2>Theory</h2>
-<p>Let the LLM propose action object $u_t$, and let a safety filter $\sigma$ map that proposal and state estimate to an allowed action: $$a_t = \sigma(u_t, \hat s_t), \qquad \sigma : \mathcal U \times \mathcal S \to \mathcal A \cup \{\text{block}, \text{escalate}\}.$$ The filter may pass, modify, block, or escalate the action depending on geometric, task, or policy constraints.</p>
+<p>Let the LLM propose action object $u_t$, and let a safety filter $\sigma$ map that proposal and <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.2.html">state estimate</a> to an allowed action: $$a_t = \sigma(u_t, \hat s_t), \qquad \sigma : \mathcal U \times \mathcal S \to \mathcal A \cup \{\text{block}, \text{escalate}\}.$$ The filter may pass, modify, block, or escalate the action depending on geometric, task, or policy constraints.</p>
 <p>This formulation matters because it places safety at the interface boundary, where the planner is still symbolic and the controller still has time to refuse. Once an unsafe instruction has already become continuous motion, the system has fewer and more expensive options.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A practical shield checks permissions, geometry, resource bounds, and human-approval rules. The LLM proposes. The shield decides whether that proposal is admissible now, admissible only after modification, or inadmissible without escalation.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: LLM Proposal Safety Filtering ($\sigma$-Shield)</h4>
+<p><strong>Input:</strong> LLM action proposal $u_t \in \mathcal{U}$, typed proposal schema $\Pi$, state estimate $\hat{s}_t$, policy constraints $\mathcal{C} = \{c_1, \ldots, c_k\}$, risk threshold $\alpha \in [0,1]$</p>
+<p><strong>Output:</strong> Admissible action $a_t \in \mathcal{A}$, or decision $d_t \in \{\text{block}, \text{escalate}\}$ with a logged evidence record</p>
+<ol>
+<li><strong>Schema validation:</strong> Parse $u_t$ against typed schema $\Pi$; if any required field is missing or the type is incorrect, return $d_t = \text{block}$ immediately without reading downstream fields.</li>
+<li><strong>Permission check:</strong> For each permission class $p \in \Pi.\text{permissions}$, verify that the requesting agent holds $p$ under current context $\hat{s}_t$; block if any class is unauthorized.</li>
+<li><strong>Risk estimation:</strong> Compute proposal risk $r(u_t, \hat{s}_t) \in [0,1]$ using the active risk model (geometric, semantic, or learned); record $r$ in the evidence log.</li>
+<li><strong>Geometric feasibility:</strong> Query the collision and kinematic checker (e.g., MoveIt 2) with state $\hat{s}_t$; if the proposed motion is infeasible or yields a collision probability above threshold $\theta_{\text{geo}}$, return $d_t = \text{block}$.</li>
+<li><strong>Policy constraint scan:</strong> Evaluate each constraint $c_i \in \mathcal{C}$ against $(u_t, \hat{s}_t)$; if any hard constraint fires, return $d_t = \text{block}$ and record which rule $c_i$ triggered.</li>
+<li><strong>Risk routing:</strong> If $r(u_t, \hat{s}_t) \leq \alpha$, proceed to step 7 (pass). If $\alpha < r(u_t, \hat{s}_t) \leq 1$, route to human review and return $d_t = \text{escalate}$.</li>
+<li><strong>Optional rewrite:</strong> If a rewrite rule $\rho \in \mathcal{C}$ applies (e.g., clamp speed, require confirmed field), apply it to produce modified proposal $u_t' = \rho(u_t)$ and re-evaluate steps 3 and 4 on $u_t'$.</li>
+<li><strong>Pass through:</strong> Set $a_t = \sigma(u_t, \hat{s}_t)$ and dispatch $a_t$ to the low-level controller, which applies its own independent geometric and dynamic limits.</li>
+<li><strong>Evidence logging:</strong> Append to the safety log the tuple $(u_t, \hat{s}_t, r, d_t, \text{rule fired})$; retain blocked proposals alongside passed ones so planner improvement does not require weakening the shield.</li>
+<li><strong>Feedback to planner:</strong> If $d_t \in \{\text{block}, \text{escalate}\}$, return the blocking reason to the planning loop $\pi_\theta$ so that replanning or human input can produce a new proposal $u_{t+1}$.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 applies a tiny safety shield to a proposed action. The important point is that the shield can return `block` or `escalate` rather than pretending every proposal must map to some executable motion.</p>
@@ -113,7 +133,10 @@ print({"proposal": proposal["action"], "decision": decision})</code></pre>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The most dangerous architecture is one where safety is written only in the prompt. Prompt text may shape planner behavior, but it is not an enforceable interface contract when hardware is involved.</p>
-<p>Consider a specific failure: a warehouse robot is prompted to "always avoid humans in the work cell." During a shift change, sensor occlusion causes the state estimate to miss a worker, the LLM generates a <code>move_to(shelf=7, speed=1.2)</code> proposal rated low-risk (0.3), and the shield passes it because the prompt-defined rule is not encoded in the filter logic. The robot moves at full speed into an occupied zone. A typed schema that requires a confirmed <code>human_clear: bool</code> field before any <code>speed &gt; 0.5</code> command would have blocked this regardless of what the prompt said. The failure is architectural, not linguistic.</p>
+<p>Consider a specific failure: a warehouse robot is prompted to "always avoid humans in the work cell." During a shift change, sensor occlusion causes the <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.5.html">state estimate to miss a worker</a>, the LLM generates a <code>move_to(shelf=7, speed=1.2)</code> proposal rated low-risk (0.3), and the shield passes it because the prompt-defined rule is not encoded in the filter logic. The robot moves at full speed into an occupied zone. A typed schema that requires a confirmed <code>human_clear: bool</code> field before any <code>speed &gt; 0.5</code> command would have blocked this regardless of what the prompt said. The failure is architectural, not linguistic.</p>
+</div>
+<div class="callout tip">
+<p>When defining your typed proposal schema with Pydantic or a JSON Schema validator, add a <code>required</code> list that explicitly names every field the shield will read, such as <code>human_clear</code>, <code>object_class</code>, or <code>zone_id</code>. A shield that silently receives <code>None</code> for a missing required field will default to permissive behavior, not to a block. Setting <code>model_config = ConfigDict(extra="forbid")</code> in Pydantic v2 causes the validator to reject any proposal that omits or adds a field, surfacing schema mismatches at the interface boundary rather than inside live execution logic.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -125,16 +148,16 @@ print({"proposal": proposal["action"], "decision": decision})</code></pre>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Current research explores action shielding, conformal risk bounds, and richer embodied-policy evaluators, but the most reliable practice today is still layered safety: typed interfaces, hard constraints, controller-level limits, and human escalation for the remaining uncertainty.</p>
+<p>Current research explores <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.4.html">action shielding</a>, conformal risk bounds, and richer embodied-policy evaluators, but the most reliable practice today is still layered safety: typed interfaces, hard constraints, controller-level limits, and human escalation for the remaining uncertainty.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>If your planner proposed a forbidden action, could your system say which rule blocked it and whether the next best move should be automatic replanning or human escalation?</p>
+<p>If your planner proposed a forbidden action, could your system say which rule blocked it and whether the next best move should be <a href="../../part-7-language-vision-and-action/module-33-llms-as-planners-and-controllers/section-33.6.html">automatic replanning</a> or human escalation?</p>
 </div>
 
 
 <p>Safety interfaces are where symbolic AI and control engineering meet most directly. The LLM's proposal is high level and semantically rich; the shield translates that richness into admissibility checks over geometry, resources, and policy. This is one reason typed action objects are so valuable: they expose the fields the shield actually needs.</p>
-<p>A second lesson is that safety is layered. Interface shields catch semantic and policy-level mistakes early, while low-level controllers catch timing, force, and dynamics violations later. Neither layer can safely replace the other.</p>
+<p>A second lesson is that safety is layered. Interface shields catch semantic and policy-level mistakes early, while <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.1.html">low-level controllers</a> catch timing, force, and dynamics violations later. Neither layer can safely replace the other.</p>
 <div class="callout key-insight"><div class="callout-title">When Each Layer Fires</div><p>Interface-level shielding (the $\sigma$ filter) is the right place to enforce policy rules, permission classes, and semantic constraints: it operates before any motion primitive is selected and can return <code>block</code> or <code>escalate</code> in microseconds with no hardware cost. Controller-level safety (collision avoidance, torque limits, velocity clamps in MoveIt 2 or a ROS 2 safety node) is the right place to enforce geometric and dynamic constraints that depend on real-time sensor feedback unavailable to the planner. Use interface shielding when the rule can be checked symbolically against the typed proposal; use controller limits when the constraint requires continuous state that only the low-level loop can see. Relying solely on interface shielding for dynamic constraints means a brief sensor dropout can silently disable the only enforcement layer.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices For Safe Embodied Interfaces</div>
@@ -167,7 +190,7 @@ print({"proposal": proposal["action"], "decision": decision})</code></pre>
 
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Safe embodied LLM systems rely on enforceable interface contracts, not on prompt wording alone.</p>
+<p>Safe embodied LLM systems rely on enforceable interface contracts, not on prompt wording alone. Building a full <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.6.html">deployment approval and safety case</a> requires evidence that each layer held under the tested conditions.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 33.8.1</div><p>Design a safety shield for a mobile manipulator that handles fragile objects and restricted areas. Specify one automatic block rule, one rewrite rule, and one escalation rule.</p></div>
 <section class="bibliography">

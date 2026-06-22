@@ -39,12 +39,67 @@
 <figcaption><strong>Figure 23.6A</strong>: The LeRobotDataset format and pipeline</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the data quality and labeling concerns introduced in section 23.5, and with the action-chunking representation discussed in section 22.3. The format contract established here feeds directly into Chapter 24, which compares major robot datasets and examines the scaling laws that motivate pooling standardized data across embodiments. The three-layer pipeline (raw, normalized, training) also recurs in Part VI when learned representations are fine-tuned across datasets with different action spaces.</p>
+</div>
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>LeRobotDataset turns robot demonstrations into a standardized multimodal time-series format with metadata, video, sensorimotor signals, and Hub integration. The point is not only convenience; the point is to make training, visualization, sharing, and reproducibility use the same data contract.</p></div>
 <h2>Format Contract</h2>
 <p>A robot dataset must answer four questions before a model loads it: what is the observation, what is the action, what episode does this frame belong to, and what metadata defines the body and task? LeRobotDataset v3 organizes these answers around standardized feature names, Parquet tables, videos or images, and metadata files. Getting those names right depends on the same concerns about <a href="../../part-5-learning-from-demonstration-and-robot-data/module-23-teleoperation-and-data-collection/section-23.5.html">data quality, diversity, and labeling</a> that apply to the collection stage.</p>
 <div class="callout key-insight"><div class="callout-title">A Loader Is A Scientific Instrument</div><p>If two labs load the same dataset differently, they are not running the same experiment. Standardized formats reduce the chance that preprocessing becomes an invisible baseline difference.</p></div>
 <div class="comparison-table"><div class="comparison-table-title">LeRobotDataset-Style Fields</div><table><thead><tr><th>Field Family</th><th>Typical Contents</th><th>Why It Matters</th></tr></thead><tbody><tr><td>Observation</td><td>Images, robot state, proprioception, tactile signals</td><td>Defines what the policy can know.</td></tr><tr><td>Action</td><td>Joint targets, end-effector deltas, gripper commands</td><td>Defines what the policy is trained to output.</td></tr><tr><td>Episode index</td><td>episode id, frame index, timestamp</td><td>Keeps temporal structure intact.</td></tr><tr><td>Metadata</td><td>fps, robot type, features, splits, license</td><td>Makes loading and comparison reproducible.</td></tr></tbody></table></div>
 <p>Code Fragment 1 validates a tiny feature schema before conversion. This catches the most common mistake: an action or timestamp field that exists in prose but not in the actual files.</p>
+
+<pre><code class="language-python"># Validate a LeRobotDataset-style feature schema before conversion
+# Demonstrates the minimum required fields and unit-annotation checks
+
+import numpy as np
+
+# Minimal required fields for a LeRobotDataset-compatible episode table
+REQUIRED_FIELDS = {
+    "timestamp",           # float, seconds since episode start
+    "episode_index",       # int, episode identifier
+    "frame_index",         # int, frame position within episode
+    "observation.state",   # float array, joint angles in radians
+    "action",              # float array, joint targets in radians
+    "observation.images.front",  # str or bytes, camera frame reference
+}
+
+# Simulated feature schema from a conversion script (what the converter claims)
+candidate_schema = {
+    "timestamp":                  {"dtype": "float32", "unit": "seconds"},
+    "episode_index":              {"dtype": "int64",   "unit": None},
+    "frame_index":                {"dtype": "int64",   "unit": None},
+    "observation.state":          {"dtype": "float32", "unit": "radians", "shape": (14,)},
+    "action":                     {"dtype": "float32", "unit": "radians", "shape": (14,)},
+    "observation.images.front":   {"dtype": "video",   "unit": None},
+}
+
+missing = REQUIRED_FIELDS - set(candidate_schema.keys())
+schema_ok = len(missing) == 0
+
+print(f"schema ok: {schema_ok}")
+print(f"missing fields: {sorted(missing)}")
+
+# Verify action unit is declared (not left ambiguous)
+action_meta = candidate_schema.get("action", {})
+unit = action_meta.get("unit")
+unit_declared = unit is not None and unit != ""
+print(f"action unit declared: {unit_declared} ({unit})")
+
+# Simulate a shape smoke-test on a random synthetic episode
+rng = np.random.default_rng(0)
+n_frames = 10
+synthetic_state  = rng.uniform(-1.0, 1.0, (n_frames, 14)).astype(np.float32)
+synthetic_action = rng.uniform(-1.0, 1.0, (n_frames, 14)).astype(np.float32)
+mean_abs_action = float(np.mean(np.abs(synthetic_action)))
+all_zero_action = mean_abs_action < 1e-6
+print(f"mean |action|: {mean_abs_action:.4f}  (near-zero signals missing follower data: {all_zero_action})")
+</code></pre>
+<div class="code-output"><pre>schema ok: True
+missing fields: []
+action unit declared: True (radians)
+mean |action|: 0.5032  (near-zero signals missing follower data: False)</pre></div>
+<div class="code-caption">Code Fragment 23.6.1: Validating a LeRobotDataset feature schema by checking required fields, unit annotations, and action signal magnitude before conversion</div>
 
 <p>The expected output is intentionally boring: <code>schema ok: True</code> and an empty missing-field list. That boring result is valuable because it means every later training script can assume episode identity, temporal order, timestamp alignment, observation image, robot state, and action are present. If <code>observation.state</code> or <code>timestamp</code> is missing, do not patch the trainer; repair the conversion pipeline so every downstream policy receives the same scientific object.</p>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the schema is clear, use LeRobot's dataset tooling to create, push, visualize, and train from the dataset. The maintained stack handles storage layout, Hub metadata, video indexing, and PyTorch access that would otherwise become fragile custom glue.</p></div>
@@ -53,6 +108,9 @@
 <h2>Conversion And Verification</h2>
 <p>A robust conversion pipeline keeps three layers separate. The raw layer preserves the original robot logs, including vendor-specific messages and <a href="../../part-5-learning-from-demonstration-and-robot-data/module-23-teleoperation-and-data-collection/section-23.2.html">leader-device signals</a>. The normalized layer exposes canonical features such as <code>observation.images.front</code>, <code>observation.state</code>, and <code>action</code>. The training layer may add cached tensors, resized videos, or model-specific transforms, but those derived artifacts should be reproducible from the normalized layer.</p>
 <p>The most important verification step is random-access replay. Sample an episode from the beginning, middle, and end of the dataset; render the camera frame; print the aligned robot state; and overlay the action that follows. This catches off-by-one frame shifts, stale calibration, swapped wrist cameras, and action-unit mistakes that a shape-only validator will miss. The three-layer separation matters most at reuse time: when a second lab wants to retrain on your data with a different image resolution or a <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.7.html">different action representation</a>, they should be able to rebuild only the training layer from your normalized layer without touching the raw layer. If your pipeline collapses normalization and training transforms into a single script, that reuse is impossible without re-collecting data.</p>
+<div class="callout tip">
+<p>When naming camera streams, use <code>lerobot-visualize-dataset</code> (the LeRobot CLI command) to render a side-by-side replay before finalizing camera feature names. The tool overlays the feature key on each frame, so a swapped <code>observation.images.wrist</code> and <code>observation.images.front</code> is immediately visible as a policy-perspective error rather than a shape or dtype mismatch that only surfaces at training time. Run it on episode 0 and at least one episode from the middle of the dataset; a mislabeled stream that happens to look plausible in episode 0 will expose itself when the wrist perspective changes across tasks.</p>
+</div>
 <div class="callout fun-note">
   <p>A swapped wrist camera is the dataset equivalent of labeling your left shoe "right": the shape is correct, the metadata says nothing is wrong, and every downstream shoe-putting-on policy learns something subtly backwards.</p>
 </div>

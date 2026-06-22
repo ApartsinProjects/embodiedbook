@@ -39,6 +39,9 @@
 <figcaption>Figure 31.3A: Language grounding pipeline: a referring expression (the red cup on the left) is processed by an open-vocabulary detector, matched to a segmentation mask in the current frame, and handed to the motion planner as a target region.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with object detection and segmentation from section 27.2, because the candidate set that a referring expression filters is produced by those detectors. The failure modes analyzed in section 27.7 (occlusion, symmetry, stale state) carry over directly: every detection weakness becomes a grounding ambiguity. The ideas developed here are extended in section 31.4, which moves from single-object referring expressions to object- and region-centric grounding over structured scene graphs.</p>
+</div>
 <p>For Grounding language in perception; referring expressions, read the figure as an interface check: identify the language input, grounding evidence, action representation, safety gate, and logged result before accepting the agent behavior described below.</p>
 <figure class="diagram" id="fig-31-3">
 <svg aria-labelledby="fig-31-3-title fig-31-3-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
@@ -80,10 +83,28 @@
 </div>
 <h2>Theory</h2>
 <p>Given objects $z_1, \ldots, z_n$ extracted from perception and a referring expression $x$, the grounding problem is $$\hat z = \arg\max_i \; p(z_i \mid x, o_t) \propto p(x \mid z_i, o_t)\, p(z_i \mid o_t).$$ The perceptual prior says what objects are present; the language likelihood says which of those objects best matches the expression.</p>
-<p>Relational language makes the problem harder because the referent depends on other objects. In 'the mug beside the kettle,' the target score depends on both the mug's own features and the probability that a nearby kettle exists and is correctly localized. Grounding therefore inherits every weakness of the detector and every ambiguity of the language model.</p>
+<p>Relational language makes the problem harder because the referent depends on other objects. In 'the mug beside the kettle,' the target score depends on both the mug's own features and the probability that a nearby kettle exists and is correctly localized. Grounding therefore inherits <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.7.html">every weakness of the detector</a> and every ambiguity of the language model.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A robust system scores three kinds of evidence: unary attributes such as color or category, binary relations such as left-of or inside, and dialogue context such as the last mentioned object. The winner is the object whose combined evidence stays strongest after these factors are multiplied or summed.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Referring Expression Grounding with Relational Disambiguation</h4>
+<p><strong>Input:</strong> referring expression $x$, candidate object set $\{z_1, \ldots, z_n\}$ from perception, observation $o_t$, relation anchors $A \subseteq \{z_1, \ldots, z_n\}$, clarification threshold $\tau$</p>
+<p><strong>Output:</strong> selected referent $\hat{z}$ or clarification request $\texttt{clarify}$</p>
+<ol>
+<li>Run an open-vocabulary detector to populate the candidate set $\{z_1, \ldots, z_n\}$ from the current frame $o_t$; record per-candidate confidence $p(z_i \mid o_t)$.</li>
+<li>Parse $x$ to extract unary predicates $U$ (color, category, size) and binary relational predicates $R$ (left-of, near, under) with their anchor arguments.</li>
+<li>For each candidate $z_i$, compute the unary score $s_u(z_i) = \sum_{u \in U} w_u \cdot \mathbf{1}[z_i \text{ satisfies } u]$.</li>
+<li>For each anchor $a \in A$, check anchor detection confidence $p(a \mid o_t)$; if $p(a \mid o_t) < \alpha$, set the relation score contribution for that anchor to zero and flag anchor failure.</li>
+<li>For each candidate $z_i$, compute the relational score $s_r(z_i) = \sum_{(r, a) \in R} w_r \cdot p(a \mid o_t) \cdot \mathbf{1}[z_i \text{ satisfies } r \text{ w.r.t. } a]$.</li>
+<li>Combine scores: $s(z_i) = p(z_i \mid o_t) \cdot \bigl(s_u(z_i) + s_r(z_i)\bigr)$.</li>
+<li>Select the top referent $\hat{z} = \arg\max_i \, s(z_i)$ and identify the runner-up $\tilde{z}$ with score $s(\tilde{z})$.</li>
+<li>Compute the confidence margin $\delta = s(\hat{z}) - s(\tilde{z})$.</li>
+<li>If $\delta < \tau$ or any anchor failure was flagged in step 4, return $\texttt{clarify}$ and log the candidate set, scores, and failure reason.</li>
+<li>Otherwise return $\hat{z}$; record the grounding artifact: expression $x$, frame timestamp, candidate scores, winner, margin $\delta$, and all anchor confidences.</li>
+<li>After any action that changes scene layout or viewpoint, repeat from step 1 to re-ground $\hat{z}$ against the updated observation $o_{t+1}$.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 scores three candidate objects against color, category, and spatial relation. It is deliberately tiny, but it exposes the same reasoning pattern used by larger grounding models and dialogue systems.</p>
@@ -111,14 +132,14 @@ obj_1</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This resolver shows that grounding depends on relations as much as on object category. `obj_1` wins because the relation to the kettle reinforces the unary mug and color evidence, while `obj_2` loses despite matching the category.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>In practice, Grounding DINO, OWL-ViT, SAM 2, and open-vocabulary VLMs provide the candidate boxes or masks in a few lines. Those tools replace manual proposal generation and feature extraction, but the system still needs explicit relation reasoning and a downstream verifier.</p>
+<p>In practice, <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.2.html">Grounding DINO, OWL-ViT, SAM 2, and open-vocabulary VLMs</a> provide the candidate boxes or masks in a few lines. Those tools replace manual proposal generation and feature extraction, but the system still needs explicit relation reasoning and a downstream verifier.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Detect or segment a candidate set before asking the language model to choose among them.</li>
 <li>Score attributes and relations separately so you can diagnose which signal failed.</li>
 <li>Keep the candidate set visible to the planner instead of passing only the winning object id.</li>
-<li>When the top two candidates are close, trigger a clarification question or an active view change.</li>
+<li>When the top two candidates are close, trigger a <a href="../../part-7-language-vision-and-action/module-31-language-guided-embodied-agents/section-31.5.html">clarification question</a> or an <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.6.html">active view change</a>.</li>
 <li>Re-ground after any action that changes visibility, object pose, or scene layout.</li>
 </ol>
 <div class="callout warning">
@@ -128,6 +149,9 @@ obj_1</div>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
 <p>Relational grounding breaks silently when one anchor object is misdetected or occluded. Consider the command "pick up the red mug to the left of the kettle" in a cluttered kitchen: if the detector returns no kettle (score 0.0 for that anchor), the relation term contributes nothing and the system falls back to the highest unary score, which may select a red bowl rather than the mug. The robot proceeds with high confidence, grabs the wrong object, and the failure is only discovered when the downstream action verifier checks the grasp. Logging the anchor detection confidence separately from the referent confidence is the only way to diagnose this class of error after the fact.</p>
+</div>
+<div class="callout tip">
+<p>When using Grounding DINO as the anchor detector, pass a confidence threshold explicitly via the <code>box_threshold</code> and <code>text_threshold</code> arguments rather than relying on the default 0.3, which is tuned for retrieval recall and is far too permissive for relation grounding. Set <code>box_threshold=0.5</code> as a starting floor and log the anchor score as a separate field in your grounding record. Any anchor score below that threshold should zero out the relation term and immediately route the command to clarification rather than letting a noisy detection silently degrade the referent selection. This single logged field catches the kettle-not-found failure class at diagnosis time without any additional model changes.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -147,8 +171,8 @@ obj_1</div>
 </div>
 
 
-<p>Referring expressions are a clean example of embodied partial observability. The agent may know the words but not the full scene, or it may see the scene but lack one relational anchor. Good systems therefore maintain uncertainty over the referent rather than forcing a premature point estimate.</p>
-<p>This is also why closed-loop evaluation matters. A target selection model can have strong top-1 accuracy and still be a poor embodied component if it never signals uncertainty and therefore never triggers clarification or camera motion. The value of grounding lies in the final action outcome, not only in the static matching score.</p>
+<p>Referring expressions are a clean example of <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">embodied partial observability</a>. The agent may know the words but not the full scene, or it may see the scene but lack one relational anchor. Good systems therefore maintain uncertainty over the referent rather than forcing a premature point estimate.</p>
+<p>This is also why <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.5.html">closed-loop evaluation</a> matters. A target selection model can have strong top-1 accuracy and still be a poor embodied component if it never signals uncertainty and therefore never triggers clarification or camera motion. The value of grounding lies in the final action outcome, not only in the static matching score.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Tool Choices For Referring Expression Grounding</div>
 <table>

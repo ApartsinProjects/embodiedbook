@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 20.3A</strong>: Domain randomization widens the training world, system identification centers it on the real robot, and adaptation handles what still changes during deployment.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the reality-gap taxonomy introduced in section 20.1 and the transfer-failure taxonomy from section 20.2; those two sections define the vocabulary (dynamics parameters, privileged observations, contact model) used throughout. The two-phase privileged-to-adaptation training described here is extended in section 20.4, which shows how a policy trained with domain randomization and RMA can be fine-tuned safely on hardware without restarting from scratch. The same online-adaptation idea recurs in Part VI alongside meta-learning and continual learning, where the adaptation module is replaced by a gradient-based fast-update step.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Domain randomization, system identification, residual randomization, and rapid motor adaptation</strong> are complementary answers to the same problem: the simulator parameters are wrong, but wrong in ways we can structure. Randomization trains robustness, system identification estimates the real parameters, residual randomization samples uncertainty around that estimate, and adaptation infers unobserved dynamics online.</p>
@@ -57,6 +61,27 @@
 <p>Rapid motor adaptation adds an online inference loop. A base policy receives observations and an adaptation vector $z_t$ inferred from recent state-action history. If the floor becomes slippery or the payload changes, $z_t$ should move before the robot falls, giving the same base policy a different dynamics context.
 
 Consider a specific case: in Kumar et al. (2021), a quadruped is trained in two phases. Phase 1 trains a base policy that receives the true dynamics parameters as privileged input (mass, friction, payload) alongside proprioceptive observations; this policy learns to walk across terrain with friction coefficients ranging from 0.35 to 1.25 and payloads from 0 to 12 kg. Phase 2 trains a small adaptation encoder that takes only the last 50 proprioceptive state-action pairs (about 0.5 seconds of history at 100 Hz) and predicts the $z_t$ vector that the base policy would have received from privileged input. At deployment, the privileged channel is removed and only the encoder runs. The reported result is that the adaptation policy matches the privileged-input policy within 5% on flat ground and transfers to outdoor grass and gravel without retraining.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Rapid Motor Adaptation (RMA) Two-Phase Training</h4>
+<p><strong>Input:</strong> Simulator with dynamics parameters $\theta \sim p_{\text{train}}(\theta)$; proprioceptive observation $o_t$; privileged dynamics vector $e_t$ (mass, friction, payload, delay); history window $H$ of state-action pairs $\{(o_{t-H}, a_{t-H}), \ldots, (o_{t-1}, a_{t-1})\}$</p>
+<p><strong>Output:</strong> Base policy $\pi_\phi(a_t \mid o_t, z_t)$ and adaptation encoder $\mu_\psi(z_t \mid o_{t-H:t-1}, a_{t-H:t-1})$ ready for hardware deployment without privileged input</p>
+<ol>
+<li><strong>Build parameter manifest.</strong> List every dynamics parameter $\theta_i$ (mass, inertia, friction $\mu$, damping $b$, motor scale $\kappa$, actuator delay $\delta$, terrain height $h$). Assign each a training range $[\theta_i^{\min}, \theta_i^{\max}]$ backed by hardware measurement or domain knowledge.</li>
+<li><strong>Phase 1: Train base policy with privileged input.</strong> Sample $\theta \sim p_{\text{train}}(\theta)$ each episode. Concatenate the true dynamics vector $e_t = f(\theta)$ with $o_t$ and optimize $\pi_\phi$ with RL loss $\mathcal{L}_{\text{RL}}(\phi) = -\mathbb{E}\bigl[\sum_t \gamma^t r_t\bigr]$ using any on-policy algorithm (PPO). The policy learns $\pi_\phi(a_t \mid o_t, e_t)$ across the full randomization range.</li>
+<li><strong>Freeze base policy.</strong> After convergence, fix $\phi$. The base policy $\pi_\phi$ is not updated in Phase 2.</li>
+<li><strong>Phase 2: Train adaptation encoder.</strong> Roll out the frozen $\pi_\phi$ in simulation. For each timestep $t$, collect history $\mathcal{H}_t = (o_{t-H:t-1}, a_{t-H:t-1})$ and the privileged vector $e_t$ used by $\pi_\phi$. Minimize the imitation loss $\mathcal{L}_{\text{adapt}}(\psi) = \mathbb{E}_t\bigl[\|{\mu_\psi(\mathcal{H}_t) - e_t}\|^2\bigr]$ so the encoder learns to predict $z_t \approx e_t$ from observable history alone.</li>
+<li><strong>Set history window in seconds, not steps.</strong> Choose $H$ to cover one full gait cycle or interaction period (e.g., $H = 50$ steps at 100 Hz covers 0.5 s). Recompute $H = T_{\text{window}} \times f_{\text{ctrl}}$ whenever control frequency changes.</li>
+<li><strong>Run system identification on hardware.</strong> Collect actuator command and state traces. Fit identified estimates $\hat{\theta}_i$ for measurable parameters (motor scale, delay). Set residual randomization $\theta_i \sim \mathcal{U}(\hat{\theta}_i - \sigma_i, \hat{\theta}_i + \sigma_i)$ with width $\sigma_i$ proportional to measurement uncertainty.</li>
+<li><strong>Evaluate on held-out dynamics panels.</strong> Sample dynamics combinations not seen during training. Confirm base policy performance with adaptation encoder $\mu_\psi$ matches privileged-input performance within an acceptable gap (e.g., $\leq 5\%$ reward degradation).</li>
+<li><strong>Deploy: replace privileged channel with encoder.</strong> On hardware, compute $z_t = \mu_\psi(\mathcal{H}_t)$ at each control step. Feed $z_t$ to $\pi_\phi$ in place of $e_t$. The base policy remains unchanged; only the input source switches.</li>
+<li><strong>Monitor adaptation vector during deployment.</strong> Log $\|z_t - \bar{z}\|$ where $\bar{z}$ is the training-distribution mean. A large drift indicates out-of-distribution dynamics (damage, unsafe payload). Trigger a fault alert rather than silently adapting.</li>
+<li><strong>Update parameter manifest and retrain if needed.</strong> If deployment surfaces a parameter not covered by $p_{\text{train}}(\theta)$, add it to the manifest, justify the new range, and repeat Phase 1 from step 1 with the extended randomization.</li>
+</ol>
+</div>
+
+<div class="callout tip">
+<p>When implementing an RMA-style adaptation encoder, the history window length (50 steps in the original paper) is tied to the control frequency: at 100 Hz that window covers 0.5 seconds, which is enough to observe a gait cycle and sense friction or payload changes. If you change the control frequency, recompute the window in seconds rather than in steps, otherwise the encoder sees either a fraction of a stride or several strides and its latent vector loses the timing structure it was trained on. In Isaac Lab, set <code>num_history_steps</code> explicitly in the environment config and verify it matches your policy's <code>dt</code> before launching a training run.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism has three layers. Training variation teaches the policy not to depend on a single parameter setting. Identification pulls the distribution toward the measured robot. Adaptation handles remaining changes, such as battery voltage, surface friction, payload, damage, and temperature.</p>

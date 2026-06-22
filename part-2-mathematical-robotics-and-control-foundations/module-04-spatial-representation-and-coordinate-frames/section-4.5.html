@@ -39,6 +39,10 @@
 <figcaption>Figure 4.5A: A ROS-style transform tree for a mobile manipulator: world-to-odom, odom-to-base, base-to-arm, arm-to-gripper, and camera frames, with tf lookups resolving any pair at a given timestamp.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with rigid-body rotation and the SE(3) group introduced in section 4.4. The transform-tree abstraction built here recurs in Part VI, where section 30.1 shows how the planner queries tf2 to resolve obstacle positions into the planning frame, and in Part VII, where multi-sensor fusion pipelines depend on timestamped tf lookups to align camera and lidar evidence.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>2D and 3D transformations; transform trees (tf in ROS)</strong> turn many local frame relationships into one queryable robot-wide spatial memory. A mobile robot may have frames for map, odom, base_link, lidar, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.6.html">camera, wrist, and gripper</a>. The transform tree lets any subsystem ask, "Where is this point in the frame I control?" without every subsystem manually knowing every calibration edge.</p>
@@ -57,6 +61,24 @@ The deeper reason to choose a transform tree over ad-hoc per-subsystem calibrati
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>A tf buffer is a time-indexed graph. Static edges store calibration, such as base to camera. Dynamic edges store motion estimates, such as map to odom or odom to base. A correct lookup must choose both a path and a time; spatial correctness and temporal correctness are inseparable.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Transform-Tree Path Lookup</h4>
+<p><strong>Input:</strong> frame graph $G = (V, E)$ where each edge $(p, c) \in E$ carries transform $T_{p,c} \in SE(3)$; source frame $f_s \in V$; target frame $f_t \in V$; query timestamp $\tau$</p>
+<p><strong>Output:</strong> composed transform $T_{f_t, f_s}(\tau)$ mapping points in $f_s$ to $f_t$</p>
+<ol>
+<li>Verify that $G$ is a directed acyclic graph with at most one parent per node; abort if a cycle is detected.</li>
+<li>Trace the unique path from $f_s$ upward to the lowest common ancestor (LCA) frame $f_a$, recording the ascending edge list $[e_1, e_2, \ldots, e_k]$.</li>
+<li>Trace the path from $f_t$ upward to $f_a$, recording the descending edge list $[d_1, d_2, \ldots, d_m]$.</li>
+<li>For each ascending edge $e_i = (p_i, c_i)$, interpolate $T_{p_i, c_i}(\tau)$ from the time-buffered store; if $\tau$ lies outside the buffer window, raise a <code>TransformException</code>.</li>
+<li>For each descending edge $d_j = (p_j, c_j)$, interpolate $T_{p_j, c_j}(\tau)$ and invert: $T_{c_j, p_j}(\tau) = T_{p_j, c_j}^{-1}(\tau)$.</li>
+<li>Initialize the accumulator $T \leftarrow I_4$ (the $4 \times 4$ identity).</li>
+<li>Multiply ascending transforms left to right: $T \leftarrow T \cdot T_{p_1,c_1}(\tau) \cdots T_{p_k,c_k}(\tau)$.</li>
+<li>Multiply inverted descending transforms left to right: $T \leftarrow T \cdot T_{c_m,p_m}(\tau) \cdots T_{c_1,p_1}(\tau)$.</li>
+<li>Apply the result to a query point $\mathbf{p}_s = (x, y, z, 1)^\top$: compute $\mathbf{p}_t = T \, \mathbf{p}_s$ and read the first three components.</li>
+<li>Sanity-check direction: confirm that the rotation subblock $R \in \mathbb{R}^{3 \times 3}$ satisfies $\det(R) \approx +1$ and $\|R^\top R - I\| < \epsilon$ (use $\epsilon = 10^{-6}$).</li>
+<li>Return $T_{f_t, f_s}(\tau) = T$.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 4.5.1 implements the smallest useful transform-tree lookup. It stores three edges, composes the path from map to camera, and applies the resulting transform to one point reported by the camera.</p>
@@ -99,6 +121,9 @@ print(point_map[:3].round(3).tolist())</code></pre>
 <li><strong>Static transform republished on every tick.</strong> Publishing a calibration edge (base to camera) as a dynamic transform causes every downstream subscriber to receive a duplicate. Use <code>StaticTransformBroadcaster</code> in ROS 2 for edges that never move.</li>
 <li><strong>Cycle in the tree.</strong> tf silently fails if two nodes each claim to be the other's parent. The error appears far downstream as an impossible pose or a buffer timeout, not at the frame where the cycle was introduced.</li>
 </ul>
+</div>
+<div class="callout tip">
+<p>Pass an explicit <code>timeout</code> argument to <code>tf_buffer.lookup_transform()</code>: for example, <code>rclpy.duration.Duration(seconds=0.1)</code>. Without it, the call raises <code>tf2_ros.TransformException</code> immediately if the transform is not yet in the buffer, which is nearly guaranteed during node startup when static broadcasters have not yet published. A 100 ms timeout retries silently until the transform arrives, eliminating the spurious lookup failures that otherwise appear only in integration tests and never on a developer's warm machine.</p>
 </div>
 <div class="callout practical-example">
   <div class="callout-title">🏗️ Application Example</div>

@@ -40,6 +40,10 @@
 <figcaption>Figure 2.5A: A trajectory unrolled across an episode horizon, annotating the discount factor's exponential decay and showing how a finite vs. infinite horizon changes which future rewards drive current decisions.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the reward signal introduced in section 2.4 and the observation-action loop from section 2.3. The discounted return formula developed here is the direct foundation for the Bellman equations in section 2.6. Trajectory structure under partial observability, where the agent cannot observe the full state within an episode, is taken up in section 2.7.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Episodes, horizons, trajectories, discounting</strong> make time explicit. An episode is one trial, a horizon is the time available, a trajectory is the sequence of transitions, and discounting describes how future outcomes are weighted.</p>
@@ -82,6 +86,22 @@
 <h2>Theory</h2>
 <p>A trajectory can be written as $(o_0, a_0, r_1, o_1, a_1, r_2, ...)$ with status fields that mark termination or truncation. For a finite episode of length $T$, the discounted return from time $t$ is $$G_t = \sum_{k=0}^{T-t-1}\gamma^k r_{t+k+1}.$$ Here $r_{t+k+1}$ is the reward received $k$ steps into the future, and $\gamma \in [0,1]$ controls how fast those future rewards shrink.</p>
 <p>The formula is a weighting rule, not a moral statement about the task. With rewards $[-0.1, -0.1, 1.0]$ and $\gamma=0.95$, the return is $-0.1 + 0.95(-0.1) + 0.95^2(1.0) = 0.708$. With $\gamma=0.5$, the same delayed success is worth only $0.100$. In embodied systems, that difference can decide whether the policy learns patient recovery or prefers a risky shortcut.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Discounted Return Computation for a Finite Trajectory</h4>
+<p><strong>Input:</strong> trajectory $\tau = (r_1, r_2, \ldots, r_T)$, discount factor $\gamma \in [0,1]$, query time step $t \in \{0, \ldots, T-1\}$</p>
+<p><strong>Output:</strong> discounted return $G_t$ from step $t$ to end of episode; termination flag indicating whether the episode ended naturally or was truncated</p>
+<ol>
+<li>Collect the full reward sequence $(r_1, r_2, \ldots, r_T)$ by rolling out policy $\pi$ for $T$ steps, storing each reward $r_{t+1} = \mathcal{R}(s_t, a_t)$ alongside a status flag $d_t \in \{\text{running}, \text{terminated}, \text{truncated}\}$.</li>
+<li>Verify that the final flag $d_T$ is either <em>terminated</em> or <em>truncated</em>; if <em>truncated</em>, set a bootstrap flag so the return can be corrected in step 8.</li>
+<li>Initialize accumulator $G \leftarrow 0$ and power $p \leftarrow 0$.</li>
+<li>For $k = 0, 1, \ldots, T - t - 1$: compute weighted reward $\gamma^k \cdot r_{t+k+1}$ and add it to $G$.</li>
+<li>If the bootstrap flag is set (episode was truncated), obtain a value estimate $V_\theta(s_T)$ from the current critic with parameters $\theta$, and add $\gamma^{T-t} \cdot V_\theta(s_T)$ to $G$.</li>
+<li>Record the pair $(G, d_T)$ together with the full trajectory in one artifact, keeping observation, action, reward, status, and wall-clock timestamp for each step.</li>
+<li>To compare two policies $\pi_\alpha$ and $\pi_\beta$, rerun steps 1 to 6 under the same environment seed $\alpha$ on the same episode panel so that $G^{\pi_\alpha}$ and $G^{\pi_\beta}$ are construct-matched.</li>
+<li>Aggregate per-episode returns with separate bins for terminated and truncated endings; never average them together without noting the mixing in the artifact.</li>
+</ol>
+</div>
+
 <p>Consider a specific case: in the ANYmal quadruped locomotion work from ETH Zurich (Hwangbo et al., Science Robotics 2019), the terminal goal reward at step 1000 under $\gamma=0.99$ retains only $0.99^{1000} \approx 0.00004$ of its nominal value. The team therefore shaped dense intermediate <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.4.html">rewards</a> (forward velocity, upright posture cost) at every step so the agent received informative signal throughout the episode, rather than relying on a distant terminal reward that discounting had reduced to near zero.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
@@ -125,6 +145,9 @@ print({
 <div class="callout warning">
 <div class="callout-title">Failure Mode</div>
 <p>Mixing truncated time-limit episodes with true task failures corrupts evaluation. A robot that runs out of time is different from a robot that collides, and the logs should preserve that difference.</p>
+</div>
+<div class="callout tip">
+<p>When using Gymnasium's <code>step()</code>, a <code>truncated=True</code> flag means the episode ended due to a time limit, not because the task was solved or failed. In this case, the final state still has future value, and you must bootstrap the return with <code>gamma * V(next_obs)</code> before discarding it. Skipping this bootstrap step causes value estimates to be systematically low for long-horizon tasks, which biases the policy toward short-sighted behavior. Stable-Baselines3 handles this automatically via its <code>TimeLimit</code> wrapper and <code>handle_timeout_termination=True</code> in the replay buffer; CleanRL's PPO implementation applies the same correction with the line <code>next_value * (1 - next_done)</code> weighted by the <code>truncated</code> mask. When rolling your own trainer, the fix is one line: treat <code>terminated</code> and <code>truncated</code> differently when computing TD targets.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

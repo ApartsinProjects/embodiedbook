@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 20.2A</strong>: Transfer is selective. High-level task structure may travel well, while sensing, timing, contact, and safety margins need fresh evidence on the robot.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the reality gap and its sources, covered in section 20.1. The transfer ledger introduced here is put to work in section 20.3, which shows how domain randomization and system identification determine which components can be reused and which must be adapted. The same reuse-versus-recalibrate distinction recurs in Part V alongside online adaptation and continual learning strategies.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>What transfers and what does not</strong> is the central triage question in sim-to-real RL. Some learned structure is portable: task decomposition, contact-seeking strategies, recovery reflexes, and rough state-feedback patterns. Other parts are local to the simulator: texture cues, friction thresholds, actuator timing, reward shortcuts, and termination artifacts.</p>
@@ -59,6 +63,24 @@
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a transfer ledger. Put each quantity into one of four buckets: reuse, recalibrate, constrain, or discard. Reuse task-level structure, recalibrate dynamics and sensors, constrain unsafe actions, and discard simulator-only rewards or privileged state channels.</p>
+</div>
+
+<div class="callout algorithm">
+<h4>Algorithm: Transfer Ledger Triage for Sim-to-Real RL Policies</h4>
+<p><strong>Input:</strong> trained policy $\pi_\theta$ with parameters $\theta$, learned representation $f$, reward terms $\{r_k\}$, normalization statistics $(\mu, \sigma)$, observation space $\mathcal{O}_{\text{sim}}$, action space $\mathcal{A}$</p>
+<p><strong>Output:</strong> transfer ledger $L = \{(c_i, d_i, g_i)\}$ mapping each component $c_i$ to decision $d_i \in \{\text{reuse}, \text{recalibrate}, \text{constrain}, \text{discard}\}$ and hardware gate $g_i$</p>
+<ol>
+<li>Enumerate all learned components: encoder $f$, policy head $\pi_\theta$, value head $V_\theta$, reward terms $\{r_k\}$, normalization statistics $(\mu, \sigma)$, termination logic, and controller interface scaling.</li>
+<li>For each component $c_i$, ask whether it encodes a task invariant (contact phase, geometry, goal relation). If yes, mark as candidate for <em>reuse</em>; assign a hardware contact or goal-reaching gate $g_i$ to confirm.</li>
+<li>For each component encoding a simulator magnitude or timing assumption (torque budget $\tau_{\max}$, step frequency $\Delta t$, friction coefficient $\mu_f$), mark as <em>recalibrate</em>. Define a measurement protocol: collect $n \geq 10$ hardware rollouts and update the parameter estimate $\hat{\theta}_{\text{real}} \leftarrow \arg\min_\theta \mathcal{L}(\theta; \mathcal{D}_{\text{real}})$.</li>
+<li>For each component governing action magnitude or exploration range (maximum joint torque $\tau$, velocity $\dot{q}_{\max}$, end-effector force $F_{\max}$), mark as <em>constrain</em>. Set a hard clip $a_t \leftarrow \text{clip}(a_t, -a_{\max}, a_{\max})$ before sending to the hardware controller.</li>
+<li>For each reward term $r_k$ or observation channel $o_j$ that requires privileged simulator state not available on hardware (ground-truth hinge angle, contact normal force from the physics engine), mark as <em>discard</em> and remove from the deployed observation contract $\mathcal{O}_{\text{real}} \subset \mathcal{O}_{\text{sim}}$.</li>
+<li>Audit normalization statistics: for each channel $j$, compare saved standard deviation $\sigma_j$ against the hardware physical range $[\underline{o}_j, \overline{o}_j]$. If $\sigma_j > (\overline{o}_j - \underline{o}_j)$, flag channel $j$ as a distribution mismatch; move its normalization entry to <em>recalibrate</em>.</li>
+<li>Assign a hardware gate $g_i$ to every <em>reuse</em> and <em>recalibrate</em> entry: the gate specifies the minimum rollout count, success criterion, and safety stop condition needed to justify the decision.</li>
+<li>Record the complete ledger $L$ and all gate results in a single versioned artifact alongside the policy checkpoint $\theta$.</li>
+<li>At deployment, load only $\mathcal{O}_{\text{real}}$, apply constraints from step 4, and replace any discarded reward term with a hardware-measurable proxy $\tilde{r}_k$ defined over observable events.</li>
+<li>After each hardware trial, update the ledger: if a <em>reuse</em> gate fails, escalate that component to <em>recalibrate</em> or <em>discard</em> and log the failure evidence.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
 <p>Code Fragment 20.2.1 builds a small transfer ledger for a drawer-opening policy. The output distinguishes reusable task structure from components that need hardware calibration or safety constraints.</p>
@@ -98,6 +120,9 @@ privileged_hinge_angle_reward: discard</div>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall</div>
 <p>Normalization statistics are a silent transfer failure. Consider a locomotion policy trained in Isaac Lab where joint velocities are normalized to a mean of 0 and a standard deviation of 1.2 rad/s under simulation conditions. On hardware the same joints saturate at 0.8 rad/s, shifting the effective input distribution. The policy receives inputs it never saw during training and produces erratic torque commands, not because the task structure is wrong, but because a single wrapper parameter was not recalibrated. Always treat normalization statistics, action scaling factors, and observation clipping bounds as recalibrate entries in the transfer ledger, never as reuse entries.</p>
+</div>
+<div class="callout tip">
+<p>When using Stable-Baselines3, call <code>VecNormalize.load(stats_path, env)</code> and then inspect <code>venv.obs_rms.mean</code> and <code>venv.obs_rms.var</code> before the first hardware trial. Print those arrays alongside the corresponding hardware sensor ranges: any channel where the saved standard deviation exceeds the hardware physical maximum is a guaranteed input-distribution mismatch that will produce erratic commands. Save this comparison as a plain CSV in the same directory as the policy checkpoint so every reviewer sees the discrepancy without re-running training.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 15.3A</strong>: The actor asks what to do next, while the critic asks whether the last action beat the state’s expectations.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on section 15.2, which derives the policy gradient theorem and the REINFORCE baseline; familiarity with the log-probability update and the role of a baseline is assumed here. The actor-critic framing introduced in this section is extended in section 15.4, where the clipped surrogate objective of PPO controls how far the actor update can move from the rollout policy. The privileged-critic pattern discussed in the research frontier callout below reappears in section 20.3, where critics trained on full simulator state are used alongside domain randomization and adaptation modules for sim-to-real transfer.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Actor-critic</strong> methods pair a policy that acts with a value function that judges whether the action was better or worse than expected. <strong>Generalized Advantage Estimation</strong> (GAE) turns noisy reward sequences into smoother advantage targets for PPO-style updates.</p>
@@ -53,6 +57,23 @@
 <p>$$\delta_t=r_t+\gamma V(s_{t+1})-V(s_t),$$</p>
 <p>then combines residuals with GAE:</p>
 <p>$$\hat A_t^{\mathrm{GAE}(\gamma,\lambda)}=\sum_{l=0}^{\infty}(\gamma\lambda)^l\delta_{t+l}.$$</p>
+<div class="callout algorithm">
+<h4>Algorithm: Generalized Advantage Estimation (GAE)</h4>
+<p><strong>Input:</strong> Rollout of $T$ steps: rewards $\{r_t\}$, value estimates $\{V_\phi(s_t)\}$, termination flags $\{\text{done}_t\}$; discount $\gamma$; trace parameter $\lambda$; critic parameters $\phi$</p>
+<p><strong>Output:</strong> Advantage estimates $\{\hat{A}_t\}$ and return targets $\{G_t\}$ for actor and critic updates</p>
+<ol>
+<li>Collect rollout: run policy $\pi_\theta$ for $T$ steps, recording $(s_t, a_t, r_t, s_{t+1}, \text{done}_t)$ at each step.</li>
+<li>Evaluate critic: compute $V_\phi(s_t)$ for all $t \in \{0, \ldots, T\}$; set $V_\phi(s_{T+1}) = 0$ if the episode truly terminated, otherwise bootstrap with $V_\phi(s_{T+1})$.</li>
+<li>Compute TD residuals: for each $t$, set $\delta_t = r_t + \gamma \, V_\phi(s_{t+1}) \cdot (1 - \text{done}_t) - V_\phi(s_t)$.</li>
+<li>Initialize accumulator: set $\hat{A}_{T} = 0$.</li>
+<li>Backward pass: for $t = T-1$ down to $0$, compute $\hat{A}_t = \delta_t + (\gamma \lambda)(1 - \text{done}_t)\,\hat{A}_{t+1}$.</li>
+<li>Compute return targets: set $G_t = \hat{A}_t + V_\phi(s_t)$ for critic supervision.</li>
+<li>Normalize advantages: compute batch mean $\mu_A$ and standard deviation $\sigma_A$; replace $\hat{A}_t \leftarrow (\hat{A}_t - \mu_A) / (\sigma_A + \varepsilon)$.</li>
+<li>Actor update: maximize $\mathbb{E}_t\bigl[\nabla_\theta \log \pi_\theta(a_t \mid s_t)\,\hat{A}_t\bigr]$ (or use the PPO clipped surrogate from section 15.4).</li>
+<li>Critic update: minimize $\mathbb{E}_t\bigl[(V_\phi(s_t) - G_t)^2\bigr]$ using gradient descent on $\phi$.</li>
+<li>Log raw advantages, value predictions, $G_t$, and $\delta_t$ per episode so critic failure does not silently corrupt the actor signal.</li>
+</ol>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Advantage Means Better Than Expected</div>
 <p>The critic does not tell the actor whether the state is good in absolute terms. It tells the actor whether the sampled action led to a result above or below what the state already promised.</p>
@@ -99,6 +120,9 @@ print("advantages:", advantages)</code></pre>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>Time-limit truncation is often mistaken for termination. If a robot episode ends because the rollout buffer filled, the critic should usually bootstrap from the next value; if it ended because the robot fell, it should not.</p>
+</div>
+<div class="callout tip">
+<p>In CleanRL and RSL-RL, the <code>dones</code> flag conflates true termination with time-limit truncation, so GAE silently stops bootstrapping at every timeout boundary. Pass a separate <code>truncated</code> mask (set to 1 only when the episode ended by time limit, not by failure) and multiply the bootstrap term by <code>(1 - terminated) * (1 - truncated) + truncated</code>. Without this fix, long-horizon locomotion tasks consistently underestimate the value of states near the rollout boundary, biasing advantages negative and suppressing exploration in the second half of every episode.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

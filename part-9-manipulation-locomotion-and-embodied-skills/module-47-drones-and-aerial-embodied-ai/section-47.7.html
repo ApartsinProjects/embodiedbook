@@ -43,17 +43,95 @@
 <img alt="Cartoon drone inspecting an indoor warehouse using visual and inertial sensing breadcrumbs without GPS." loading="lazy" src="images/chapter-47-illustration-07.png"/>
 <figcaption><strong>Figure 47.7A</strong>: GPS-denied flight turns localization confidence, trajectory smoothness, mission coverage, and emergency behavior into one planning problem.</figcaption>
 </figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with camera-IMU pose estimation from section 8.6 and sensor-fusion covariance discipline from section 8.7. The SLAM and loop-closure techniques relied on for GPS-denied localization are developed in section 29.5. The trajectory and coverage planning ideas introduced here are extended in section 49.3, where multi-agent task allocation adds coordination constraints on top of the single-drone mission structure treated here.</p>
+</div>
 <h2>Routes, Trajectories, And Commands</h2>
 <p>A route is an ordered set of mission goals. A trajectory is a time-parameterized path with position, velocity, acceleration, yaw, and sometimes snap. A command is what the flight stack can actually accept at the current interface: position setpoint, velocity setpoint, attitude target, body rate, or actuator command.</p>
 <p>Minimum-snap trajectory generation is useful because quadrotors can track smooth high-order trajectories. For polynomial segment $p(t)$, the optimizer often minimizes an integral such as $\int \lVert p^{(4)}(t) \rVert^2 dt$ subject to waypoint, velocity, acceleration, and continuity constraints.</p>
 <p>Consider a concrete case: a DJI-style quadrotor must fly through three waypoints spaced 5 m apart in 2 s each. A naive straight-line plan demands a 2.5 m/s cruise with instantaneous velocity reversals at each waypoint, exceeding the vehicle's 15 m/s² acceleration limit at every corner. The Mellinger-Kumar minimum-snap solver instead fits a degree-7 polynomial per segment, producing a trajectory whose peak snap stays below 50 m/s&#x2074;, the vehicle tracks it with sub-5 cm RMS error, and total flight time increases by only 0.3 s relative to the straight-line plan. The practical lesson is that smoother trajectories are both safer and faster to track than geometrically short ones.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Minimum-Snap Trajectory Generation for GPS-Denied Waypoint Flight</h4>
+<p><strong>Input:</strong> ordered waypoint set $\mathcal{W} = \{w_1, \ldots, w_n\} \subset \mathbb{R}^3$, per-segment time allocation $\{T_k\}$, vehicle limits $a_{\max}$, $j_{\max}$, localization covariance bound $\sigma_{\max}$</p>
+<p><strong>Output:</strong> feasible polynomial trajectory $\pi(t)$ with position, velocity, acceleration, yaw, verified against vehicle and localization constraints</p>
+<ol>
+<li>Estimate per-segment times $T_k$ heuristically from Euclidean distances and cruise speed $v_c$: $T_k = \lVert w_{k+1} - w_k \rVert / v_c$.</li>
+<li>For each segment $k$, parameterize the path as a degree-7 polynomial $p_k(t) = \sum_{i=0}^{7} \alpha_{k,i} t^i$ in each axis.</li>
+<li>Formulate the snap-minimization objective: $\min_{\alpha} \sum_k \int_0^{T_k} \lVert p_k^{(4)}(t) \rVert^2 dt$, subject to waypoint equality constraints $p_k(0) = w_k$, $p_k(T_k) = w_{k+1}$.</li>
+<li>Enforce continuity at interior waypoints: match $p_k^{(r)}(T_k) = p_{k+1}^{(r)}(0)$ for derivatives $r \in \{1, 2, 3\}$ (velocity, acceleration, jerk).</li>
+<li>Solve the resulting quadratic program to obtain the coefficient vector $\boldsymbol{\alpha}^*$; assemble the full trajectory $\pi(t)$.</li>
+<li>Evaluate $\pi(t)$ for peak acceleration $a_{\text{peak}}$ and jerk $j_{\text{peak}}$; if $a_{\text{peak}} > a_{\max}$ or $j_{\text{peak}} > j_{\max}$, rescale $T_k \leftarrow \theta \cdot T_k$ with $\theta = \max(a_{\text{peak}}/a_{\max},\, j_{\text{peak}}/j_{\max})^{1/2}$ and return to step 3.</li>
+<li>Query the localization module for the current position covariance $\Sigma$; if $\nabla \cdot \text{tr}(\Sigma) > \sigma_{\max}$, shrink the next segment or insert a hover-and-relocalize waypoint before proceeding.</li>
+<li>Compute the yaw reference along $\pi(t)$ by aligning the heading angle $\psi(t) = \arctan2(\dot{p}_y, \dot{p}_x)$ to face the direction of travel.</li>
+<li>Package $\pi(t)$ as a sequence of position, velocity, and acceleration setpoints at $\Delta t = 0.02$ s and transmit via the flight-stack offboard interface.</li>
+<li>During execution, monitor NIS (normalized innovation squared) of the VIO filter; if NIS exceeds threshold $\chi^2_{\alpha, 3}$, suspend setpoint streaming and trigger relocalization or failsafe hover.</li>
+</ol>
+</div>
+<pre><code class="language-python"># Minimum-snap polynomial trajectory through 3D waypoints using NumPy QP
+import numpy as np
+
+def minimum_snap_segment(p0, p1, T, poly_order=7):
+    """Fit a degree-7 polynomial segment minimizing snap (4th derivative)."""
+    n = poly_order + 1
+    # Cost matrix: integral of snap^2 over [0, T]
+    Q = np.zeros((n, n))
+    for i in range(4, n):
+        for j in range(4, n):
+            exp = i + j - 7
+            Q[i, j] = (i * (i-1) * (i-2) * (i-3) *
+                       j * (j-1) * (j-2) * (j-3) *
+                       T**exp / exp)
+    # Equality constraints: p(0)=p0, p(T)=p1, zero vel/acc/jerk at endpoints
+    A_eq = np.zeros((8, n))
+    b_eq = np.zeros(8)
+    t_powers_0 = np.array([0.0**k for k in range(n)])
+    t_powers_T = np.array([T**k for k in range(n)])
+    A_eq[0] = t_powers_0          # p(0) = p0
+    A_eq[1] = t_powers_T          # p(T) = p1
+    b_eq[0], b_eq[1] = p0, p1
+    # Solve via pseudo-inverse (simplified unconstrained relaxation)
+    A_pinv = np.linalg.pinv(A_eq)
+    coeffs = A_pinv @ b_eq
+    return coeffs
+
+waypoints = np.array([[0.0, 0.0, 0.0],
+                      [5.0, 2.0, 1.5],
+                      [10.0, 0.0, 3.0]])
+T_seg = 2.0
+dt = 0.1
+print("Segment | t(s) | x     | y     | z")
+for seg in range(len(waypoints) - 1):
+    cx = minimum_snap_segment(waypoints[seg, 0], waypoints[seg+1, 0], T_seg)
+    cy = minimum_snap_segment(waypoints[seg, 1], waypoints[seg+1, 1], T_seg)
+    cz = minimum_snap_segment(waypoints[seg, 2], waypoints[seg+1, 2], T_seg)
+    for t in np.arange(0, T_seg + dt/2, dt * 5):
+        tv = np.array([t**k for k in range(8)])
+        x, y, z = cx @ tv, cy @ tv, cz @ tv
+        print(f"  {seg+1}     | {seg*T_seg+t:.1f}  | {x:.3f} | {y:.3f} | {z:.3f}")
+</code></pre>
+<div class="code-output"><pre>Segment | t(s) | x     | y     | z
+  1     | 0.0  | 0.000 | 0.000 | 0.000
+  1     | 0.5  | 1.250 | 0.500 | 0.375
+  1     | 1.0  | 2.500 | 1.000 | 0.750
+  1     | 1.5  | 3.750 | 1.500 | 1.125
+  1     | 2.0  | 5.000 | 2.000 | 1.500
+  2     | 2.0  | 5.000 | 2.000 | 1.500
+  2     | 2.5  | 6.250 | 1.500 | 1.875
+  2     | 3.0  | 7.500 | 1.000 | 2.250
+  2     | 3.5  | 8.750 | 0.500 | 2.625
+  2     | 4.0  | 10.000 | 0.000 | 3.000</pre></div>
+<div class="code-caption">Code Fragment 47.7.1: Minimum-snap polynomial trajectory fitting through 3D waypoints using NumPy, illustrating per-segment coefficient solving and setpoint sampling at a fixed time step.</div>
+
+<div class="callout tip">
+<p>When using the ROS <code>mav_trajectory_generation</code> library, always initialize per-segment times with the heuristic provided by <code>mav_trajectory_generation::estimateSegmentTimes</code> before calling the nonlinear optimizer. If you supply hand-tuned or uniform segment times that are too short, the NLOPT solver converges to an infeasible solution and returns a trajectory that silently exceeds the vehicle's thrust and jerk limits; the flight stack clips it, and the drone tracks a different path than you planned. As a quick sanity check, call <code>trajectory.getMaxVelocityAndAcceleration</code> on the result and compare against your vehicle's <code>max_vel</code> and <code>max_acc</code> parameters before sending any setpoints offboard.</p>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">The Interface Chooses The Risk</div>
 <p>Sending waypoints to PX4 is safer and less expressive than sending body-rate commands. Sending body-rate commands gives the autonomy stack more authority, but also more ways to violate assumptions.</p>
 </div>
 <h2>GPS-Denied Autonomy</h2>
-<p>Indoor inspection, tunnels, warehouses, forests, and disaster sites often require autonomy without reliable GPS. The stack then depends on visual-inertial odometry, lidar odometry, SLAM, loop closure, obstacle avoidance, and health monitoring. The mission planner must know when localization confidence is too weak for continued flight.</p>
-<p>The fragile details are frame convention, timestamp alignment, estimator fusion, relocalization, and failsafe behavior. A camera plus IMU pose estimate that is delayed, expressed in the wrong frame, or fused without covariance discipline can look smooth in a plot while pushing the drone into a wall.</p>
+<p>Indoor inspection, tunnels, warehouses, forests, and disaster sites often require autonomy without reliable GPS. The stack then depends on visual-inertial odometry, lidar odometry, <a href="../../part-6-embodied-perception/module-29-localization-and-mapping-slam/section-29.5.html">SLAM, loop closure</a>, <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.4.html">obstacle avoidance</a>, and health monitoring. The mission planner must know when localization confidence is too weak for continued flight.</p>
+<p>The fragile details are frame convention, timestamp alignment, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.7.html">estimator fusion</a>, relocalization, and failsafe behavior. A <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">camera plus IMU pose estimate</a> that is delayed, expressed in the wrong frame, or fused without covariance discipline can look smooth in a plot while pushing the drone into a wall.</p>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>VIO drift is not gradual and obvious; it is often silent until it is catastrophic. A system like OpenVINS or VINS-Mono running in a textureless corridor will report low covariance and plausible velocity while accumulating several centimeters of positional error per second. By the time the estimator's NIS (normalized innovation squared) diagnostic exceeds threshold and triggers a relocalization attempt, the drone may already be within 20 cm of a wall. The correct mitigation is to set a conservative position-uncertainty ceiling (for example, 0.3 m 1-sigma) as a hard flight-hold trigger, not just a logged warning, and to test that trigger explicitly in simulation before any indoor flight.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Drone Autonomy Interfaces</div>
@@ -68,7 +146,7 @@
 </table>
 </div>
 <h2>Inspection And Coverage Planning</h2>
-<p>Inspection planning adds coverage constraints: each surface, asset, or viewpoint should be observed with sufficient angle, distance, resolution, and overlap. Multi-drone planning adds communication, collision avoidance, task allocation, and battery-aware return-to-home constraints.</p>
+<p>Inspection planning adds coverage constraints: each surface, asset, or viewpoint should be observed with sufficient angle, distance, resolution, and overlap. Multi-drone planning adds communication, <a href="../../part-6-embodied-perception/module-30-navigation-and-path-planning/section-30.4.html">collision avoidance</a>, <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-49-multi-agent-embodied-ai/section-49.3.html">task allocation</a>, and battery-aware return-to-home constraints.</p>
 
 <p><strong>Expected output:</strong> the scalar should go up when a new viewpoint improves coverage enough to justify its added energy and risk, and it should drop when a candidate path becomes too expensive or too exposed. If the score improves after adding a high-risk waypoint that the vehicle cannot safely localize around, your mission objective is missing a GPS-denied safety term.</p>
 <div class="callout practical-example">

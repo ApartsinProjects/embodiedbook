@@ -40,6 +40,10 @@
 <figcaption>Figure 41.5A: Risks of generated experience: a drift accumulation diagram shows how small per-step generation errors compound across a long rollout, eventually producing physically impossible states that mislead the policy if used without verification.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on the synthetic data generation methods introduced in section 41.4. The support-mismatch risk quantified here recurs in section 25.2, where offline RL datasets face the same distributional gap between logged and deployment trajectories. The locomotion benchmarks used to measure rollout drift are examined in depth in section 45.3, which also discusses contact-realism audits as a practical remedy for the compounding errors described in the warning callout below.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Risks Of Generated Experience</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
@@ -51,19 +55,34 @@
 <h2>Speed: From a Thousand Steps to a Handful</h2>
 <p>Vanilla DDPM sampling runs the full reverse chain, on the order of 1000 steps, which is far too slow for control. DDIM reinterprets the trained model as a deterministic ODE and skips steps, bringing sampling down to roughly 10 to 50 steps with little quality loss. Consistency models go further, distilling the generative process so that 1 to 4 steps suffice, which is the regime that makes diffusion-style control plausible at high rates. In practice these samplers move continuous-control diffusion from offline planning into the loop, though most deployed systems still run near 10 to 20 Hz rather than the 100+ Hz that stiff contact-rich control wants.</p>
 <h2>Equivariance: Building in the Symmetry of Rigid Bodies</h2>
-<p>Rigid-body actions live in SE(3), the group of 3D rotations and translations, and a grasp that is correct under one object pose is correct under a rotated pose too. SE(3)-equivariant diffusion bakes this symmetry into the network so the generator does not have to learn it from data: rotate the scene, and the generated action rotates with it. The payoff is sharply better sample efficiency and out-of-distribution pose generalization for manipulation, because the model spends its capacity on the task rather than on relearning geometry.</p>
+<p>Rigid-body actions live in <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.4.html">SE(3), the group of 3D rotations and translations</a>, and a grasp that is correct under one object pose is correct under a rotated pose too. SE(3)-equivariant diffusion bakes this symmetry into the network so the generator does not have to learn it from data: rotate the scene, and the generated action rotates with it. The payoff is sharply better sample efficiency and out-of-distribution pose generalization for manipulation, because the model spends its capacity on the task rather than on relearning geometry.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A model earns its place only when it improves action. In Risks Of Generated Experience, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
 </div>
 <h2>Theory</h2>
-<p>A simple way to express support mismatch is to compare the planner's training distribution $p_g(\tau)$ with the real deployment distribution $p_r(\tau)$. If high-scoring generated trajectories live where $p_r(\tau)$ is small, then optimizing on them can improve offline metrics while harming deployment.</p>
+<p>A simple way to express support mismatch is to compare the planner's training distribution $p_g(\tau)$ with the real deployment distribution $p_r(\tau)$. If high-scoring generated trajectories live where $p_r(\tau)$ is small, then optimizing on them can improve <a href="../../part-5-learning-from-demonstration-and-robot-data/module-25-offline-rl-and-dataset-based-robot-learning/section-25.2.html">offline metrics</a> while harming deployment.</p>
 <p>One practical audit statistic is the weighted divergence</p>
 <p>$$
 \Delta = \mathbb{E}_{\tau \sim p_g}\left[w(\tau)\, \mathbf{1}\{p_r(\tau) &lt; \epsilon\}\right],
 $$</p>
 <p>where $w(\tau)$ is the training weight. Large $\Delta$ means the learner is spending too much attention on low-support generated experience.</p>
-<p>Concrete evidence for this problem comes from the large empirical study by Yang et al. (2025), which found that diffusion planners trained with unchecked synthetic rollouts degraded task success by 12 to 18 percentage points on locomotion benchmarks relative to planners that applied a feasibility filter before adding synthetic episodes to the training mix. DiffuserLite (Huang et al., 2024) reports a related finding: reducing plan horizon from 32 to 8 steps cut end-state position error by roughly 60% on the D4RL HalfCheetah task, a direct illustration of how horizon length amplifies support mismatch.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Synthetic Rollout Support Audit</h4>
+<p><strong>Input:</strong> generated trajectory set $\{\tau_i\}_{i=1}^{N}$ with training weights $w(\tau_i)$; real-deployment density estimator $\hat{p}_r$; support threshold $\epsilon$ (set to the 10th percentile of real-rollout support scores); policy parameters $\theta$</p>
+<p><strong>Output:</strong> reweighted training mixture $\tilde{w}(\tau_i)$; flag <em>reweight</em> indicating whether the mixture requires correction before the policy gradient update $\nabla_\theta J(\theta)$</p>
+<ol>
+<li>For each generated trajectory $\tau_i$, query $\hat{p}_r$ to obtain the real-support estimate $\hat{p}_r(\tau_i)$.</li>
+<li>Compute the low-support indicator: $\mathbf{1}_i = \mathbf{1}\{\hat{p}_r(\tau_i) &lt; \epsilon\}$ for each $\tau_i$.</li>
+<li>Accumulate the weighted low-support mass: $\Delta = \sum_{i=1}^{N} w(\tau_i)\,\mathbf{1}_i$.</li>
+<li>If $\Delta &gt; \delta_{\max}$ (recommended threshold 0.30), set <em>reweight</em> to $\texttt{True}$; otherwise set <em>reweight</em> to $\texttt{False}$.</li>
+<li>When <em>reweight</em> is $\texttt{True}$, apply a down-weighting correction: $\tilde{w}(\tau_i) \leftarrow w(\tau_i)\,(1 - \alpha\,\mathbf{1}_i)$ for step size $\alpha \in (0,1]$.</li>
+<li>Cap rollout horizon to control compounding drift: reject any $\tau_i$ with $|\tau_i| &gt; H_{\max}$, where $H_{\max}$ is determined by the per-step drift rate observed on real hardware under policy $\pi$.</li>
+<li>Log $\epsilon$, $\Delta$, <em>reweight</em>, $\alpha$, and $H_{\max}$ as a single artifact alongside $\theta$ and the training configuration before any gradient update $\nabla_\theta J(\theta)$.</li>
+<li>Proceed with policy training using $\tilde{w}(\tau_i)$; if $\Delta$ remains above $\delta_{\max}$ after reweighting, route low-support trajectories to perception pretraining only and exclude them from the control-policy loss.</li>
+</ol>
+</div>
+<p>Concrete evidence for this problem comes from the large empirical study by Yang et al. (2025), which found that diffusion planners trained with unchecked synthetic rollouts degraded task success by 12 to 18 percentage points on <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-45-locomotion-and-mobility/section-45.3.html">locomotion benchmarks</a> relative to planners that applied a feasibility filter before adding synthetic episodes to the training mix. DiffuserLite (Huang et al., 2024) reports a related finding: reducing plan horizon from 32 to 8 steps cut end-state position error by roughly 60% on the D4RL HalfCheetah task, a direct illustration of how horizon length amplifies support mismatch.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>For Risks of generated experience, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
@@ -85,6 +104,9 @@ print({
 <div class="code-output"><code>{'low_support_mass': 0.45, 'should_reweight': True}</code></div>
 <div class="code-caption"><strong>Code Fragment 41.5</strong>.1 implements diffusion_planner_probe for Risks of generated experience and prints the diagnostic quantity the controller or evaluator should inspect.</div>
 <p>The expected output should raise the reweight flag. The interpretation is simple: too much of the training objective is being spent on trajectories with weak real support, so the synthetic mix is no longer trustworthy as-is.</p>
+<div class="callout tip">
+<p>The <code>epsilon</code> threshold in the support audit is not arbitrary: set it to the 10th percentile of real-rollout support scores computed on your held-out hardware evaluation set, then freeze that value before running any synthetic augmentation experiment. Calibrating <code>epsilon</code> post-hoc to whichever value makes the flag disappear is the single most common way practitioners convince themselves their synthetic data is clean when it is not. In DiffuserLite-style pipelines, log the chosen <code>epsilon</code> alongside <code>low_support_mass</code> in the same artifact so any reviewer can reproduce the threshold decision independently.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>For Risks of generated experience, the hand-built probe exposes the planning assumption; Diffuser-style or Decision-Diffuser-style tooling should preserve the same logging and evaluation fields.</p>
@@ -99,11 +121,11 @@ print({
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Pitfall: Compounding Rollout Drift</div>
-<p>Generated experience accumulates error multiplicatively across time. In a 10-step rollout, a 3% per-step position error compounds to roughly 26% deviation by the final step; at 50 steps the trajectory is almost certainly out of any physically reachable region. Three distinct mechanisms drive this: (1) the generator samples from a learned distribution that slightly misses contact constraints, (2) each generated state feeds as input to the next denoising call, so errors are never corrected, and (3) the planner has no privileged signal that a state is physically impossible. The practical test is to compute end-state error for short versus long horizons on real hardware: if error grows super-linearly with horizon length, generated rollouts should be capped or verified by a physics check at each step before being used for policy training.</p>
+<p>Generated experience accumulates error multiplicatively across time. In a 10-step rollout, a 3% per-step position error compounds to roughly 26% deviation by the final step; at 50 steps the trajectory is almost certainly out of any physically reachable region. Three distinct mechanisms drive this: (1) the generator samples from a learned distribution that slightly misses <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.3.html">contact constraints</a>, (2) each generated state feeds as input to the next denoising call, so errors are never corrected, and (3) the planner has no privileged signal that a state is physically impossible. The practical test is to compute end-state error for short versus long horizons on real hardware: if error grows super-linearly with horizon length, generated rollouts should be capped or verified by a physics check at each step before being used for policy training.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Risks Of Generated Experience</div>
-<p>A quadruped team augments training with generated stair-climbing episodes that look realistic in video but hide unrealistic foot-ground contact timing. Offline success improves, but on hardware the policy starts over-committing its front legs during ascent. The lesson is not "never use synthetic data." It is that contact realism must be part of the audit whenever locomotion policies learn from generated experience.</p>
+<p>A quadruped team augments training with generated stair-climbing episodes that look realistic in video but hide unrealistic foot-ground contact timing. Offline success improves, but on hardware the policy starts over-committing its front legs during ascent. The lesson is not "never use synthetic data." It is that contact realism must be part of the audit whenever <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.2.html">locomotion policies learn from generated experience</a>.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>

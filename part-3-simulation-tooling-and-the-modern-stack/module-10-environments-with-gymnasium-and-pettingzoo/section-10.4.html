@@ -39,6 +39,10 @@
 <figcaption>Figure 10.4A: Vectorized environment architecture: N independent environment copies run in parallel subprocesses, their observations are stacked into a batch tensor, and the policy processes the batch in a single forward pass.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with Gymnasium observation and action spaces introduced in section 10.2. The vectorization patterns here are extended in section 17.1, which scales the same batched rollout technique to GPU-accelerated parallel simulation across thousands of sub-environments. The autoreset semantics and bootstrap-target pitfalls covered here also recur in section 14.2, where value-function targets must be computed from terminal observations rather than from the reset observations that vectorized environments return in their place.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Vectorized environments; wrappers defines the contract an embodied experiment exposes to learning code: observations, actions, rewards, termination, truncation, rendering, and diagnostic info. Gymnasium handles the single-agent version of that contract, while PettingZoo extends the same discipline to <a href="section-10.7.html">multi-agent interaction</a>.</p>
@@ -160,6 +164,24 @@ envs.close()</code></pre>
 <p>The expected output should be read row-wise across three sub-environments: a batched observation tensor of shape <code>(3, 4)</code>, three sampled actions, three rewards, and one termination and truncation flag per environment. Nothing is aggregated yet, which is exactly the right interpretation for vectorized evidence.</p>
 <div class="code-caption"><strong>Code Fragment 10.4</strong>.2 uses <code>gym.make_vec</code> to step three environments together. The observation shape <code>(3, 4)</code> shows the batch dimension, and the reward and ending arrays keep one value per sub-environment.</div>
 
+
+<div class="callout algorithm">
+<h4>Algorithm: Vectorized Rollout with a Verified Wrapper Stack</h4>
+<p><strong>Input:</strong> base environment factory $f$, wrapper list $W = [w_1, w_2, \ldots, w_k]$ in application order, number of parallel copies $N$, rollout horizon $T$, policy $\pi_\theta$</p>
+<p><strong>Output:</strong> per-sub-environment trajectory arrays $\{o_t^i, a_t^i, r_t^i, d_t^i, \tau_t^i\}$ for $i \in [N]$, $t \in [T]$; final-observation buffer $F$</p>
+<ol>
+<li>Construct the base environment $e_0 = f()$ and record its observation space $\mathcal{O}_0$ and action space $\mathcal{A}_0$.</li>
+<li>Apply wrappers in order: set $e_j = w_j(e_{j-1})$ for $j = 1, \ldots, k$. After each step record $(\mathcal{O}_j, \mathcal{A}_j)$ to confirm the contract change; abort if any wrapper leaves $\mathcal{O}_j$ or $\mathcal{A}_j$ undefined.</li>
+<li>Create the vector environment: $\text{VecEnv} = \text{SyncVectorEnv}([e_k^{(1)}, \ldots, e_k^{(N)}])$, where each copy is built from the fully wrapped factory.</li>
+<li>Reset all copies with a fixed seed $s$: obtain batch $o_0 \in \mathbb{R}^{N \times |\mathcal{O}_k|}$ and initial info dictionary $I_0$.</li>
+<li>For each step $t = 0, 1, \ldots, T-1$: sample or compute $a_t = \pi_\theta(o_t)$ and call $\text{VecEnv.step}(a_t)$ to receive $(o_{t+1}, r_t, d_t, \tau_t, I_t)$ where each array has shape $[N]$ (scalar fields) or $[N, \ldots]$ (observation fields).</li>
+<li>For each index $i$ where $d_t^i = \text{True}$: copy $I_t[\text{"final\_observation"}][i]$ into the final-observation buffer $F[i]$ before overwriting $o_{t+1}^i$ with the autoreset observation.</li>
+<li>Use $F[i]$ (not $o_{t+1}^i$) to compute any value-function bootstrap target $V(s_T^i)$ at episode boundaries, ensuring $\nabla_\theta$ flows through the correct terminal state.</li>
+<li>Accumulate per-sub-environment episode returns $G^i = \sum_t r_t^i$ and episode lengths $L^i$; never aggregate across $i$ before storing per-environment traces.</li>
+<li>Log the complete wrapper stack $[w_1, \ldots, w_k]$, $N$, $T$, and seed $s$ alongside the trajectory arrays so any downstream comparison uses construct-matched observations and rewards.</li>
+<li>Close the vector environment with $\text{VecEnv.close}()$ and verify no sub-process leaks remain before returning results.</li>
+</ol>
+</div>
 
 <p>When an experiment about vectorized environments; wrappers fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 

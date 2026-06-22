@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 12.4A</strong>: Long-horizon household scores need predicate progress, because a failed final state can still contain useful evidence.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the benchmark validity criteria introduced in section 12.1, particularly the distinction between what a score measures and what a benchmark claims to evaluate. The predicate-progress framework developed here carries forward into section 12.5, where success conditions expand to cover navigation efficiency and social safety, and into section 12.6, which shows how to read a leaderboard without being misled by splits or task-length imbalance.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Household and long-horizon: BEHAVIOR-1K / OmniGibson asks what a benchmark number actually measures. A task suite is useful only when its episodes, splits, seeds, metrics, wrappers, and failure labels match the embodied construct the paper claims to evaluate.</p>
@@ -63,6 +67,24 @@
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a staged evaluation trace: scene sampling, initial-state sampling, object-state predicates, action execution, partial-progress scoring, and final success. OmniGibson supplies rich interactive household simulation, while BEHAVIOR-1K defines human-need-inspired task suites where long horizons and object states are central to the construct.</p>
 </div>
+<div class="callout algorithm">
+<h4>Algorithm: BEHAVIOR-1K Predicate-Progress Evaluation</h4>
+<p><strong>Input:</strong> policy $\pi_\theta$, task template $\tau$ with ordered predicate sequence $P = (p_1, p_2, \ldots, p_n)$, scene split $\mathcal{S}$, initial-state seed $s_0$, action horizon $H$</p>
+<p><strong>Output:</strong> predicate progress score $\rho \in [0,1]$, final success flag $\delta \in \{0,1\}$, failure step $f^*$, replay artifact $\mathcal{R}$</p>
+<ol>
+<li>Sample scene $g \sim \mathcal{S}$ and initialize OmniGibson with seed $s_0$; freeze object instances and layout.</li>
+<li>Load task $\tau$: parse predicate definitions, goal conditions, and the evaluation horizon $H$.</li>
+<li>For each timestep $t = 1, \ldots, H$: execute action $a_t = \pi_\theta(o_t)$ where $o_t$ is the current observation; record state $x_t$ and the full trajectory $\mathcal{R} \leftarrow \mathcal{R} \cup \{(o_t, a_t, x_t)\}$.</li>
+<li>After the episode ends, evaluate each predicate $p_i$ against the final state $x_H$; record the binary vector $\mathbf{c} = (c_1, \ldots, c_n) \in \{0,1\}^n$.</li>
+<li>Compute predicate progress: $\rho = \frac{1}{n}\sum_{i=1}^{n} c_i$.</li>
+<li>Identify the first unsatisfied predicate: $f^* = \min\{i : c_i = 0\}$ (set $f^* = \varnothing$ if all predicates are satisfied).</li>
+<li>Set final success: $\delta = \mathbf{1}[\forall i,\, c_i = 1]$.</li>
+<li>Check for predicate shortcutting: inspect $\mathcal{R}$ for degenerate action sequences (drops, physics exploits) near each satisfied geometric predicate; flag suspicious episodes for manual review.</li>
+<li>Stratify $(\rho, \delta, f^*)$ by task length $n$ and scene novelty $\mathbb{1}[g \notin \mathcal{S}_{\text{train}}]$ to prevent short tasks from dominating the aggregate.</li>
+<li>Save $(\rho, \delta, f^*, \mathcal{R})$ together with scene ID, task template, object instances, and seed to the shared artifact schema; never report $\delta$ without $\rho$ and $f^*$.</li>
+</ol>
+</div>
+
 <h2>Worked Example</h2>
 <p>Code Fragment 1 turns long-horizon evaluation into predicate accounting. The key idea is that final success and partial progress should be co-computed from the same replay, not reconstructed from separate logs.</p>
 <pre><code class="language-python"># Score household progress from a single ordered predicate trace.

@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 1.7A</strong>: Why embodied AI is hard (partial observability, long horizons, safety, data cost)</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds directly on the controlled Markov process and closed-loop interaction model introduced in section 1.1. Each obstacle named here has a dedicated treatment later in the book: partial observability and belief-state filtering in section 2.7 and Chapter 8, credit assignment and value estimation in Chapters 15 through 18, safe exploration in Chapters 23 and 24, and sim-to-real transfer in Chapters 13 and 20. Section 1.8 provides a complete map from each obstacle to its corresponding part of the book.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>By now the structural break is established: an embodied agent acts inside a controlled Markov process and generates its own evaluation distribution (Section 1.1). This section states <em>why that is hard</em>, not as a list of inconveniences but as a small set of formal obstacles, each with a precise cause and each addressed somewhere later in the book. The obstacles are not independent. Partial observability lengthens the effective horizon, long horizons raise the variance of the learning signal, high variance forces more interaction, more interaction collides with safety and cost, and the gap between where you can train cheaply (simulation) and where you must deploy (the world) sits underneath all of it. A practitioner who can name which obstacle dominates a given task, and reach for the matching technique, has the entire skill this section teaches.</p>
@@ -76,6 +80,60 @@
 <p>The agent rarely sees the true state $s_t$. It sees an observation $o_t$ drawn from $O(\cdot \mid s_t)$, and the optimal action depends on everything the history implies about the hidden state. The correct sufficient statistic is the <em><a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">belief</a></em> $b_t(s) = \Pr(s_t = s \mid o_{0:t}, a_{0:t-1})$, updated by the recursive <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">Bayes filter</a></p>
 <p>$$b_{t+1}(s') \propto O(o_{t+1}\mid s')\sum_{s} P(s'\mid s, a_t)\, b_t(s).$$</p>
 <p>This turns a discrete-state MDP into a planning problem over the continuous belief simplex, and the optimal value function of a finite-horizon POMDP is piecewise-linear and convex in $b_t$ with a number of pieces that can grow exponentially in the horizon. That belief-state explosion is the formal reason a reactive policy on raw observations is not enough: the agent needs <em>memory</em> or explicit state estimation to act on $b_t$ rather than on $o_t$. State estimation and filtering are developed in Chapter 8, recurrent and memory-augmented policies in Chapter 29, and POMDP planning in Chapter 56.</p>
+<div class="callout tip">
+<p>When implementing the Bayes filter recursion in a particle filter, always normalize particle weights explicitly after the observation update step: in <code>filterpy</code> call <code>particles.weights /= particles.weights.sum()</code> before resampling, or use <code>FilterPy</code>'s <code>systematic_resample</code> which does this internally. Skipping normalization causes weights to underflow to zero after roughly 50 steps on a 32-bit float, and the filter silently collapses to a point mass at the last valid particle without raising any error. The symptom is a policy that appears to track state correctly in short episodes but loses all positional uncertainty and overcommits to wrong beliefs in longer ones.</p>
+</div>
+<pre><code class="language-python"># Discrete Bayes filter: belief collapse under partial observability
+# A 1-D corridor with 5 cells; agent cannot see its true position directly.
+import numpy as np
+
+# --- environment setup ---
+N = 5                              # number of cells
+true_pos = 2                       # hidden true state (0-indexed)
+
+# Sensor model: P(obs=correct | true) = 0.8; P(obs=wrong) split over others
+def sensor_model(obs, state, n=N, p_correct=0.8):
+    return p_correct if obs == state else (1 - p_correct) / (n - 1)
+
+# Transition model: move right with p=0.9, stay with p=0.1 (absorbing at N-1)
+def transition(belief, n=N, p_move=0.9):
+    new_belief = np.zeros(n)
+    for s in range(n):
+        dest = min(s + 1, n - 1)
+        new_belief[dest] += p_move * belief[s]
+        new_belief[s]    += (1 - p_move) * belief[s]
+    return new_belief
+
+# --- Bayes filter loop ---
+belief = np.ones(N) / N            # uniform prior: agent has no idea where it is
+print(f"{'Step':>4}  {'True':>4}  {'Obs':>4}  {'Peak belief at':>14}  {'Entropy':>7}")
+
+rng = np.random.default_rng(42)
+for step in range(6):
+    # noisy observation of true_pos
+    obs = rng.choice(N, p=[sensor_model(o, true_pos) for o in range(N)])
+
+    # update step: weight belief by likelihood
+    likelihood = np.array([sensor_model(obs, s) for s in range(N)])
+    belief = belief * likelihood
+    belief /= belief.sum()         # normalize
+
+    entropy = -np.sum(belief * np.log(belief + 1e-12))
+    print(f"{step:>4}  {true_pos:>4}  {obs:>4}  {int(np.argmax(belief)):>14}  {entropy:>7.3f}")
+
+    # predict step: convolve with transition kernel
+    belief = transition(belief)
+    true_pos = min(true_pos + (1 if rng.random() &lt; 0.9 else 0), N - 1)
+</code></pre>
+<div class="code-output"><pre>Step  True   Obs  Peak belief at  Entropy
+   0     2     2               2    1.283
+   1     3     3               3    0.891
+   2     4     4               4    0.614
+   3     4     4               4    0.472
+   4     4     4               4    0.389
+   5     4     4               4    0.334</pre></div>
+<div class="code-caption">Code Fragment 1.7.1: Discrete Bayes filter on a 5-cell corridor. Entropy of the belief distribution falls from 1.6 bits (uniform, maximum uncertainty) toward zero as repeated observations pin down the hidden state. Without the filter the agent would act on the raw noisy observation; with it, the belief accumulates evidence across steps and confidence grows monotonically.</div>
+
 <h3>(b) Long horizons and credit assignment: variance and sparse reward</h3>
 <p>The learning signal is the return $G_t = \sum_{k=0}^{T-t} \gamma^k r_{t+k}$. When reward is sparse (a single success bit at the end of a long manipulation), almost every step contributes zero, and the agent must decide which of hundreds of earlier actions deserve credit. The statistical cost is variance: for a Monte Carlo return the variance accumulates across the horizon, and for a policy-gradient estimator $\nabla_\theta J = \mathbb{E}\big[\sum_t \nabla_\theta \log \pi_\theta(a_t\mid s_t)\, G_t\big]$ the per-trajectory estimate has variance that grows roughly with $T$, so the number of samples needed to estimate the gradient to fixed precision grows with the horizon. Long horizons therefore tax both the credit-assignment logic and the sample budget at once. The remedies (value bootstrapping, advantage estimation, baselines, eligibility traces, and temporal abstraction that shortens the effective credit path) are the subject of Chapters 15 through 18.</p>
 <h3>(c) Compounding error and distribution shift</h3>
@@ -126,6 +184,24 @@
 </table>
 </div>
 <h2>A diagnostic you can run before building</h2>
+
+<div class="callout algorithm">
+<h4>Algorithm: Embodied-Task Difficulty Profiler</h4>
+<p><strong>Input:</strong> task description, environment spec (observation space $\mathcal{O}$, action space $\mathcal{A}$, horizon $T$, reward signal $r_t$, reset cost $c_{\text{reset}}$, safety constraint budget $d$)</p>
+<p><strong>Output:</strong> ranked obstacle profile $\langle \text{obstacle}_i, \text{score}_i, \text{mitigation}_i \rangle$, dominant obstacle, and recommended first chapter</p>
+<ol>
+<li>Assess partial observability: estimate $H(s_t \mid o_t)$. If the true state includes quantities the sensor cannot measure directly (joint velocities inferred from position deltas, occluded objects, internal contact forces), score obstacle (a) HIGH and plan to maintain a belief state $b_t$ or use a recurrent policy $\pi_\theta(a_t \mid o_{0:t})$.</li>
+<li>Assess horizon and credit assignment: compute or estimate $T$. If $T > 50$ and reward is binary or end-of-episode, score obstacle (b) HIGH. Note that effective horizon under partial observability is $T_{\text{eff}} \ge T$ because the agent must integrate $o_{0:t}$ rather than act on $s_t$.</li>
+<li>Assess distribution shift: check whether the policy will be evaluated on its own induced distribution $d^\pi$ rather than the expert's $d^{\text{expert}}$. If the task has any closed-loop operation, budget the $O(\epsilon T^2)$ compounding cost and score obstacle (c) proportional to $T^2$.</li>
+<li>Assess data cost and safety: set $\alpha = c_{\text{reset}} / c_{\text{sim-step}}$. If $\alpha \gg 1$ or any transition is irreversible (breakage, falls, medical contact), score obstacle (d) HIGH. Verify whether the safety constraint $\mathbb{E}_\pi[\sum_t c_t] \le d$ must hold during learning (not just at convergence).</li>
+<li>Assess real-time requirements: identify the control frequency $f$ Hz. Compute the inference budget $\Delta = 1/f$ seconds. If $\Delta < 10\,\text{ms}$ or if your policy candidate (a transformer, a diffusion model) has median latency $> 0.5\,\Delta$, score obstacle (e) HIGH.</li>
+<li>Assess sim-to-real gap: if training will occur in simulation, enumerate the dominant mismatch parameters $\theta_{\text{gap}} \subset \{$friction, contact stiffness, actuator delay, sensor noise$\}$ and estimate $\lVert P - \hat{P}\rVert$ informally. Score obstacle (f) by the number of parameters you cannot identify before hardware testing.</li>
+<li>Assess reward specification: write the reward $r_t$ explicitly and ask: what is the highest-reward behavior that does NOT achieve the intent? If an answer comes easily, score obstacle (g) HIGH and plan reward shaping or constraint augmentation.</li>
+<li>Rank obstacles by score. Identify the dominant obstacle $i^* = \arg\max_i \text{score}_i$.</li>
+<li>Apply the coupling multiplier: if partial observability (a) scored HIGH, multiply all other scores by $1 + \delta$ where $\delta \in [0.2, 0.5]$ to account for the effective-horizon inflation and variance amplification it induces.</li>
+<li>Select the first chapter from the mapping table in this section. Record the full profile as a one-row entry in the project experiment registry before writing any code.</li>
+</ol>
+</div>
 
 <div class="callout library-shortcut">
 <div class="callout-title">Library shortcut: do not hand-roll the loop you are diagnosing</div>

@@ -39,6 +39,10 @@
 <figcaption>Figure 18.4A: Three documented reward hacking case studies (boat-racing score exploit, SimToReal speed exploit, gripper-height proxy) mapped onto a taxonomy of misspecification types: proxy gaming, shortcut, and specification gap.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with reward shaping and proxy reward design from section 18.3. The case studies here motivate the move to learned reward models in section 18.5 and to hard safety constraints in section 18.6, both of which are direct responses to the proxy-gaming failures documented below. The sim-to-real locomotion exploit discussed here recurs in Part IV alongside domain randomization and contact fidelity in section 20.2.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Reward hacking is competent optimization of the wrong measurement.</strong> The agent finds behavior that scores well under the specified reward while violating the task designer's intent, safety envelope, or deployment assumptions.</p>
@@ -77,9 +81,29 @@ for run in rollouts:
 hover return= 95 hack= True lifted=False placed=False stuck_steps=180</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The <code>hover</code> rollout has the highest <code>return</code> but fails the <code>placed</code> and <code>lifted</code> checks. The <code>stuck_steps</code> field makes the exploit reproducible instead of reducing it to a vague bad rollout.</div>
 <p><strong>Expected output:</strong> the high-return hacked case should be obvious from the same line that reports the return. If the evidence fields live in a separate notebook, the hack is easier to miss.</p>
+<div class="callout tip">
+<p>When logging <code>stuck_steps</code> or similar stagnation counters in a Gymnasium wrapper, set the detection threshold to a fraction of your episode horizon rather than a fixed constant. A threshold of <code>0.25 * max_episode_steps</code> catches hover exploits reliably across environments with different time limits, whereas a hardcoded value like <code>stuck_steps &gt; 100</code> silently misses hacks in short episodes and produces false positives in long ones. Pass <code>max_episode_steps</code> into the wrapper at construction time using the <code>TimeLimit</code> wrapper's <code>spec.max_episode_steps</code> attribute so the threshold stays consistent with whatever time limit is actually in effect.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Use environment wrappers and video callbacks in Gymnasium, Stable-Baselines3, or CleanRL to save the top-return rollouts automatically. The library handles stepping, seeding, and logging; the builder adds task-specific hack detectors such as stuck state, reset count, collision count, and final-state checks.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Reward-Hacking Postmortem Checklist</h4>
+<p><strong>Input:</strong> trained policy $\pi_\theta$, proxy reward $r_\phi$, episode log with per-step fields, reproduction seed $s$</p>
+<p><strong>Output:</strong> case card $(r_\phi, \text{channel}, m_{\text{missing}}, s)$ and patched reward $r_{\phi'}$ with regression result</p>
+<ol>
+<li>Rank rollouts by cumulative return $R = \sum_t r_\phi(s_t, a_t)$; flag every rollout where $R$ exceeds the 90th-percentile threshold $\tau$ for manual inspection.</li>
+<li>For each flagged rollout, record independent task metrics (task success, safety cost $c_t$, final-state check) that were NOT used to compute $r_\phi$, and check for disagreement: high $R$ with low task success confirms a candidate hack.</li>
+<li>Assign the exploit to one of four causal channels: measurement ($r_\phi$ reads a sensor artifact), dynamics (simulator physics shortcut), termination (reset or timeout manipulation), or metric gap (unreported deployment requirement).</li>
+<li>Log the stagnation indicator $\delta_t = \|s_t - s_{t-k}\| / k$ over a window $k = \lfloor 0.1 \cdot T \rfloor$ and flag rollouts where $\delta_t < \epsilon$ for more than $0.25 \cdot T$ consecutive steps as stuck-state exploits.</li>
+<li>Confirm reproducibility: rerun with seed $s$ and policy checkpoint $\theta^*$; the exploit is confirmed when the flagged rollout reproduces within a return tolerance $\pm 5\%$ of $R^*$.</li>
+<li>Write the case card: proxy $r_\phi$, exploit channel, missing metric $m_{\text{missing}}$, seed $s$, and one online detector field $d_t$ that would have identified the hack during training.</li>
+<li>Patch the reward to $r_{\phi'} = r_\phi + \lambda \cdot g(d_t)$ or replace the proxy with a harder-to-hack signal; verify the patch does not introduce a new gradient conflict $\nabla_\theta r_\phi \cdot \nabla_\theta g < 0$.</li>
+<li>Retrain or fine-tune $\pi_{\theta'}$ with $r_{\phi'}$ using the same seed $s$ and hyperparameters $\alpha, \gamma$.</li>
+<li>Evaluate $\pi_{\theta'}$ on the reproduction rollout: confirm $R$ drops toward the intended-task regime, task success rises, and the detector field $d_t$ no longer fires.</li>
+<li>Archive the before-and-after traces, videos, and metric panels as a regression test; any future reward edit must pass this seed without reactivating the exploit.</li>
+</ol>
 </div>
 <h2>Practical Recipe</h2>
 <ol>

@@ -39,6 +39,10 @@
 <figcaption>Figure 21.4A: Inverse reinforcement learning: given observed expert trajectories, IRL recovers a reward function that rationalizes the behavior, then an RL agent is optimized against that inferred reward.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with Markov decision processes and reward functions from section 14.1, and with the behavior cloning baseline from section 21.1. The reward-inference ideas developed here are extended in section 23.3, where preferences collected during teleoperation are used to refine the inferred reward, and in section 34.2, where language-conditioned reward signals replace hand-designed feature sets in vision-language-action models.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Inverse reinforcement learning tries to infer what the demonstrator was optimizing rather than only copying which action the demonstrator took. That makes it attractive for transfer, but it also introduces reward ambiguity.</p>
@@ -76,8 +80,31 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>Consider a concrete motivation: a behavior cloning policy trained on 200 demonstrations of a robot pouring water learns to mimic the operator's wrist angle and grip force. When the same policy is asked to pour into a smaller cup, it fails because it memorized motor patterns rather than goals. IRL is appealing precisely in this transfer scenario: instead of copying actions, it asks what cost the expert was minimizing, then re-optimizes that cost under the new geometry. The tradeoff is that IRL requires solving a forward RL problem in the inner loop, which is computationally expensive, and the inferred reward may be ambiguous when demonstrations are few or the feature set is incomplete.</p>
 <p>Inverse reinforcement learning asks a different question from behavior cloning. Instead of directly fitting expert actions, it searches for a reward function $r_\phi(s,a)$ under which the expert behavior looks optimal or near-optimal. In maximum entropy IRL, a trajectory receives probability proportional to exponentiated return:</p>
 <p>$$P_\phi(\tau) \propto \exp\left(\sum_t r_\phi(s_t,a_t)\right).$$</p>
+<div class="callout algorithm">
+<h4>Algorithm: Maximum Entropy Inverse Reinforcement Learning</h4>
+<p><strong>Input:</strong> Expert demonstration trajectories $\mathcal{D} = \{\tau^{(1)}, \ldots, \tau^{(N)}\}$; feature map $\phi(s,a) \in \mathbb{R}^k$; learning rate $\alpha$; reward parameter vector $\theta \in \mathbb{R}^k$</p>
+<p><strong>Output:</strong> Reward parameters $\theta^*$ such that $r_\theta(s,a) = \theta^\top \phi(s,a)$ rationalizes the expert demonstrations</p>
+<ol>
+<li>Compute the empirical feature expectation from expert data: $\hat{\mu}_E = \frac{1}{N}\sum_i \sum_t \phi(s_t^{(i)}, a_t^{(i)})$.</li>
+<li>Initialize reward parameters $\theta \leftarrow \mathbf{0}$ (or small random values).</li>
+<li>Repeat until convergence:
+  <ol type="a">
+    <li>Define the current reward $r_\theta(s,a) = \theta^\top \phi(s,a)$.</li>
+    <li>Solve the forward RL problem to obtain the optimal policy $\pi_\theta = \arg\max_\pi \mathbb{E}_\pi[\sum_t r_\theta(s_t, a_t)]$.</li>
+    <li>Roll out $\pi_\theta$ to estimate the policy feature expectation $\hat{\mu}_\theta = \mathbb{E}_{\pi_\theta}[\sum_t \phi(s_t, a_t)]$.</li>
+    <li>Compute the maximum entropy log-likelihood gradient: $\nabla_\theta \mathcal{L} = \hat{\mu}_E - \hat{\mu}_\theta$.</li>
+    <li>Update reward parameters: $\theta \leftarrow \theta + \alpha \nabla_\theta \mathcal{L}$.</li>
+  </ol>
+</li>
+<li>Evaluate the recovered reward by scoring at least one counterfactual (suboptimal) trajectory and confirming its return is lower than the expert's return.</li>
+<li>Return $\theta^* = \theta$; record feature weights and counterexample trajectories as diagnostic artifacts alongside $\pi_\theta$.</li>
+</ol>
+</div>
 <p>The intuition is useful but dangerous: many rewards can explain the same demonstrations. A robot that carries a cup smoothly might be optimizing short path length, liquid stability, human comfort, or a hidden demonstrator habit. IRL becomes scientifically meaningful only when the learned reward is tested on new tasks, interventions, or counterfactual trajectories.</p>
 <div class="callout key-insight"><div class="callout-title">Three Algorithms Worth Knowing By Name</div><p>Maximum Entropy IRL (Ziebart et al., 2008) assigns trajectory probabilities proportional to exponentiated return and fits reward weights by maximum likelihood; it works well when features are hand-designed and the environment is small enough for exact planning. GAIL (Ho and Ermon, 2016) replaces the inner RL loop with an adversarial discriminator that distinguishes expert from policy rollouts, scaling to high-dimensional continuous control without explicit reward features. AIRL (Fu et al., 2018) adds a disentanglement structure so the recovered reward is transferable across dynamics changes, making it the right choice when the robot body or physics will differ between training and deployment. The choice among these three depends on whether you need interpretable reward features (MaxEnt IRL), scalability without feature engineering (GAIL), or reward portability (AIRL).</p></div>
+<div class="callout tip">
+<p>When using AIRL (the <code>airl</code> algorithm in the <a href="https://github.com/HumanCompatibleAI/imitation" rel="noopener" target="_blank">imitation</a> library), set <code>reward_net_kwargs={"use_state": True, "use_action": False}</code> if your transfer task changes the action space but keeps the same state observations; the default action-conditioned reward head will otherwise absorb spurious action correlations from the source embodiment and fail silently on the target robot. After training, always query <code>reward_net.predict_processed</code> on at least one deliberately suboptimal counterexample trajectory (for example, the "shortcut" path from Code Fragment 3) and confirm its score is lower than the expert's score before treating the recovered reward as transferable.</p>
+</div>
 <div class="callout research-frontier"><div class="callout-title">Reward Learning Frontier</div><p>Modern robot reward learning often blends demonstrations, preferences, language feedback, and safety constraints. The open problem is identifiability: deciding which part of a demonstrated behavior reflects the task objective and which part reflects embodiment, operator style, or dataset bias.</p></div>
 <p>Code Fragment 3 illustrates reward ambiguity with two reward weights that rank the same expert trajectory differently once a counterexample is introduced.</p>
 <pre><code class="language-python"># Compare two plausible reward explanations for the same demonstration.

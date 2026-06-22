@@ -39,6 +39,10 @@
 <figcaption><strong>Figure 15.6A</strong>: Reward shaping and its hazards</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section builds on the advantage estimation introduced in section 15.3 and assumes familiarity with the discounted MDP framework from section 2.6. The reward hacking patterns catalogued here recur in section 18.4 (reward hacking case studies) and section 19.1, where sparse rewards and costly exploration make shaping especially tempting for embodied agents.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Reward shaping</strong> adds intermediate learning signals so a policy can discover useful behavior before sparse task success appears. Its hazard is that the agent may optimize the shaped signal instead of the intended embodied task.</p>
@@ -51,6 +55,23 @@
 <p>Potential-based shaping is the safest standard form:</p>
 <p>$$F(s,a,s')=\gamma\Phi(s')-\Phi(s).$$</p>
 <p>Adding $F$ to the reward preserves the optimal policy under the usual <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.6.html">discounted MDP assumptions</a> because it changes trajectory returns by a telescoping potential term rather than changing which complete behavior is best.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Reward Shaping Safety Checklist</h4>
+<p><strong>Input:</strong> candidate shaping term $F(s,a,s')$, policy $\pi_\theta$, task success criterion $S$, potential function $\Phi(s)$</p>
+<p><strong>Output:</strong> decision to accept or reject $F$, plus a logged exploit hypothesis for each accepted term</p>
+<ol>
+<li>Define $S$ as a binary or sparse scalar independent of $F$ before writing any shaping code.</li>
+<li>Check whether $F$ takes the potential-based form $F(s,a,s') = \gamma\Phi(s') - \Phi(s)$; if not, document why a non-potential term is justified.</li>
+<li>Verify that $\Phi(s)$ is evaluated on the true Markov state, not on a filtered sensor observation $o_t$, to preserve the policy-preservation guarantee.</li>
+<li>Write an explicit exploit hypothesis: describe one episode where $F$ is high but $S$ is zero (e.g., loitering near the goal, falling forward for velocity credit).</li>
+<li>Construct adversarial test episodes from step 4 and check that $\pi_\theta$ does not prefer the exploit over task completion under random initialization.</li>
+<li>Decompose the total reward into components $r_\text{task}$, $r_\text{progress}$, $r_\text{energy}$, $r_\text{contact}$ and log them separately each episode.</li>
+<li>Run PPO for $N$ gradient steps; plot component totals alongside $S$ to detect which term dominates the advantage signal $\hat{A}_t$.</li>
+<li>If any shaped component accounts for more than half of the mean advantage while $S$ stagnates, reduce its coefficient $w_F$ by a factor of 2 and return to step 5.</li>
+<li>Accept $F$ only when $S$, safety flags, and robustness metrics all improve in the same logged artifact as the shaped return.</li>
+<li>Record the accepted $F$, $\Phi$, component weights, and exploit-test outcomes in the experiment registry before updating $\theta$.</li>
+</ol>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">The Reward Is A Proxy</div>
 <p>The agent optimizes the scalar it receives, not the intent in the designer's head. Shaping is useful only when the proxy remains aligned with the task under the policy's future behavior.</p>
@@ -82,6 +103,9 @@ for before, after in zip(distances, distances[1:]):
 <p>The expected output makes the exploit visible in the last row. When the robot stops moving closer, the potential-based term collapses toward zero, but the proximity bonus keeps paying the same amount, which is exactly how a loitering behavior can become locally optimal.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The <code>potential_bonus</code> becomes small when the agent stops making progress from distance 2.0 to 2.0. The <code>proximity_bonus</code> keeps paying at the same location, which can train a policy to loiter near the goal rather than finish the task.</div>
 <p>The final row is the warning. A shaped reward that keeps paying without task progress creates a local strategy the optimizer can exploit. PPO will faithfully improve that proxy unless the evaluation artifact separates shaped reward from true success.</p>
+<div class="callout tip">
+<p>When using Gymnasium's <code>TransformReward</code> wrapper to implement potential-based shaping, the potential function receives the <em>observation</em>, not the underlying Markov state. In partially observed settings (noisy pose estimates, occluded sensors) this silently breaks the policy-preservation guarantee: the telescoping cancellation only holds when <code>Phi(s)</code> is evaluated on the true state used by the MDP transition, not on a filtered sensor reading. Implement potential shaping inside the environment's <code>step()</code> method or a custom wrapper that has access to the simulator's ground-truth state, and add an assertion that logs when the potential decreases across a step where the robot visibly moved closer to the goal, which flags the mismatch between observation and true state immediately.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p><a href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.4.html">Gymnasium-style wrappers</a> are a clean place to implement reward decomposition because they can return shaped reward while also adding component diagnostics to <code>info</code>. CleanRL and Stable-Baselines3 can then log those <code>info</code> fields during PPO training.</p>

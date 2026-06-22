@@ -39,6 +39,10 @@
 <figcaption>Figure 21.1A: Learning from demonstration positioned against RL on a data-vs-sample-efficiency axes: demonstrations provide high-quality behavioral priors that collapse the exploration problem for contact-rich tasks.</figcaption>
 </figure>
 
+<div class="callout pathway">
+<p>This section assumes familiarity with the Markov decision process formulation and the notion of a policy covered in section 14.1, and with reward sparsity discussed in section 18.2. The behavior cloning baseline introduced here is extended in section 21.2, which formalizes covariate shift, and in section 21.3, which presents DAgger as the interactive fix. The demonstration-data contracts developed here recur throughout Part V alongside the teleoperation pipelines in section 23.2 and scale up to vision-language-action models in Chapter 34.</p>
+</div>
+
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>Learning from demonstration gives a robot a supervised entry point into skills that are difficult to reward-shape from scratch: contact-rich manipulation, recovery behavior, bimanual timing, and human-preferred motion style. The section frames every demonstration as a trajectory with provenance, not as a self-sufficient training label.</p>
@@ -74,6 +78,21 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <section class="course-depth-block">
 <h2>Demonstrations As State-Action Evidence</h2>
 <p>A robot demonstration is not merely a video of success. It is a time-indexed trajectory $\tau = (o_0, a_0, o_1, a_1, \ldots, o_T)$ produced by a demonstrator policy $\pi_E(a \mid o)$ under a particular robot body, sensor layout, controller, reset distribution, and task definition. Learning from demonstration matters because many embodied skills are easier to show than to reward-shape: insertion, bimanual folding, tool use, and recovery from small contact mistakes often have <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-18-reward-design-and-goal-specification/section-18.2.html">sparse or misleading reward signals</a>. The most direct use of these trajectories is <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.2.html">behavior cloning (BC)</a>: treat the demonstration data as a supervised dataset and train a policy $\pi_\theta$ to minimize the prediction error $\mathbb{E}_{(o,a)\sim d_E}[\|\pi_\theta(o) - a\|^2]$ for continuous actions, or cross-entropy for discrete ones. BC works well when the task is short-horizon or the demonstration distribution is dense enough to cover likely recovery states.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Behavior Cloning from Demonstration Trajectories</h4>
+<p><strong>Input:</strong> Demonstration dataset $\mathcal{D} = \{\tau^{(i)}\}_{i=1}^{N}$ where each trajectory $\tau^{(i)} = (o_0, a_0, o_1, a_1, \ldots, o_T)$ is produced by expert policy $\pi_E$; policy network $\pi_\theta$ with parameters $\theta$; learning rate $\alpha$; number of epochs $K$.</p>
+<p><strong>Output:</strong> Trained policy $\pi_\theta$ that approximates $\pi_E$ on the expert distribution $d_E(o)$.</p>
+<ol>
+<li>Flatten all trajectories into a paired dataset: $\mathcal{S} = \{(o_t, a_t) \mid \tau^{(i)} \in \mathcal{D},\; 0 \le t \le T\}$.</li>
+<li>Verify metadata for each $\tau^{(i)}$: check that robot body, action space units, camera rate, and operator source fields are present before any gradient step.</li>
+<li>Initialize policy parameters $\theta$ (random or from a pretrained backbone).</li>
+<li>For epoch $k = 1, \ldots, K$, shuffle $\mathcal{S}$ and iterate over minibatches $\mathcal{B} \subseteq \mathcal{S}$.</li>
+<li>Compute the supervised loss over the minibatch: $\mathcal{L}(\theta) = \frac{1}{|\mathcal{B}|} \sum_{(o,a) \in \mathcal{B}} \|\pi_\theta(o) - a\|^2$ for continuous actions, or cross-entropy $H(\pi_\theta(o), a)$ for discrete ones.</li>
+<li>Update parameters: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)$.</li>
+<li>After each epoch, evaluate $\pi_\theta$ on a held-out split; record per-step prediction error and flag observations outside the support of $d_E(o)$.</li>
+<li>If closed-loop rollout success saturates or covariate shift widens, stop and proceed to DAgger (Section 21.3) rather than adding more BC epochs.</li>
+</ol>
+</div>
 <p>The self-contained contract is therefore: observations $o_t$ are what the learner sees, actions $a_t$ are what the controller accepts, and demonstrations define an empirical distribution $d_E(o)$ over states or observations visited by the expert. A learned policy is useful only if it acts well under its own induced distribution $d_\pi(o)$, not only under $d_E(o)$. This distinction connects the chapter to <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/index.html">Chapter 14</a>, where policies are evaluated by the trajectories they generate.</p>
 <div class="callout key-insight"><div class="callout-title">Distribution Before Architecture</div><p>The first imitation-learning question is not which neural network to use. It is whether the demonstration distribution covers the states the deployed policy will create after its own small mistakes.</p></div>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Behavior cloning error compounds over time. A policy that is 99% accurate per step on a 100-step task accumulates roughly $0.99^{100} \approx 37\%$ survival probability, and each small deviation moves the robot into states the expert never visited. Three conditions reliably trigger this failure: long-horizon tasks where small errors accumulate, contact-rich phases where the robot must react to forces not present in the demonstration, and lighting or viewpoint changes that shift the observation distribution at test time. <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.3.html">DAgger (Ross et al., 2011)</a> addresses this by interactively querying the expert on states the learned policy actually visits, collapsing the gap between $d_E$ and $d_\pi$.</p></div>
@@ -93,6 +112,9 @@ print("missing fields:", missing)
 print("ready for training:", len(missing) == 0)</code></pre>
 <div class="code-output">missing fields: ['license']<br/>ready for training: False</div>
 <div class="code-caption"><strong>Code Fragment 3:</strong> This metadata check names the robot, sensing rate, action representation, operator source, split, and license fields before model training. The missing <code>license</code> field is not cosmetic, because robot datasets are often shared, remixed, or filtered through public hubs.</div>
+<div class="callout tip">
+<p>Always record the <code>action_space</code> field as a string that includes both the coordinate frame and the units, for example <code>"joint_delta_14d_rad"</code> rather than just <code>"joint_delta_14d"</code>. Behavior cloning loss will appear to converge normally even when a policy trained on joint-delta actions is deployed against a controller that expects absolute joint positions; the mismatch produces erratic motion without a Python error or NaN loss. A concrete check: confirm that <code>episode["action_space"].endswith("_rad")</code> or <code>"_deg"</code> and that the rollout wrapper uses the matching controller mode before any training run begins.</p>
+</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the metadata contract is explicit, LeRobotDataset v3.0 provides a maintained format for multimodal time-series robot data, sensorimotor signals, multi-camera video, and searchable metadata. That collapses a custom storage stack into a dataset object while preserving the provenance fields that make comparisons reproducible.</p></div>
 </section>
 <h2>Practical Recipe</h2>
