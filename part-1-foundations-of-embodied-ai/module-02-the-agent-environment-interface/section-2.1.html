@@ -36,13 +36,17 @@
 <main class="content" id="main-content">
 <blockquote class="epigraph"><p>"The environment is the part of the experiment that gets a vote after every action."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 2.1: Agents and environments formally, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-02-illustration-01.png"/>
+<img alt="Technical illustration for Section 2.1: Agents and environments formally." loading="lazy" src="images/chapter-02-illustration-01.png"/>
 <figcaption><strong>Figure 2.1A</strong>: Section 2.1: Agents and environments formally becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
 <cite>A Boundary-Conscious Embodied AI Agent</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Agents and environments formally</strong> gives the perception-action loop a contract. The agent is the decision-making process, the environment is everything that produces observations and consequences, and the interface is the boundary where evidence, action, reward, and timing pass.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make the agent-environment boundary operational: identify what reset returns, what step consumes, what step returns, who owns termination, and which diagnostic fields make a rollout reproducible.</p>
 </div>
 <figure aria-labelledby="fig-2-1-title" class="concept-diagram">
 <svg aria-labelledby="fig-2-1-title fig-2-1-desc" role="img" viewbox="0 0 760 250" xmlns="http://www.w3.org/2000/svg">
@@ -156,39 +160,41 @@ print(step(position=2, action="right", time_step=3))</code></pre>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>Environment dynamics and transition functions becomes useful when it is tied to a closed-loop contract for the contract between policy, world, evaluator, and safety constraints. The contract names the observation stream, the action representation, the timing budget, the safety boundary, and the result artifact. That is the bridge between a readable concept and a system a skeptical builder can test.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the idea should help. The systems claim explains which interface it changes. The evidence claim records which same-config measurement would convince a skeptical reader. Keeping these claims separate prevents a good story, a clean API, or a single rollout from pretending to prove more than it does.</p>
+<p>The formal interface is useful only if it prevents silent changes in the experiment. A policy result should say which environment version produced it, how reset sampled initial state, which action space was accepted, whether the command was clipped, why the episode ended, and whether the ending was a task termination or an external truncation.</p>
+<p>The most common mistake is to treat the environment as background code. In embodied AI the environment is part of the scientific claim. If a wrapper changes observations, action limits, time limits, rewards, or diagnostic info, it changes the meaning of the result.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For Section 2.1</div>
-<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Gymnasium</td><td>keeps reset, step, termination, truncation, and spaces explicit</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr><tr><td>PettingZoo</td><td>extends the same interface discipline to multi-agent settings</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr><tr><td>ROS 2</td><td>carries observations, commands, clocks, and diagnostics across real robot processes</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr></tbody></table>
+<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Gymnasium</td><td>standardizes reset, step, spaces, termination, truncation, wrappers, and seeding</td><td>Use it to make single-agent environment contracts inspectable before training.</td></tr><tr><td>PettingZoo</td><td>separates sequential and parallel multi-agent interaction patterns</td><td>Use it when other agents, people, vehicles, or robots change the transition dynamics.</td></tr><tr><td>ROS 2</td><td>carries observations, commands, clocks, transforms, and diagnostics across real robot processes</td><td>Use it to connect the formal environment contract to real-time deployed components.</td></tr></tbody></table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to a maintained tool. The baseline should log observations, actions, units, timestamps, seeds, termination reasons, and the perturbation applied. The library version should produce the same artifact schema, so the comparison is construct-matched rather than assembled from separate experiments.</p>
-<ol><li>Write a one-paragraph task contract with observation, action, success, failure, and safety fields.</li><li>Choose the smallest simulator, dataset, or wrapper that exposes the contract faithfully.</li><li>Run one deterministic smoke test and one perturbation test before scaling.</li><li>Save one artifact containing configuration, seed, metrics, traces, and failure labels.</li><li>Compare methods only when the same script evaluates the same panel, split, seed set, and metric.</li></ol>
-<pre><code class="language-python"># Build one evidence record for Section 2.1: Environment dynamics and transition functions.
-# Use the same schema for the hand-built baseline and the library shortcut.
-from dataclasses import dataclass, asdict
+<p>Before training, run an interface audit on one transition. The audit should fail if a required field is missing, if termination and truncation are confused, or if action clipping is hidden.</p>
+<ol><li>Declare the reset output and step output as named fields.</li><li>Check that observation and action types match the declared spaces.</li><li>Log termination and truncation as different fields.</li><li>Put latency, clipping, safety gate status, and wrapper version in info.</li><li>Save the first transition from every experiment run as a smoke-test artifact.</li></ol>
+<pre><code class="language-python"># Audit one transition record before trusting an environment result.
+transition = {
+    "observation": {"position": 3},
+    "action": "right",
+    "reward": 1.0,
+    "terminated": True,
+    "truncated": False,
+    "info": {"latency_ms": 12, "action_clipped": False, "wrapper_version": "v2"},
+}
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+def audit_transition(row: dict[str, object]) -&gt; list[str]:
+    required = {"observation", "action", "reward", "terminated", "truncated", "info"}
+    problems = [f"missing {key}" for key in sorted(required - row.keys())]
+    if row.get("terminated") and row.get("truncated"):
+        problems.append("terminated and truncated cannot both explain the same ending")
+    info = row.get("info", {})
+    for key in ["latency_ms", "action_clipped", "wrapper_version"]:
+        if key not in info:
+            problems.append(f"info missing {key}")
+    return problems
 
-record = EvidenceRecord(
-    section="2.1",
-    observation="state or observation before an action",
-    action="action passed to the transition function",
-    metric="prediction error for next state and task progress",
-    perturbation="slippery transition or delayed effect",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 2.1.2 records a construct-matched evidence schema for Environment dynamics and transition functions.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(audit_transition(transition))</code></pre>
+<div class="code-caption">Code Fragment 2.1.2 audits a transition record for required fields, episode-ending semantics, and diagnostic info.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask students to intentionally remove one transition field and explain which future claim becomes impossible to verify. This makes the interface contract concrete.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When Environment dynamics and transition functions fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When an agent-environment experiment fails, first inspect the transition boundary. Check reset distribution, action clipping, wrapper order, time-limit handling, reward emission, and diagnostic info before changing the policy.</p>
 </section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>

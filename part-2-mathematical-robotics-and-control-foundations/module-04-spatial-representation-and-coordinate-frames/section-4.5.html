@@ -34,42 +34,65 @@
 <h1>Section 4.5: 2D and 3D transformations; transform trees (tf in ROS)</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"2D and 3D transformations; transform trees (tf in ROS) matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 4.5: 2D and 3D transformations; transform trees (tf in ROS), showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-04-illustration-05.png"/>
+<img alt="Technical illustration for Section 4.5: 2D and 3D transformations; transform trees (tf in ROS)." loading="lazy" src="images/chapter-04-illustration-05.png"/>
 <figcaption><strong>Figure 4.5A</strong>: Section 4.5: 2D and 3D transformations; transform trees (tf in ROS) is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>2D and 3D transformations; transform trees (tf in ROS)</strong> is one lens on spatial representation and coordinate frames. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>2D and 3D transformations; transform trees (tf in ROS)</strong> turn many local frame relationships into one queryable robot-wide spatial memory. A mobile robot may have frames for map, odom, base_link, lidar, camera, wrist, and gripper. The transform tree lets any subsystem ask, "Where is this point in the frame I control?" without every subsystem manually knowing every calibration edge.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make 2d and 3d transformations; transform trees (tf in ros) operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
 </div>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for 2D and 3D transformations; transform trees (tf in ROS) into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for 2D and 3D transforms as a graph problem. First we define a transform tree as a directed acyclic frame graph with one parent per child. Then we show how a lookup composes edges along a path. Finally we connect the math to the ROS tf2 discipline of stamped transforms, buffer windows, and explicit lookup times.</p>
+<p>The key question is practical: when a camera detects an obstacle, which chain of transforms converts that obstacle into the planning frame at the time the planner needs it?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A representation earns its place when it changes the measurable action interface. In 2D and 3D transformations; transform trees (tf in ROS), the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A transform tree stores edges such as $T_{\text{map},\text{odom}}$, $T_{\text{odom},\text{base}}$, and $T_{\text{base},\text{camera}}$. A lookup from camera to map follows the unique path through the tree and composes the transforms in path order:</p>
+<p>$$T_{\text{map},\text{camera}} = T_{\text{map},\text{odom}}T_{\text{odom},\text{base}}T_{\text{base},\text{camera}}.$$</p>
+<p>This is why tf2 insists on parent and child frame names. Without the names, a transform matrix is only a 4 by 4 array. With the names and timestamp, it becomes a claim about where one coordinate convention sits relative to another at a specific time.</p>
+<p>2D transforms are the same idea with fewer degrees of freedom. A planar robot often uses $(x, y, \theta)$ and the group SE(2). A flying robot, manipulator, or camera-bearing humanoid needs SE(3), because roll, pitch, yaw, and vertical translation are load-bearing state variables.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>A tf buffer is a time-indexed graph. Static edges store calibration, such as base to camera. Dynamic edges store motion estimates, such as map to odom or odom to base. A correct lookup must choose both a path and a time; spatial correctness and temporal correctness are inseparable.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"># 2D and 3D transformations; transform trees (tf in ROS): keep the section idea tied to observable
-# evidence.
-# Run this diagnostic probe before trusting the maintained library path.
-instruction = "run the section diagnostic and save the evidence trace"
-skills = ["find_object", "estimate_pose", "grasp", "move_to_tray", "release"]
-plan = [skill for skill in skills]
-print(instruction)
-print(plan)</code></pre>
-<div class="code-caption">Code Fragment 4.5.1 names instruction, skills, and plan so the reader can inspect where a frame computation feeds the task sequence.</div>
-<p><strong>Expected output:</strong> the printed trace for 2D and 3D transformations; transform trees (tf in ROS) should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>Code Fragment 4.5.1 implements the smallest useful transform-tree lookup. It stores three edges, composes the path from map to camera, and applies the resulting transform to one point reported by the camera.</p>
+<pre><code class="language-python"># Compose a tf-style path from map to camera and transform one point.
+# Each edge is named by parent and child frame to prevent silent direction bugs.
+# The example omits rotation so the path arithmetic is easy to inspect.
+import numpy as np
+
+def translate(x, y, z):
+    transform = np.eye(4)
+    transform[:3, 3] = [x, y, z]
+    return transform
+
+edges = {
+    ("map", "odom"): translate(2.0, 0.0, 0.0),
+    ("odom", "base_link"): translate(0.5, 1.0, 0.0),
+    ("base_link", "camera"): translate(0.2, 0.0, 0.8),
+}
+
+path = [("map", "odom"), ("odom", "base_link"), ("base_link", "camera")]
+map_from_camera = np.eye(4)
+for edge in path:
+    map_from_camera = map_from_camera @ edges[edge]
+
+point_camera = np.array([1.0, 0.0, 0.0, 1.0])
+point_map = map_from_camera @ point_camera
+print(point_map[:3].round(3).tolist())</code></pre>
+<div class="code-output">[3.7, 1.0, 0.8]</div>
+<div class="code-caption">Code Fragment 4.5.1 composes the named edges <code>map</code> to <code>odom</code>, <code>odom</code> to <code>base_link</code>, and <code>base_link</code> to <code>camera</code>. The resulting <code>point_map</code> value shows how a camera measurement becomes planner-ready map-frame evidence.</div>
+<p><strong>Expected output:</strong> the point moves by the sum of the three translations. If a real tf2 lookup gives a different direction, inspect whether the code requested source-to-target or target-to-source, and whether the lookup time matches the sensor timestamp.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
@@ -84,15 +107,19 @@ print(plan)</code></pre>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in 2D and 3D transformations; transform trees (tf in ROS) is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team using 2D and 3D transformations; transform trees (tf in ROS) should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
 </div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When 2d and 3d transformations; transform trees (tf in ros) feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>For 2D and 3D transformations; transform trees (tf in ROS), treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -102,7 +129,7 @@ print(plan)</code></pre>
 <h2>Production Pattern</h2>
 <p>2D and 3D transformations; transform trees (tf in ROS) sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p>Treat the tf tree as a time-buffered data structure with one parent per frame and reproducible lookup times. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>A pose is a typed relationship between frames, not just a vector of numbers. Track parent frame, child frame, units, timestamp, and multiplication order before trusting a transform.</p></div>
+<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For 2D and 3D transformations; transform trees (tf in ROS), a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -125,7 +152,7 @@ print(plan)</code></pre>
 <li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
 <li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
+<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For 2D and 3D transformations; transform trees (tf in ROS), compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 <pre><code class="language-python"># Evidence record for 2D and 3D transformations; transform trees (tf in ROS).
 # Fill the fields before comparing a hand-built baseline with a library run.
 from dataclasses import dataclass, asdict
@@ -140,6 +167,9 @@ class EvidenceRecord:
     metric: str
     failure_label: str
 
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
 record = EvidenceRecord(
     section="4.5",
     topic="2D and 3D transformations; transform trees (tf in ROS)",
@@ -149,13 +179,13 @@ record = EvidenceRecord(
     metric="construct-matched success metric",
     failure_label="record after the perturbation run after perturbation test",
 )
-print(asdict(record))</code></pre>
+print(record.as_row())</code></pre>
 <div class="code-caption">Code Fragment 4.5.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so 2D and 3D transformations; transform trees (tf in ROS) can be compared across the hand-built baseline and the maintained-library path.</div>
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to 2D and 3D transformations; transform trees (tf in ROS) and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>Most frame bugs look like weak perception or weak control. First test whether points, vectors, poses, and timestamps were transformed through the same frame tree. For this section, first reproduce one tiny case by hand, then rerun it through SciPy Rotation, ROS 2 tf2, spatialmath-python, Drake, OpenCV calibration. If the two disagree, inspect conventions and timing before changing the model.</p>
+<p>Transform-tree bugs look like weak perception or control. Check parent-child direction, timestamp, static transform, and interpolation before changing the robot policy.</p>
 </section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for 2D and 3D transformations; transform trees (tf in ROS): Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for 2D and 3D transformations; transform trees (tf in ROS): Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>2D and 3D transformations; transform trees (tf in ROS) is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
@@ -174,3 +204,4 @@ print(asdict(record))</code></pre>
 </main>
 </body>
 </html>
+

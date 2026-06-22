@@ -34,36 +34,56 @@
 <h1>Section 4.6: Camera, body, and world frames</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"Camera, body, and world frames matters when the next action changes the evidence you thought you had."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Camera, body, and world frames</strong> is one lens on spatial representation and coordinate frames. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Camera, body, and world frames</strong> connect pixels to action. The camera frame explains where a measurement came from, the body frame explains what the robot can do now, and the world frame explains how the robot remains consistent over time. Without this chain, a detected object is only a bright region in an image, not a reachable target.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make camera, body, and world frames operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
 </div>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Camera, body, and world frames into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the camera-to-robot coordinate chain used by embodied perception. First we define the camera optical frame and the body frame. Then we show how camera intrinsics convert a pixel and depth into a 3D camera-frame point. Finally we compose extrinsics so the same point becomes a body-frame or world-frame target.</p>
+<p>The key question is practical: when a perception model marks a pixel, what additional calibration, depth, and transform information turns that pixel into a robot action?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A representation earns its place when it changes the measurable action interface. In Camera, body, and world frames, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A pinhole camera model maps a 3D camera-frame point $(X, Y, Z)$ to pixel coordinates $(u, v)$ using focal lengths $(f_x, f_y)$ and principal point $(c_x, c_y)$:</p>
+<p>$$u = f_x\frac{X}{Z} + c_x, \qquad v = f_y\frac{Y}{Z} + c_y.$$</p>
+<p>Back-projection reverses this mapping when depth $Z$ is known:</p>
+<p>$$X = (u-c_x)\frac{Z}{f_x}, \qquad Y = (v-c_y)\frac{Z}{f_y}.$$</p>
+<p>This derivation assumes a calibrated pinhole model after distortion correction, matching image resolution, synchronized depth, and a camera optical frame convention. OpenCV convention usually uses $x$ right, $y$ down, and $z$ forward. Robotics body frames often use $x$ forward, $y$ left, and $z$ up. That mismatch is why camera-to-body extrinsics must be explicit.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The camera pipeline has two contracts. Intrinsics convert between pixels and rays inside the camera. Extrinsics convert 3D points between camera, body, and world frames. A failure in either contract can look like a weak detector, even when the detector is doing exactly what it was trained to do.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"># Camera, body, and world frames: keep the section idea tied to observable evidence.
-# Run this diagnostic probe before trusting the maintained library path.
-instruction = "run the section diagnostic and save the evidence trace"
-skills = ["find_object", "estimate_pose", "grasp", "move_to_tray", "release"]
-plan = [skill for skill in skills]
-print(instruction)
-print(plan)</code></pre>
-<div class="code-caption">Code Fragment 4.6.1 names instruction, skills, and plan so the reader can inspect where a frame computation feeds the task sequence.</div>
-<p><strong>Expected output:</strong> the printed trace for Camera, body, and world frames should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>Code Fragment 4.6.1 back-projects a detected pixel into the camera frame, then shifts it into a simple body frame. The example is intentionally small: one pixel, one depth value, one camera offset.</p>
+<pre><code class="language-python"># Back-project one detected pixel into the camera frame.
+# Then translate it into the robot body frame using a known camera offset.
+# This exposes the difference between image evidence and action-ready geometry.
+import numpy as np
+
+fx, fy = 600.0, 600.0
+cx, cy = 320.0, 240.0
+u, v, depth = 380.0, 210.0, 2.0
+
+x_camera = (u - cx) * depth / fx
+y_camera = (v - cy) * depth / fy
+point_camera = np.array([x_camera, y_camera, depth])
+
+camera_origin_in_body = np.array([0.30, 0.00, 0.80])
+point_body = camera_origin_in_body + point_camera
+
+print("camera frame:", point_camera.round(3).tolist())
+print("body frame:", point_body.round(3).tolist())</code></pre>
+<div class="code-output">camera frame: [0.2, -0.1, 2.0]
+body frame: [0.5, -0.1, 2.8]</div>
+<div class="code-caption">Code Fragment 4.6.1 uses <code>fx</code>, <code>fy</code>, <code>cx</code>, and <code>cy</code> to back-project pixel <code>(u, v)</code> into <code>point_camera</code>. Adding <code>camera_origin_in_body</code> shows the extra extrinsic step needed before a controller can reason in the body frame.</div>
+<p><strong>Expected output:</strong> the camera-frame point shows where the pixel ray lands at 2 meters of depth. The body-frame point shifts by the camera mounting offset, which is the piece perception logs often omit when debugging reach errors.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
@@ -78,15 +98,19 @@ print(plan)</code></pre>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in Camera, body, and world frames is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team using Camera, body, and world frames should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
 </div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>For camera, body, and world frames, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>For Camera, body, and world frames, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -96,7 +120,7 @@ print(plan)</code></pre>
 <h2>Production Pattern</h2>
 <p>Camera, body, and world frames sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p>Write camera, body, and world frames into the same audit trail before projecting or back-projecting observations. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>A pose is a typed relationship between frames, not just a vector of numbers. Track parent frame, child frame, units, timestamp, and multiplication order before trusting a transform.</p></div>
+<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For Camera, body, and world frames, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -119,7 +143,7 @@ print(plan)</code></pre>
 <li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
 <li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
+<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For Camera, body, and world frames, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 <pre><code class="language-python"># Evidence record for Camera, body, and world frames.
 # Fill the fields before comparing a hand-built baseline with a library run.
 from dataclasses import dataclass, asdict
@@ -134,6 +158,9 @@ class EvidenceRecord:
     metric: str
     failure_label: str
 
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
 record = EvidenceRecord(
     section="4.6",
     topic="Camera, body, and world frames",
@@ -143,13 +170,13 @@ record = EvidenceRecord(
     metric="construct-matched success metric",
     failure_label="record after the perturbation run after perturbation test",
 )
-print(asdict(record))</code></pre>
+print(record.as_row())</code></pre>
 <div class="code-caption">Code Fragment 4.6.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Camera, body, and world frames can be compared across the hand-built baseline and the maintained-library path.</div>
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Camera, body, and world frames and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>Most frame bugs look like weak perception or weak control. First test whether points, vectors, poses, and timestamps were transformed through the same frame tree. For this section, first reproduce one tiny case by hand, then rerun it through SciPy Rotation, ROS 2 tf2, spatialmath-python, Drake, OpenCV calibration. If the two disagree, inspect conventions and timing before changing the model.</p>
+<p>Camera-to-body mistakes corrupt every downstream perception result. Verify optical-frame convention, extrinsics, depth scale, and timestamp alignment before blaming detection or planning.</p>
 </section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Camera, body, and world frames: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Camera, body, and world frames: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Camera, body, and world frames is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
@@ -168,3 +195,4 @@ print(asdict(record))</code></pre>
 </main>
 </body>
 </html>
+

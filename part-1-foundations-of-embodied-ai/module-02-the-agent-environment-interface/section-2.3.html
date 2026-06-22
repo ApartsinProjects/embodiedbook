@@ -36,13 +36,17 @@
 <main class="content" id="main-content">
 <blockquote class="epigraph"><p>"Choosing an action space is how you tell a robot what kinds of mistakes it is allowed to make."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 2.3: Action types: discrete, continuous, symbolic, motor-level, chunked, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-02-illustration-03.png"/>
+<img alt="Technical illustration for Section 2.3: Action types: discrete, continuous, symbolic, motor-level, chunked." loading="lazy" src="images/chapter-02-illustration-03.png"/>
 <figcaption><strong>Figure 2.3A</strong>: Section 2.3: Action types: discrete, continuous, symbolic, motor-level, chunked becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
 </figure>
 <cite>A Cautious Policy Interface</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Action types: discrete, continuous, symbolic, motor-level, chunked</strong> define what the agent can actually do. The same task can be framed as choosing a skill, setting a velocity, moving a joint, emitting a language-conditioned action token, or committing to a short action chunk.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make action representation operational: identify the command units, coordinate frame, update rate, bounds, clipping behavior, controller below the policy, and recovery cost when an action is wrong.</p>
 </div>
 <figure aria-labelledby="fig-2-3-title" class="concept-diagram">
 <svg aria-labelledby="fig-2-3-title fig-2-3-desc" role="img" viewbox="0 0 760 250" xmlns="http://www.w3.org/2000/svg">
@@ -141,73 +145,83 @@ for name, action in action_spaces.items():
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>Action types: discrete, continuous, symbolic, motor-level, chunked becomes useful when it is tied to a closed-loop contract for the contract between policy, world, evaluator, and safety constraints. The contract names the observation stream, the action representation, the timing budget, the safety boundary, and the result artifact. That is the bridge between a readable concept and a system a skeptical builder can test.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the idea should help. The systems claim explains which interface it changes. The evidence claim records which same-config measurement would convince a skeptical reader. Keeping these claims separate prevents a good story, a clean API, or a single rollout from pretending to prove more than it does.</p>
+<p>Action representation is an architectural boundary. A symbolic skill shifts burden to a planner and skill library. An end-effector delta shifts burden to a controller and calibration stack. A joint command shifts burden to the learned policy and safety monitor. A chunked action shifts burden to prediction because the policy commits before seeing every intermediate consequence.</p>
+<p>The practical question is not which action type is most elegant. It is which layer should own timing, contact, validity checking, and recovery for the task at hand.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For Section 2.3</div>
-<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Gymnasium</td><td>keeps reset, step, termination, truncation, and spaces explicit</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr><tr><td>PettingZoo</td><td>extends the same interface discipline to multi-agent settings</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr><tr><td>ROS 2</td><td>carries observations, commands, clocks, and diagnostics across real robot processes</td><td>Use it when the hand-built contract is clear and the experiment needs repeatable runs.</td></tr></tbody></table>
+<table><thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Gymnasium spaces</td><td>declares discrete, continuous, multi-discrete, dictionary, and bounded action structures</td><td>Use spaces as executable documentation for units, bounds, shapes, and clipping behavior.</td></tr><tr><td>ROS 2 controllers</td><td>execute velocity, position, effort, and trajectory commands under real timing constraints</td><td>Use them to check whether the action representation can be executed safely at deployment rate.</td></tr><tr><td>LeRobot and VLA action adapters</td><td>normalize robot actions, action chunks, and policy outputs into deployable commands</td><td>Use them when learned action heads must be mapped back to body-specific controllers.</td></tr></tbody></table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to a maintained tool. The baseline should log observations, actions, units, timestamps, seeds, termination reasons, and the perturbation applied. The library version should produce the same artifact schema, so the comparison is construct-matched rather than assembled from separate experiments.</p>
-<ol><li>Write a one-paragraph task contract with observation, action, success, failure, and safety fields.</li><li>Choose the smallest simulator, dataset, or wrapper that exposes the contract faithfully.</li><li>Run one deterministic smoke test and one perturbation test before scaling.</li><li>Save one artifact containing configuration, seed, metrics, traces, and failure labels.</li><li>Compare methods only when the same script evaluates the same panel, split, seed set, and metric.</li></ol>
-<pre><code class="language-python"># Build one evidence record for Section 2.3: Action types: discrete, continuous, symbolic,
-# motor-level, chunked.
-# Use the same schema for the hand-built baseline and the library shortcut.
-from dataclasses import dataclass, asdict
+<p>Audit an action interface before training. The audit should fail if units, frames, rates, bounds, or chunk semantics are absent.</p>
+<ol><li>Name the action level: symbolic, skill, end-effector, joint, torque, velocity, or chunked sequence.</li><li>Record units, coordinate frame, bounds, update rate, controller below the action, and clipping behavior.</li><li>Define what happens when a command is invalid or stale.</li><li>Inject saturation, delay, and mid-chunk observation changes.</li><li>Report action validity failures separately from policy-task failures.</li></ol>
+<pre><code class="language-python"># Audit an action interface for fields needed by a real controller.
+action_interface = {
+    "level": "end_effector_delta",
+    "units": {"dx": "m", "dy": "m", "dz": "m", "yaw": "rad"},
+    "frame": "tool0",
+    "rate_hz": 20,
+    "bounds": {"dx": 0.02, "dy": 0.02, "dz": 0.015, "yaw": 0.10},
+    "clip_behavior": "clip_and_log",
+    "controller_below": "cartesian_impedance",
+}
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+def missing_action_contract(interface: dict[str, object]) -&gt; list[str]:
+    required = ["level", "units", "frame", "rate_hz", "bounds", "clip_behavior", "controller_below"]
+    return [key for key in required if key not in interface]
 
-record = EvidenceRecord(
-    section="2.3",
-    observation="policy context and actuator limits",
-    action="discrete, continuous, symbolic, motor-level, or chunked command",
-    metric="task success plus control smoothness",
-    perturbation="actuator saturation or command quantization",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 2.3.2 records a construct-matched evidence schema for Action types: discrete, continuous, symbolic, motor-level, chunked.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(missing_action_contract(action_interface))</code></pre>
+<div class="code-caption">Code Fragment 2.3.2 audits whether an action interface contains the fields required for safe execution.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask students to convert the same task into symbolic, end-effector, joint, and chunked action contracts. The comparison makes clear which subsystem owns recovery in each design.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When Action types: discrete, continuous, symbolic, motor-level, chunked fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When an action interface fails, ask whether the command was invalid, clipped, stale, in the wrong frame, too coarse, too low-level, or too committed through chunking. Those are different failures and should not be collapsed into "bad policy."</p>
 </section>
 <section class="lab" id="lab-2-3">
-<h2>Hands-On Lab: Build a Section Evidence Trace</h2>
+<h2>Hands-On Lab: Audit An Action Interface</h2>
 <div class="lab-meta"><span class="lab-duration">Duration: ~65 minutes</span><span class="lab-difficulty">Difficulty: Intermediate</span></div>
-<div class="lab-objective"><h3>Objective</h3><p>Turn Action types: discrete, continuous, symbolic, motor-level, chunked into a small artifact that compares a hand-built baseline with a maintained-tool shortcut under one perturbation.</p></div>
-<div class="lab-skills"><h3>What You'll Practice</h3><ul><li>Define an observation, action, metric, and perturbation contract</li><li>Build a minimal baseline trace</li><li>Preserve the same schema for the library shortcut</li><li>Write a failure postmortem from the evidence record</li></ul></div>
+<div class="lab-objective"><h3>Objective</h3><p>Build an action-interface contract for one task and test how clipping, delay, or chunking would change recovery.</p></div>
+<div class="lab-skills"><h3>What You'll Practice</h3><ul><li>Define action units, bounds, frames, and update rate</li><li>Detect missing execution fields before policy training</li><li>Log raw commands, executed commands, and clipping</li><li>Compare correction delay for single-step and chunked actions</li></ul></div>
 <div class="lab-prereqs"><h3>Setup</h3><pre><code class="language-bash">pip install numpy pandas</code></pre><div class="code-caption">Code Fragment 2.3.L1 installs NumPy and pandas for the section lab trace.</div></div>
 <div class="lab-steps"><h3>Steps</h3>
-<div class="lab-step"><h4>Step 1: Define the contract</h4><p>Write the fields that make two runs comparable.</p><pre><code class="language-python"># TODO: Fill in the observation, action, metric, and perturbation fields.
-contract = {"observation": "", "action": "", "metric": "", "perturbation": ""}
-print(contract)</code></pre><div class="code-caption">Code Fragment 2.3.L1.1 scaffolds Step 1, Define the contract, with TODO fields the reader must complete.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Start with the smallest deterministic trace. Add the perturbation only after the baseline and shortcut share the same artifact schema.</p></div></div></div>
-<div class="lab-step"><h4>Step 2: Record the baseline</h4><p>Save one deterministic result before adding noise or latency.</p><pre><code class="language-python"># TODO: Replace the placeholder value with a baseline measurement.
-baseline = {"run": "baseline", "seed": 0, "success": 0.0, "failure_label": "TODO"}
-print(baseline)</code></pre><div class="code-caption">Code Fragment 2.3.L1.2 scaffolds Step 2, Record the baseline, with TODO fields the reader must complete.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Start with the smallest deterministic trace. Add the perturbation only after the baseline and shortcut share the same artifact schema.</p></div></div></div>
-<div class="lab-step"><h4>Step 3: Add the shortcut</h4><p>Run or sketch the maintained-tool version while keeping the artifact schema fixed.</p><pre><code class="language-python"># TODO: Record the shortcut result with the same keys as the baseline.
-shortcut = {"run": "library_shortcut", "seed": 0, "success": 0.0, "failure_label": "TODO"}
-print(shortcut)</code></pre><div class="code-caption">Code Fragment 2.3.L1.3 scaffolds Step 3, Add the shortcut, with TODO fields the reader must complete.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Start with the smallest deterministic trace. Add the perturbation only after the baseline and shortcut share the same artifact schema.</p></div></div></div>
-<div class="lab-step"><h4>Step 4: Apply one perturbation</h4><p>Change exactly one condition and preserve the same logging fields.</p><pre><code class="language-python"># TODO: Change one perturbation field and rerun the evidence record.
-perturbed = {**baseline, "run": "baseline_perturbed", "failure_label": "TODO"}
-print(perturbed)</code></pre><div class="code-caption">Code Fragment 2.3.L1.4 scaffolds Step 4, Apply one perturbation, with TODO fields the reader must complete.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Start with the smallest deterministic trace. Add the perturbation only after the baseline and shortcut share the same artifact schema.</p></div></div></div>
-</div>
-<div class="lab-expected"><h3>Expected Output</h3><p>The completed lab produces one table with baseline, shortcut, and perturbed rows, plus a short note explaining which comparison is valid because all metrics were co-computed under one schema.</p></div>
-<div class="lab-stretch"><h3>Stretch Goals</h3><ul><li>Add a second seed and report mean and spread.</li><li>Write a one-paragraph postmortem that separates root cause from symptom.</li></ul></div>
-<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Complete Solution</p><pre><code class="language-python"># Complete compact evidence trace for the section lab.
-# Extend these records with values produced by your actual environment or simulator.
-import pandas as pd
+<div class="lab-step"><h4>Step 1: Define the action contract</h4><p>Write the execution fields before choosing a policy.</p><pre><code class="language-python">def validate_contract(payload: dict[str, object]) -&gt; dict[str, object]:
+    assert payload, "payload must not be empty"
+    return payload
 
-records = [
-    {"run": "baseline", "seed": 0, "success": 0.72, "failure_label": "none"},
-    {"run": "library_shortcut", "seed": 0, "success": 0.78, "failure_label": "none"},
-    {"run": "baseline_perturbed", "seed": 0, "success": 0.54, "failure_label": "latency"},
+contract = {
+    "level": "end_effector_delta",
+    "units": {"dx": "m", "dy": "m", "dz": "m", "grip": "normalized"},
+    "frame": "tool0",
+    "rate_hz": 20,
+    "bounds": {"dx": 0.02, "dy": 0.02, "dz": 0.02, "grip": [0.0, 1.0]},
+    "clip_behavior": "clip_and_log",
+}
+print(validate_contract(contract))</code></pre><div class="code-caption">Code Fragment 2.3.L1.1 defines an action contract with units, frame, rate, bounds, and clipping behavior.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>If a controller cannot execute the command, the action representation is not finished.</p></div></div></div>
+<div class="lab-step"><h4>Step 2: Check for missing execution fields</h4><p>Audit the contract before running a policy.</p><pre><code class="language-python">required = {"level", "units", "frame", "rate_hz", "bounds", "clip_behavior"}
+missing = sorted(required - contract.keys())
+assert not missing, f"Action contract missing fields: {missing}"
+print({"contract_ready": True, "rate_hz": contract["rate_hz"], "bounds": contract["bounds"]})</code></pre><div class="code-caption">Code Fragment 2.3.L1.2 reports whether the action contract is executable enough to test.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Most action bugs hide in units, frames, bounds, and silent clipping.</p></div></div></div>
+<div class="lab-step"><h4>Step 3: Simulate clipping</h4><p>Test whether out-of-bounds commands are visible in the log.</p><pre><code class="language-python">command = {"dx": 0.05, "dy": 0.00, "dz": 0.00, "grip": 0.6}
+clipped = {**command, "dx": min(command["dx"], contract["bounds"]["dx"])}
+clip_amount = command["dx"] - clipped["dx"]
+assert clip_amount >= 0.0
+print({"raw_dx": command["dx"], "executed_dx": clipped["dx"], "clip_amount": round(clip_amount, 3)})</code></pre><div class="code-caption">Code Fragment 2.3.L1.3 records the raw command, executed command, and clipping flag.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>A clipped command is not the action the policy selected. Log both.</p></div></div></div>
+<div class="lab-step"><h4>Step 4: Compare commitment length</h4><p>Record how long the system must continue before it can correct a bad command.</p><pre><code class="language-python">interfaces = [
+    {"name": "single_delta", "chunk_len": 1, "rate_hz": 20},
+    {"name": "five_step_chunk", "chunk_len": 5, "rate_hz": 20},
 ]
-print(pd.DataFrame(records))</code></pre><div class="code-caption">Code Fragment 2.3.L2 creates a complete same-schema evidence table for the section lab.</div></div>
+for item in interfaces:
+    item["commitment_ms"] = 1000 * item["chunk_len"] / item["rate_hz"]
+print(interfaces)</code></pre><div class="code-caption">Code Fragment 2.3.L1.4 compares correction delay for single-step and chunked actions.<div class="kindle-disclosure"><p class="kindle-disclosure-title">Hint</p><p>Chunking can smooth control, but it also delays recovery when observations change.</p></div></div></div>
+</div>
+<div class="lab-expected"><h3>Expected Output</h3><p>The completed lab produces a compact action-interface audit showing whether the contract is complete, whether clipping is visible, and how long a chunked command delays correction.</p></div>
+<div class="lab-stretch"><h3>Stretch Goals</h3><ul><li>Add a joint-level version and compare its bounds against the end-effector version.</li><li>Add a stale-command rule that holds position when the command age exceeds the control budget.</li></ul></div>
+<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Complete Solution</p><pre><code class="language-python">import pandas as pd
+
+rows = [
+    {"check": "contract_complete", "value": not sorted(required - contract.keys())},
+    {"check": "clipping_visible", "value": command != clipped},
+    {"check": "chunk_commitment_ms", "value": interfaces[1]["commitment_ms"]},
+]
+print(pd.DataFrame(rows))</code></pre><div class="code-caption">Code Fragment 2.3.L2 creates a compact action-interface audit table.</div></div>
 </section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>

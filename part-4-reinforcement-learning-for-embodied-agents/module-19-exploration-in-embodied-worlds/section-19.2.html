@@ -34,95 +34,114 @@
 <h1>Section 19.2: Intrinsic motivation, curiosity, count-based and novelty methods</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Intrinsic motivation, curiosity, count-based and novelty methods matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 19.2: Intrinsic motivation, curiosity, count-based and novelty methods, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-19-illustration-02.png"/>
-<figcaption><strong>Figure 19.2A</strong>: Section 19.2: Intrinsic motivation, curiosity, count-based and novelty methods is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 19.2, showing a robot marking visited places while balancing novelty bonuses, prediction error, and useful task progress." loading="lazy" src="images/chapter-19-illustration-02.png"/>
+<figcaption><strong>Figure 19.2A</strong>: Novelty is useful when it points the agent toward learnable gaps, not when it rewards every shiny distraction equally.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Intrinsic motivation, curiosity, count-based and novelty methods</strong> is one lens on exploration in embodied worlds. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Intrinsic motivation, curiosity, count-based, and novelty methods</strong> give an agent a reason to move before the external reward appears. They are useful in embodied worlds because a sparse task reward may arrive only after the robot has already discovered doorways, object affordances, viewpoints, and safe approaches.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a bonus-design chain: first define what counts as "visited," then define which prediction error counts as curiosity, then test whether the bonus changes useful action rather than merely producing restless motion.</p>
 </div>
 <p>It builds on reward specification in <a class="cross-ref" href="../module-18-reward-design-and-goal-specification/index.html">Chapter 18: Reward Design and Goal Specification</a>, reuses partial observability from <a class="cross-ref" href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2: The Agent-Environment Interface</a>, and prepares transfer testing in <a class="cross-ref" href="../module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20: Sim-to-Real Transfer</a>.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for intrinsic motivation, curiosity, count-based and novelty methods into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the technical contract for internal exploration rewards. Counts, pseudo-counts, prediction error, disagreement, and novelty all add an auxiliary reward signal, but they differ in what they treat as unknown.</p>
+<p>The key question is practical: what feature representation receives the count or prediction error, and does that representation align with embodied progress such as new viewpoints, reachable states, object contacts, or goal-relevant affordances?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In intrinsic motivation, curiosity, count-based and novelty methods, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>An intrinsic bonus earns its place when it changes the measurable action interface. The reader should keep asking whether the bonus makes the agent inspect a useful doorway, revisit a promising frontier, or avoid wasting rollouts on sensor noise.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>We can view the agent at time $t$ as receiving an observation $o_t$, encoding it as features $\phi(o_t)$, choosing an action $a_t$, and receiving both an external reward $r_t^{ext}$ and an intrinsic reward $r_t^{int}$. A count-based bonus often uses a form such as $r_t^{int}=\beta / \sqrt{N(\phi(o_t))}$, where $N$ is the visit count for the feature bin and $\beta$ sets the strength of the bonus.</p>
+<p>Curiosity methods replace explicit counts with learnability. For example, a forward model predicts $\phi(o_{t+1})$ from $\phi(o_t)$ and $a_t$, then rewards prediction error when the next observation is not yet well modeled. The design danger is that unpredictable noise, moving shadows, or camera artifacts can look "interesting" even when they do not improve task competence.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a sequence of transformations: encode the observation, update the novelty statistic, compute the intrinsic bonus, combine it with the task reward, and monitor whether the selected action reaches new useful state. Each transformation should have a measurable contract, otherwise a high intrinsic return can hide aimless motion.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 19.2.1 shows the count-based idea without hiding it inside a learner. A repeated feature receives a smaller bonus, so the agent has a measurable reason to leave the familiar hallway and test a new cell.</p>
+<pre><code class="language-python"># Compute a count-based intrinsic bonus for visited feature bins.
+# Repeated bins receive smaller rewards, so novelty decays locally.
+from collections import Counter
+import math
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 19.2.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Intrinsic motivation, curiosity, count-based and novelty methods should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+feature_trace = ["hall:0", "hall:1", "hall:1", "door:2", "door:2", "room:3"]
+counts = Counter()
+beta = 0.2
+
+for feature in feature_trace:
+    counts[feature] += 1
+    bonus = beta / math.sqrt(counts[feature])
+    print(feature, counts[feature], round(bonus, 3))</code></pre>
+<div class="code-output">hall:0 1 0.2
+hall:1 1 0.2
+hall:1 2 0.141
+door:2 1 0.2
+door:2 2 0.141
+room:3 1 0.2</div>
+<div class="code-caption"><strong>Code Fragment 19.2.1:</strong> This snippet computes a count bonus from the feature bins in <code>feature_trace</code>. The second visit to <code>hall:1</code> and <code>door:2</code> receives a lower reward, which makes the decay in novelty visible.</div>
+<p><strong>Expected output:</strong> repeated bins should show lower intrinsic reward than first-time bins. If the feature encoder maps every camera frame to a unique bin, this diagnostic would never decay and the agent would be paid for visual noise.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium or MiniGrid to expose sparse-reward environments, CleanRL or Stable-Baselines3 for baseline learners, and Habitat-Lab when novelty must be measured over embodied navigation states. The shortcut removes boilerplate so the engineering attention goes to feature design, bonus scaling, and diagnostic traces.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Choose the feature space for novelty before choosing the learning algorithm.</li>
+<li>Plot intrinsic reward separately from external reward, action distance, and task progress.</li>
+<li>Clamp or normalize the bonus so curiosity does not dominate the task reward for the whole run.</li>
+<li>Record failures as structured cases: noisy feature, unreachable novelty, reward hacking, derailment, or evaluation mismatch.</li>
+<li>Run at least one perturbation test that changes visual noise without changing the task state.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to reward prediction error without checking whether the error is controllable. A flickering monitor, reflective floor, or moving person can keep curiosity high while the robot learns little about the task.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using intrinsic motivation, curiosity, count-based and novelty methods should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A navigation team using curiosity should log external reward, intrinsic reward, feature-bin counts, map coverage, collisions, and whether each newly visited area is reachable again. The logs reveal whether novelty is expanding useful coverage or paying the agent to chase aliasing and camera noise.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Curiosity is a good intern and a poor manager. It should bring the agent to promising evidence, not set the entire company strategy.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>A core research frontier is controllable curiosity: rewarding surprise that the agent can reduce through action while ignoring nuisance variation. This connects count-based exploration, learned world models, disagreement bonuses, and embodied coverage metrics into one question: did the agent discover a state it can use again?</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for intrinsic motivation, curiosity, count-based and novelty methods? If not, the system boundary is still too vague.</p>
+<p>Can you name the novelty feature, bonus scale, external reward, action selected because of the bonus, and most likely noise source? If not, the curiosity signal is still too vague.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Exploration in Embodied Worlds, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when it is tied to a closed-loop bonus contract. In this chapter on Exploration in Embodied Worlds, the contract names the feature encoder, the count or prediction-error statistic, the action representation, the bonus scale, and the evaluation artifact. Without that contract, an agent can look curious while spending every rollout on unhelpful novelty.</p>
+<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the bonus should drive exploration. The representation claim explains what gets counted or predicted. The evidence claim records whether coverage, controllability, and task progress improve in the same run.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Intrinsic motivation, curiosity, count-based and novelty methods</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Intrinsic motivation, curiosity, count-based and novelty methods</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Intrinsic motivation, curiosity, count-based and novelty methods</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Intrinsic motivation, curiosity, count-based and novelty methods</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Intrinsic motivation, curiosity, count-based and novelty methods</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium</td><td>Sparse-reward baseline</td><td>Use it to verify reward and termination plumbing before adding any intrinsic bonus.</td></tr><tr><td>MiniGrid</td><td>Count and novelty diagnostics</td><td>Use it when the feature bins, doors, keys, and rooms make visit counts easy to inspect.</td></tr><tr><td>CleanRL</td><td>Readable learner baseline</td><td>Use it when you need a compact training script where bonus scaling and logging are visible.</td></tr><tr><td>Habitat-Lab</td><td>Embodied coverage metric</td><td>Use it when novelty should correspond to new viewpoints, map coverage, or reachable navigation states.</td></tr><tr><td>Stable-Baselines3</td><td>Maintained policy training</td><td>Use it after the bonus diagnostic is settled, with callbacks that log intrinsic and external reward separately.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a tiny, inspectable bonus trace and only then moves to a maintained learner. The baseline should log the feature key, visit count, intrinsic reward, external reward, action, and termination condition. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Write a one-paragraph bonus contract with feature key, count or prediction error, external reward, and failure fields.</li>
+<li>Start with the smallest simulator or wrapper that exposes repeated and novel states clearly.</li>
+<li>Run one deterministic smoke test and one nuisance-noise perturbation before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, rewards, counts, coverage traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates external reward, intrinsic reward, and coverage on the same task panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Intrinsic motivation, curiosity, count-based and novelty methods.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one intrinsic-reward evidence record for exploration.
+# The same schema should be used for count, curiosity, and novelty variants.
 from dataclasses import dataclass, asdict
 
 @dataclass
@@ -132,7 +151,11 @@ class EvidenceRecord:
     observation: str
     action: str
     metric: str
+    bonus_signal: str
     perturbation: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="19.2",
@@ -140,58 +163,60 @@ record = EvidenceRecord(
     observation="record after the perturbation run: sensor or state input",
     action="record after the perturbation run: control or decision output",
     metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    bonus_signal="record after the perturbation run: count, prediction error, or disagreement",
+    perturbation="record after the perturbation run: visual noise, aliasing, delay, or domain shift",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 19.2.2 records the method-specific evidence schema for testing Intrinsic motivation, curiosity, count-based and novelty methods with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '19.2', 'tool': 'Gymnasium', 'observation': 'record after the perturbation run: sensor or state input', 'action': 'record after the perturbation run: control or decision output', 'metric': 'record after the perturbation run: construct-matched success metric', 'bonus_signal': 'record after the perturbation run: count, prediction error, or disagreement', 'perturbation': 'record after the perturbation run: visual noise, aliasing, delay, or domain shift'}</div>
+<div class="code-caption"><strong>Code Fragment 19.2.2:</strong> The evidence record makes <code>bonus_signal</code> explicit so count, curiosity, and disagreement variants can be compared on the same fields. The perturbation field forces the run to test whether novelty survives nuisance noise.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the bonus and perturbation fields before they touch model code. The exercise exposes feature choices that would otherwise be hidden inside the reward curve.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When an intrinsic reward method fails, avoid labeling the whole method as weak. First assign the failure to representation aliasing, uncontrollable noise, bonus domination, derailment, insufficient reset, sparse external reward, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Intrinsic motivation, curiosity, count-based and novelty methods, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For intrinsic motivation methods, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same feature encoder, same bonus scale, same perturbation suite, and the same success definition. Save external reward, intrinsic reward, coverage, collision counts, and failure labels in one artifact so every number in a later table is backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Intrinsic motivation, curiosity, count-based and novelty methods is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Intrinsic motivation helps when it turns sparse reward into directed discovery: more reachable states, better coverage, fewer dead ends, and clearer evidence about what the agent learned.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 19.2.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 19.2.1</div><p>Design a count-based or curiosity experiment in simulation. Specify the feature encoder, bonus formula, bonus scale, external reward, coverage metric, and one nuisance perturbation that should not be rewarded.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned intrinsic motivation, curiosity, count-based and novelty methods into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-19.3.html">Section 19.3</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned intrinsic motivation into a testable bonus contract: define the feature, compute the bonus, save one comparable artifact, and diagnose curiosity failures by signal source. Next, continue with <a href="section-19.3.html">Section 19.3</a>, where exploration must satisfy explicit safety constraints.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://www.sciencedirect.com/science/article/pii/S0022000008000767" rel="noopener" target="_blank">Strehl, A. L., and Littman, M. L. (2008). An analysis of model-based interval estimation for Markov decision processes. Journal of Computer and System Sciences.</a></p>
-<p class="bib-annotation">This work grounds optimism and uncertainty-driven exploration in tabular MDPs. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">This work grounds optimism and uncertainty-driven exploration in tabular MDPs. It provides the clean version of the idea before counts are approximated through learned or discretized embodied features.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1606.01868" rel="noopener" target="_blank">Bellemare, M. G. et al. (2016). Unifying count-based exploration and intrinsic motivation. NeurIPS.</a></p>
-<p class="bib-annotation">The paper connects pseudo-counts to intrinsic rewards in high-dimensional spaces. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">The paper connects pseudo-counts to intrinsic rewards in high-dimensional spaces. It is the key bridge from literal state counts to density-model counts that can operate on visual observations.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1705.05363" rel="noopener" target="_blank">Pathak, D. et al. (2017). Curiosity-driven Exploration by Self-supervised Prediction. ICML.</a></p>
-<p class="bib-annotation">Intrinsic Curiosity Module rewards prediction progress in learned feature space. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Intrinsic Curiosity Module rewards prediction progress in learned feature space. Use it to study the difference between useful controllable surprise and nuisance prediction error.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1810.12894" rel="noopener" target="_blank">Burda, Y. et al. (2018). Exploration by Random Network Distillation. arXiv.</a></p>
-<p class="bib-annotation">RND is a practical intrinsic reward method based on prediction error. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">RND is a practical intrinsic reward method based on prediction error. Its appeal is implementation simplicity, but this section emphasizes logging where high error sends the embodied agent.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1911.00357" rel="noopener" target="_blank">Wijmans, E. et al. (2019). DD-PPO: Learning Near-Perfect PointGoal Navigators from 2.5 Billion Frames. ICLR.</a></p>
-<p class="bib-annotation">DD-PPO connects exploration to distributed simulation and navigation evaluation. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">DD-PPO connects exploration to distributed simulation and navigation evaluation. It is useful here for thinking about coverage, scale, and whether large rollout budgets change the exploration conclusion.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://aihabitat.org/docs/habitat-lab/" rel="noopener" target="_blank">Habitat-Lab documentation.</a></p>
-<p class="bib-annotation">Habitat-Lab provides embodied navigation and interaction environments. For this section, connect the source to intrinsic motivation, curiosity, count-based and novelty methods and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Habitat-Lab provides embodied navigation and interaction environments. Use it to test whether a novelty bonus increases map coverage and goal progress under the same seed panel.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>

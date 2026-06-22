@@ -34,15 +34,19 @@
 <h1>Section 55.4: Logging, monitoring, model updates</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"A robot does not care which metric looked best in a slide deck. It cares which command arrives next."</p>
+<blockquote class="epigraph"><p>For Logging, monitoring, model updates, deployment quality is measured by the command stream, safety monitor state, and replayable evidence behind each command.</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 55.4: Logging, monitoring, model updates, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-55-illustration-04.png"/>
+<img alt="Technical illustration for Section 55.4: Logging, monitoring, model updates." loading="lazy" src="images/chapter-55-illustration-04.png"/>
 <figcaption><strong>Figure 55.4A</strong>: Section 55.4: Logging, monitoring, model updates is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Logging, monitoring, model updates</strong> matters because logs and monitors make deployment scientifically inspectable. The section treats evaluation, uncertainty, safety, and deployment as one closed-loop contract rather than as separate checklist items.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make logging, monitoring, model updates operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
 </div>
 <h2>Problem First</h2>
 <p>Without structured logs, teams cannot tell whether a failure came from perception, planning, control, timing, model drift, or operator context.</p>
@@ -77,41 +81,37 @@
 <figcaption>The evidence contract for Logging, monitoring, model updates keeps the observation, estimate, action, monitor decision, and result artifact in one traceable path.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>Every deployment run emits time-aligned observations, actions, policy version, monitor state, latency, safety events, and update decisions into a queryable artifact.</p>
-<p>A compact formal view is $e_i = (x_i, a_i, m_i, r_i, z_i)$, where $x_i$ is the episode context, $a_i$ is the action trace, $m_i$ is the monitor trace, $r_i$ is the result vector, and $z_i$ is the saved artifact id. The section metric is computed from the same set of $e_i$ records, not from a stitched collection of unrelated runs.</p>
+<p>Observability is the difference between a repeatable incident review and a post hoc story. The deployment trace should align observations, estimated state, chosen action, model version, latency, monitor transitions, and operator interventions on a shared time axis.</p>
+<p>A useful observability tuple is</p>
+<p>$$o_i = (t_i, y_i, \hat s_i, a_i, v_i, q_i, m_i, u_i),$$</p>
+<p>where $v_i$ is the version id, $q_i$ is queue and latency telemetry, $m_i$ is the monitor state, and $u_i$ is any human intervention. Model updates should be promoted only if a canary or shadow evaluation shows gain without violating retained-skill or safety thresholds.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is observe, estimate, choose, constrain, execute, monitor, log, and review. Each verb has an owner in the deployment architecture and a field in the evaluation artifact.</p>
 </div>
 <h2>Worked Example</h2>
-<p>When a grasp update reduces success on reflective objects, a structured log can show whether the model changed, the camera exposure drifted, or the monitor threshold moved.</p>
-<p>The code below builds the evidence record before any model-specific claim is made. It is intentionally small so the metric and artifact contract are visible.</p>
-<pre><code class="language-python"># Create a same-artifact evidence record for Logging, monitoring, model updates.
-# The record keeps metrics, perturbations, and monitor state together.
-from dataclasses import dataclass, asdict
-import json
+<p>Suppose a grasp update improves carton picks but causes unexpected failures on reflective packaging. A deployment trace must answer whether the change came from model weights, input distribution drift, calibration drift, or monitor-threshold edits.</p>
+<pre><code class="language-python">required_fields = {
+    "timestamp", "obs_hash", "state_estimate", "action", "model_version",
+    "queue_age_ms", "monitor_state", "operator_event"
+}
+logged_fields = {
+    "timestamp", "obs_hash", "state_estimate", "action", "model_version",
+    "queue_age_ms", "monitor_state", "operator_event"
+}
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    panel: str
-    metric_contract: str
-    perturbation: str
-    monitor_state: str
-    artifact_id: str
-
-record = EvidenceRecord(
-    section="55.4",
-    panel="fixed rollout panel, seeds 0 to 9",
-    metric_contract="diagnostic_coverage = logged_required_fields / required_fields",
-    perturbation="policy update, changed object distribution, and monitor threshold drift",
-    monitor_state="normal, degraded, stopped, or recovery",
-    artifact_id="55_4_panel_v1.json",
-)
-
-print(json.dumps(asdict(record), indent=2))</code></pre>
-<div class="code-caption">Code Fragment 55.4.1 creates a same-artifact evidence record for Logging, monitoring, model updates, including the metric contract, perturbation panel, monitor state, and saved artifact id.</div>
-<p><strong>Expected output:</strong> the printed trace for Logging, monitoring, model updates should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+coverage = len(required_fields &amp; logged_fields) / len(required_fields)
+update_gate = {
+    "candidate_version": "grasp_v12",
+    "shadow_panel_passed": True,
+    "rollback_ready": True,
+    "diagnostic_coverage": coverage,
+}
+print(update_gate)</code></pre>
+<div class="code-output"><pre>{'candidate_version': 'grasp_v12', 'shadow_panel_passed': True, 'rollback_ready': True, 'diagnostic_coverage': 1.0}</pre></div>
+<div class="code-caption">Code Fragment 55.4.1 evaluates whether a candidate model update is observable enough to be promoted safely.</div>
+<p>The expected output is not just a green status. The key interpretation is that promotion is unjustified unless the update is both measurable and reversible. A candidate with improved task score but incomplete diagnostic coverage should still be rejected.</p>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Shadow, Canary, Promote, Or Roll Back</div><ol><li>Log all required fields for the current production version.</li><li>Run the candidate in shadow mode on the same observation stream.</li><li>Compare retained-skill metrics, new-task metrics, and monitor-trigger counts on one panel.</li><li>Promote to a canary slice only if rollback is already prepared.</li><li>Roll back immediately if safety events or retained-skill regressions cross threshold.</li></ol></div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built record is about 24 lines. In a production run, DVC, MLflow, Weights and Biases Artifacts, or a ROS 2 bag plus metadata file reduces the tracking code to a few calls while handling versioning, file storage, run ids, and reproducible retrieval. The hand-built version remains useful because it shows which fields the tool must preserve.</p>
@@ -126,7 +126,7 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>A model update without rollback evidence is an experiment on the deployment site.</p>
+<p>An update that changes weights, thresholds, and data preprocessing simultaneously is practically unreviewable. Separate those moves or the logs will not support causal diagnosis.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -154,19 +154,19 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 </table>
 </div>
 <h2>Cross-References</h2>
-<p>This section connects backward to <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-12-benchmarks-and-task-suites/index.html">Chapter 12 benchmark design</a> and <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20 sim-to-real transfer</a>, then forward to <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/index.html">Chapter 53 uncertainty and robustness</a> and <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/index.html">Chapter 54 safety barriers</a>. Use those links when the evaluation contract needs benchmark context, sim-to-real context, uncertainty checks, safety barriers, or deployment monitoring.</p>
+<p>For Logging, monitoring, model updates, connect benchmark design, sim-to-real transfer, uncertainty, and safety barriers through the deployment artifact that will be checked before release.</p>
 <div class="callout lab">
 <div class="callout-title">Lab: Build The Artifact First</div>
 <p>Create a JSON or Parquet artifact for five rollouts of Logging, monitoring, model updates. Include fields for configuration, seed, perturbation, metric values, monitor state, and a short failure label. Then rerun the same panel with one changed policy setting and verify that both methods can be compared row by row.</p>
 </div>
 <h2>Failure Analysis Pattern</h2>
-<p>When Logging, monitoring, model updates fails, assign the failure to perception, state estimation, planning, control, timing, data coverage, monitor design, or evaluation hygiene. Then rerun one controlled perturbation that isolates the suspected cause.</p>
+<p>When an update misbehaves, assign the failure to data drift, instrumentation gap, threshold drift, model regression, or release-process error. Then replay one canonical incident against both the previous and current version with identical telemetry collection.</p>
 </section>
 <div class="callout fun-note">
 <div class="callout-title">A Useful Annoyance</div>
-<p>If the artifact schema feels fussy, that is a good sign. It is cheaper for a spreadsheet to complain than for a robot to discover the missing field while moving.</p>
+<p>For Logging, monitoring, model updates, schema strictness is cheaper than discovering a missing field during a moving-robot trial; require the log before comparing outcomes.</p>
 </div>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Logging, monitoring, model updates: primary papers, official tool documentation, and chapter bibliography entries named in this part.</p><p class="bib-annotation">Use these sources to verify assumptions, implementation details, expected outputs, and evaluation artifacts.</p></div></section>
+
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Logging, monitoring, model updates is valuable when it changes the closed-loop decision and leaves behind evidence that another builder can audit.</p>
@@ -175,9 +175,10 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 <div class="callout-title">Exercise 55.4.1</div>
 <p>Design a same-artifact evaluation for this section. Specify the environment, rollout panel, seed plan, metric fields, monitor fields, one perturbation, and one rollback or recovery rule.</p>
 </div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Quigley, M. et al. ROS: an open-source Robot Operating System. ICRA Workshop, 2009.</p><p class="bib-annotation">Use for the robotics middleware lineage behind nodes, topics, services, bags, and deployment boundaries.</p></div><div class="bib-entry-card"><p class="bib-ref">OpenTelemetry project documentation. https://opentelemetry.io/docs/</p><p class="bib-annotation">Use for tracing, metrics, and logs when robot deployment evidence must connect software events to runtime behavior.</p></div></section>
 <div class="callout whats-next">
 <div class="callout-title">What's Next</div>
-<p>The next section reuses the same artifact discipline while changing the failure mode or deployment interface under study.</p>
+<p>After Logging, monitoring, model updates, the next section should reuse the artifact schema while changing one deployment interface or failure mode, so comparisons remain auditable.</p>
 </div>
 <nav class="chapter-nav">
 <a class="prev" href="section-55.3.html">Section 55.3: Edge vs. cloud-robot computation; asyn...</a>

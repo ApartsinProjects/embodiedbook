@@ -34,136 +34,154 @@
 <h1>Section 15.5: PPO in practice: the implementation details that matter</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"PPO in practice: the implementation details that matter matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 15.5: PPO in practice: the implementation details that matter, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-15-illustration-05.png"/>
-<figcaption><strong>Figure 15.5A</strong>: Section 15.5: PPO in practice: the implementation details that matter is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration showing PPO rollout records, frozen log probabilities, minibatch updates, and robot diagnostics connected in one loop." loading="lazy" src="images/chapter-15-illustration-05.png"/>
+<figcaption><strong>Figure 15.5A</strong>: PPO succeeds when rollout evidence, minibatch updates, and embodied diagnostics stay synchronized.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>PPO in practice: the implementation details that matter</strong> is one lens on policy gradient methods and PPO. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>PPO in practice</strong> is mostly disciplined bookkeeping. The clipped objective matters, but the difference between a stable embodied policy and a broken one often comes from rollout collection, old log probabilities, advantage normalization, value targets, entropy, and KL stopping.</p>
 </div>
-<p>It builds on the RL framing from <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, contrasts with off-policy learning in <a class="cross-ref" href="../module-16-value-based-and-off-policy-methods/index.html">Chapter 16: Value-Based and Off-Policy Methods</a>, and becomes easier to scale in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as the implementation checklist behind PPO: collect rollouts with the current policy, freeze the old probabilities, compute advantages, train for a limited number of epochs, and stop before the policy moves too far from the data.</p>
+</div>
+<p>For PPO in practice: the implementation details that matter, the PPO dependency is concrete: trajectory collection, advantage estimation, policy update, entropy term, and evaluation seed must be recorded together.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for PPO in practice: the implementation details that matter into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>PPO looks compact on paper, but practical implementations have a strict data lifecycle. Rollouts are collected by a fixed behavior policy. The optimizer then reuses that rollout for a small number of minibatch epochs. During those epochs, the <em>old</em> log probabilities must remain frozen, otherwise the ratio no longer compares the new policy to the behavior that generated the data.</p>
+<p>A typical PPO loss combines four pieces:</p>
+<p>$$L = L_{\mathrm{clip}} - c_{\mathrm{ent}}H(\pi_\theta) + c_v L_{\mathrm{value}},$$</p>
+<p>where $L_{\mathrm{clip}}$ is the actor objective, $H(\pi_\theta)$ encourages exploration, and $L_{\mathrm{value}}$ trains the critic. Implementations may also use value-function clipping and target-KL early stopping.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In PPO in practice: the implementation details that matter, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Freeze The Evidence</div>
+<p>The old log probability is part of the evidence record, not a value to recompute after the policy changes. If it drifts during training, PPO's ratio stops meaning "new policy divided by behavior policy."</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The rollout buffer is the center of the implementation. Each row should contain observation, action, reward, done flag, value estimate, old log probability, and enough metadata to interpret truncation and embodied failures. For recurrent policies or frame-stacked perception, the buffer also needs hidden states, masks, or observation histories.</p>
+<p>The training loop is deliberately conservative. Multiple epochs improve sample efficiency, but each epoch makes the policy less like the one that collected the data. Target KL, clip fraction, and entropy reveal when reuse has gone too far.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Most PPO bugs are mismatches: old and new log probabilities computed with different action transforms, advantages computed with the wrong termination convention, or value targets trained on rewards that were normalized differently from the actor loss.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 shows how a PPO rollout row keeps old log probabilities separate from values and rewards. The row is small, but it contains the fields that later make ratio clipping, GAE, and failure analysis possible.</p>
+<pre><code class="language-python"># Store the PPO rollout fields that must stay aligned.
+# Old log probabilities are frozen evidence from the behavior policy.
+from dataclasses import dataclass, asdict
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 15.5.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for PPO in practice: the implementation details that matter should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+@dataclass
+class PPORow:
+    observation_id: str
+    action: float
+    reward: float
+    value: float
+    old_log_prob: float
+    terminated: bool
+    truncated: bool
+    failure_label: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+row = PPORow("env03_step128", 0.41, 0.7, 0.52, -0.88, False, True, "time_limit")
+print(row.as_row())</code></pre>
+<div class="code-output">{'observation_id': 'env03_step128', 'action': 0.41, 'reward': 0.7, 'value': 0.52, 'old_log_prob': -0.88, 'terminated': False, 'truncated': True, 'failure_label': 'time_limit'}</div>
+<p>The expected output is one rollout row whose critical feature is the combination <code>terminated=False</code> and <code>truncated=True</code>. That tells the PPO implementation to treat the boundary as a time limit case, not as a physical terminal failure, when constructing bootstrap targets.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>PPORow</code> stores <code>old_log_prob</code>, <code>value</code>, and separate <code>terminated</code> and <code>truncated</code> flags. Those fields determine whether the update computes ratios correctly and whether GAE bootstraps at the rollout boundary.</div>
+<p>The <code>time_limit</code> label is not decoration. If this row is treated as terminal failure, the value target will be too low. If it is treated as an ordinary truncation, the critic can bootstrap from the next value estimate.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Stable-Baselines3 is a good production starting point for standard Gymnasium-style tasks. CleanRL is better when the goal is to inspect every line of PPO logic. RSL-RL and rl_games are common in high-throughput simulated robotics because they emphasize vectorized rollout collection and GPU-friendly training.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Collect rollouts with the current policy in vectorized environments, then freeze actions, values, rewards, and old log probabilities.</li>
+<li>Compute GAE with correct handling for termination versus truncation.</li>
+<li>Shuffle the rollout into minibatches and train for a small number of epochs.</li>
+<li>Log policy loss, value loss, entropy, approximate KL, clip fraction, explained variance, and safety failures.</li>
+<li>Use target-KL stopping or learning-rate reduction when the update moves too far.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>Reward normalization, observation normalization, and action squashing must be applied consistently during rollout and training. A mismatch can produce smooth loss curves while the deployed policy receives commands in a different scale.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using PPO in practice: the implementation details that matter should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>In massively parallel locomotion, thousands of simulated robots may collect short rollout fragments. PPO needs the fragments to preserve per-environment resets, timeout masks, and old log probabilities so minibatch training does not mix incompatible evidence.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
-<p>PPO in practice: the implementation details that matter is where the agent learns that optimism is not an evaluation metric. The simulator may applaud every rollout, but the hardware still asks for the receipt: logs, perturbations, and one failure case that explains what happened.</p>
+<p>PPO's paperwork is the method. If the old log probabilities, masks, and value targets are wrong, the clipped objective is solving the wrong problem with impressive confidence.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Large-scale robot training increasingly treats PPO as part of a broader data engine: demonstrations seed behavior, simulators generate perturbation coverage, and policy-gradient updates refine closed-loop robustness. The research frontier is less about the PPO equation alone and more about reliable data pipelines around it.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for PPO in practice: the implementation details that matter? If not, the system boundary is still too vague.</p>
+<p>Can you name which PPO fields are collected once, which are recomputed each epoch, and which diagnostics would catch stale-data overuse before the next rollout?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Policy Gradient Methods and PPO, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>PPO's popularity comes from a useful compromise: it is less exact than TRPO but much easier to implement and scale. That compromise only works when the implementation keeps the assumptions visible. The old policy must be identifiable, the rollout horizon must be known, and the environment interface must distinguish failure from administrative truncation.</p>
+<p>Embodied tasks also make rollout collection part of the method. A batch from easy resets can make a policy look stable while rare contacts remain unsolved. A batch from aggressive perturbations can overstate failure. Production PPO evaluations should report the reset distribution, perturbation panel, and failure labels together with reward.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">PPO Implementation Details That Change Results</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Detail</th><th>Why It Matters</th><th>Diagnostic</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>PPO in practice: the implementation details that matter</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>PPO in practice: the implementation details that matter</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>PPO in practice: the implementation details that matter</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>PPO in practice: the implementation details that matter</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>PPO in practice: the implementation details that matter</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Old log-prob storage</td><td>Defines the behavior policy denominator in the ratio.</td><td>Ratio histogram centered near 1 early in each update.</td></tr>
+<tr><td>Advantage normalization</td><td>Controls actor loss scale across reward regimes.</td><td>Raw and normalized advantage plots.</td></tr>
+<tr><td>Value clipping</td><td>Prevents critic targets from jumping too far in one update.</td><td>Value loss and explained variance.</td></tr>
+<tr><td>Entropy coefficient</td><td>Maintains exploration pressure.</td><td>Entropy and action standard deviation traces.</td></tr>
+<tr><td>Target KL</td><td>Limits stale-data overuse during epochs.</td><td>Approximate KL per epoch.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>Code Fragment 2 demonstrates target-KL early stopping across PPO epochs. The exact threshold is task-dependent, but the pattern is simple: stop reusing the rollout once the new policy has moved too far from it.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Run a deterministic smoke test that checks buffer shapes and termination masks before any long training run.</li>
+<li>Log the first minibatch's ratio, advantage, and value-target statistics every time the implementation changes.</li>
+<li>Use the same evaluation script for checkpoints produced by different PPO variants.</li>
+<li>Save videos or state traces at fixed training intervals, not only after reward improves.</li>
+<li>Keep one compact baseline configuration that can train on CartPole or a simple locomotion task for regression testing.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for PPO in practice: the implementation details that matter.
-# The same schema should be used for the baseline and the library shortcut.
-from dataclasses import dataclass, asdict
+<pre><code class="language-python"># Stop PPO epochs when approximate KL exceeds the target.
+# This prevents stale rollout data from driving a large policy jump.
+approx_kls = [0.004, 0.009, 0.018, 0.041]
+target_kl = 0.02
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
-
-record = EvidenceRecord(
-    section="15.5",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
-)
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 15.5.2 records the method-specific evidence schema for testing PPO in practice: the implementation details that matter with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+for epoch, kl in enumerate(approx_kls, start=1):
+    print("epoch", epoch, "kl", kl)
+    if kl > 1.5 * target_kl:
+        print("early stop at epoch", epoch)
+        break</code></pre>
+<div class="code-output">epoch 1 kl 0.004
+epoch 2 kl 0.009
+epoch 3 kl 0.018
+epoch 4 kl 0.041
+early stop at epoch 4</div>
+<p>The expected output shows KL drift accumulating over repeated epochs on the same rollout batch until it crosses the <code>target_kl</code> threshold at epoch 4. Readers should interpret the early stop as a healthy guardrail, not as a failure, because it prevents PPO from moving too far away from the policy that generated the data.</p>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>target_kl</code> rule stops minibatch reuse after epoch 4 because the update has moved too far from the rollout policy. This diagnostic is especially important in embodied tasks, where a large policy jump may not look dangerous until the next rollout.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to mark which PPO quantities are frozen rollout evidence and which are recomputed during each training epoch. The distinction catches many implementation bugs before they reach long experiments.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When PPO fails in practice, isolate the layer. Buffer bugs show up as impossible ratios, wrong termination masks, or value targets that ignore timeouts. Optimization bugs show up as KL spikes, high clip fractions, or entropy collapse. Embodied-interface bugs show up as reward improvement without matching improvements in videos, state traces, or safety margins.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For PPO in practice: the implementation details that matter, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For PPO implementation comparisons, co-compute return, success, safety violations, KL, clip fraction, entropy, value error, explained variance, truncation counts, and failure labels in one run on one configuration. A table that mixes reward from one run with KL or safety diagnostics from another run is not a valid PPO comparison.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>PPO in practice: the implementation details that matter is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>PPO is not only a clipped equation. It is a disciplined data pipeline where rollout evidence, advantage estimates, minibatch updates, and embodied diagnostics must stay aligned.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 15.5.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.5.1</div><p>Design a PPO rollout buffer schema for a vectorized robot simulator. Include fields for observations, actions, old log probabilities, values, rewards, termination, truncation, actuator clipping, and failure labels, then explain which fields are frozen during training.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned PPO in practice: the implementation details that matter into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-15.6.html">Section 15.6</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned PPO into a concrete rollout, advantage, minibatch, and diagnostics pipeline. Next, <a href="section-15.6.html">Section 15.6</a> examines reward shaping, the design choice that often decides what PPO actually learns.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

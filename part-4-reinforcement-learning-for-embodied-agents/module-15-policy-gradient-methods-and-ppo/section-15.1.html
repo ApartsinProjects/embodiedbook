@@ -34,132 +34,164 @@
 <h1>Section 15.1: Direct policy optimization; stochastic policies</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Direct policy optimization; stochastic policies matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 15.1: Direct policy optimization; stochastic policies, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-15-illustration-01.png"/>
-<figcaption><strong>Figure 15.1A</strong>: Section 15.1: Direct policy optimization; stochastic policies is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration connecting stochastic action sampling, embodied feedback, and a policy update for direct policy optimization." loading="lazy" src="images/chapter-15-illustration-01.png"/>
+<figcaption><strong>Figure 15.1A</strong>: A stochastic policy turns exploration into evidence by saving what it sampled, how likely it was, and what happened afterward.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Direct policy optimization; stochastic policies</strong> is one lens on policy gradient methods and PPO. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Direct policy optimization</strong> trains the policy itself, not a value table that later chooses actions. Stochastic policies matter because an embodied robot must explore contact-rich behavior, represent uncertainty in perception, and keep a usable log probability for every action it took.</p>
 </div>
-<p>It builds on the RL framing from <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, contrasts with off-policy learning in <a class="cross-ref" href="../module-16-value-based-and-off-policy-methods/index.html">Chapter 16: Value-Based and Off-Policy Methods</a>, and becomes easier to scale in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as the bridge from value-based RL to policy gradients: define the policy distribution, sample actions from it, score the sampled behavior, and update the parameters toward trajectories that earned higher return.</p>
+</div>
+<p>For Direct policy optimization; stochastic policies, the PPO dependency is concrete: trajectory collection, advantage estimation, policy update, entropy term, and evaluation seed must be recorded together.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for direct policy optimization; stochastic policies into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>Value-based methods ask, "Which action has the highest estimated value?" Policy-gradient methods ask a different question: "How should the parameters of the action distribution move so future sampled behavior becomes more successful?" That shift is important in embodied control because the action may be continuous, multimodal, or constrained by hardware limits.</p>
+<p>The object we optimize is the expected discounted return:</p>
+<p>$$J(\theta)=\mathbb{E}_{\tau\sim\pi_\theta}\left[\sum_{t=0}^{T-1}\gamma^t r_t\right].$$</p>
+<p>Here $\theta$ are policy parameters, $\tau$ is a trajectory of observations, actions, and rewards, $\pi_\theta(a_t \mid o_t)$ is the probability or density assigned to an action, and $\gamma$ discounts delayed consequences. Direct optimization means we adjust $\theta$ to increase $J(\theta)$ rather than first learning a separate action-value function and acting greedily from it.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In direct policy optimization; stochastic policies, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Why Stochastic Policies Are Not Optional</div>
+<p>A deterministic policy can only be judged by the action it already chose. A stochastic policy gives the learner a local experiment: it knows how probable the chosen action was, so it can increase that probability after good outcomes and decrease it after bad outcomes.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The policy is a distribution, not a lookup table. For a discrete mobile robot action set, $\pi_\theta$ might be a softmax over forward, left, right, and stop. For a manipulation controller, it might be a Gaussian over joint velocity commands with a learned mean and standard deviation. In both cases, the policy must expose two things for training: the sampled action and the log probability of that exact action.</p>
+<p>The central intuition is credit assignment through sampling. If a robot nudges a drawer handle and the drawer opens later, the update cannot differentiate through the drawer physics, contact impulses, camera exposure, or environment reset. It can still differentiate through the policy's own probability of the sampled motion. That is the foothold used by REINFORCE and PPO.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Direct policy optimization turns rollout data into pairs of log probabilities and returns. The update says, in effect, "actions that appeared in high-return trajectories should become more likely in similar observations, and actions from low-return trajectories should become less likely."</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 below shows the smallest useful contrast: a deterministic controller always chooses the largest probability action, while a stochastic controller samples from the whole distribution and records the probability of what it did.</p>
+<pre><code class="language-python"># Compare greedy action selection with stochastic sampling.
+# The sampled action keeps a log probability, which policy gradients need.
+import math
+import random
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 15.1.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Direct policy optimization; stochastic policies should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+random.seed(7)
+actions = ["move_left", "move_right", "stop"]
+logits = [0.2, 1.4, -0.7]
+
+exp_logits = [math.exp(x) for x in logits]
+total = sum(exp_logits)
+probs = [x / total for x in exp_logits]
+
+greedy_action = actions[probs.index(max(probs))]
+sampled_action = random.choices(actions, weights=probs, k=1)[0]
+sampled_prob = probs[actions.index(sampled_action)]
+
+print("policy probabilities:", dict(zip(actions, [round(p, 3) for p in probs])))
+print("greedy action:", greedy_action)
+print("sampled action:", sampled_action, "log_prob:", round(math.log(sampled_prob), 3))</code></pre>
+<div class="code-output">policy probabilities: {'move_left': 0.212, 'move_right': 0.702, 'stop': 0.086}
+greedy action: move_right
+sampled action: move_right log_prob: -0.353</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The softmax policy assigns probabilities to <code>move_left</code>, <code>move_right</code>, and <code>stop</code>. The sampled action carries a <code>log_prob</code>, which is the training handle used later by REINFORCE and PPO.</div>
+<p>The worked example is small, but it shows the contract. The policy must not only choose an action; it must remember how surprising that action was under the current parameters. Without that record, the optimizer cannot say whether the action should become more or less likely after the return is known.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical experiments, Gymnasium provides the environment interface, and libraries such as CleanRL, Stable-Baselines3, RSL-RL, and rl_games keep the policy distribution, action sampling, and log-probability bookkeeping consistent. That does not remove the need to understand the contract; it keeps small bookkeeping errors from becoming training failures.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Choose the policy distribution to match the actuator: categorical for discrete actions, Gaussian or squashed Gaussian for continuous commands.</li>
+<li>Log observations, sampled actions, rewards, terminations, and old log probabilities for every rollout step.</li>
+<li>Keep exploration physically plausible by bounding actions and standard deviations before the command reaches the controller.</li>
+<li>Evaluate with the same initial states and perturbations whenever two policy updates are compared.</li>
+<li>Separate policy failure from execution failure by logging controller saturation, contact slips, timeouts, and safety stops.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A policy can look stochastic in code while behaving deterministically in the robot. This happens when the action standard deviation collapses, action clipping hides large samples, or a low-level controller smooths every command into the same motion.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using direct policy optimization; stochastic policies should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a quadruped learning rough-terrain locomotion, a stochastic policy can try slightly different foot placements from the same body pose. The rollout log should preserve the sampled footstep command, its log probability, terrain patch features, slip events, and final stability score.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A stochastic policy is not indecisive. It is keeping receipts for the choices it made, so the optimizer can reward the useful experiments and retire the expensive ones.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Current embodied-policy research often combines stochastic policy gradients with demonstrations, offline datasets, safety filters, and diffusion-style action generators. The open question is how to preserve useful exploration while keeping real hardware inside safe contact, torque, and recovery limits.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for direct policy optimization; stochastic policies? If not, the system boundary is still too vague.</p>
+<p>For a robot arm policy, can you name the action distribution, the actuator bounds, the log-probability field saved in the rollout buffer, and the failure mode that would make the recorded probability misleading?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Policy Gradient Methods and PPO, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>A direct policy optimizer only sees the consequences of actions that were actually sampled. That makes distribution design a systems decision, not a cosmetic modeling choice. Too little entropy prevents discovery; too much entropy spends rollouts on unsafe or uninformative behavior.</p>
+<p>For embodied agents, the action distribution also sits between learning and control. A Gaussian policy over joint velocity commands may sample a value that the safety layer clips. If training records the unclipped log probability but the robot executes the clipped command, the update credits the wrong action. The implementation must log both the policy sample and the executed command.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Policy Distribution Choices</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Action Space</th><th>Policy Form</th><th>Embodied Caution</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Direct policy optimization; stochastic policies</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Direct policy optimization; stochastic policies</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Direct policy optimization; stochastic policies</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Direct policy optimization; stochastic policies</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Direct policy optimization; stochastic policies</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Discrete mode choice</td><td>Categorical softmax</td><td>Make invalid actions impossible before sampling, not after the fact.</td></tr>
+<tr><td>Joint velocity or torque</td><td>Gaussian with learned mean and scale</td><td>Track clipped commands because actuator limits change what the world receives.</td></tr>
+<tr><td>Bounded continuous command</td><td>Tanh-squashed Gaussian</td><td>Account for the squashing transform when computing log probabilities.</td></tr>
+<tr><td>High-level skill selection</td><td>Hierarchical categorical policy</td><td>Log the selected skill and the low-level controller outcome together.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation treats action sampling as part of the evidence artifact. Code Fragment 2 sketches the fields a rollout buffer needs before PPO or REINFORCE can make a valid policy-gradient update.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Store the observation before action sampling, not a later state estimate after the controller has moved.</li>
+<li>Store the sampled action, executed action, old log probability, reward, value estimate, and termination flag in one row.</li>
+<li>Record the random seed and policy version that produced the rollout.</li>
+<li>Reject rollout rows where safety clipping or controller failure makes the training target ambiguous, or mark them with an explicit failure label.</li>
+<li>Compare policies only when rollouts use the same reset distribution and perturbation suite.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Direct policy optimization; stochastic policies.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Define the rollout row that direct policy optimization needs.
+# Store both sampled and executed actions so safety clipping is visible.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class RolloutRow:
+    observation_id: str
+    sampled_action: float
+    executed_action: float
+    old_log_prob: float
+    reward: float
+    clipped_by_safety: bool
 
-record = EvidenceRecord(
-    section="15.1",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+row = RolloutRow(
+    observation_id="episode_0042_step_0017",
+    sampled_action=1.35,
+    executed_action=1.00,
+    old_log_prob=-0.42,
+    reward=0.8,
+    clipped_by_safety=True,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 15.1.2 records the method-specific evidence schema for testing Direct policy optimization; stochastic policies with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(row.as_row())</code></pre>
+<div class="code-output">{'observation_id': 'episode_0042_step_0017', 'sampled_action': 1.35, 'executed_action': 1.0, 'old_log_prob': -0.42, 'reward': 0.8, 'clipped_by_safety': True}</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>RolloutRow</code> separates <code>sampled_action</code> from <code>executed_action</code>. That distinction matters because policy-gradient math credits the sampled action, while the embodied system may have executed a clipped command.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Before training, inspect ten rollout rows by hand. If a human cannot explain which action was sampled, which command reached the actuator, and why the reward was assigned, the policy-gradient update is not yet trustworthy.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When direct policy optimization fails, first inspect the action distribution before blaming the optimizer. Check entropy, action clipping, invalid-action masking, controller saturation, and whether high-return episodes came from meaningful exploration or lucky resets. Then rerun a small perturbation panel with fixed seeds so the policy change is compared against the same embodied conditions.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Direct policy optimization; stochastic policies, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For direct policy optimization, compare only construct-matched metrics co-computed in one pass on one configuration: same reset states, same policy checkpoint, same action bounds, same perturbation suite, and the same success definition. Save returns, action entropy, clipping rate, controller failures, and videos or state logs in one artifact so the policy improvement and the embodied behavior are backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Direct policy optimization; stochastic policies is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Direct policy optimization works when the policy distribution, rollout buffer, and executed commands describe the same behavior. If those three records diverge, the gradient is learning from a story the robot did not actually enact.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 15.1.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.1.1</div><p>Choose a discrete or continuous embodied task and write the policy distribution contract. Include the action bounds, sampling rule, log-probability field, safety clipping rule, and one diagnostic plot that would reveal exploration collapse.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned direct policy optimization; stochastic policies into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-15.2.html">Section 15.2</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section established the policy distribution and rollout record that direct optimization needs. Next, <a href="section-15.2.html">Section 15.2</a> derives the likelihood-ratio estimator that turns those saved log probabilities into a policy-gradient update.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>

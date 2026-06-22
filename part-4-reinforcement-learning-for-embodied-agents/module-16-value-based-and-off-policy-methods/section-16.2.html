@@ -34,9 +34,9 @@
 <h1>Section 16.2: Replay buffers and target networks</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Replay buffers and target networks matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 16.2: Replay buffers and target networks, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-16-illustration-02.png"/>
+<img alt="Technical illustration for Section 16.2: Replay buffers and target networks." loading="lazy" src="images/chapter-16-illustration-02.png"/>
 <figcaption><strong>Figure 16.2A</strong>: Section 16.2: Replay buffers and target networks is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
@@ -44,119 +44,147 @@
 <div class="callout-title">Big Picture</div>
 <p><strong>Replay buffers and target networks</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
 </div>
-<p>It contrasts with the policy-gradient path in <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>, depends on simulator interfaces from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/index.html">Chapter 10: Environments with Gymnasium and PettingZoo</a>, and sets up GPU-scale replay choices in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make replay buffers and target networks operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
+</div>
+<p>For Replay buffers and target networks, off-policy learning depends on replay semantics, environment API, target computation, and GPU-scale batching being fixed before comparison with policy-gradient methods.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for replay buffers and target networks into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>Replay buffers and target networks solve two different instability problems in deep Q-learning. Replay buffers slow down the data stream by training on stored transitions rather than only the newest correlated frames. Target networks slow down the learning target by using older parameters to compute the bootstrap value.</p>
+<p>The key question is practical: is the agent learning from a representative memory of interaction, or from a recent slice of behavior that overrepresents one hallway, one object pose, one lighting condition, or one failure mode?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In replay buffers and target networks, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Memory Is Part Of The Algorithm</div>
+<p>A replay buffer is not passive storage. Its capacity, sampling rule, freshness, and episode mix define the training distribution that the Q network sees, so buffer design is part of the learning algorithm.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Without replay, consecutive updates come from consecutive frames. In a robot task, that means many nearly identical observations while the arm approaches the same object. Gradient descent then overfits the most recent local experience and forgets rare but important transitions.</p>
+<p>A replay buffer stores tuples $(o_t, a_t, r_t, o_{t+1}, d_t)$ and samples mini-batches from that store. Uniform replay reduces short-range correlation. Prioritized replay samples high-error transitions more often, which can speed learning but needs correction weights because the sampled distribution no longer matches the buffer distribution.</p>
+<p>A target network addresses a different problem. The DQN loss uses a target of the form $r + \gamma \max_{a'}Q_{\theta^-}(o',a')$. If $\theta^-$ equals the online network after every update, the model changes both sides of its own target at once. Copying online weights into $\theta^-$ every fixed interval, or slowly averaging them with Polyak updates, makes the target move on a slower time scale.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Replay controls which transitions train the critic. The target network controls which critic computes the next-state value. Separating these roles helps debug whether instability came from biased data, stale targets, or overconfident bootstrap values.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 shows the two clocks in a small replay example: the online estimate changes every update, while the target estimate is copied only at a synchronization step.</p>
+<pre><code class="language-python"># Simulate replay sampling and a target-network synchronization clock.
+# The target estimate stays fixed until the sync interval is reached.
+replay_rewards = [-0.2, 0.0, 1.0, -0.1]
+online_q = 0.30
+target_q = 0.50
+gamma = 0.90
+alpha = 0.20
+sync_interval = 3
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 16.2.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Replay buffers and target networks should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for update, reward in enumerate(replay_rewards, start=1):
+    td_target = reward + gamma * target_q
+    online_q += alpha * (td_target - online_q)
+    if update % sync_interval == 0:
+        target_q = online_q
+    print(update, f"online={online_q:.3f}", f"target={target_q:.3f}")</code></pre>
+<div class="code-output">1 online=0.290 target=0.500
+2 online=0.322 target=0.500
+3 online=0.548 target=0.548
+4 online=0.517 target=0.548</div>
+<p>The expected output should be read as a lagged-target trace. The target value stays frozen through updates 1 and 2, synchronizes at update 3, and then remains fixed again while the online critic continues to move, which is the stabilizing behavior target networks are designed to create.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The variables <code>online_q</code> and <code>target_q</code> expose the separation between learning and target construction. The third update copies the online estimate into the target estimate, which changes the bootstrap value used by later replay samples.</div>
+<p>The point is not that update 3 is special, it is that the synchronization schedule is an experimental condition. In an embodied run, a target update that is too frequent can chase noise, while a target update that is too slow can train against stale dynamics after a curriculum or domain shift.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>CleanRL is useful for inspecting replay and target-network details in a compact script. Stable-Baselines3 and Tianshou are useful when you need maintained replay buffers, vectorized collectors, checkpointing, and logging. Keep the buffer statistics visible even when a library owns the implementation.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Choose buffer capacity by task diversity, not only by memory budget.</li>
+<li>Log the age distribution of sampled transitions.</li>
+<li>Track which environment conditions appear in replay batches.</li>
+<li>Record the target-network sync interval or Polyak coefficient with every run.</li>
+<li>Recompute metrics after perturbations using the same replay and target settings.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>Replay can make old behavior look more important than it is. A buffer full of early random exploration may keep training the critic on collisions that the current policy no longer produces, while a buffer full of recent easy successes may erase rare recovery cases.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using replay buffers and target networks should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a warehouse robot, replay should preserve rare transitions such as wheel slip, blocked aisles, and near-collision recovery. If uniform replay almost never samples those events, the value function can look stable during average episodes and still fail under the exact conditions that matter operationally.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When replay buffers and target networks feel abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Replay research for embodied agents increasingly studies data curation, offline-to-online replay, and coverage-aware sampling. The frontier question is how to reuse large logs without letting stale, biased, or unsafe behavior dominate the critic.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for replay buffers and target networks? If not, the system boundary is still too vague.</p>
+<p>Can you report the replay capacity, sampling rule, transition age distribution, target update rule, and the environment conditions represented in sampled batches? If not, the critic's training distribution is underspecified.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Value-Based and Off-Policy Methods, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Replay buffers turn interaction history into a training dataset, so they inherit every dataset problem: imbalance, stale labels, missing coverage, and selection bias. Target networks turn a moving regression target into a slower one, so they inherit a control problem: how quickly should the target follow the online critic?</p>
+<p>The embodied version of this tradeoff is concrete. A quadruped trained on replay from flat terrain may learn stable values for flat steps, then extrapolate poorly on rubble. A target network synced during a terrain curriculum may also lag behind the current dynamics. Logging buffer composition and target lag makes these failure modes visible.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Replay buffers and target networks</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Replay buffers and target networks</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Replay buffers and target networks</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Replay buffers and target networks</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Replay buffers and target networks</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>CleanRL</td><td>Readable replay implementation</td><td>Use it to inspect buffer insertion, random sampling, target sync, and loss computation in one script.</td></tr><tr><td>Stable-Baselines3</td><td>Maintained DQN replay stack</td><td>Use it for baselines where checkpointing, vectorized collection, and logging matter.</td></tr><tr><td>Tianshou</td><td>Collector and buffer variants</td><td>Use it to compare replay policies while keeping data collection code consistent.</td></tr><tr><td>MuJoCo</td><td>Controlled perturbation source</td><td>Use it to label replay by friction, mass, contact, and terrain condition.</td></tr><tr><td>ROS 2 bags</td><td>Real interaction logs</td><td>Use them cautiously, with explicit coverage labels before mixing hardware logs into replay.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation treats replay metadata as first-class evidence. Code Fragment 2 creates a compact buffer audit row that records not only what was sampled, but when it was collected and which condition it came from.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Assign each transition an episode id, collection step, environment condition, and behavior policy tag.</li>
+<li>Compute batch summaries for transition age, reward mix, terminal fraction, and condition coverage.</li>
+<li>Store the target-network update rule in the same artifact as the training metrics.</li>
+<li>Plot TD error by condition, not only by global step.</li>
+<li>Reject comparisons where methods saw different replay condition mixes.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Replay buffers and target networks.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one replay audit row for an off-policy update.
+# The metadata makes stale or imbalanced sampled transitions visible.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
+class ReplayAuditRecord:
+    transition_id: str
+    age_steps: int
+    condition: str
+    behavior_policy: str
     action: str
-    metric: str
-    perturbation: str
+    reward: float
+    target_sync_step: int
 
-record = EvidenceRecord(
-    section="16.2",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = ReplayAuditRecord(
+    transition_id="episode_041_step_018",
+    age_steps=12400,
+    condition="low_light_wheel_slip",
+    behavior_policy="epsilon_greedy_0.20",
+    action="turn_left",
+    reward=-1.0,
+    target_sync_step=12000,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 16.2.2 records the method-specific evidence schema for testing Replay buffers and target networks with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'transition_id': 'episode_041_step_018', 'age_steps': 12400, 'condition': 'low_light_wheel_slip', 'behavior_policy': 'epsilon_greedy_0.20', 'action': 'turn_left', 'reward': -1.0, 'target_sync_step': 12000}</div>
+<p>The expected output is one replay audit row whose interpretation depends on provenance, not only reward. Here the transition is already 12,400 steps old and was collected before the latest target sync, so a reader should treat it as potentially stale evidence from a shifted condition rather than as a fresh sample from the current policy regime.</p>
+<div class="code-caption"><strong>Code Fragment 2:</strong> <code>ReplayAuditRecord</code> connects one sampled transition to its age, condition, behavior policy, and target sync step. Those fields reveal whether a batch is training the critic on current task evidence or on stale off-policy leftovers.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the Replay buffers and target networks evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When replay-based learning fails, separate buffer failure from target failure. Buffer failure means the sampled data lacks the condition or action coverage needed by the policy. Target failure means the bootstrap value is too stale, too noisy, or too optimistic. The fix depends on which clock broke.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Replay buffers and target networks, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For replay-buffer experiments, compare methods only when sampled batches are audited from the same stored transition panel or from collectors with the same condition schedule. Report return together with replay age, terminal fraction, condition coverage, and target-update rule so the performance number has a data-distribution explanation.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Replay buffers and target networks is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Replay buffers stabilize DQN by changing the training distribution, and target networks stabilize DQN by slowing the bootstrap target. Both are algorithmic choices that must be logged, audited, and stress-tested under embodied distribution shift.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 16.2.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 16.2.1</div><p>Design a replay audit for a robot navigation task. Specify buffer capacity, sampling rule, target update rule, transition metadata, and one replay imbalance that could make evaluation look better than deployment.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned replay buffers and target networks into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-16.3.html">Section 16.3</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

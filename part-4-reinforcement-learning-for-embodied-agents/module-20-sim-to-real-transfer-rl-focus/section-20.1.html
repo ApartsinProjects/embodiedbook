@@ -34,129 +34,147 @@
 <h1>Section 20.1: The reality gap revisited</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The reality gap revisited matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 20.1: The reality gap revisited, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-20-illustration-01.png"/>
-<figcaption><strong>Figure 20.1A</strong>: Section 20.1: The reality gap revisited is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration showing a simulated robot plan meeting a physical robot run, with sensor noise, contact slip, and delayed actuation making the same action behave differently." loading="lazy" src="images/chapter-20-illustration-01.png"/>
+<figcaption><strong>Figure 20.1A</strong>: The reality gap is not one crack in the simulator. It is the combined effect of perception, dynamics, timing, contact, and evaluation mismatches showing up in the same closed loop.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>The reality gap revisited</strong> is one lens on sim-to-real transfer (RL focus). We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>The reality gap</strong> is the difference between the Markov decision process used for training and the physical process that receives the deployed policy. In reinforcement learning, this gap matters because a policy exploits whatever regularities make reward easy in simulation, including regularities the real robot will never provide.</p>
 </div>
-<p>It builds on domain randomization in <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/index.html">Chapter 13: Domain Randomization and Synthetic Data</a>, uses simulator details from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>, and hands off to demonstration learning in <a class="cross-ref" href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/index.html">Chapter 21: Imitation Learning Foundations</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a diagnostic chain: first name which part of the loop differs between simulation and hardware, then choose the perturbation that exposes that difference, then save a rollout artifact that lets another team reproduce the failure.</p>
+</div>
+<p>For The reality gap revisited, sim-to-real transfer should name the randomized variables, simulator assumptions, real-world measurement, and demonstration-learning handoff in one transfer ledger.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for the reality gap revisited into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section turns the reality gap from a slogan into a set of measurable mismatches. The most common gaps are observation mismatch, transition mismatch, actuator mismatch, timing mismatch, contact mismatch, and evaluation mismatch. Each one creates a different debugging question.</p>
+<p>The key question is practical: when a policy succeeds in simulation and fails on hardware, which interface changed enough to invalidate the learned action?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In the reality gap revisited, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A sim-to-real policy fails for a reason that can usually be localized. Treat "the reality gap" as a failure label only temporarily, then split it into sensor, dynamics, actuator, timing, contact, and metric gaps.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>A useful formalization compares the simulator transition model $P_{\text{sim}}(s_{t+1}\mid s_t,a_t)$ with the hardware transition model $P_{\text{real}}(s_{t+1}\mid s_t,a_t)$. The policy never sees these distributions directly. It experiences them as different next observations, different rewards, and different safety margins after the same nominal action.</p>
+<p>The gap is load-bearing when it changes the policy ranking: action $a_1$ looks better than action $a_2$ in simulation, but the ordering reverses on the robot. Small parameter errors matter most when they push the policy across a contact threshold, actuator limit, sensor blind spot, or termination condition.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is a mismatch cascade. A camera pose estimate is late by two frames, the policy commands torque for the old pose, the motor clips the command, the contact model overestimates friction, and the evaluator counts a brief touch as success. The robot does not see five small errors. It sees one failed rollout.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 20.1.1 below shows a tiny diagnostic for a pushing policy. It compares the same commanded push in simulation and on hardware, then labels the dominant gap instead of hiding the failure behind one success rate.</p>
+<pre><code class="language-python"># Compare a simulated push with a hardware push using the same command.
+# The gap label points to the interface that changed the rollout outcome.
+sim_trace = {"slip_cm": 0.4, "settle_ms": 110, "success": True}
+real_trace = {"slip_cm": 2.1, "settle_ms": 190, "success": False}
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 20.1.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for The reality gap revisited should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+if real_trace["slip_cm"] - sim_trace["slip_cm"] > 1.0:
+    gap = "contact and friction"
+elif real_trace["settle_ms"] - sim_trace["settle_ms"] > 50:
+    gap = "actuator delay"
+else:
+    gap = "evaluation or observation"
+
+print(f"sim_success={sim_trace['success']}, real_success={real_trace['success']}")
+print(f"dominant_gap={gap}")</code></pre>
+<div class="code-output">sim_success=True, real_success=False
+dominant_gap=contact and friction</div>
+<div class="code-caption">Code Fragment 20.1.1 turns a failed transfer into a diagnosis by comparing <code>slip_cm</code>, <code>settle_ms</code>, and <code>success</code> under the same command. The important move is not the threshold itself, but the habit of storing enough trace fields to name the failure mechanism.</div>
+<p><strong>Expected output:</strong> a useful reality-gap diagnostic reports the simulator outcome, the hardware outcome, and the suspected mismatch category. If the trace contains only final reward, the team cannot tell whether to fix sensing, dynamics, actuation, timing, or evaluation.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Use Gymnasium or Isaac Lab to enforce a common rollout schema, MuJoCo or Drake when explicit dynamics and contact assumptions must be inspected, and ROS 2 bags for hardware traces. The library shortcut is not "train and trust." It is "log the same fields in sim and real so the gap can be localized."</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Write the simulated MDP assumptions: state variables, observation noise, transition parameters, actuator model, contact model, and termination rule.</li>
+<li>Record the hardware interface with the same fields: sensor timestamps, command timestamps, controller status, measured motion, safety events, and success label.</li>
+<li>Run paired rollouts with the same initial condition family and the same commanded policy checkpoint.</li>
+<li>Label failures by the first interface that diverges enough to change the action outcome.</li>
+<li>Repair the narrowest mismatch first, then rerun the paired diagnostic before changing the policy architecture.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to treat sim-to-real as a single scalar transfer score. A high simulator reward can coexist with a wrong contact model, a delayed motor response, and an evaluator that rewards a state the hardware cannot safely reach.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using the reality gap revisited should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A mobile manipulator that opens a drawer may fail because the simulated hinge friction is too low. The fix is not automatically more domain randomization. The first fix is a paired trace that shows whether the gripper slipped, the wrist saturated, the drawer contact stuck, or the success detector fired too early.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When the reality gap revisited feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Research systems increasingly treat the reality gap as a measurement problem rather than only a robustness problem. The strongest transfer reports include videos, state logs, perturbation panels, real-robot failures, and ablations that show which simulated assumptions mattered.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for the reality gap revisited? If not, the system boundary is still too vague.</p>
+<p>Pick one robot task and name the most likely observation gap, transition gap, actuator gap, timing gap, and evaluation gap. Which one would you test first, and what trace field would prove it?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Sim-to-Real Transfer, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when it is tied to a closed-loop contract. For reality-gap work, the contract names the simulator assumptions, the hardware measurements, and the alignment rule that says two rollouts are comparable. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
+<p>The graduate-level habit is to separate three claims. The modeling claim explains which part of $P_{\text{sim}}$ approximates $P_{\text{real}}$. The systems claim explains which observation, action, or timing interface exposes the approximation error. The evidence claim records which paired rollout would convince a skeptical builder.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>The reality gap revisited</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>The reality gap revisited</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>The reality gap revisited</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>The reality gap revisited</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>The reality gap revisited</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium</td><td>Common rollout API</td><td>Use it to keep reset, step, reward, and termination semantics consistent across diagnostic environments.</td></tr><tr><td>Isaac Lab</td><td>Robot-learning simulation</td><td>Use it when the gap involves sensors, randomized assets, parallel rollout collection, or GPU-scale task panels.</td></tr><tr><td>ROS 2 bags</td><td>Hardware trace capture</td><td>Use them to align observations, commands, controller states, and safety events with simulator logs.</td></tr><tr><td>MuJoCo</td><td>Inspectible contact and dynamics</td><td>Use it when contact parameters, inertia, actuator limits, or control latency need explicit auditing.</td></tr><tr><td>Drake</td><td>System modeling and identification</td><td>Use it when the transfer question depends on calibrated dynamics, constraints, and state estimation.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a paired rollout schema. The schema should log inputs, outputs, units, timestamps, controller limits, termination reasons, and one failure label. The simulator and the robot must produce the same artifact shape, otherwise the comparison becomes a story assembled from separate experiments.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Write a one-paragraph reality-gap contract with simulator assumptions and hardware measurements.</li>
+<li>Choose paired trace fields that can be captured in both places without manual interpretation.</li>
+<li>Run one deterministic smoke test and one perturbation test before scaling policy training.</li>
+<li>Save a single artifact containing configuration, seed, metrics, videos or state logs, timing traces, and failure labels.</li>
+<li>Compare repairs only when one script evaluates them on the same task panel and hardware protocol.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for The reality gap revisited.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one evidence record for a reality-gap diagnosis.
+# The same schema is used for simulator and hardware rollouts.
 from dataclasses import dataclass, asdict
 
 @dataclass
 class EvidenceRecord:
     section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+    sim_assumption: str
+    real_measurement: str
+    paired_metric: str
+    suspected_gap: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="20.1",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    sim_assumption="drawer friction coefficient sampled near 0.20",
+    real_measurement="drawer required 2.3 times the simulated pull force",
+    paired_metric="same pull policy, same handle pose bin, same success rule",
+    suspected_gap="contact friction and actuator margin",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 20.1.2 records the method-specific evidence schema for testing The reality gap revisited with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '20.1', 'sim_assumption': 'drawer friction coefficient sampled near 0.20', 'real_measurement': 'drawer required 2.3 times the simulated pull force', 'paired_metric': 'same pull policy, same handle pose bin, same success rule', 'suspected_gap': 'contact friction and actuator margin'}</div>
+<div class="code-caption">Code Fragment 20.1.2 records a reality-gap evidence schema with <code>sim_assumption</code>, <code>real_measurement</code>, <code>paired_metric</code>, and <code>suspected_gap</code>. The schema forces the transfer claim to point at a concrete mismatch rather than a generic hardware failure.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the The reality gap revisited evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a transfer attempt fails, avoid labeling the whole policy as weak. First assign the failure to observation, transition dynamics, contact, actuator delay, controller saturation, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For The reality gap revisited, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For reality-gap studies, compare only construct-matched metrics that are co-computed in one pass on one configuration: same policy checkpoint, same initial-condition panel, same perturbation suite, same hardware protocol, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, timing measurements, and failure labels so every number in a later table is backed by the same run.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>The reality gap revisited is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>The reality gap becomes useful engineering knowledge only after it is decomposed into measurable mismatches that a team can test, repair, and retest.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 20.1.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 20.1.1</div><p>Choose a real robot task and write a paired trace schema with at least one observation field, one action field, one timing field, one safety field, and one suspected gap label.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned the reality gap revisited into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-20.2.html">Section 20.2</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

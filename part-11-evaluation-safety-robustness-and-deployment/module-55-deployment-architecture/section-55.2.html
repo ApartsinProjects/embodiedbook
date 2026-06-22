@@ -34,15 +34,19 @@
 <h1>Section 55.2: Real-time inference and control rates</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"A robot does not care which metric looked best in a slide deck. It cares which command arrives next."</p>
+<blockquote class="epigraph"><p>For Real-time inference and control rates, deployment quality is measured by the command stream, safety monitor state, and replayable evidence behind each command.</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 55.2: Real-time inference and control rates, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-55-illustration-02.png"/>
+<img alt="Technical illustration for Section 55.2: Real-time inference and control rates." loading="lazy" src="images/chapter-55-illustration-02.png"/>
 <figcaption><strong>Figure 55.2A</strong>: Section 55.2: Real-time inference and control rates is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p><strong>Real-time inference and control rates</strong> matters because control rates define how much latency the policy can spend. The section treats evaluation, uncertainty, safety, and deployment as one closed-loop contract rather than as separate checklist items.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make real-time inference and control rates operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
 </div>
 <h2>Problem First</h2>
 <p>A strong model can be unusable if inference arrives after the controller needed the decision.</p>
@@ -77,41 +81,38 @@
 <figcaption>The evidence contract for Real-time inference and control rates keeps the observation, estimate, action, monitor decision, and result artifact in one traceable path.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>Separate high-rate stabilization, mid-rate policy updates, and low-rate planning. Each loop has a budget, timeout, fallback, and logged deadline miss count.</p>
-<p>A compact formal view is $e_i = (x_i, a_i, m_i, r_i, z_i)$, where $x_i$ is the episode context, $a_i$ is the action trace, $m_i$ is the monitor trace, $r_i$ is the result vector, and $z_i$ is the saved artifact id. The section metric is computed from the same set of $e_i$ records, not from a stitched collection of unrelated runs.</p>
+<p>Real-time deployment is a multirate systems problem. A stabilizing controller may run at 200 to 1000 Hz, a state estimator at 30 to 200 Hz, a learned visuomotor policy at 5 to 30 Hz, and a task planner at 0.5 to 2 Hz. These loops must exchange commands without violating freshness constraints.</p>
+<p>A useful contract is</p>
+<p>$$\Pr(\tau_{\mathrm{age}} &gt; \tau_{\max}) \le \epsilon,\qquad \tau_{\mathrm{age}}=\tau_{\mathrm{sense}}+\tau_{\mathrm{queue}}+\tau_{\mathrm{infer}}+\tau_{\mathrm{publish}}.$$</p>
+<p>Average latency is not enough. Physical instability is typically triggered by the tail of the latency distribution, so p95 and p99 command age belong in the same artifact as task success.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is observe, estimate, choose, constrain, execute, monitor, log, and review. Each verb has an owner in the deployment architecture and a field in the evaluation artifact.</p>
 </div>
 <h2>Worked Example</h2>
-<p>A legged robot may run stabilization at hundreds of hertz while a vision-language planner updates far more slowly. Mixing those rates without buffers creates unsafe commands.</p>
-<p>The code below builds the evidence record before any model-specific claim is made. It is intentionally small so the metric and artifact contract are visible.</p>
-<pre><code class="language-python"># Create a same-artifact evidence record for Real-time inference and control rates.
-# The record keeps metrics, perturbations, and monitor state together.
-from dataclasses import dataclass, asdict
-import json
+<p>A legged robot often stabilizes at high rate while a vision module and a policy run much more slowly. The safe pattern is to hold the low-level loop constant and explicitly decide when a slower policy output is still fresh enough to consume.</p>
+<pre><code class="language-python">from statistics import quantiles
 
-@dataclass
-class EvidenceRecord:
-    section: str
-    panel: str
-    metric_contract: str
-    perturbation: str
-    monitor_state: str
-    artifact_id: str
+control_period_ms = 5
+command_ages_ms = [28, 32, 35, 31, 40, 29, 36, 34, 52, 33]
+max_freshness_ms = 40
 
-record = EvidenceRecord(
-    section="55.2",
-    panel="fixed rollout panel, seeds 0 to 9",
-    metric_contract="deadline_miss_rate = missed_deadlines / control_ticks",
-    perturbation="GPU contention, network jitter, and sensor burst load",
-    monitor_state="normal, degraded, stopped, or recovery",
-    artifact_id="55_2_panel_v1.json",
-)
+p95 = quantiles(command_ages_ms, n=20)[18]
+deadline_miss_rate = sum(age &gt; max_freshness_ms for age in command_ages_ms) / len(command_ages_ms)
+degraded_mode = p95 &gt; max_freshness_ms
 
-print(json.dumps(asdict(record), indent=2))</code></pre>
-<div class="code-caption">Code Fragment 55.2.1 creates a same-artifact evidence record for Real-time inference and control rates, including the metric contract, perturbation panel, monitor state, and saved artifact id.</div>
-<p><strong>Expected output:</strong> the printed trace for Real-time inference and control rates should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+report = {
+    "section": "55.2",
+    "control_period_ms": control_period_ms,
+    "policy_age_p95_ms": round(p95, 1),
+    "deadline_miss_rate": deadline_miss_rate,
+    "degraded_mode": degraded_mode,
+}
+print(report)</code></pre>
+<div class="code-output"><pre>{'section': '55.2', 'control_period_ms': 5, 'policy_age_p95_ms': 57.4, 'deadline_miss_rate': 0.1, 'degraded_mode': True}</pre></div>
+<div class="code-caption">Code Fragment 55.2.1 computes a simple freshness report for a slower policy feeding a faster controller.</div>
+<p>The expected output should make the control decision obvious. Here the p95 command age exceeds the freshness threshold, so the correct interpretation is not merely that latency is "a bit high" but that the stack should enter a degraded mode or reduce reliance on the slow policy.</p>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Multirate Control Integration</div><ol><li>Freeze the high-rate stabilizer and measure its independent stability margin.</li><li>Choose the learned policy rate and a maximum command age budget.</li><li>Buffer, timestamp, and reject stale commands explicitly.</li><li>Log p50, p95, p99 latency and deadline misses under nominal and stressed compute load.</li><li>Switch to degraded mode whenever the freshness contract is violated repeatedly.</li></ol></div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built record is about 24 lines. In a production run, DVC, MLflow, Weights and Biases Artifacts, or a ROS 2 bag plus metadata file reduces the tracking code to a few calls while handling versioning, file storage, run ids, and reproducible retrieval. The hand-built version remains useful because it shows which fields the tool must preserve.</p>
@@ -126,7 +127,7 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>Average latency is not enough. The tail of the latency distribution is where physical systems lose stability.</p>
+<p>Teams often optimize mean inference time while ignoring queue buildup. The robot then fails when a burst of sensor callbacks or one GPU stall pushes command age past the control horizon.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -154,19 +155,19 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 </table>
 </div>
 <h2>Cross-References</h2>
-<p>This section connects backward to <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-12-benchmarks-and-task-suites/index.html">Chapter 12 benchmark design</a> and <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20 sim-to-real transfer</a>, then forward to <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-53-robustness-and-uncertainty/index.html">Chapter 53 uncertainty and robustness</a> and <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/index.html">Chapter 54 safety barriers</a>. Use those links when the evaluation contract needs benchmark context, sim-to-real context, uncertainty checks, safety barriers, or deployment monitoring.</p>
+<p>For Real-time inference and control rates, connect benchmark design, sim-to-real transfer, uncertainty, and safety barriers through the deployment artifact that will be checked before release.</p>
 <div class="callout lab">
 <div class="callout-title">Lab: Build The Artifact First</div>
 <p>Create a JSON or Parquet artifact for five rollouts of Real-time inference and control rates. Include fields for configuration, seed, perturbation, metric values, monitor state, and a short failure label. Then rerun the same panel with one changed policy setting and verify that both methods can be compared row by row.</p>
 </div>
 <h2>Failure Analysis Pattern</h2>
-<p>When Real-time inference and control rates fails, assign the failure to perception, state estimation, planning, control, timing, data coverage, monitor design, or evaluation hygiene. Then rerun one controlled perturbation that isolates the suspected cause.</p>
+<p>When a rate contract fails, classify the fault as sensor backlog, estimator lag, inference stall, middleware queue growth, scheduler preemption, or controller integration error. Then isolate that mechanism with one targeted perturbation such as synthetic GPU contention or callback bursts.</p>
 </section>
 <div class="callout fun-note">
 <div class="callout-title">A Useful Annoyance</div>
-<p>If the artifact schema feels fussy, that is a good sign. It is cheaper for a spreadsheet to complain than for a robot to discover the missing field while moving.</p>
+<p>For Real-time inference and control rates, schema strictness is cheaper than discovering a missing field during a moving-robot trial; require the log before comparing outcomes.</p>
 </div>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Real-time inference and control rates: primary papers, official tool documentation, and chapter bibliography entries named in this part.</p><p class="bib-annotation">Use these sources to verify assumptions, implementation details, expected outputs, and evaluation artifacts.</p></div></section>
+
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Real-time inference and control rates is valuable when it changes the closed-loop decision and leaves behind evidence that another builder can audit.</p>
@@ -175,9 +176,10 @@ print(json.dumps(asdict(record), indent=2))</code></pre>
 <div class="callout-title">Exercise 55.2.1</div>
 <p>Design a same-artifact evaluation for this section. Specify the environment, rollout panel, seed plan, metric fields, monitor fields, one perturbation, and one rollback or recovery rule.</p>
 </div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Quigley, M. et al. ROS: an open-source Robot Operating System. ICRA Workshop, 2009.</p><p class="bib-annotation">Use for the robotics middleware lineage behind nodes, topics, services, bags, and deployment boundaries.</p></div><div class="bib-entry-card"><p class="bib-ref">OpenTelemetry project documentation. https://opentelemetry.io/docs/</p><p class="bib-annotation">Use for tracing, metrics, and logs when robot deployment evidence must connect software events to runtime behavior.</p></div></section>
 <div class="callout whats-next">
 <div class="callout-title">What's Next</div>
-<p>The next section reuses the same artifact discipline while changing the failure mode or deployment interface under study.</p>
+<p>After Real-time inference and control rates, the next section should reuse the artifact schema while changing one deployment interface or failure mode, so comparisons remain auditable.</p>
 </div>
 <nav class="chapter-nav">
 <a class="prev" href="section-55.1.html">Section 55.1: From notebook to robot</a>

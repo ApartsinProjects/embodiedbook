@@ -34,36 +34,61 @@
 <h1>Section 4.7: Common frame mistakes and how to debug them</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"Common frame mistakes and how to debug them matters when the next action changes the evidence you thought you had."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Common frame mistakes and how to debug them</strong> is one lens on spatial representation and coordinate frames. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Common frame mistakes and how to debug them</strong> matters because frame bugs usually masquerade as perception, planning, or control failures. A robot reaching 20 centimeters to the side of a target may have a weak grasp policy, but it may also have a swapped transform direction, stale timestamp, meter-to-millimeter error, or left-handed frame where a right-handed frame was expected.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make common frame mistakes and how to debug them operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
 </div>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Common frame mistakes and how to debug them into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops a frame-debugging checklist that can be used before retraining a model or retuning a controller. The method is simple: validate identity, inverse, composition order, handedness, units, timestamps, and one known physical point. If any of those fail, the system has a geometry problem before it has a learning problem.</p>
+<p>The key question is practical: can the team reproduce the wrong pose with a tiny deterministic case, or are they debugging a full robot episode with too many variables active at once?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
 <p>A representation earns its place when it changes the measurable action interface. In Common frame mistakes and how to debug them, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The most useful invariant is the inverse check. If $T_{AB}$ maps coordinates from $B$ into $A$, then $T_{BA}=T_{AB}^{-1}$ and</p>
+<p>$$T_{AB}T_{BA} \approx I.$$</p>
+<p>The approximation accounts for floating-point error, not conceptual error. A large residual means one of three things is likely: the transform was inverted twice, the multiplication order is wrong, or the stored translation is expressed in the wrong parent frame.</p>
+<p>A second invariant is distance preservation. A rigid transform can move and rotate two points, but the distance between them must stay constant. If a transform changes distances, it is not a rigid transform. Check scale before checking policy behavior.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Frame debugging works by shrinking the episode. Replace the learned detector with one known point, replace the controller with one logged target, and replace the transform tree with the exact edges used in the failing timestep. The smaller case tells you whether the geometry is trustworthy before the model is blamed.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"># Common frame mistakes and how to debug them: keep the section idea tied to observable evidence.
-# Run this diagnostic probe before trusting the maintained library path.
-instruction = "run the section diagnostic and save the evidence trace"
-skills = ["find_object", "estimate_pose", "grasp", "move_to_tray", "release"]
-plan = [skill for skill in skills]
-print(instruction)
-print(plan)</code></pre>
-<div class="code-caption">Code Fragment 4.7.1 names instruction, skills, and plan so the reader can inspect where a frame computation feeds the task sequence.</div>
-<p><strong>Expected output:</strong> the printed trace for Common frame mistakes and how to debug them should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>Code Fragment 4.7.1 tests two frame invariants. The determinant check catches reflections and left-handed coordinate mistakes. The round-trip residual catches inverse and order errors that otherwise produce plausible but wrong positions.</p>
+<pre><code class="language-python"># Run two frame sanity checks before blaming perception or control.
+# A valid rigid transform has det(R)=1 and a tiny round-trip residual.
+# The test uses one known point so the failure is easy to reproduce.
+import numpy as np
+
+rotation = np.array([
+    [0.0, -1.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0],
+])
+translation = np.array([0.5, 0.0, 1.0])
+
+transform = np.eye(4)
+transform[:3, :3] = rotation
+transform[:3, 3] = translation
+
+point_local = np.array([0.2, 0.1, 0.0, 1.0])
+point_world = transform @ point_local
+point_recovered = np.linalg.inv(transform) @ point_world
+
+determinant = np.linalg.det(rotation)
+residual = np.linalg.norm(point_local - point_recovered)
+print("determinant:", round(determinant, 6))
+print("round-trip residual:", round(residual, 12))</code></pre>
+<div class="code-output">determinant: 1.0
+round-trip residual: 0.0</div>
+<div class="code-caption">Code Fragment 4.7.1 validates the <code>rotation</code> matrix with a determinant check and validates the full <code>transform</code> with a round-trip residual. These two numbers catch many frame bugs before the robot stack is involved.</div>
+<p><strong>Expected output:</strong> a determinant near 1 and a near-zero residual mean the transform is at least internally consistent. They do not prove that the transform is the right one for the robot, but they eliminate several common convention mistakes.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
@@ -78,15 +103,19 @@ print(plan)</code></pre>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A dangerous debugging pattern is to retrain the detector when the actual bug is geometric. Always replay one known point through the exact transform chain from the failing timestep before changing a learned component.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team using Common frame mistakes and how to debug them should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
 </div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat common frame mistakes and how to debug them like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>For Common frame mistakes and how to debug them, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
@@ -96,7 +125,7 @@ print(plan)</code></pre>
 <h2>Production Pattern</h2>
 <p>Common frame mistakes and how to debug them sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p>Debug frame errors by replaying one known point through the full chain, then checking signs, units, and timestamps. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>A pose is a typed relationship between frames, not just a vector of numbers. Track parent frame, child frame, units, timestamp, and multiplication order before trusting a transform.</p></div>
+<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For Common frame mistakes and how to debug them, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -119,7 +148,7 @@ print(plan)</code></pre>
 <li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
 <li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
+<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For Common frame mistakes and how to debug them, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 <pre><code class="language-python"># Evidence record for Common frame mistakes and how to debug them.
 # Fill the fields before comparing a hand-built baseline with a library run.
 from dataclasses import dataclass, asdict
@@ -134,6 +163,9 @@ class EvidenceRecord:
     metric: str
     failure_label: str
 
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
 record = EvidenceRecord(
     section="4.7",
     topic="Common frame mistakes and how to debug them",
@@ -143,13 +175,13 @@ record = EvidenceRecord(
     metric="construct-matched success metric",
     failure_label="record after the perturbation run after perturbation test",
 )
-print(asdict(record))</code></pre>
+print(record.as_row())</code></pre>
 <div class="code-caption">Code Fragment 4.7.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Common frame mistakes and how to debug them can be compared across the hand-built baseline and the maintained-library path.</div>
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Common frame mistakes and how to debug them and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>Most frame bugs look like weak perception or weak control. First test whether points, vectors, poses, and timestamps were transformed through the same frame tree. For this section, first reproduce one tiny case by hand, then rerun it through SciPy Rotation, ROS 2 tf2, spatialmath-python, Drake, OpenCV calibration. If the two disagree, inspect conventions and timing before changing the model.</p>
+<p>Debug frame mistakes with a minimal geometric probe: one point, one vector, one pose, one timestamp, and one expected transform path. Then replay the same case through tf2 and visualization.</p>
 </section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Common frame mistakes and how to debug them: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Common frame mistakes and how to debug them: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Common frame mistakes and how to debug them is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
@@ -168,3 +200,4 @@ print(asdict(record))</code></pre>
 </main>
 </body>
 </html>
+

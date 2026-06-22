@@ -34,159 +34,189 @@
 <h1>Section 17.6: Throughput, wall-clock, and cost engineering</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"Throughput, wall-clock, and cost engineering matters when the next action changes the evidence you thought you had."</p><cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Throughput, wall-clock, and cost engineering</strong> is one lens on massively parallel and GPU RL. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Throughput, wall-clock, and cost engineering</strong> is where GPU RL becomes an engineering system. A useful run is not the one with the largest steps-per-second number; it is the one that reaches a held-out success target with known memory use, known evaluation overhead, and known compute cost.</p>
 </div>
-<p>It extends simulator choices from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>, operationalizes PPO from <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>, and feeds directly into reward design in <a class="cross-ref" href="../module-18-reward-design-and-goal-specification/index.html">Chapter 18: Reward Design and Goal Specification</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a measurement discipline. Throughput, sample efficiency, wall-clock, and cost are different metrics, and a credible result reports them from the same run rather than collecting the best number from each log.</p>
+</div>
+<p>For Throughput, wall-clock, and cost engineering, GPU RL depends on simulator fidelity, PPO rollout semantics, reward terms, and reset distribution being versioned in the same training artifact.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for throughput, wall-clock, and cost engineering into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the cost contract for massively parallel RL. We define the denominator for every claim: environment steps per second, policy updates per minute, wall-clock to target success, GPU memory at peak, evaluation time, and dollars per successful checkpoint.</p>
+<p>The key question is practical: did the optimization make learning cheaper, or did it only move time from rollout collection into compilation, synchronization, logging, or evaluation?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In throughput, wall-clock, and cost engineering, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Report The Target, Not Only The Rate</div>
+<p>Steps per second is a systems metric. Wall-clock to held-out success is the learning metric that matters to a builder deciding what to run next.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Let a run collect $S$ environment steps in $W$ wall-clock seconds. The raw throughput is $S/W$, but the cost metric should include training, evaluation, checkpointing, and failed runs. If the target is a 90 percent held-out success rate, the relevant question is how many dollars and minutes were spent before the first checkpoint reached that target.</p>
+<p>There is a common tension between throughput and sample efficiency. Larger batches can improve device utilization, but they may reduce update frequency or increase policy lag. Smaller batches may learn with fewer samples but waste the accelerator.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is an accounting loop: measure rollout time, learner time, evaluation time, synchronization time, peak memory, and target success in the same run. Only then can you decide whether the bottleneck is simulation, policy inference, advantage computation, optimizer updates, logging, or evaluation.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 17.6.1 computes the metrics that should appear together in a cost report. The same artifact contains throughput, wall-clock to target, evaluation overhead, and compute spend.</p>
+<pre><code class="language-python"># Compute throughput and cost from one RL training run.
+# The target-success checkpoint, not peak steps per second, drives the decision.
+env_steps = 1_200_000_000
+train_minutes = 42.0
+eval_minutes = 6.0
+gpu_dollars_per_hour = 2.20
+heldout_success = 0.92
+target_success = 0.90
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 17.6.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Throughput, wall-clock, and cost engineering should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+total_minutes = train_minutes + eval_minutes
+steps_per_second = env_steps / (train_minutes * 60)
+total_cost = (total_minutes / 60) * gpu_dollars_per_hour
+cost_per_billion_steps = total_cost / (env_steps / 1_000_000_000)
+
+print(f"train throughput: {steps_per_second:,.0f} env steps/s")
+print(f"total wall-clock: {total_minutes:.1f} min")
+print(f"held-out success: {heldout_success:.2f}")
+print(f"target reached: {heldout_success >= target_success}")
+print(f"total compute cost: ${total_cost:.2f}")
+print(f"cost per billion steps: ${cost_per_billion_steps:.2f}")</code></pre>
+<div class="code-output">train throughput: 476,190 env steps/s
+total wall-clock: 48.0 min
+held-out success: 0.92
+target reached: True
+total compute cost: $1.76
+cost per billion steps: $1.47</div>
+<div class="code-caption">Code Fragment 17.6.1 computes a cost report from one training run. The target-success line keeps throughput honest by tying the speed claim to held-out behavior, while evaluation minutes keep wall-clock accounting complete.</div>
+<p><strong>Expected output:</strong> the trace should include both systems and learning metrics. A run that reports 476,190 steps per second but omits held-out success has not shown that those steps bought a deployable policy.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practical systems, rely on the framework's profiler, GPU telemetry, and logger rather than hand timing one function. Isaac Lab, RSL-RL, rl_games, SKRL, Brax, and MJX can all produce impressive throughput; the engineering shortcut is to export comparable cost records from the same evaluation script.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Define the success target before training, such as 90 percent held-out success across 256 evaluation seeds.</li>
+<li>Measure rollout, learning, evaluation, logging, and checkpoint time separately.</li>
+<li>Track peak GPU memory, utilization, host-device transfer time, and compilation time where relevant.</li>
+<li>Report dollars per target-reaching checkpoint, not only dollars per hour.</li>
+<li>Repeat the run across seed panels when the result will support a paper table or hardware decision.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to maximize training throughput by reducing evaluation frequency, then miss the first checkpoint that actually generalizes. Evaluation is part of the wall-clock budget, not an optional afterthought.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using throughput, wall-clock, and cost engineering should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A team choosing between two GPU instances should compare them on one script that trains to the same held-out success target. The faster instance can still be the worse choice if it runs out of memory, needs a smaller batch, or spends more time compiling and evaluating.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>The fastest run is not always the cheapest run. The cheapest successful run is the one that reaches the target before curiosity turns into a hyperparameter sweep.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>The frontier is shifting from raw simulator speed toward full-stack efficiency: GPU-resident sensors, batched rendering, compilation-aware training, automatic curriculum scheduling, and evaluation systems that can keep up with faster learners. The open problem is measuring cost per robust behavior, not cost per simulator step.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for throughput, wall-clock, and cost engineering? If not, the system boundary is still too vague.</p>
+<p>Can you report steps per second, wall-clock to target, evaluation overhead, peak memory, instance cost, failed-run count, and held-out success from one artifact? If not, the cost claim is incomplete.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Massively Parallel and GPU RL, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The idea in this section becomes useful when every number has a denominator. Steps per second uses training seconds. Wall-clock to target uses training plus evaluation seconds. Cost uses all billable time. Paper tables and engineering decisions should not mix these denominators.</p>
+<p>The graduate-level habit is to report the bottleneck breakdown. A low throughput run may be simulation-bound, learner-bound, memory-bound, evaluation-bound, logging-bound, or compilation-bound. Each bottleneck implies a different fix.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Throughput, wall-clock, and cost engineering</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Throughput, wall-clock, and cost engineering</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Throughput, wall-clock, and cost engineering</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Throughput, wall-clock, and cost engineering</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Throughput, wall-clock, and cost engineering</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Steps per second</td><td>Raw simulator and learner throughput</td><td>Use it to locate systems bottlenecks, not to claim policy quality.</td></tr><tr><td>Wall-clock to target</td><td>Minutes until held-out success threshold is reached</td><td>Use it as the primary training-speed metric.</td></tr><tr><td>Peak GPU memory</td><td>Capacity pressure from rollout, model, and optimizer state</td><td>Use it to explain batch-size limits and instance choice.</td></tr><tr><td>Evaluation overhead</td><td>Time spent measuring held-out behavior</td><td>Use it in total wall-clock because evaluation frequency changes checkpoint selection.</td></tr><tr><td>Cost per success</td><td>Billable compute until the first target-reaching checkpoint</td><td>Use it when comparing GPU instances, frameworks, or recipes.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a cost ledger. The ledger makes it impossible to claim a throughput win from one run and a success win from another run.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Start the ledger before launch with instance type, price, batch size, target metric, and evaluation cadence.</li>
+<li>Update the ledger at each checkpoint with train seconds, eval seconds, peak memory, success, and reset reasons.</li>
+<li>Mark failed runs explicitly so cost estimates include search and debugging, not only the winning run.</li>
+<li>Save profiler summaries with the same run ID as the policy checkpoint.</li>
+<li>Compare cost only when success is computed on the same held-out panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Throughput, wall-clock, and cost engineering.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Record one cost ledger row for a GPU RL checkpoint.
+# Keep systems metrics and held-out behavior in the same artifact.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class CostLedgerRow:
+    checkpoint: int
+    train_minutes: float
+    eval_minutes: float
+    peak_gpu_gb: float
+    heldout_success: float
+    billable_cost_usd: float
 
-record = EvidenceRecord(
-    section="17.6",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+row = CostLedgerRow(
+    checkpoint=320,
+    train_minutes=42.0,
+    eval_minutes=6.0,
+    peak_gpu_gb=18.4,
+    heldout_success=0.92,
+    billable_cost_usd=1.76,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 17.6.2 records the method-specific evidence schema for testing Throughput, wall-clock, and cost engineering with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(row.as_row())</code></pre>
+<div class="code-output">{'checkpoint': 320, 'train_minutes': 42.0, 'eval_minutes': 6.0, 'peak_gpu_gb': 18.4, 'heldout_success': 0.92, 'billable_cost_usd': 1.76}</div>
+<div class="code-caption">Code Fragment 17.6.2 records one checkpoint-level cost ledger row. Keeping peak memory, evaluation time, held-out success, and billable cost together prevents later tables from comparing numbers that came from different runs.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to add one column for failed-run cost. That single column changes cost engineering from a best-case story into an operational budget.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When a cost result disappoints, avoid changing the algorithm first. Identify whether the budget was lost to simulator stepping, learner updates, GPU memory pressure, host-device transfers, compilation, evaluation, logging, or failed hyperparameter searches. Each cause has a different repair.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Throughput, wall-clock, and cost engineering, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For throughput and cost claims, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same held-out seed set, same perturbation suite, same success definition, and same cost accounting window. Save throughput, wall-clock, memory, evaluation overhead, success, failure labels, and billable cost as one artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Throughput, wall-clock, and cost engineering is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Throughput is useful when it lowers wall-clock and cost to a held-out behavior target. Raw steps per second is only the first line of the ledger.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 17.6.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 17.6.1</div><p>Build a cost ledger for two GPU RL recipes. For each, record steps per second, train minutes, evaluation minutes, peak memory, instance price, held-out success, failed-run count, and dollars to first target-reaching checkpoint.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned throughput, wall-clock, and cost engineering into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="index.html">Chapter 17</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned throughput into a cost ledger: steps per second, wall-clock to target, evaluation overhead, peak memory, failure count, and dollars per successful checkpoint. Return to <a href="index.html">Chapter 17</a> with one rule for every GPU RL result: speed and success belong in the same artifact.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2108.10470" rel="noopener" target="_blank">Makoviychuk, V. et al. (2021). Isaac Gym: High Performance GPU-Based Physics Simulation For Robot Learning. arXiv.</a></p>
-<p class="bib-annotation">Isaac Gym showed how GPU-resident simulation can change robot RL throughput. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Gym is the right source for understanding raw GPU simulation throughput. In this section, use it to separate impressive step rates from full cost accounting that includes evaluation and failed runs.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2106.13281" rel="noopener" target="_blank">Freeman, C. D. et al. (2021). Brax: A Differentiable Physics Engine for Large Scale Rigid Body Simulation. arXiv.</a></p>
-<p class="bib-annotation">Brax is a JAX-based simulator designed for accelerator-scale RL. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Brax is relevant because JAX-native simulation can shift the bottleneck from stepping to compilation, memory, or evaluation. Cost reports should account for those phases separately.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://isaac-sim.github.io/IsaacLab/" rel="noopener" target="_blank">NVIDIA Isaac Lab documentation.</a></p>
-<p class="bib-annotation">Isaac Lab is the current NVIDIA workflow for robot learning tasks on top of Isaac Sim. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Lab provides a realistic setting for end-to-end cost measurement: task setup, training runner, checkpointing, play scripts, and evaluation videos. Those components all consume wall-clock time.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/mjx.html" rel="noopener" target="_blank">Google DeepMind MuJoCo MJX documentation.</a></p>
-<p class="bib-annotation">MJX brings MuJoCo-style physics into JAX workflows for accelerator execution. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">MJX is useful when comparing accelerator-native MuJoCo-style workloads. Its static-shape and compilation behavior should be logged separately from steady-state steps per second.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978" rel="noopener" target="_blank">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
-<p class="bib-annotation">This paper is a landmark example of fast legged locomotion training with massive parallelism. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Rudin et al. are a benchmark for fast wall-clock locomotion. For cost engineering, read the result as a prompt to ask what hardware, evaluation cadence, and success threshold define the headline time.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://github.com/leggedrobotics/rsl_rl" rel="noopener" target="_blank">RSL-RL repository.</a></p>
-<p class="bib-annotation">RSL-RL is a widely used PPO implementation for legged robot learning. For this section, connect the source to throughput, wall-clock, and cost engineering and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">RSL-RL gives readers concrete PPO runner code to profile. It is useful for locating whether time is spent in rollout storage, advantage computation, optimizer updates, logging, or evaluation.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>

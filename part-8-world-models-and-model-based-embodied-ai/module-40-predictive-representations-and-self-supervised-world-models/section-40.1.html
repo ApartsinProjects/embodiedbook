@@ -34,140 +34,157 @@
 <h1>Section 40.1: Predict in representation space, not pixels: the JEPA idea</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"I made a future, then the robot took one step and asked for a revision."</p>
+<blockquote class="epigraph"><p>"Do not ask me to repaint every pixel; ask me whether the mug will still be there when the gripper closes."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 40.1: Predict in representation space, not pixels: the JEPA idea, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-40-illustration-01.png"/>
-<figcaption><strong>Figure 40.1A</strong>: Section 40.1: Predict in representation space, not pixels: the JEPA idea becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
+<img alt="A robot watches a cluttered tabletop through a camera while translucent latent blocks float above the scene, highlighting objects and motion instead of raw pixels." loading="lazy" src="images/chapter-40-illustration-01.png"/>
+<figcaption><strong>Figure 40.1A</strong>: JEPA shifts prediction from surface appearance to the latent factors that matter for the next decision.</figcaption>
 </figure>
-<cite>A Patient JEPA Encoder</cite></blockquote>
+<cite>A Pragmatic World Model</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Predict In Representation Space, Not Pixels: The JEPA Idea</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
+<p><strong>JEPA</strong> asks a different prediction question from reconstruction models. Instead of reproducing every future pixel, it learns a representation that is only detailed enough to support semantic prediction, action selection, and downstream control.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section turns Predict In Representation Space, Not Pixels: The JEPA Idea into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Track three contracts in this section: the context crop the encoder sees, the masked target embedding it must predict, and the downstream robot task that decides whether the latent space preserved anything action-relevant.</p>
+</div>
+<h2>Why Predict Latents Instead Of Pixels?</h2>
+<p>Pixel prediction is a poor first target for embodied reasoning because the world is visually multimodal. A mug can move slightly left or right, a hand can occlude part of the scene, or the lighting can change, while the action-relevant fact remains the same: the mug is still graspable. If we force a model to commit to one exact pixel future, it spends capacity on texture and camera noise that a controller will later ignore.</p>
+<p>JEPA, short for Joint-Embedding Predictive Architecture, changes the task. The model observes a context region $x_c$, encodes it into a latent representation, and predicts the target representation of a masked region $x_t$. What matters is semantic consistency across representations, not image reconstruction fidelity.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A model earns its place only when it improves action. In Predict In Representation Space, Not Pixels: The JEPA Idea, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
+<div class="callout-title">The Core Shift</div>
+<p>JEPA is not "compression for its own sake." It is a selective prediction objective: keep information that helps future reasoning, discard nuisance variation that would make planning brittle.</p>
 </div>
-<h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. Predict In Representation Space, Not Pixels: The JEPA Idea changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is observe, encode, predict, score, act, and monitor. Each transformation needs a measurable input, output, timing assumption, and failure label so debugging does not collapse into guessing.</p>
+<h2>Formal Objective</h2>
+<p>The basic JEPA training contract uses an online encoder $f_\theta$, a predictor $g_\theta$, and a target encoder $f_\xi$. Given a context crop $x_c$ and a masked target crop $x_t$, the predictor must match the target embedding:</p>
+<p>$$
+z_c = f_\theta(x_c), \qquad
+\hat z_t = g_\theta(z_c, m_t), \qquad
+z_t = \operatorname{sg}\!\left(f_\xi(x_t)\right)
+$$</p>
+<p>$$
+\mathcal{L}_{\text{JEPA}} = \left\lVert \hat z_t - z_t \right\rVert_2^2
+$$</p>
+<p>Here $m_t$ denotes target-location metadata and $\operatorname{sg}$ is stop-gradient, which prevents the target branch from chasing the predictor. The loss is simple, but the masking policy is load-bearing. Targets must be large enough to require semantic prediction, and the context must be spatially distributed enough to make the prediction possible without turning the task into a trivial copy operation.</p>
+<div class="callout note">
+<div class="callout-title">Assumption Check</div>
+<p>JEPA assumes there exists a latent representation that is predictive and stable across nuisance changes. If the downstream task depends on fine texture, tiny contact geometry, or fast action-conditioned state changes, a weak latent target can wash out the signal you actually need.</p>
 </div>
-<h2>Worked Example</h2>
-<p>The following compact probe makes Predict in representation space, not pixels: the JEPA idea concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"># Compute a JEPA-style representation prediction loss.
-# The target is a latent embedding, not a reconstructed image.
+<h2>What The Loss Is Really Doing</h2>
+<p>The loss above looks like ordinary regression, but its effect depends on what the encoder is allowed to represent. Because the target is another learned representation rather than the raw image, the system can choose to encode object identity, pose, rough depth, and motion affordances while ignoring irrelevant color jitter or background clutter. That is why JEPA is often discussed as a bridge between self-supervised learning and world modeling rather than just another masked-prediction objective.</p>
+<p>The illustration above is useful here: the robot does not need to redraw the whole tabletop, it needs to preserve the latent facts that determine whether grasp, push, or reorientation will succeed. This is the same representational discipline that reappears in <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/index.html">Chapter 28</a> when scene structure matters more than pixel similarity.</p>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: JEPA Training Step</div>
+<p>1. Sample a context crop and one or more target crops from the same scene.<br/>2. Encode the context with the online encoder.<br/>3. Encode target crops with the momentum target encoder.<br/>4. Predict each target embedding from the context embedding and target-location metadata.<br/>5. Minimize squared latent prediction error, then update the target encoder by momentum.</p>
+</div>
+<h2>Worked Numeric Probe</h2>
+<p>Code Fragment 40.1.1 below implements a tiny JEPA-style loss on hand-sized vectors. The goal is not realism; it is to make the geometry of the loss inspectable before we bury it inside a Vision Transformer.</p>
+<pre><code class="language-python"># JEPA predicts the target embedding from context, not raw pixels.
+# This micro-example shows how the squared latent loss reacts to a
+# predictor that captures direction correctly but misses magnitude.
 import numpy as np
 
-context = np.array([0.2, 0.4, -0.1, 0.7])
-target = np.array([0.3, 0.35, -0.05, 0.8])
-predictor = np.array([1.05, 0.85, 0.90, 1.10])
-prediction = context * predictor
-loss = np.mean((prediction - target) ** 2)
-print({"jepa_loss": round(float(loss), 5), "prediction": prediction.round(3).tolist()})</code></pre>
-<div class="code-output"><p><code>The output shows the representation-space prediction and loss, which is the quantity a JEPA-style learner optimizes.</code></p></div>
-<div class="code-caption">Code Fragment 40.1.1 implements jepa_prediction_probe for Predict in representation space, not pixels: the JEPA idea and prints the diagnostic quantity the controller or evaluator should inspect.</div>
+context = np.array([0.20, 0.40, -0.10, 0.70], dtype=np.float32)
+target = np.array([0.28, 0.33, -0.02, 0.82], dtype=np.float32)
+predictor_scale = np.array([1.05, 0.88, 0.85, 1.12], dtype=np.float32)
+
+prediction = context * predictor_scale
+residual = prediction - target
+loss = float(np.mean(residual ** 2))
+
+print({
+    "prediction": prediction.round(3).tolist(),
+    "residual": residual.round(3).tolist(),
+    "jepa_loss": round(loss, 5),
+})</code></pre>
+<div class="code-output"><code>{'prediction': [0.21, 0.352, -0.085, 0.784], 'residual': [-0.07, 0.022, -0.065, -0.036], 'jepa_loss': 0.00277}</code></div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> This probe computes a JEPA-style latent loss by comparing the predicted embedding against the target embedding element by element. Notice that the residual is small even though no image was reconstructed, which is the entire point of the objective. The useful output is the latent error pattern, because it tells you which semantic factors the predictor still misses.</div>
+<p>The expected output is a short residual vector with one scalar loss. If a single latent dimension spikes while the others stay stable, that is the first clue that the representation is missing one controllable factor, such as motion direction or coarse object pose.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built probe is about 20 lines. In a working project, use PyTorch for the maintained path and FAISS for reproducible evaluation support. The maintained route handles interfaces, batching, logging, and versioned artifacts; the hand-built version remains useful for debugging the contract and explaining the failure mode.</p>
+<p>The numeric probe takes about 18 lines. The same training step drops to roughly 6 lines with PyTorch tensors and a maintained optimizer loop. PyTorch handles batching, autograd, and device placement internally, which lets you focus on masking policy, predictor design, and evaluation rather than tensor bookkeeping.</p>
 </div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
-</ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between perception, representation, planning, control, and evaluation.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example: Predict In Representation Space, Not Pixels: The JEPA Idea</div>
-<p><strong>Who:</strong> Elena, representation-learning scientist adapting video pretraining to robot picking. <strong>Situation:</strong> A 12-robot evaluation shift must decide whether Predict in representation space, not pixels: the JEPA idea improves closed-loop behavior. <strong>Problem:</strong> offline scores look promising, but the robot still has to recover from sensor noise, delayed actuation, and rare contact changes. <strong>Dilemma:</strong> ship the new model after a visual or reward score, or require a matched baseline, one perturbation panel, and manual review of the 20 hardest rollouts. <strong>Decision:</strong> the lead keeps the baseline and candidate on the same seed panel and logs every observation, action, intervention, and terminal state. <strong>How:</strong> the run saves one artifact with configuration, metrics, latency, videos, and failure tags. <strong>Result:</strong> the candidate is accepted only when it improves the chapter metric by 10 percent and does not increase unsafe recoveries. <strong>Lesson:</strong> Predict In Representation Space, Not Pixels: The JEPA Idea matters when it changes decisions in the loop, not when it only improves a standalone proxy.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>JEPA-style learning asks the model to predict representations, not every pixel. The frontier question is whether these representations preserve enough geometry, object permanence, and action consequence information to support planning with limited robot interaction data.</p>
-</div>
-<div class="callout cross-ref">
-<div class="callout-title">Cross-Reference Thread</div>
-<p>This section connects to <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/index.html">Chapter 27</a> for vision for action, <a href="../../part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/index.html">Chapter 35</a> for foundation models, <a href="../module-41-diffusion-and-generative-planning/index.html">Chapter 41</a> for generative planning. Follow those links when a planning, perception, or safety assumption needs a refresher before the current method is trusted.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you state the observation, state estimate, action, prediction horizon, success metric, and most likely failure mode for Predict in representation space, not pixels: the JEPA idea? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Predict In Representation Space, Not Pixels: The JEPA Idea becomes useful when it is tied to JEPA-style representation prediction, video pretraining, and action-conditioned latent planning. The contract names the observation stream, latent or physical state, action representation, timing budget, and evaluation artifact before any model comparison is made. This answers the core agent checklist questions: what changes in the loop, why it should help, how it is measured, and when the method should be rejected.</p>
-<p>V-JEPA 2 is an important 2025 anchor because it combines internet-scale video pretraining with a smaller amount of robot interaction data for action-conditioned latent planning. The skeptical-reader test is simple: a claim about Predict in representation space, not pixels: the JEPA idea must identify the baseline, the shared seed panel, the horizon or task split, and the failure labels saved in one artifact.</p>
+<h2>Why Masking Strategy Is Load-Bearing</h2>
+<p>I-JEPA showed that the task becomes too easy when targets are tiny or when the context reveals almost everything. Large targets force the model to infer semantic structure, while spatially distributed context regions stop it from solving the task with local texture continuation. In other words, the masking policy is not a data-loader detail, it is how you define the abstraction level of the learned representation.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 40.1</div>
+<div class="comparison-table-title">What Changes When You Change The Objective?</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Objective</th><th>What the model must preserve</th><th>Main failure mode for control</th></tr></thead>
 <tbody>
-<tr><td>PyTorch</td><td>Supports JEPA-style representation prediction, video pretraining, and action-conditioned latent planning.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>FAISS</td><td>Supports JEPA-style representation prediction, video pretraining, and action-conditioned latent planning.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>Meta V-JEPA</td><td>Supports JEPA-style representation prediction, video pretraining, and action-conditioned latent planning.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>V-JEPA 2</td><td>Supports JEPA-style representation prediction, video pretraining, and action-conditioned latent planning.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>LeRobot</td><td>Supports JEPA-style representation prediction, video pretraining, and action-conditioned latent planning.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr>
+<tr><td>Pixel reconstruction</td><td>Texture, color, exact appearance</td><td>Spends capacity on visual detail with weak action relevance</td></tr>
+<tr><td>Contrastive learning</td><td>Instance discrimination and invariances</td><td>Can hide geometry needed for prediction or control</td></tr>
+<tr><td>JEPA latent prediction</td><td>Predictive semantic structure</td><td>May under-represent fine contact or action-conditioned detail</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with one inspectable probe, then replaces only the plumbing with maintained libraries. Keep the artifact schema identical across baseline and shortcut runs so the comparison is construct-matched and co-computed in one pass.</p>
-<ol>
-<li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>
-<li>Run a deterministic smoke test on one seed and save the complete configuration.</li>
-<li>Add one perturbation tied to the section topic: delay, noise, horizon length, contact change, distractor object, or generated-scene shift.</li>
-<li>Compare only methods evaluated by the same script, split, seed panel, and metric definition.</li>
-<li>Record a postmortem that assigns failures to perception, representation, dynamics, planning, control, data coverage, timing, or evaluation.</li>
-</ol>
-<pre><code class="language-python"># Build one evidence record for Predict in representation space, not pixels: the JEPA idea.
-# Use the same schema for the baseline and the maintained shortcut.
-from dataclasses import dataclass, asdict
+<h2>From Representation Learning To Control</h2>
+<p>A JEPA encoder becomes a world-model ingredient when its latent space supports at least one downstream operation that matters for embodied action: state estimation, rollout prediction, retrieval of similar transitions, value estimation, or goal-conditioned planning. If none of those improve, then the representation may still be interesting scientifically, but it is not yet helping the robot.</p>
+<p>This is why Chapter 40 keeps returning to the evaluation artifact. A representation paper can stop at linear probing; an embodied system cannot. The artifact must record the encoder checkpoint, masking policy, downstream task head, seed panel, intervention budget, and the exact perturbations used during rollout tests.</p>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A warehouse picking team pretrains a JEPA encoder on hours of wrist-camera video before collecting grasp labels. The frozen encoder gives them a 3D feature space where cups, boxes, and handles cluster by shape and motion rather than by background. The win is not the pretty embedding plot; the win is that a small grasp head now needs fewer labeled failures before it stops mistaking specular reflections for grasp points.</p>
+</div>
+<h2>Implementation Pattern</h2>
+<p>Code Fragment 2 shows the evidence record that should accompany any JEPA-to-control claim. Put this contract in place before you run the big model. It forces the representation learner and the control engineer to talk about the same experiment.</p>
+<pre><code class="language-python"># Record the evaluation contract before training the downstream controller.
+# The important fields are the latent source, downstream task, and
+# perturbation panel used to test whether JEPA pretraining helps control.
+from dataclasses import asdict, dataclass
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    topic: str
-    tool: str
-    observation: str
-    action: str
+class JEPAEvidence:
+    encoder_checkpoint: str
+    downstream_task: str
     metric: str
     perturbation: str
-    failure_tag: str
+    rollout_horizon: int
+    accepted: bool
 
-record = EvidenceRecord(
-    section="40.1",
-    topic="Predict in representation space, not pixels: the JEPA idea",
-    tool="PyTorch",
-    observation="sensor, latent, or generated observation used by the method",
-    action="control, plan, or query chosen by the agent",
-    metric="construct-matched closed-loop success metric",
-    perturbation="the smallest shift that should expose brittleness",
-    failure_tag=(
-        "perception, representation, dynamics, planning, control, timing, data, or evaluation"
-    ),
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = JEPAEvidence(
+    encoder_checkpoint="ijepa_vith_mask64",
+    downstream_task="goal-conditioned grasp ranking",
+    metric="success_rate_at_20_trials",
+    perturbation="lighting_shift_plus_object_reorder",
+    rollout_horizon=12,
+    accepted=False,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 40.1.2 records the evidence schema for Predict in representation space, not pixels: the JEPA idea so the hand-built probe and the PyTorch shortcut are compared on the same contract.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Predict in representation space, not pixels: the JEPA idea fails, do not collapse the result into a single method verdict. Assign the failure to the interface that broke, rerun one controlled perturbation, and keep the trace next to the metric. That habit turns a disappointing rollout into a reusable diagnostic asset.</p>
+print(record.as_row())</code></pre>
+<div class="code-output"><code>{'encoder_checkpoint': 'ijepa_vith_mask64', 'downstream_task': 'goal-conditioned grasp ranking', 'metric': 'success_rate_at_20_trials', 'perturbation': 'lighting_shift_plus_object_reorder', 'rollout_horizon': 12, 'accepted': False}</code></div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> This evidence record defines the contract for a JEPA transfer experiment. The key fields are the exact encoder checkpoint, the downstream control task, and the perturbation panel used to decide whether the representation helped or merely looked good offline. A section like this is not complete until the representation claim and the control claim live in the same artifact.</div>
+<p>The expected output is a structured record, not a score. That is deliberate. Before you trust a performance number, you should be able to inspect the experimental contract and see whether the control task, horizon, and perturbations were actually meaningful.</p>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The usual mistake is to conclude "the representation is good" from a static downstream proxy such as k-nearest-neighbor retrieval or frozen linear probing. Those checks are useful, but they do not tell you whether the latent space preserves the action-conditioned variables that determine recovery, contact, and timing in a real loop.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Recent JEPA work raises a sharper question than "can the encoder classify actions?" The active frontier is whether self-supervised video pretraining can preserve object permanence, intuitive physics, and controllable affordances well enough that a small amount of robot interaction data is sufficient for planning. That question becomes concrete in <a href="section-40.3.html">Section 40.3</a>, where V-JEPA 2 adds action-conditioned latent rollout modeling.</p>
+</div>
+<div class="callout cross-ref">
+<div class="callout-title">Cross-Reference Thread</div>
+<p>For the perception side of these representations, revisit <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/index.html">Chapter 27</a>. For scene abstractions and geometry-rich features, see <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/index.html">Chapter 28</a>. For generative planners that operate over trajectories rather than latent target blocks, jump ahead to <a href="../module-41-diffusion-and-generative-planning/section-41.1.html">Section 41.1</a>.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you explain why JEPA prefers latent prediction to pixel reconstruction, write the core loss, and name one downstream control variable that could still be missing from the learned representation? If not, reread the masking discussion before moving on.</p>
+</div>
+<section class="production-depth-expansion">
+<h2>Builder's Deep Dive</h2>
+<p>For embodied systems, the practical reading of JEPA is simple: use the latent objective to bias the encoder toward predictive structure, then test whether that structure survives contact-rich decision making. The key design knobs are masking scale, predictor capacity, target-encoder momentum, and the downstream interface that consumes the latent state.</p>
+<p>The right-tool stack for this section is PyTorch for training, Meta's JEPA implementations for baselines, and a lightweight experiment logger that keeps the encoder checkpoint tied to rollout evidence. FAISS can help when you use latent nearest-neighbor retrieval for diagnostics or retrieval-augmented planning, but it is a diagnostic helper, not the world model itself.</p>
 </section>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>Predict In Representation Space, Not Pixels: The JEPA Idea is the planning equivalent of checking the weather before opening the door: prediction is useful only if it changes what the agent does next.</p>
+<p>JEPA asks the robot to remember what can change the next decision, not what would make the screenshot prettier.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Predict In Representation Space, Not Pixels: The JEPA Idea is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+<p>The JEPA idea is to predict semantic target embeddings from context embeddings. It becomes an embodied-AI result only when that representation demonstrably improves state estimation, planning, or control under a matched rollout evaluation.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 40.1.1</div><p>Design a minimal experiment for Predict in representation space, not pixels: the JEPA idea. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 40.1.1</div><p>Write a JEPA evaluation card for a tabletop pushing task. Include the context crop definition, target crop definition, latent loss, downstream controller, rollout horizon, perturbation panel, and one failure case where latent prediction might still miss the variable that matters.</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
 <h3>Primary References And Tools</h3>

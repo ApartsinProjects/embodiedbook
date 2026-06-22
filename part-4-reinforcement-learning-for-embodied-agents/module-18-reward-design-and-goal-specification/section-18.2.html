@@ -34,164 +34,183 @@
 <h1>Section 18.2: Sparse vs. dense; shaping done right</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Sparse vs. dense; shaping done right matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 18.2: Sparse vs. dense; shaping done right, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-18-illustration-02.png"/>
+<img alt="Technical illustration for Section 18.2: Sparse vs. dense; shaping done right." loading="lazy" src="images/chapter-18-illustration-02.png"/>
 <figcaption><strong>Figure 18.2A</strong>: Section 18.2: Sparse vs. dense; shaping done right is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Sparse vs. dense; shaping done right</strong> is one lens on reward design and goal specification. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p><strong>Sparse rewards tell the truth late; dense rewards speak early but may lie.</strong> A sparse success bonus preserves the task definition, yet it can leave a robot with almost no learning signal. A dense shaping term can guide exploration, yet an arbitrary dense term can teach the agent to optimize the hint instead of the goal.</p>
 </div>
-<p>It depends on the objective definitions in <a class="cross-ref" href="../module-14-reinforcement-learning-refresher/index.html">Chapter 14: Reinforcement Learning Refresher</a>, interacts with safe exploration in <a class="cross-ref" href="../module-19-exploration-in-embodied-worlds/index.html">Chapter 19: Exploration in Embodied Worlds</a>, and connects to deployment safety in <a class="cross-ref" href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/index.html">Chapter 54: Safety in Embodied AI</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a reward-signal design pass: identify where sparse feedback starves learning, add dense guidance only when it has a stated invariant, then verify the shaped and unshaped metrics in one run artifact.</p>
+</div>
+<p>For Sparse vs. dense; shaping done right, reward design must expose objective term, safety interaction, exploration effect, and deployment risk instead of hiding them inside one scalar return.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for sparse vs. dense; shaping done right into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>This section develops the contract for shaping rewards without rewriting the task. Sparse rewards give credit only at success or failure. Dense rewards add intermediate feedback, such as distance-to-goal progress, uprightness, clearance, or energy use.</p>
+<p>The key question is practical: does the extra feedback make learning easier while preserving the policy ranking implied by the real success condition?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In sparse vs. dense; shaping done right, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Hints Must Not Become Goals</div>
+<p>Dense shaping should behave like a teacher pointing toward the solution, not like a new exam. If the shaped reward makes a different final behavior optimal, it is no longer a hint; it is a new task.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Potential-based shaping is the standard way to add dense guidance while preserving optimal policies under the usual discounted Markov decision process assumptions. Choose a scalar potential $\Phi(s)$ that measures progress in a state. Then add the shaping term</p>
+<p>$$F(s,a,s') = \gamma \Phi(s') - \Phi(s).$$</p>
+<p>The shaped reward is $r'(s,a,s') = r(s,a,s') + F(s,a,s')$. The intuition is telescoping: along a trajectory, the added terms mostly cancel, leaving a boundary term tied to the start and finish rather than a new preference for a particular path. This is why a distance-like potential can speed learning without paying the agent forever for pacing near the goal.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The potential $\Phi$ is not the reward. It is a progress gauge used to create a local training signal. The final evaluation should still report the unshaped task reward and embodied metrics such as success rate, collisions, time, energy, and interventions.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Suppose a gripper starts three grid cells from a target. The sparse reward is zero until the final success, but the potential $\Phi(s)=-\text{distance}(s,\text{goal})$ produces a small positive shaping reward whenever distance shrinks. Code Fragment 1 shows the actual numbers.</p>
+<pre><code class="language-python"># Compute potential-based shaping for a short reaching path.
+# Progress creates dense feedback while final success remains separate.
+gamma = 0.9
+distances = [3, 2, 1, 0]
+sparse_rewards = [0, 0, 1]
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 18.2.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Sparse vs. dense; shaping done right should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for step, reward in enumerate(sparse_rewards):
+    phi_now = -distances[step]
+    phi_next = -distances[step + 1]
+    shaping = gamma * phi_next - phi_now
+    shaped_reward = reward + shaping
+    print(step, "sparse=", reward, "shaping=", round(shaping, 2), "shaped=", round(shaped_reward, 2))</code></pre>
+<div class="code-output">0 sparse= 0 shaping= 1.2 shaped= 1.2
+1 sparse= 0 shaping= 1.1 shaped= 1.1
+2 sparse= 1 shaping= 1.0 shaped= 2.0</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>distances</code> sequence turns an otherwise sparse success signal into shaped rewards at each step. The <code>gamma * phi_next - phi_now</code> term rewards progress without replacing the final task reward stored in <code>sparse_rewards</code>.</div>
+<p><strong>Expected output:</strong> intermediate shaped rewards appear before success, but the unshaped success reward remains visible. That separation is what lets the evaluation report learning speed and task success without mixing them.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In production, implement shaping as a Gymnasium wrapper around the environment rather than burying it inside the policy code. The wrapper can log raw reward, shaping term, shaped reward, potential value, and termination cause from the same step call.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Start with the sparse success condition that matches the task.</li>
+<li>Identify the learning bottleneck: exploration, credit assignment, or delayed feedback.</li>
+<li>If adding a dense term, write whether it is potential-based or a deliberate task change.</li>
+<li>Log raw reward, shaping term, and shaped reward separately.</li>
+<li>Report final success using the unshaped metric, then report shaping as a training aid.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A dense distance reward can teach a manipulator to hover near the object because hovering keeps earning progress-like feedback while grasping risks failure. The fix is not to avoid dense rewards entirely. The fix is to make shaping policy-invariant when possible and to audit the final behavior with the sparse success metric.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using sparse vs. dense; shaping done right should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A legged robot may receive sparse reward for crossing a finish line and potential-based shaping for reducing distance to the line. The evaluation should still include falls, torque, foot slip, and timeout rate, because a shaped distance signal alone cannot say whether the gait is deployable.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Dense reward is the coach shouting from the sideline. Sparse reward is the scoreboard. Do not let the coach secretly move the goalposts.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Current robot learning systems often combine sparse task success with learned shaping terms, curriculum signals, demonstrations, and constraint costs. The open research problem is deciding which auxiliary signals accelerate learning without creating brittle policies that fail when the hint distribution changes.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for sparse vs. dense; shaping done right? If not, the system boundary is still too vague.</p>
+<p>For a shaped reward you design, can you say whether the shaping is potential-based, what potential it uses, and which unshaped metric will be reported at the end?</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Reward Design and Goal Specification, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>The shaped reward should be treated as a training interface, not as the headline metric. During optimization, the learner sees $r'$. During evaluation, the report should expose raw task reward, shaping contribution, safety cost, and embodied success. This prevents a shaped run from looking better simply because it received more arithmetic along the way.</p>
+<p>The graduate-level habit is to state the assumption behind the invariant. Potential-based shaping preserves optimal policies for the same discounted Markov decision process when the shaping term has the form $\gamma\Phi(s')-\Phi(s)$. If the potential depends on hidden evaluator state, future information, changing curricula, or nonstationary human hints, the invariance argument no longer applies cleanly.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Sparse vs. dense; shaping done right</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Sparse vs. dense; shaping done right</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Sparse vs. dense; shaping done right</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Sparse vs. dense; shaping done right</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Sparse vs. dense; shaping done right</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium wrappers</td><td>Reward decomposition</td><td>Wrap <code>step</code> so raw reward, shaping, and shaped reward are logged together.</td></tr><tr><td>Safety Gymnasium</td><td>Sparse success plus cost</td><td>Use separate reward and cost channels when the shaping signal must not hide constraint violations.</td></tr><tr><td>MuJoCo</td><td>Potential features</td><td>Compute potentials from object pose, center of mass, velocity, and contact state with clear units.</td></tr><tr><td>Stable-Baselines3</td><td>Training loop</td><td>Train on shaped rewards, then evaluate callbacks on raw success and safety metrics.</td></tr><tr><td>CleanRL</td><td>Inspectable implementation</td><td>Use a short single-file run when you need to verify exactly where shaping enters the return.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation keeps shaping mechanically separate from task success. The environment can compute both, the policy can train on the shaped reward, and the evaluator can report success without the shaping bonus.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Define the sparse success event and termination condition first.</li>
+<li>Choose a potential with physical units, such as negative distance or negative height error.</li>
+<li>Compute the shaping term from consecutive states, not from the action label alone.</li>
+<li>Log a per-step reward decomposition table.</li>
+<li>Compare shaped and unshaped runs on one seed panel and one success definition.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Sparse vs. dense; shaping done right.
-# The same schema should be used for the baseline and the library shortcut.
+<p>Code Fragment 2 records the fields that should appear beside any shaped-reward experiment.</p>
+<pre><code class="language-python"># Build one shaping audit record for a robot reaching task.
+# The invariant field states why the dense term should not change the goal.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
+class ShapingAudit:
     section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+    sparse_success: str
+    potential: str
+    shaping_formula: str
+    report_metrics: list[str]
 
-record = EvidenceRecord(
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = ShapingAudit(
     section="18.2",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    sparse_success="object within 2 cm of target for 10 consecutive steps",
+    potential="negative gripper-to-target distance in meters",
+    shaping_formula="gamma * Phi(next_state) - Phi(current_state)",
+    report_metrics=["raw_success_rate", "mean_shaping_return", "collision_cost"],
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 18.2.2 records the method-specific evidence schema for testing Sparse vs. dense; shaping done right with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '18.2', 'sparse_success': 'object within 2 cm of target for 10 consecutive steps', 'potential': 'negative gripper-to-target distance in meters', 'shaping_formula': 'gamma * Phi(next_state) - Phi(current_state)', 'report_metrics': ['raw_success_rate', 'mean_shaping_return', 'collision_cost']}</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>ShapingAudit</code> record keeps the sparse success event, potential, formula, and reported metrics in one place. The <code>report_metrics</code> list makes clear that collision cost and raw success must remain visible after shaping is added.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to explain what would break the potential-based guarantee. This separates a mathematically safe hint from a dense reward that deliberately changes the task.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When shaping fails, inspect whether the policy optimized a dense term that was easier than success. Then compare the best shaped rollouts against unshaped success, safety cost, and final state. A useful failure label says whether the problem was a bad potential, a nonstationary hint, a missing cost, or a metric report that hid the raw reward.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Sparse vs. dense; shaping done right, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For shaped rewards, compare raw success, shaped return, safety cost, and time-to-success only when they are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Report shaping as a training aid, not as a replacement for the task metric.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Sparse vs. dense; shaping done right is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Dense shaping is useful when it improves learning while raw task success and embodied safety metrics remain the final judge.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 18.2.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 18.2.1</div><p>For a reaching, navigation, or locomotion task, write a sparse success reward and one potential-based shaping term. Then name one dense reward you would reject because it changes the task rather than guiding it.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned sparse vs. dense; shaping done right into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-18.3.html">Section 18.3</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section showed how to add dense guidance without losing the sparse task definition. Next, <a href="section-18.3.html">Section 18.3</a> uses goal conditioning and hindsight replay to make failed trials useful without pretending they reached the original goal.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://people.eecs.berkeley.edu/~russell/papers/icml99-shaping.pdf" rel="noopener" target="_blank">Ng, A. Y., Harada, D., and Russell, S. (1999). Policy invariance under reward transformations. ICML.</a></p>
-<p class="bib-annotation">This paper gives the potential-based shaping result that keeps optimal policies invariant. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">This is the anchor reference for potential-based shaping. It explains why the form $\gamma\Phi(s')-\Phi(s)$ can add dense feedback while preserving optimal policies under the stated discounted-MDP assumptions.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1707.01495" rel="noopener" target="_blank">Andrychowicz, M. et al. (2017). Hindsight Experience Replay. NeurIPS.</a></p>
-<p class="bib-annotation">HER converts failed attempts into goal-conditioned learning signal. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">HER is not the same as shaping, but it addresses the same sparse-feedback pain point. Reading it alongside potential-based shaping helps distinguish relabeling experience from changing per-step reward.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1606.06565" rel="noopener" target="_blank">Amodei, D. et al. (2016). Concrete Problems in AI Safety. arXiv.</a></p>
-<p class="bib-annotation">This paper gives durable categories for reward hacking, side effects, robustness, and safe exploration. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">This paper explains why dense terms need safety review. A shaping term that improves learning can still create side effects if it is not tied to a policy-invariant potential or an explicit task change.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1706.03741" rel="noopener" target="_blank">Christiano, P. F. et al. (2017). Deep reinforcement learning from human preferences. NeurIPS.</a></p>
-<p class="bib-annotation">Preference-based reward learning is a core alternative when hand-written rewards are brittle. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Preference models can provide dense-looking feedback when hand-written shaping is hard. The section's caution still applies: learned dense signals must be evaluated against raw task success and safety metrics.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://cdn.openai.com/safexp-short.pdf" rel="noopener" target="_blank">Ray, A., Achiam, J., and Amodei, D. (2019). Benchmarking Safe Exploration in Deep Reinforcement Learning. OpenAI.</a></p>
-<p class="bib-annotation">Safety Gym introduced benchmark tasks for constrained exploration and safety cost tracking. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Safety Gym is useful when shaped progress must be checked against constraint costs. It keeps the reader from treating a smoother reward curve as proof of safer behavior.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://safety-gymnasium.farama.org/" rel="noopener" target="_blank">Farama Foundation Safety Gymnasium documentation.</a></p>
-<p class="bib-annotation">Safety Gymnasium supports testing constraint-aware reward and exploration recipes. For this section, connect the source to sparse vs. dense; shaping done right and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Safety Gymnasium supports experiments where sparse success, dense shaping, and safety costs can be logged from the same rollout. That is the artifact this section asks readers to preserve.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>

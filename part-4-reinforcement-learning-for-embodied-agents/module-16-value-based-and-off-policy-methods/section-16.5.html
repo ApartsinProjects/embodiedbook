@@ -34,9 +34,9 @@
 <h1>Section 16.5: Sample efficiency and off-policy failure modes</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Sample efficiency and off-policy failure modes matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 16.5: Sample efficiency and off-policy failure modes, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-16-illustration-05.png"/>
+<img alt="Technical illustration for Section 16.5: Sample efficiency and off-policy failure modes." loading="lazy" src="images/chapter-16-illustration-05.png"/>
 <figcaption><strong>Figure 16.5A</strong>: Section 16.5: Sample efficiency and off-policy failure modes is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
@@ -44,119 +44,144 @@
 <div class="callout-title">Big Picture</div>
 <p><strong>Sample efficiency and off-policy failure modes</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
 </div>
-<p>It contrasts with the policy-gradient path in <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>, depends on simulator interfaces from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/index.html">Chapter 10: Environments with Gymnasium and PettingZoo</a>, and sets up GPU-scale replay choices in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make sample efficiency and off-policy failure modes operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
+</div>
+<p>For Sample efficiency and off-policy failure modes, off-policy learning depends on replay semantics, environment API, target computation, and GPU-scale batching being fixed before comparison with policy-gradient methods.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for sample efficiency and off-policy failure modes into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>Sample efficiency is the promise of off-policy RL: learn more from each transition by reusing data. The danger is that reused data may come from a different policy, a different simulator condition, or a different phase of the robot's learning history.</p>
+<p>This section develops the failure map. We distinguish useful reuse from distribution mismatch, show why off-policy correction can become high variance, and name the embodied cases where bootstrapping turns missing coverage into confident value errors.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In sample efficiency and off-policy failure modes, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Efficient Data Is Not Automatically Relevant Data</div>
+<p>A transition is useful only for the decisions the current policy must make. A million replay entries can still be thin evidence if they miss the object poses, contacts, recovery actions, or sensor failures that deployment will expose.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Off-policy learning trains a target policy using data collected by a behavior policy. If the behavior policy $\mu$ and target policy $\pi$ differ, an importance ratio can correct expectations in the simplest setting:</p>
+<p>$$\rho_t = \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}$$</p>
+<p>Large ratios mean the target policy strongly prefers an action that the behavior policy rarely took. That can reduce bias, but it increases variance. In long-horizon embodied tasks, multiplying many ratios can make estimates unusably noisy, so practical systems clip, truncate, or avoid explicit correction by using value-based bootstrapping.</p>
+<p>Bootstrapping has its own failure mode. The critic can assign high value to state-action pairs that are out of distribution, because no transition in replay contradicts the estimate. This is extrapolation error: the model sounds certain exactly where the data is thin.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Off-policy methods trade fresh interaction for data reuse. The trade works when replay covers the target policy's decisions and fails when the current policy asks the critic about actions the behavior data barely visited.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 computes importance ratios for three logged actions. The third transition is dangerous because the target policy assigns high probability to an action that the behavior policy rarely selected.</p>
+<pre><code class="language-python"># Compute off-policy correction ratios for logged actions.
+# Large ratios identify target-policy decisions with weak behavior-policy support.
+logged = [
+    {"action": "slow_push", "pi": 0.40, "mu": 0.50},
+    {"action": "lift", "pi": 0.20, "mu": 0.25},
+    {"action": "fast_recovery", "pi": 0.30, "mu": 0.03},
+]
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 16.5.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Sample efficiency and off-policy failure modes should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+for row in logged:
+    ratio = row["pi"] / row["mu"]
+    clipped = min(ratio, 2.0)
+    print(row["action"], f"rho={ratio:.1f}", f"clipped={clipped:.1f}")</code></pre>
+<div class="code-output">slow_push rho=0.8 clipped=0.8
+lift rho=0.8 clipped=0.8
+fast_recovery rho=10.0 clipped=2.0</div>
+<p>The expected output shows mild correction for the first two logged actions and an extreme mismatch for <code>fast_recovery</code>. A ratio of <code>10.0</code> means the target policy wants that action far more often than the behavior policy ever demonstrated it, so clipping to <code>2.0</code> is a variance-control patch, not proof of support.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> <code>fast_recovery</code> has an importance ratio of 10.0 because <code>pi</code> is much larger than <code>mu</code>. Clipping the ratio reduces variance, but it also records that the replay data gives weak evidence for the action the target policy now wants.</div>
+<p>In an embodied dataset, that weak evidence is not an abstract statistical problem. It may mean the robot almost never attempted the emergency recovery motion during collection, yet the learned policy now depends on it during deployment.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Libraries can handle replay, batching, and algorithm updates, but they cannot decide whether the data covers the current policy's decisions. For off-policy experiments, add coverage reports, behavior-policy tags, and condition labels to the artifact even when the trainer is fully managed by Stable-Baselines3, Tianshou, or CleanRL.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Define sample efficiency as return or success per environment interaction, not per gradient step.</li>
+<li>Tag replay by behavior policy, task condition, and collection time.</li>
+<li>Measure policy-data mismatch with action coverage, importance ratios, or nearest-neighbor support.</li>
+<li>Track critic uncertainty or critic disagreement on target-policy actions.</li>
+<li>Report failure modes by distribution shift: observation, action, dynamics, reward, or termination.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to report fewer environment steps without reporting coverage. A method can look sample efficient because it reuses data aggressively, while the learned critic is extrapolating over actions and states the robot never actually visited.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using sample efficiency and off-policy failure modes should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A fleet-learning project may reuse thousands of delivery-robot logs. That is valuable only if the logs cover the new policy's turns, speeds, obstacle types, lighting conditions, and recovery maneuvers. Otherwise off-policy learning becomes confident imitation of yesterday's easy routes plus speculation about today's hard ones.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A good embodied system makes sample efficiency and off-policy failure modes visible twice: once in the design sketch and once in the replay artifact. The second view keeps the first one honest.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Research on offline RL, conservative critics, uncertainty-aware value learning, and dataset curation all targets the same embodied problem: how to learn from fixed or mixed-policy data without trusting unsupported actions. The central open question is how to turn coverage diagnostics into reliable deployment decisions.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for sample efficiency and off-policy failure modes? If not, the system boundary is still too vague.</p>
+<p>Can you state the behavior policy, target policy, replay coverage, correction rule, and critic diagnostic for a sample-efficiency claim? If not, the claim is missing the evidence needed to interpret it.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Value-Based and Off-Policy Methods, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Sample efficiency has to be construct-matched. If method A uses 10,000 real robot steps and method B uses 10,000 simulator steps plus a million logged transitions, the comparison is not a single sample-efficiency number. It is a data-regime comparison that must report every source of experience.</p>
+<p>Off-policy failure analysis starts by asking which distribution changed. Observation shift changes what the encoder sees. Action shift changes which controls the critic must evaluate. Dynamics shift changes the consequence of the same action. Reward shift changes which behavior the value function calls good. Termination shift changes which failures are hidden by early episode endings.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Sample efficiency and off-policy failure modes</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Sample efficiency and off-policy failure modes</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Sample efficiency and off-policy failure modes</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Sample efficiency and off-policy failure modes</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Sample efficiency and off-policy failure modes</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Offline logs</td><td>Behavior-policy evidence</td><td>Use them only with policy tags, condition labels, and action-support summaries.</td></tr><tr><td>CleanRL</td><td>Inspectable training loop</td><td>Use it to verify which environment steps, replay samples, and gradient steps are counted.</td></tr><tr><td>Tianshou</td><td>Collector and replay controls</td><td>Use it to keep collection policy, replay sampling, and evaluation policy explicit.</td></tr><tr><td>MuJoCo</td><td>Controlled shift panel</td><td>Use it to generate matched dynamics perturbations for coverage and failure analysis.</td></tr><tr><td>ROS 2 bags</td><td>Real deployment traces</td><td>Use them to audit whether real observations and actions match the simulator-trained distribution.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust off-policy implementation records data provenance, not only return. Code Fragment 2 builds one artifact row that ties a sample-efficiency claim to the exact interaction and replay counts behind it.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Count real environment steps, simulator steps, replayed transitions, and gradient updates separately.</li>
+<li>Store behavior-policy tags for every replay source.</li>
+<li>Report action-support warnings for target-policy actions with weak coverage.</li>
+<li>Evaluate the current policy on a fixed perturbation panel, not on replay alone.</li>
+<li>Keep negative diagnostics in the registry even when only significant wins enter the paper tables.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Sample efficiency and off-policy failure modes.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one sample-efficiency audit record.
+# Separating data sources prevents invalid apples-to-oranges comparisons.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class SampleEfficiencyAudit:
+    algorithm: str
+    real_steps: int
+    sim_steps: int
+    replay_samples: int
+    gradient_updates: int
+    weak_action_support: str
+    evaluation_panel: str
 
-record = EvidenceRecord(
-    section="16.5",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = SampleEfficiencyAudit(
+    algorithm="TD3",
+    real_steps=0,
+    sim_steps=50000,
+    replay_samples=1000000,
+    gradient_updates=200000,
+    weak_action_support="fast_recovery torque range",
+    evaluation_panel="mass_friction_delay_v1",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 16.5.2 records the method-specific evidence schema for testing Sample efficiency and off-policy failure modes with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'algorithm': 'TD3', 'real_steps': 0, 'sim_steps': 50000, 'replay_samples': 1000000, 'gradient_updates': 200000, 'weak_action_support': 'fast_recovery torque range', 'evaluation_panel': 'mass_friction_delay_v1'}</div>
+<p>The expected output should be read as an accounting record, not a performance claim. It says this result used only simulator interaction, extremely heavy replay reuse, and still has a named weak-support region, so any sample-efficiency comparison must keep those data sources and support warnings attached to the score.</p>
+<div class="code-caption"><strong>Code Fragment 2:</strong> <code>SampleEfficiencyAudit</code> separates real steps, simulator steps, replay samples, and gradient updates. The <code>weak_action_support</code> field records where off-policy reuse is most likely to produce extrapolation error.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the Sample efficiency and off-policy failure modes evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When an off-policy method fails, do not start by blaming the algorithm name. First identify whether the bad value came from behavior-policy mismatch, missing action support, stale dynamics, reward mislabeling, termination bias, or critic extrapolation. Then rerun one matched perturbation panel with coverage diagnostics enabled.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Sample efficiency and off-policy failure modes, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For sample-efficiency claims, compare only metrics co-computed in one pass on one data accounting scheme: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same definitions of real steps, simulator steps, replay samples, and gradient updates. Save the coverage diagnostics with the result table.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Sample efficiency and off-policy failure modes is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Off-policy learning is valuable because it reuses expensive embodied experience. It is trustworthy only when data provenance, coverage, correction, and bootstrapping diagnostics explain why reuse applies to the current policy.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 16.5.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 16.5.1</div><p>Design a sample-efficiency table for two off-policy methods. Include real steps, simulator steps, replay samples, gradient updates, success, one safety metric, and one coverage warning that would block a strong claim.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned sample efficiency and off-policy failure modes into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="index.html">Chapter 16</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

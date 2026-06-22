@@ -34,90 +34,99 @@
 <h1>Section 13.5: real2sim2real and asset/scene reconstruction</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"real2sim2real and asset/scene reconstruction matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 13.5: real2sim2real and asset/scene reconstruction, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-13-illustration-05.png"/>
+<img alt="Technical illustration for Section 13.5: real2sim2real and asset/scene reconstruction." loading="lazy" src="images/chapter-13-illustration-05.png"/>
 <figcaption><strong>Figure 13.5A</strong>: Section 13.5: real2sim2real and asset/scene reconstruction is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p>real2sim2real and asset/scene reconstruction treats synthetic variation as a transfer experiment. Randomized textures, lights, friction, masses, cameras, and object layouts matter only when they reduce a measured reality-gap failure.</p>
-<p>The transfer argument starts from the reality-gap framing in <a class="cross-ref" href="../module-09-why-simulation-is-central/index.html">Chapter 9: Why Simulation Is Central</a> and the simulator-choice rules in <a class="cross-ref" href="../module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/index.html">Chapter 11: Physics Simulators</a>. It prepares <a class="cross-ref" href="../../part-4-reinforcement-learning-for-embodied-agents/module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20: Sim-to-Real Transfer</a> and <a class="cross-ref" href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/index.html">Chapter 52: Evaluating Embodied Systems</a> by treating synthetic variation as an auditable transfer experiment rather than a data-volume trick.</p>
+<p>real2sim2real starts from real measurements, reconstructs a simulator from them, trains or evaluates inside that simulator, then returns to the real system for validation. Asset and scene reconstruction reduce guesswork, but they also create a leakage risk if the same real objects, rooms, camera paths, or episodes are used for both calibration and final evaluation.</p>
+<p>For real2sim2real and asset/scene reconstruction, the transfer argument should name which simulator gap is randomized, which real variable it approximates, and which evaluation panel checks whether transfer improved.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Read this section as a provenance chain: collect real measurements, reconstruct assets and scene parameters, randomize the residual uncertainty, train in the reconstructed simulator, and validate on real conditions that were not used to build the digital twin.</p>
 </div>
 <h2>What This Section Builds</h2>
-<p>This section makes real2sim2real and asset/scene reconstruction operational. It names the task contract, the evidence artifact, and the failure mode that would make a result untrustworthy.</p>
-<p>The goal is not vocabulary recognition. The goal is a reproducible habit: define the task, run an inspectable baseline, apply the maintained tool, and save the comparison as one artifact.</p>
+<p>This section makes real2sim2real operational. It distinguishes reconstruction inputs, such as scans, meshes, camera calibration, object dimensions, and contact measurements, from evaluation outputs such as real success, pose error, slip, collision, or recovery rate.</p>
+<p>The goal is to build a simulator that is anchored to reality without becoming a benchmark mirror. A digital twin should explain what was measured, what was inferred, and what remains randomized.</p>
 <div class="callout key-insight">
 <div class="callout-title">Transfer Is The Test</div>
-<p>Synthetic data is not automatically evidence. It becomes evidence when the randomization plan names a real-world bottleneck, holds out validation conditions, and shows which failures improved.</p>
+<p>Reconstruction is not automatically evidence. It becomes evidence when the calibration set, reconstructed parameters, residual randomization ranges, and untouched real holdout set are all named.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>The real2sim2real loop has four steps. First, measure the real environment: geometry, material appearance, camera calibration, object dimensions, mass, friction, and task layout. Second, reconstruct an asset or scene representation. Third, randomize residual uncertainty around the reconstruction, because the scan is never the whole world. Fourth, evaluate transfer on real conditions held out from reconstruction.</p>
+<p>The critical split is calibration versus evaluation. Calibration data may tune mesh scale, camera intrinsics, contact parameters, and lighting priors. Evaluation data must remain separate, otherwise the digital twin can memorize the test room, test object, or test camera path.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is measured anchoring plus residual uncertainty. Reconstruction narrows the randomization range, and residual randomization covers what the reconstruction did not capture.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"># Create a typed record for Real2sim2real and asset/scene reconstruction.
-# The fields expose the environment contract before policy code appears.
-from dataclasses import dataclass
+<p>The following snippet turns measured object dimensions into a residual randomization range. The simulator is anchored to the real measurement, but the training distribution still covers small reconstruction and manufacturing errors.</p>
+<pre><code class="language-python"># Convert real calibration measurements into residual randomization ranges.
+# The holdout object is excluded, so range fitting does not leak evaluation data.
+calibration_lengths_cm = [9.8, 10.1, 10.0, 9.9]
+margin_cm = 0.3
 
-@dataclass
-class EmbodiedStep:
-    observation: str
-    action: str
-    result: str
+low = min(calibration_lengths_cm) - margin_cm
+high = max(calibration_lengths_cm) + margin_cm
+holdout_object = "object_E, unseen during reconstruction"
 
-step = EmbodiedStep("real2sim2real_and_asset_scene_", "act", "observe consequence")
-print(step)</code></pre>
-<div class="code-caption">Code Fragment 13.5.1 creates an <code>EmbodiedStep</code> record for Real2sim2real and asset/scene reconstruction. The observation, action, and result fields make the interface explicit before a simulator or policy is added.</div>
+print(f"length_range_cm=({low:.1f}, {high:.1f})")
+print(f"holdout={holdout_object}")</code></pre>
+<div class="code-output">length_range_cm=(9.5, 10.4)
+holdout=object_E, unseen during reconstruction</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> The calibration list defines the reconstructed range, while <code>holdout_object</code> records what was excluded from fitting. This is the core real2sim2real discipline: use real measurements to anchor simulation, then protect the final test from leakage.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use MuJoCo, MJX, Isaac Lab, Genesis, Newton, Drake, ROS 2, and modern Gazebo to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>The from-scratch fragment is for understanding the calibration split. In a practical system, reconstruction tools, simulators, and robot logs should preserve which real measurements informed the digital twin and which real episodes were reserved for final evaluation.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Split real data into calibration, validation-for-debugging, and final holdout sets before reconstruction.</li>
+<li>Record which assets were scanned, which parameters were fitted, and which parameters remain randomized.</li>
+<li>Randomize residual uncertainty around reconstructed values rather than treating the reconstruction as exact.</li>
+<li>Evaluate on real objects, scenes, or camera paths absent from the reconstruction set.</li>
+<li>Report failures as reconstruction error, residual range miss, simulator physics miss, perception miss, or policy miss.</li>
 </ol>
-<div class="callout tip"><div class="callout-title">Randomization Evidence Rule</div><p>A randomization plan is evidence only when it names the randomized factors, ranges, sampling distribution, held-out real measurements, and failure labels. Synthetic data should improve a measured transfer bottleneck, not merely increase the number of rendered images.</p></div>
+<div class="callout tip"><div class="callout-title">Reconstruction Evidence Rule</div><p>A real2sim2real plan is evidence only when it names the calibration data, reconstructed parameters, residual randomization ranges, final real holdout, and failure labels. Without that split, a digital twin can become a polished copy of the test set.</p></div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is reconstruction leakage. If the final evaluation scene was used to tune mesh cleanup, lighting, camera pose, friction, or object scale, the reported transfer score is partly a reconstruction fit.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team working on real2sim2real and asset/scene reconstruction should log final success, intermediate observations, chosen actions, controller status, seed, wrapper stack, and recovery events. The logs reveal whether the method solves the task or merely passes the easiest episodes.</p>
+<p>A lab building a drawer-opening simulator might scan the drawer geometry, estimate handle pose, fit friction from calibration pulls, then randomize handle texture, rail friction, and camera pose around those measurements. The final test should use a different drawer or a different set of pulls that never shaped the reconstruction.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A digital twin is not a trophy. It is a measurement instrument with a calibration log.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>The frontier connects real-world capture, neural reconstruction, procedural editing, and policy training into faster real2sim2real loops. The open question is how much scene fidelity is needed before residual randomization and real holdout evidence dominate additional reconstruction detail.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, action, metric, perturbation, seed policy, and most likely failure mode for real2sim2real and asset/scene reconstruction? If not, the experiment boundary is still too vague.</p>
+<p>Can you name the calibration set, reconstructed parameters, residual ranges, final holdout set, and leakage guard? If not, the real2sim2real experiment is still too vague.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>real2sim2real and asset/scene reconstruction becomes useful when it is tied to a closed-loop contract. In this chapter on Domain Randomization and Synthetic Data, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>real2sim2real and asset reconstruction become useful when the simulator is treated as an estimate with uncertainty. The reconstructed asset is the center of the distribution, not the full distribution.</p>
+<p>The graduate-level habit is to separate three claims. The reconstruction claim says the digital twin matches measured calibration data. The residual claim says remaining uncertainty is randomized across plausible ranges. The evidence claim says final real performance is measured on conditions excluded from reconstruction.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>real2sim2real and asset/scene reconstruction</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>real2sim2real and asset/scene reconstruction</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>real2sim2real and asset/scene reconstruction</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>real2sim2real and asset/scene reconstruction</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>real2sim2real and asset/scene reconstruction</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Photogrammetry or scan pipelines</td><td>Asset geometry capture</td><td>Use them to anchor mesh scale, object shape, and scene layout before adding residual randomization.</td></tr><tr><td>Neural scene reconstruction</td><td>View and appearance recovery</td><td>Use it when camera images can reconstruct useful appearance priors for the simulator.</td></tr><tr><td>MuJoCo or MJX</td><td>Fitted physical parameters</td><td>Use it when reconstructed geometry must be paired with mass, friction, damping, and actuator ranges.</td></tr><tr><td>ROS 2 bags</td><td>Calibration and holdout bookkeeping</td><td>Use them to separate episodes that fit the digital twin from episodes that test transfer.</td></tr><tr><td>LeRobot</td><td>Real policy validation</td><td>Use it to compare reconstructed-sim training against real trajectories and task outcomes.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a provenance record. Code Fragment 2 records the calibration source, residual range, final holdout, and leakage guard beside the transfer metric.</p>
 <ol>
 <li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
 <li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
@@ -125,40 +134,44 @@ print(step)</code></pre>
 <li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
 <li>Compare methods only when one script evaluates them on the same task panel.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for real2sim2real and asset/scene reconstruction.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one evidence record for real2sim2real reconstruction.
+# The record separates calibration data from the final real holdout.
 from dataclasses import dataclass, asdict
 
 @dataclass
 class EvidenceRecord:
     section: str
     tool: str
-    observation: str
-    action: str
+    calibration_source: str
+    residual_randomization: str
     metric: str
-    perturbation: str
+    leakage_guard: str
+
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
 
 record = EvidenceRecord(
     section="13.5",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    tool="scan pipeline plus MuJoCo",
+    calibration_source="objects A through D and camera path 1",
+    residual_randomization="object length +/- 0.3 cm, friction +/- 0.08",
+    metric="real success on object E and camera path 2",
+    leakage_guard="object E and path 2 excluded from reconstruction",
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 13.5.2 records the method-specific evidence schema for testing real2sim2real and asset/scene reconstruction with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<p><strong>Expected output:</strong> the printed trace for real2sim2real and asset/scene reconstruction should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'section': '13.5', 'tool': 'scan pipeline plus MuJoCo', 'calibration_source': 'objects A through D and camera path 1', 'residual_randomization': 'object length +/- 0.3 cm, friction +/- 0.08', 'metric': 'real success on object E and camera path 2', 'leakage_guard': 'object E and path 2 excluded from reconstruction'}</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>EvidenceRecord</code> separates calibration data from final evaluation data. This is the simplest audit for train/test leakage in a real2sim2real workflow.</div>
+<p><strong>Expected output:</strong> the printed trace should expose calibration source, residual randomization, transfer metric, and leakage guard. If one of those fields is missing, the example is not yet an evaluation artifact.</p>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to draw a line between calibration data and final holdout data before reconstruction begins. That line is the simplest way to catch a digital twin that has learned the exam.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When real2sim2real and asset/scene reconstruction fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When real2sim2real fails, separate scan error, mesh simplification error, contact-parameter miss, residual range miss, perception mismatch, and policy mismatch. Then adjust only the suspected reconstruction or residual range and rerun on the same final holdout. This preserves the evidence value of the holdout panel.</p>
 </section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>real2sim2real and asset/scene reconstruction is useful when it makes a policy or perception model more robust under measured transfer stress, not when it simply increases the amount of simulated data.</p>
+<p>real2sim2real is useful when reconstructed assets anchor simulation, residual randomization covers uncertainty, and final transfer is measured on real conditions excluded from the reconstruction process.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 13.5.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
-<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="section-13.6.html">Section 13.6 →</a> continues the thread with the next piece of the Part III stack.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 13.5.1</div><p>Plan a real2sim2real workflow for one object or room. Specify calibration measurements, reconstructed parameters, residual randomization ranges, final holdout conditions, and the leakage guard.</p></div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="section-13.6.html">Section 13.6 →</a> compares randomization, realism, and hybrid strategies on one shared transfer-readiness panel.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Foundational Papers</div>

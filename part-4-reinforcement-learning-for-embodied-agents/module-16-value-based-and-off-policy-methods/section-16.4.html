@@ -34,9 +34,9 @@
 <h1>Section 16.4: Maximum-entropy RL</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Maximum-entropy RL matters when the next action changes the evidence you thought you had."</p>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 16.4: Maximum-entropy RL, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="images/chapter-16-illustration-04.png"/>
+<img alt="Technical illustration for Section 16.4: Maximum-entropy RL." loading="lazy" src="images/chapter-16-illustration-04.png"/>
 <figcaption><strong>Figure 16.4A</strong>: Section 16.4: Maximum-entropy RL is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
 </figure>
 <cite>A Careful Control Loop</cite></blockquote>
@@ -44,52 +44,68 @@
 <div class="callout-title">Big Picture</div>
 <p><strong>Maximum-entropy RL</strong> is one lens on value-based and off-policy methods. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
 </div>
-<p>It contrasts with the policy-gradient path in <a class="cross-ref" href="../module-15-policy-gradient-methods-and-ppo/index.html">Chapter 15: Policy Gradient Methods and PPO</a>, depends on simulator interfaces from <a class="cross-ref" href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/index.html">Chapter 10: Environments with Gymnasium and PettingZoo</a>, and sets up GPU-scale replay choices in <a class="cross-ref" href="../module-17-massively-parallel-and-gpu-rl/index.html">Chapter 17: Massively Parallel and GPU RL</a>.</p>
+<div class="callout pathway">
+<div class="callout-title">Reader Pathway</div>
+<p>Use this section to make maximum-entropy rl operational: identify the quantity or representation being carried, the interface that carries it through the embodied stack, and the failure evidence that would force a redesign.</p>
+</div>
+<p>For Maximum-entropy RL, off-policy learning depends on replay semantics, environment API, target computation, and GPU-scale batching being fixed before comparison with policy-gradient methods.</p>
 <h2>What This Section Develops</h2>
-<p>This section develops the technical contract for maximum-entropy rl into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p>Maximum-entropy RL addresses a failure that appears often in embodied control: a policy can become competent but too narrow. It succeeds when the world follows the training script, then fails when contact, lighting, object pose, or latency changes slightly.</p>
+<p>The method changes the objective so the agent values both reward and controlled action diversity. The practical question is not whether randomness is good by itself. The question is how much stochasticity helps the robot discover and preserve useful alternatives without turning control into noise.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In maximum-entropy rl, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Entropy Buys Options</div>
+<p>Entropy in the policy means the agent keeps more than one plausible action available. In embodied tasks, those alternatives matter when the first plan slips, bumps, saturates, or becomes unsafe after a sensor update.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
+<p>Standard RL maximizes expected return. Maximum-entropy RL augments return with the policy entropy at each state:</p>
+<p>$$J(\pi)=\mathbb{E}_{\pi}\left[\sum_t r(s_t,a_t) + \alpha \mathcal{H}(\pi(\cdot|s_t))\right]$$</p>
+<p>$\mathcal{H}$ is high when the policy spreads probability across multiple actions and low when it collapses onto one action. The temperature $\alpha$ sets the exchange rate between task reward and diversity. A high $\alpha$ encourages exploration and robustness; a low $\alpha$ makes the policy behave more greedily.</p>
+<p>SAC implements this idea with soft value targets. In discrete notation, the soft value of a state can be written as:</p>
+<p>$$V(s)=\alpha \log \sum_a \exp(Q(s,a)/\alpha)$$</p>
+<p>This is a smooth version of $\max_a Q(s,a)$. As $\alpha$ becomes small, the highest action value dominates. As $\alpha$ grows, more actions contribute to the value.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Maximum-entropy learning changes both action selection and value estimation. The policy is rewarded for keeping useful uncertainty, and the critic evaluates a softened future instead of a single hard maximum.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python">import gymnasium as gym
+<p>Code Fragment 1 computes a soft value from three candidate action values. The higher temperature gives the lower-valued alternatives more influence, which is the numerical signature of preserving options.</p>
+<pre><code class="language-python"># Compare hard max value with a maximum-entropy soft value.
+# A larger temperature lets more actions contribute to the backup.
+import math
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-caption">Code Fragment 16.4.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Maximum-entropy RL should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+q_values = [1.0, 0.7, 0.1]
+
+def soft_value(values: list[float], temperature: float) -> float:
+    scaled = [math.exp(value / temperature) for value in values]
+    return temperature * math.log(sum(scaled))
+
+for temperature in [0.2, 1.0]:
+    print(f"alpha={temperature:.1f}", f"soft_value={soft_value(q_values, temperature):.3f}")
+print(f"hard_max={max(q_values):.3f}")</code></pre>
+<div class="code-output">alpha=0.2 soft_value=1.041
+alpha=1.0 soft_value=1.828
+hard_max=1.000</div>
+<div class="code-caption"><strong>Code Fragment 1:</strong> <code>soft_value</code> shows how the entropy temperature changes a backup computed from <code>q_values</code>. With <code>alpha=0.2</code>, the value is close to the hard max; with <code>alpha=1.0</code>, the lower-valued alternatives contribute more strongly.</div>
+<p>For a robot, that difference means the policy can keep several near-good actions alive while it learns. The result can be better recovery behavior when the top action becomes unavailable after contact or a perception update.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practice, SAC implementations in Stable-Baselines3, CleanRL, and Tianshou handle stochastic actor sampling, entropy-temperature updates, twin critics, target networks, and replay. The builder still owns the reward scale, action bounds, and safety metrics that determine whether entropy helps or hurts.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Use maximum-entropy RL when exploration and recovery diversity matter.</li>
+<li>Log entropy, temperature, action standard deviation, and action saturation.</li>
+<li>Check reward scale before tuning $\alpha$, because reward magnitude changes the entropy tradeoff.</li>
+<li>Evaluate deterministic and stochastic policy modes separately when the library supports both.</li>
+<li>Stress-test whether entropy improves recovery under contact, delay, or occlusion shifts.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>Entropy can hide poor control if only average return is reported. A policy that keeps too much action variance near a fragile object may look exploratory in training and unsafe on hardware.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using maximum-entropy rl should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>For a drawer-opening robot, SAC can preserve alternative pull angles while the agent learns which contact geometry works. The evaluation should report not only success, but also failed grasp force, recovery after slip, entropy over training, and whether stochastic deployment is allowed by the safety envelope.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -97,70 +113,76 @@ for step in range(5):
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p>Maximum-entropy ideas remain important in offline-to-online learning, reset-free robotics, and policies trained from heterogeneous demonstrations. The unresolved embodied question is how to keep useful uncertainty while enforcing hard constraints on force, speed, and collision risk.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for maximum-entropy rl? If not, the system boundary is still too vague.</p>
+<p>Can you state the reward scale, entropy temperature, target entropy, action bounds, and deployment mode for the policy? If not, the entropy term is a hidden experimental variable.</p>
 </div>
 <section class="production-depth-expansion">
 <h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Value-Based and Off-Policy Methods, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Maximum entropy is not a decoration on SAC. It is the reason the policy does not collapse immediately to whichever action currently has the highest estimated value. That matters when the critic is still wrong, the simulator is incomplete, or a robot needs recovery options after contact changes the state.</p>
+<p>The engineering danger is reward-temperature mismatch. If rewards are scaled very large, entropy becomes negligible. If rewards are scaled very small, entropy can dominate. Good experiments report both the task metric and the entropy diagnostics that explain how the policy behaved.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Maximum-entropy RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Maximum-entropy RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Maximum-entropy RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Maximum-entropy RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Maximum-entropy RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Stable-Baselines3 SAC</td><td>Production baseline</td><td>Use it to train a maintained SAC policy while logging entropy coefficient and action statistics.</td></tr><tr><td>CleanRL SAC</td><td>Readable update path</td><td>Use it to inspect temperature loss, actor loss, critic loss, and target entropy.</td></tr><tr><td>Tianshou</td><td>Composable SAC experiments</td><td>Use it when collectors, replay buffers, and policies need controlled swaps.</td></tr><tr><td>MuJoCo</td><td>Perturbed continuous dynamics</td><td>Use it to test whether entropy improves recovery under friction, mass, and contact changes.</td></tr><tr><td>ROS 2 safety logs</td><td>Deployment evidence</td><td>Use them to verify that stochastic actions do not violate hardware limits.</td></tr>
 </tbody>
 </table>
 </div>
 <h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust maximum-entropy implementation records the policy's diversity alongside task outcomes. Code Fragment 2 gives the minimum audit row needed to explain whether entropy was useful exploration or unsafe variance.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Log reward scale and all reward components.</li>
+<li>Log entropy temperature and target entropy.</li>
+<li>Log action mean, action standard deviation, and clipping frequency.</li>
+<li>Report deterministic evaluation separately from stochastic evaluation.</li>
+<li>Attach failure videos or traces for cases where entropy caused unsafe action spread.</li>
 </ol>
-<pre><code class="language-python"># Build one evidence record for Maximum-entropy RL.
-# The same schema should be used for the baseline and the library shortcut.
+<pre><code class="language-python"># Build one audit record for maximum-entropy control.
+# Entropy diagnostics explain whether diversity helped or harmed deployment.
 from dataclasses import dataclass, asdict
 
 @dataclass
-class EvidenceRecord:
-    section: str
-    tool: str
-    observation: str
-    action: str
-    metric: str
-    perturbation: str
+class EntropyAuditRecord:
+    reward_scale: float
+    alpha: float
+    target_entropy: float
+    action_std: float
+    clipped_fraction: float
+    stochastic_eval_success: float
+    deterministic_eval_success: float
 
-record = EvidenceRecord(
-    section="16.4",
-    tool="Gymnasium",
-    observation="record after the perturbation run: sensor or state input",
-    action="record after the perturbation run: control or decision output",
-    metric="record after the perturbation run: construct-matched success metric",
-    perturbation="record after the perturbation run: delay, noise, domain shift, or contact change",
+    def as_row(self) -&gt; dict[str, object]:
+        return asdict(self)
+
+record = EntropyAuditRecord(
+    reward_scale=1.0,
+    alpha=0.08,
+    target_entropy=-2.0,
+    action_std=0.31,
+    clipped_fraction=0.04,
+    stochastic_eval_success=0.82,
+    deterministic_eval_success=0.79,
 )
-print(asdict(record))</code></pre>
-<div class="code-caption">Code Fragment 16.4.2 records the method-specific evidence schema for testing Maximum-entropy RL with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
+print(record.as_row())</code></pre>
+<div class="code-output">{'reward_scale': 1.0, 'alpha': 0.08, 'target_entropy': -2.0, 'action_std': 0.31, 'clipped_fraction': 0.04, 'stochastic_eval_success': 0.82, 'deterministic_eval_success': 0.79}</div>
+<div class="code-caption"><strong>Code Fragment 2:</strong> <code>EntropyAuditRecord</code> keeps reward scale, temperature, target entropy, action spread, clipping, and both evaluation modes in one row. Those fields prevent a SAC result from being summarized by return while hiding the entropy behavior that produced it.</div>
+<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the Maximum-entropy RL evidence record before they touch model code. The exercise exposes vague task definitions while the schema, metric, and perturbation are still easy to repair.</p></div>
 <h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<p>When maximum-entropy control fails, separate three causes: the critic valued unsafe action diversity, the temperature kept entropy too high, or the reward scale made entropy too weak to matter. Then rerun with the same seed panel while plotting entropy, action spread, clipping, and recovery success.</p>
 </section>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Maximum-entropy RL, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For maximum-entropy RL, compare return and success only with entropy temperature, action spread, clipping rate, and deterministic versus stochastic evaluation mode co-computed in the same run. This keeps the claim tied to one configuration instead of mixing reward numbers from one policy with entropy diagnostics from another.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Maximum-entropy RL is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Maximum-entropy RL makes exploration part of the objective. It helps embodied agents when the extra action diversity creates recoverable alternatives, and it needs entropy diagnostics to prove that the diversity stayed inside the task's safety envelope.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 16.4.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 16.4.1</div><p>For a continuous manipulation task, define a SAC evaluation table with reward scale, $\alpha$, target entropy, action clipping rate, deterministic success, stochastic success, and one recovery metric.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned maximum-entropy rl into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-16.5.html">Section 16.5</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
