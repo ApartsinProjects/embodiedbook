@@ -105,6 +105,7 @@
 <li>Use language as a planner only after commands are grounded into a typed skill library with affordance checks.</li>
 <li>Evaluate composition, not only individual success. Many failures occur when two correct skills meet at a bad boundary.</li>
 </ol>
+<p>Consider a specific case: a mobile manipulator must deliver a mug from a counter to a table 3 meters away. The skill library contains three entries: <code>navigate_to_pose</code> (precondition: path clear, arm tucked; cost: 1.2 s/m), <code>grasp_upright_object</code> (precondition: object detected within 0.4 m, gripper open; cost: 2.1 s), and <code>place_on_surface</code> (precondition: gripper loaded, surface detected within 0.3 m; cost: 1.8 s). The planner selects the minimum-cost sequence that satisfies each precondition in order, yielding navigate (3.6 s) then grasp (2.1 s) then navigate again (0.6 s) then place (1.8 s). When the grasp verifier reports that the mug tipped 15 degrees beyond the acceptable roll threshold, the skill returns "retry" and the planner re-calls <code>grasp_upright_object</code> from a pose 5 cm to the left, without replanning the entire mission. This is the compounding benefit of explicit postconditions: local recovery without global replan.</p>
 <div class="callout fun-note">
   <p>Naming a skill <code>grasp_handle</code> instead of <code>do_thing_7</code> sounds obvious until you inherit a codebase where every skill is named after the engineer who wrote it: <code>dave_motion</code>, <code>dave_motion_v2</code>, and the ominous <code>dave_motion_final_REAL</code>. The verb-object convention is, quietly, one of the highest-leverage design decisions in the whole library.</p>
 </div>
@@ -130,8 +131,12 @@
 </table>
 </div>
 <div class="callout warning">
-<div class="callout-title">Composition Failure</div>
-<p>For Skill libraries for embodied agents, test hierarchy failures caused by mismatched postconditions, hidden frames, stale perception, and planners treating probabilistic skills as deterministic.</p>
+<div class="callout-title">Common Pitfall</div>
+<p>Composition failures are the dominant failure mode in deployed skill libraries, and they are almost never caught by per-skill unit tests. A concrete example: <code>navigate_to_station</code> succeeds and reports the base within 0.05 m of the target, but the target pose was specified in a map frame that drifted 0.12 m during navigation due to wheel slip. <code>grasp_handle</code> then checks its own precondition (object within 0.4 m in the camera frame) and finds the handle at 0.48 m, just outside threshold, so it returns "precondition not met" rather than attempting the grasp. The planner sees two individually-passing skills produce a hard stop with no clear fault owner. The fix is to verify postconditions in the same sensor frame the next skill uses as its precondition, not in the frame the completed skill used internally.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">When a Flat Policy Beats a Skill Library</div>
+<p>Skill libraries add value when tasks are long-horizon (more than roughly 10 seconds of execution), when sub-tasks recur across missions, and when failure attribution matters for debugging or safety certification. For short, single-phase tasks, the overhead of precondition checking, frame alignment, and postcondition verification can exceed the planning benefit. RT-2 (Brohan et al., 2023) demonstrates that a single visuomotor policy can handle pick-and-place variants without any explicit skill decomposition when the task horizon is under 5 seconds and the scene diversity is covered by the training distribution. The decision criterion is therefore: if the task exceeds one termination condition and one recovery branch, a skill library pays for itself; if it fits in a single option with one verifier, a flat policy is simpler and often more robust.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>

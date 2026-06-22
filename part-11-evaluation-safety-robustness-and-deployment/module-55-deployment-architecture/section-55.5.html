@@ -104,6 +104,10 @@ print(report)</code></pre>
 <div class="code-caption"><strong>Code Fragment 55.5</strong>.1 distinguishes recoverable runtime faults from faults that require secure maintenance or physical repair.</div>
 <p>The expected output should split faults by the type of authority required to resolve them. That distinction matters operationally because a robot should not improvise its way through a security fault the same way it handles a temporary perception drop.</p>
 <div class="callout algorithm"><div class="callout-title">Algorithm: Recovery and Maintenance Routing</div><ol><li>Detect the fault and classify it as runtime, security, or hardware-maintenance related.</li><li>Enter degraded mode if safe motion is still possible, otherwise safe stop.</li><li>Attempt only preauthorized recovery actions with bounded retries.</li><li>Escalate certificate, signing, or command-authority failures to a secure maintenance window.</li><li>Record mean time to recovery, operator load, and unresolved-fault backlog.</li></ol></div>
+<div class="callout key-insight">
+<div class="callout-title">Concrete Deployment: Amazon Robotics and MiR Fleet Management</div>
+<p>Amazon Robotics drive units operating in fulfillment centers use a layered fault model with well-defined thresholds: a motor current spike above 120% of nominal for more than 50 ms triggers a hardware fault and forces the unit into safe-stop before the central fleet manager is notified. MiR's fleet software (MiR Fleet) handles certificate rotation for its AMR units by issuing new TLS certificates during scheduled low-traffic windows and refusing to accept commands signed with a certificate whose remaining validity is below a configurable threshold (default: 24 hours). Neither system allows the robot to self-heal a security fault autonomously; both require an operator-acknowledged maintenance ticket before the unit re-enters the active pool. These real constraints illustrate why the algorithm above separates runtime recovery (bounded retries, autonomous) from security recovery (requires external authority).</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built record is about 24 lines. In a production run, DVC, MLflow, Weights and Biases Artifacts, or a ROS 2 bag plus metadata file reduces the tracking code to a few calls while handling versioning, file storage, run ids, and reproducible retrieval. The hand-built version remains useful because it shows which fields the tool must preserve.</p>
@@ -119,6 +123,10 @@ print(report)</code></pre>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>Treating maintenance and security as separate from safety is a category error. A compromised command channel and a worn actuator both change the physical action the robot can execute safely.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall: Watchdog and Safety Monitor Race</div>
+<p>A frequent production failure occurs when a software watchdog and a hardware safety monitor act on the same fault independently and in parallel. The watchdog may attempt a software restart of a motion controller at the same moment the safety monitor issues a hardware brake command. The result is an undefined mechanical state: the controller restarts into nominal mode while the brake is still engaged, causing a locked-wheel condition that neither subsystem detects as a fault. The fix is a strict arbitration rule: the safety monitor always wins, and any watchdog restart requires a safety-monitor clearance signal before motion resumes. This rule must be encoded in the architecture, not left as a convention in operator documentation.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -153,6 +161,8 @@ print(report)</code></pre>
 </div>
 
 <p>When resilience fails, classify the incident as runtime fault, cyber trust failure, hardware degradation, or procedure failure. Then inspect whether the system entered the correct mode and whether the artifact preserved enough evidence to improve the next maintenance cycle.</p>
+
+<p>Consider a specific case: a warehouse AMR logs encoder counts and wheel current every 100 ms. After 800 operating hours the rolling average wheel current at constant speed has risen 18% above baseline, which the maintenance module flags as a bearing wear indicator. The system does not yet fail; it enters a "maintenance advisory" sub-state that reduces maximum velocity by 20% and sets a maintenance deadline of 48 hours. If the deadline passes without a service ticket being closed, the unit is automatically removed from the active fleet pool and held at its nearest charging station. This graduated response is the operationally correct behavior: the robot stays productive while hardware health is still adequate, avoids a sudden mid-mission safe-stop, and creates a maintenance event with enough lead time for a human technician to schedule the repair without disrupting throughput. The key design question is choosing the right detection threshold and response tier for each degradation signal, which requires offline analysis of historical failure data rather than guesswork at deploy time.</p>
 
 <div class="callout fun-note">
 <div class="callout-title">A Useful Annoyance</div>

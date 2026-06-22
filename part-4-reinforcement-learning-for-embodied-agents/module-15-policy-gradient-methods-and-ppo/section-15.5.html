@@ -103,6 +103,10 @@ print(row.as_row())</code></pre>
 <div class="callout-title">Common Failure Mode</div>
 <p>Reward normalization, observation normalization, and action squashing must be applied consistently during rollout and training. A mismatch can produce smooth loss curves while the deployed policy receives commands in a different scale.</p>
 </div>
+<div class="callout warning">
+<div class="callout-title">How PPO Breaks in Practice: Three Diagnostic Signatures</div>
+<p>KL spikes above 0.05 within the first two epochs of a rollout almost always indicate stale old log probabilities: the frozen value was recomputed or overwritten, so the ratio is comparing the new policy against itself rather than against the behavior policy that collected the data. Entropy collapse to near zero (below 0.01 nats for a continuous action space) means exploration has died; the policy is committing to one mode and the entropy coefficient is either zero or too small to resist. Value loss that grows while actor loss plateaus points to a value target constructed from a different normalization scheme than the rewards used in the actor update. Each of these signatures is visible in standard PPO logging before reward curves give any indication of a problem.</p>
+</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>In massively parallel locomotion, thousands of simulated robots may collect short rollout fragments. PPO needs the fragments to preserve per-environment resets, timeout masks, and old log probabilities so minibatch training does not mix incompatible evidence.</p>
@@ -137,6 +141,7 @@ print(row.as_row())</code></pre>
 </table>
 </div>
 
+<p>Consider a specific case for advantage normalization: a minibatch contains raw advantages of [8.2, 7.9, 8.5, 8.1] from a high-reward locomotion phase. The mean is 8.175 and the standard deviation is 0.22. After normalization, those become roughly [0.11, -1.25, 1.48, -0.34], which are actor loss weights indistinguishable from a low-reward phase whose raw advantages were [0.04, -0.29, 0.12, 0.13]. The normalization forces both phases to contribute equally to the actor gradient regardless of absolute reward scale. That is intentional: it prevents high-reward phases from dominating the update and keeps the actor loss stable across curriculum stages. The cost is that the actor loses information about which phase was intrinsically better, which is why advantage normalization works best when the reward scale is already interpretable from the value function rather than from raw magnitudes.</p>
 <p>Code Fragment 2 demonstrates target-KL early stopping across PPO epochs. The exact threshold is task-dependent, but the pattern is simple: stop reusing the rollout once the new policy has moved too far from it.</p>
 <ol>
 <li>Run a deterministic smoke test that checks buffer shapes and termination masks before any long training run.</li>
