@@ -117,19 +117,19 @@ print("spatial-frame next position:", np.round(T_spatial_next[:3, 3], 4))
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Fix the frame convention first and write it in a header comment: spatial (world-aligned) or body (end-effector-aligned). On a Franka Panda, <code>pin.getFrameVelocity</code> defaults to <code>LOCAL</code> (body); ROS 2 <code>tf2</code> publishes twists in <code>LOCAL_WORLD_ALIGNED</code> (spatial). Mixing the two silently misaligns your velocity command by the full wrist rotation, typically 30 to 90 degrees on any non-trivial pick-and-place posture.</li>
+<li>Verify forward kinematics at a known "zero" posture before running any trajectory. On a seven-DOF arm such as the Franka Panda or the Kinova Gen3, the zero posture is documented in the URDF; confirm the end-effector origin matches the manufacturer datasheet within 0.1 mm before trusting any computed twist.</li>
+<li>Sanity-check the twist magnitude against physical limits. Franka Panda joint velocity limits are 2.175 rad/s per joint; Spot's body twist saturates at roughly 1.6 m/s linear and 1.0 rad/s yaw. A computed twist that exceeds these limits by more than 10% indicates a frame error or a timestep mismatch, not a planning decision.</li>
+<li>Test the body-versus-spatial trap explicitly: command a 0.1 m/s forward body-frame velocity at a 45-degree yaw, then log the world-frame Cartesian arc. The path should curve; a straight-line path means the spatial and body twist were silently swapped.</li>
+<li>For sim-to-real transfer, compare Pinocchio twist predictions against MuJoCo <code>mj_objectVelocity</code> on the same robot model at three postures. Discrepancies larger than 5% in any axis typically trace to differing joint-angle conventions (DH vs. URDF) or a missing offset frame defined in the URDF but absent in the analytic model.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Position, velocity, acceleration; twists is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>On legged robots such as Boston Dynamics Spot or Unitree H1, the body-frame twist reported by the onboard estimator is relative to the trunk, not the foot contact frame. Feeding this twist directly into a whole-body controller that expects a world-frame velocity command causes the robot to lean into turns instead of correcting for them, producing a characteristic spiral drift at velocities above 0.8 m/s. The fix is a single adjoint transform: $V_s = [Ad_{T_{sb}}] V_b$, where $T_{sb}$ is the trunk-to-world transform from the state estimator.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Position, velocity, acceleration; twists should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>During a Franka Panda bin-picking deployment, log the full six-dimensional body twist at 1 kHz alongside the joint encoder readings. When the gripper overshoots by more than 2 mm, replay the log and check whether the linear velocity component $v_z$ in the body frame was correctly projected to world-frame $v_z$ at the moment of approach. In practice, roughly 60% of overshoot events in impedance-controlled arms trace to a frame mismatch in the approach phase rather than to trajectory timing errors.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

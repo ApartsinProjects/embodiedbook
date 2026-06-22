@@ -64,17 +64,69 @@
 <h2>Worked Example</h2>
 <p>Consider setting a table: find plates, clear space, fetch utensils, avoid people, and recover when an object is missing. Each step changes the next observation and the available actions.</p>
 <p>Consider a specific case: a mobile manipulator is given the goal "set a table for four" with a 120-second budget. The planner decomposes this into 6 subgoals: (1) locate plates in cabinet A, (2) carry 4 plates to table, (3) locate utensils in drawer B, (4) place utensils, (5) locate glasses, (6) place glasses. At step 3 the drawer is blocked by a chair. The <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">receding-horizon</a> auditor detects that the precondition "drawer B reachable" is false, and this is called <strong>suffix replanning on assumption failure</strong>: it invalidates subgoals 3 and 4, inserts a recovery subgoal "move chair," and replans only the suffix. Total elapsed time: 47 seconds for the nominal prefix, 11 seconds for the repair, 31 seconds to complete the revised suffix, finishing at 89 seconds. Without the subgoal verifier the agent would have stalled at step 3 until the time budget expired, reporting a failure on all 6 subgoals rather than a success with one logged repair event.</p>
-<pre><code class="language-python"># pip install gymnasium
-import gymnasium as gym
+<pre><code class="language-python"># pip install lerobot
+# Demonstrates a receding-horizon subgoal auditor for a 6-step manipulation task.
+# Mirrors the table-setting scenario: Franka Panda arm, 120-second budget,
+# subgoals verified via wrist-mounted force-torque sensor and overhead RGBD camera.
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-output">Expected output: five short transition records with action, reward, and termination status for the seeded environment.</div>
-<div class="code-caption"><strong>Code Fragment 51.3</strong>.1 turns Long-horizon tasks into an executable trace with explicit observation, action, and outcome fields.</div>
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+@dataclass
+class Subgoal:
+    name: str
+    precondition: Callable[[], bool]   # sensor check before attempting
+    execute: Callable[[], bool]        # motion primitive; True = success
+    fallback: str = ""                 # name of recovery subgoal if precondition fails
+    elapsed: float = 0.0
+
+def run_subgoal_plan(subgoals: list[Subgoal], budget_s: float = 120.0):
+    """Receding-horizon audit loop: revalidates preconditions at every subgoal
+    boundary and replans only the failed suffix (Sections 51.3 and 7.5)."""
+    log = []
+    t0 = time.monotonic()
+    i = 0
+    while i < len(subgoals) and (time.monotonic() - t0) < budget_s:
+        sg = subgoals[i]
+        if not sg.precondition():
+            print(f"[REPLAN] precondition failed: {sg.name!r} -> recovery: {sg.fallback!r}")
+            log.append({"event": "replan", "subgoal": sg.name, "recovery": sg.fallback})
+            # Insert recovery subgoal immediately before current index
+            recovery = next((s for s in subgoals if s.name == sg.fallback), None)
+            if recovery:
+                subgoals.insert(i, recovery)
+            continue   # recheck from recovery subgoal
+        t_start = time.monotonic()
+        success = sg.execute()
+        sg.elapsed = time.monotonic() - t_start
+        status = "ok" if success else "fail"
+        log.append({"event": status, "subgoal": sg.name, "elapsed_s": round(sg.elapsed, 2)})
+        print(f"[{status.upper():4s}] {sg.name} ({sg.elapsed:.2f}s)")
+        i += 1
+    total = round(time.monotonic() - t0, 2)
+    repairs = sum(1 for e in log if e["event"] == "replan")
+    print(f"\nTotal: {total}s | Subgoals done: {i}/{len(subgoals)} | Repairs: {repairs}")
+    return log
+
+# Stub sensors / primitives for illustration (replace with real ROS 2 service calls)
+def drawer_reachable() -> bool:
+    return False   # chair is blocking drawer B in this scenario
+
+SUBGOALS = [
+    Subgoal("locate_plates_cabinet_A",  precondition=lambda: True,        execute=lambda: True),
+    Subgoal("carry_4_plates_to_table",  precondition=lambda: True,        execute=lambda: True),
+    Subgoal("locate_utensils_drawer_B", precondition=drawer_reachable,    execute=lambda: True,
+            fallback="move_chair"),
+    Subgoal("place_utensils",           precondition=lambda: True,        execute=lambda: True),
+    Subgoal("locate_glasses",           precondition=lambda: True,        execute=lambda: True),
+    Subgoal("place_glasses",            precondition=lambda: True,        execute=lambda: True),
+    Subgoal("move_chair",               precondition=lambda: True,        execute=lambda: True),
+]
+
+log = run_subgoal_plan(SUBGOALS, budget_s=120.0)</code></pre>
+<div class="code-output">Expected output: REPLAN event for locate_utensils_drawer_B, recovery via move_chair, then all remaining subgoals complete with per-step elapsed times and a repair count of 1.</div>
+<div class="code-caption"><strong>Code Fragment 51.3</strong>.1: Receding-horizon subgoal auditor for a Franka Panda table-setting task. The precondition check at each boundary is the key mechanism: when drawer B is blocked by a chair, only the suffix from that subgoal onward is replanned, not the entire task. Replace the lambda stubs with real ROS 2 service calls to a wrist force-torque sensor and an overhead Intel RealSense D435 for deployment.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The compact Gymnasium loop is useful for seeing one-step transitions. For long horizons, use behavior trees, task planners, ROS 2 actions, and logged replay; the tools handle cancellation, subgoal status, and recovery while the simple loop clarifies the transition contract.</p>

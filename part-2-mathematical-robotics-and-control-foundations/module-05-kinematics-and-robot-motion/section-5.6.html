@@ -118,23 +118,23 @@ print("far target -> converged:", ok_far, "residual:", f"{res_far:.3f} m")
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Verify the URDF joint limits match the physical hardware before running a single IK query. On the Franka Panda, joint 4 has an asymmetric limit of [-3.0748, -0.0698] rad; solvers initialized outside this range silently clamp the seed and return a configuration the physical arm refuses.</li>
+<li>Choose a seed from the current joint state, not from zero or a fixed home posture. Zero-seeding a 7-DOF arm like the Franka Panda reliably converges to the elbow-up branch even when the arm is physically in an elbow-down posture, producing a discontinuous jump that triggers the joint-velocity limit (2.175 rad/s on joints 1-4) and an emergency stop.</li>
+<li>Test reachability at the workspace boundary before committing to a trajectory. In MuJoCo or Isaac Sim, sweep the target along a line approaching the boundary and log residual vs. distance; a residual that grows from 0.001 m to 0.01 m over the last 5 cm of travel is the warning that the solver is about to fail mid-trajectory in hardware deployment.</li>
+<li>After any contact event (a grasp close, a push, a surface touch) re-seed the IK solver from the post-contact joint encoder values, not from the pre-contact solution. Contact forces produce 0.5-2 mm of Cartesian deflection on a compliant arm such as the Panda, and the stale seed produces a 5-10 iteration penalty on the next solve that can violate a 1 ms real-time budget.</li>
+<li>When using a learned IK model (IKFlow or a diffusion sampler) in a sim-to-real pipeline, validate candidate joint vectors with a forward-kinematics pass inside the same physics model used for training. A candidate that passes FK in MuJoCo may violate self-collision constraints on the physical arm because the collision mesh in the URDF includes rubber bumpers that were omitted from the simplified sim geometry.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Inverse kinematics: analytic, numerical (Jacobian), and learned is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>The most common IK failure in deployed manipulation stacks is a frame mismatch between the planner and the controller. MoveIt 2 returns solutions in the robot base frame, but if the base is mounted on a mobile platform (a Spot arm, a PR2, a Stretch RE2) the base frame moves between planning and execution. A 5 cm base drift during arm extension translates to a 0.05 rad joint error at the shoulder, which the low-level joint controller does not know to compensate. Always transform the IK target into the current base frame at execution time, not at planning time.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Inverse kinematics: analytic, numerical (Jacobian), and learned should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>The Open X-Embodiment dataset contains IK-solved trajectories from 22 robot embodiments including the Franka Panda, Google RT robot, and WidowX. The per-embodiment joint-limit distributions in that dataset reveal which workspace regions each solver explores and which it avoids. Inspecting the joint-angle histograms for a target embodiment before training a learned IK model shows whether the training distribution actually covers the workspace region your deployment task requires.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>When inverse kinematics: analytic, numerical (jacobian), and learned feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+<p>Every IK solution is a promise from the solver to the hardware. Analytic IK makes that promise in closed form and keeps it exactly. Jacobian IK makes it iteratively and keeps it to within the convergence tolerance. Learned IK makes it statistically and may break it silently. The FK replay is how you check whether the promise was kept before sending the joint command to the actuators.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>

@@ -126,15 +126,15 @@ execute first k = 2 actions: [[0.6, -0.2], [0.6, -0.2]]</code></div>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li><strong>Pin the observation, action, and control rate first.</strong> For a Franka Panda arm, this means specifying whether the observation is a 640x480 RGB frame at 30 Hz, proprioceptive joint angles at 1 kHz, or a fused wrist-force plus depth image. Diffusion Policy on a Franka running pick-and-place from the Chi et al. CoRL 2023 setup uses a 10-step DDIM schedule to stay under the 20 ms budget imposed by the 50 Hz Cartesian impedance controller. If your planner exceeds that budget, the controller reads stale actions and contact forces build up unpredictably at the fingertip.</li>
+<li><strong>Start with a behavior-cloning baseline on the same demonstration data</strong> so you can separate gains that come from the diffusion architecture from gains that come from dataset quality or observation preprocessing. On the LeRobot benchmark, a CNN-BC baseline on 50 demonstrations of a push-T task gives a reliable lower bound before layering action chunking.</li>
+<li><strong>Choose the action horizon $H$ and execute count $k$ to match your physical loop.</strong> Chi et al. report that $H=16$, $k=8$ works well for tabletop push tasks on a UR5 with a wrist camera, but longer horizons accumulate drift in the presence of rigid contact because the denoised chunk cannot anticipate the reaction force mid-sequence. Shorter $k$ (replanning more often) helps when objects shift unpredictably; longer $k$ reduces jitter from frequent re-embedding of the visual observation.</li>
+<li><strong>Log the per-step denoising time, the action norm, and any constraint violations in the same artifact.</strong> A sudden spike in action norm often signals that the DDIM schedule was not re-indexed after changing the inference step count (see the Tip callout above), not a dataset problem. Keep the raw trajectory tensor next to the metric so failures can be replayed offline in MuJoCo or Isaac Sim without hardware access.</li>
+<li><strong>Run at least one contact-perturbation test before declaring success.</strong> Push the target object 2 cm off its expected position mid-episode and verify that replanning within one receding-horizon window ($k$ steps) recovers without a joint-limit violation. On a 7-DoF arm this is the minimum sanity check before moving to sim-to-real transfer, because diffusion planners trained purely on scripted demonstrations often produce wrist-flip motions when the object pose drifts outside the training support.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>For Diffuser and Decision Diffuser, evaluate the generated or predicted object through the closed loop that consumes it, because interface failures often dominate component scores.</p>
+<p>The most frequent deployment failure is a mismatch between the training observation frequency and the inference observation frequency. If Diffusion Policy was trained on 30 Hz wrist-camera frames but the deployed robot's USB camera drops to 15 Hz under USB bandwidth contention, the observation embedding is stale for two control ticks. The denoiser still runs and produces a confident action chunk, but that chunk was conditioned on an observation that is already 66 ms old. On a Franka arm moving at 0.3 m/s, 66 ms of stale observation corresponds to 20 mm of untracked end-effector travel, which is enough to miss a grasp on a 30 mm diameter cylinder. Monitor frame timestamps explicitly and halt if the gap exceeds one control period.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Diffuser And Decision Diffuser</div>
