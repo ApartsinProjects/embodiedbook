@@ -118,6 +118,33 @@ print(manifest)</code></pre>
 <div class="code-output"><pre>{'base_model': 'open-vla-small', 'custom_task': 'fold towel corner and place on rack', 'episodes': 180, 'frozen_backbone': True, 'eval_splits': ['nominal', 'camera_shift', 'unseen_textures']}</pre></div>
 <div class="code-caption">Code Fragment 59.4.A summarizes the topic-specific evidence card for Fine-tune an open VLA on a custom task (LeRobot).</div>
 <p>The expected output should be a reproducible fine-tuning manifest, not a notebook with hidden state. If a reader cannot recover the task, split, and freeze policy from the printed card, the capstone is not yet reproducible.</p>
+<h3>Concrete LeRobot Fine-tuning Sketch</h3>
+<p>The three steps below form the minimal runnable skeleton. Step 1 loads a LeRobot-format dataset. Step 2 attaches a LoRA adapter to the vision-language backbone so the large pretrained weights stay frozen while the task-specific parameters update. Step 3 runs a compact training loop that mirrors the standard LeRobot training script.</p>
+<pre><code class="language-python"># Step 1: load a LeRobot dataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
+dataset = LeRobotDataset(
+    repo_id="your-org/towel-fold-180eps",  # Hugging Face dataset id
+    split="train",
+    image_transforms=None,     # add augmentations here for domain randomization
+)
+dataloader = dataset.to_dataloader(batch_size=8, shuffle=True)
+
+# Step 2: configure a LoRA adapter on an OpenVLA-style backbone
+from peft import LoraConfig, get_peft_model
+from lerobot.common.policies.openvla.modeling_openvla import OpenVLAForActionPrediction
+
+base_policy = OpenVLAForActionPrediction.from_pretrained("openvla/openvla-7b")
+lora_cfg = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj", "v_proj"])
+policy = get_peft_model(base_policy, lora_cfg)
+policy.print_trainable_parameters()  # expect ~0.5% of total params
+
+# Step 3: minimal training loop (3 lines of logic)
+optimizer = torch.optim.AdamW(policy.parameters(), lr=2e-4)
+for batch in dataloader:
+    loss = policy(**batch).loss   # LeRobot batch already contains obs, actions, language
+    loss.backward(); optimizer.step(); optimizer.zero_grad()</code></pre>
+<div class="code-caption">Code Fragment 59.4.B: A minimal but runnable LeRobot fine-tuning pipeline. Replace the <code>repo_id</code> with your collected dataset, adjust <code>r</code> and <code>lora_alpha</code> to fit GPU memory, and wrap the loop with a scheduler and eval step before submission.</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the from-scratch contract is clear, the practical route uses <strong>LeRobot, OpenVLA, Hugging Face datasets, PyTorch, Accelerate, Weights &amp; Biases</strong>. The payoff is that standard interfaces, logging, batching, and replay support move from ad hoc glue code into maintained infrastructure, while the evidence schema stays the same.</p></div>
 <div class="callout practical-example"><div class="callout-title">Project Or Teaching Use</div><p>This project is ideal for a course because it exposes current tooling while keeping the task local. The most instructive result often comes from a small adaptation that helps one camera setup but hurts another, forcing students to reason about generalization instead of celebrating one headline win.</p></div>
 <div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>The frontier challenge is adaptation efficiency: how little task-specific data is needed to retarget a foundation policy to a new embodiment or household setup while preserving broad competence?</p></div>
