@@ -78,6 +78,7 @@
 </figure>
 <h2>Theory</h2>
 <p>Real-time deployment is a multirate systems problem. A stabilizing controller may run at 200 to 1000 Hz, a state estimator at 30 to 200 Hz, a learned visuomotor policy at 5 to 30 Hz, and a task planner at 0.5 to 2 Hz. These loops must exchange commands without violating freshness constraints.</p>
+<p>Consider a specific case: Boston Dynamics Spot runs its joint-level balance controller at 1000 Hz while a vision-language policy such as RT-2 (Brohan et al., 2023) produces action tokens at roughly 3 Hz on an onboard GPU. The gap is more than two orders of magnitude. The integration contract is that balance never waits for a vision token; instead the low-level controller holds the last valid joint setpoint until a fresh token arrives, and any token older than 333 ms (one planner cycle) is discarded rather than executed. A similar pattern appears in ETH Zurich's ANYmal deployments, where the locomotion policy runs at 50 Hz and the navigation planner at 2 Hz, with explicit staleness checks at the handoff boundary.</p>
 <p>A useful contract is</p>
 <p>$$\Pr(\tau_{\mathrm{age}} &gt; \tau_{\max}) \le \epsilon,\qquad \tau_{\mathrm{age}}=\tau_{\mathrm{sense}}+\tau_{\mathrm{queue}}+\tau_{\mathrm{infer}}+\tau_{\mathrm{publish}}.$$</p>
 <p>Average latency is not enough. Physical instability is typically triggered by the tail of the latency distribution, so p95 and p99 command age belong in the same artifact as task success.</p>
@@ -109,6 +110,10 @@ print(report)</code></pre>
 <div class="code-caption"><strong>Code Fragment 55.2</strong>.1 computes a simple freshness report for a slower policy feeding a faster controller.</div>
 <p>The expected output should make the control decision obvious. Here the p95 command age exceeds the freshness threshold, so the correct interpretation is not merely that latency is "a bit high" but that the stack should enter a degraded mode or reduce reliance on the slow policy.</p>
 <div class="callout algorithm"><div class="callout-title">Algorithm: Multirate Control Integration</div><ol><li>Freeze the high-rate stabilizer and measure its independent stability margin.</li><li>Choose the learned policy rate and a maximum command age budget.</li><li>Buffer, timestamp, and reject stale commands explicitly.</li><li>Log p50, p95, p99 latency and deadline misses under nominal and stressed compute load.</li><li>Switch to degraded mode whenever the freshness contract is violated repeatedly.</li></ol></div>
+<div class="callout key-insight">
+<div class="callout-title">Choosing and Revising Control Rates</div>
+<p>Select the high-rate loop frequency first by the plant dynamics: a robot with a 10 ms mechanical settling time needs at least a 500 Hz torque loop, regardless of what the policy can produce. Set the policy rate as fast as your inference budget allows while keeping p99 command age below one high-rate cycle. Revise rates when either condition breaks: if profiling shows p99 age growing under load, reduce policy complexity or add a hardware accelerator before raising the rate target. If the plant starts oscillating at the current torque-loop frequency, the stabilizer gain, not the rate, is usually the fault.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built record is about 24 lines. In a production run, DVC, MLflow, Weights and Biases Artifacts, or a ROS 2 bag plus metadata file reduces the tracking code to a few calls while handling versioning, file storage, run ids, and reproducible retrieval. The hand-built version remains useful because it shows which fields the tool must preserve.</p>

@@ -54,7 +54,9 @@
 </div>
 <h2>Theory</h2>
 <p>Isaac Lab tasks commonly expose named observation groups. A policy actor may receive proprioception, commands, and history, while the critic may receive privileged simulator state such as terrain height, contact flags, or object poses. In asymmetric actor-critic training, those groups must be routed explicitly so privileged information helps value learning without leaking into the deployed actor.</p>
-<p>The runner boundary also controls performance. rl_games can work directly with GPU buffers, RSL-RL expects its own rollout storage conventions, and SKRL emphasizes transparent algorithm configuration across backends. The task is the scientific object; the runner is the optimizer and storage implementation.</p>
+<p>The runner boundary also controls performance. rl_games can work directly with GPU buffers, RSL-RL expects its own rollout storage conventions, and SKRL emphasizes transparent algorithm configuration across backends. The task is the scientific object; the runner is the optimizer and storage implementation.
+
+Consider a specific case: an Anymal-D locomotion policy is trained with RSL-RL on Isaac Lab's rough-terrain task using 4096 parallel environments. The critic receives 187-dimensional input including 52 terrain-height scan points; the actor receives 48-dimensional proprioception plus command velocity. After 1500 PPO iterations (roughly 20 minutes on a single A100), the critic's value estimates are accurate because it can "see" upcoming steps. The actor learns to navigate rough terrain because the value signal is informative, even though the actor itself never sees the terrain. At deployment on the real Anymal, the actor input is still 48-dimensional and the policy transfers without modification. This is asymmetric actor-critic working correctly. The failure case is when a wrapper silently concatenates terrain heights into the actor tensor, the policy trains to use them, and the 52 terrain dimensions are simply absent on the real robot.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is: create the Isaac Lab task, wrap it for the runner, map observation groups into the runner's expected input format, collect rollouts, update the policy, then evaluate the exported checkpoint through the same task contract. The dangerous step is silent conversion, especially when a wrapper changes clipping, device movement, or the meaning of <code>obs</code> and <code>states</code>.</p>
@@ -103,6 +105,10 @@ SKRL: actor=states, critic=state_values</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>The common mistake is to switch runners and also change reward weights, observation groups, normalization, action scaling, or evaluation seeds. That comparison measures a new experiment bundle, not the runner.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall: Silent Privileged-State Leak</div>
+<p>When a wrapper accidentally routes critic-only keys (terrain heights, contact flags) into the actor's observation tensor, training proceeds normally because the value function and policy both improve. The failure appears only at deployment: the real robot has no terrain map, so the actor receives a zero-padded or missing input where it learned to expect signal. The policy then falls on rough terrain not because the task is too hard but because the input contract was broken before training began. Check <code>actor_obs</code> keys against the runner wrapper source before the first GPU rollout, not after the robot falls.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
