@@ -85,6 +85,19 @@ print("round trip:", round_trip[:3].round(3).tolist())</code></pre>
 round trip: [0.3, 0.1, 0.2]</div>
 <div class="code-caption"><strong>Code Fragment 4.4</strong>.1 composes <code>base_from_wrist</code> and <code>wrist_from_camera</code>, then applies the resulting <code>base_from_camera</code> transform to one detected point. The round-trip check confirms that the inverse returns the point to the original camera coordinates.</div>
 <p><strong>Expected output:</strong> the base-frame point is shifted by the two translations, while the round-trip output returns to the original camera measurement. If the round trip fails, debug transform order, units, and frame labels before changing perception or control code.</p>
+<div class="callout practical-example">
+  <div class="callout-title">🏗️ Application Example</div>
+  <h4>When a Stale tf2 Lookup Caused a Pick-and-Place Robot to Miss Every Grasp</h4>
+  <p><strong>Who:</strong> Robotics software engineer at a mid-size warehouse automation startup deploying a 6-DOF arm on a mobile base.</p>
+  <p><strong>Situation:</strong> The team was building a pick-and-place pipeline: a wrist-mounted RGB-D camera detected objects, and the arm controller consumed base-frame coordinates to plan grasps.</p>
+  <p><strong>Problem:</strong> Grasp success dropped from 91% in static tests to 54% during mobile-base movement, yet the SE(3) composition code passed all offline unit tests.</p>
+  <p><strong>Dilemma:</strong> Two theories competed. Option A: the camera extrinsic calibration had drifted and needed a full recalibration session (costly, 4-hour downtime). Option B: the tf2 lookup was retrieving the transform at current wall time rather than at the sensor timestamp, introducing up to 80 ms of stale pose while the base moved at 0.3 m/s. Recalibrating first would have masked the real bug.</p>
+  <p><strong>Decision:</strong> The engineer added a round-trip identity check ($T_{BC} \cdot T_{CB} = I$) after every tf2 lookup and logged the lookup timestamp delta alongside it. The delta exposed the staleness immediately, so Option B was investigated first.</p>
+  <p><strong>How:</strong> Using ROS 2 tf2 in Python, the team changed <code>lookup_transform(target, source, rclpy.time.Time())</code> to <code>lookup_transform(target, source, sensor_msg.header.stamp)</code> with a 50 ms timeout. NumPy was used to verify the round-trip: <code>np.allclose(T @ np.linalg.inv(T), np.eye(4), atol=1e-6)</code>.</p>
+  <p><strong>Result:</strong> Grasp success recovered to 93% within one shift, with zero recalibration downtime. The timestamp delta at failure had been averaging 65 ms.</p>
+  <p><strong>Lesson:</strong> <strong>Always pass the sensor timestamp, not wall time, to tf2 lookups, and guard every transform chain with a round-trip identity check before the controller consumes the result.</strong></p>
+</div>
+
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>

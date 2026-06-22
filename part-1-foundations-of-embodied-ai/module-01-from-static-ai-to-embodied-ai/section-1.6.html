@@ -104,6 +104,19 @@
 <p>The most expensive cross-domain mistake is to port a method without re-checking its time budget. A model-predictive grasp planner that re-optimizes over 80 ms is excellent for a manipulator whose planning layer runs at 10-100 Hz and whose worst routine failure is a dropped object. The same 80 ms inference, dropped into an autonomous vehicle whose planner must close at roughly 10 Hz against agents moving at highway speed, may already be a budget violation, and the failure it guards against is irreversible rather than re-tryable. "It worked on the arm" says nothing about the vehicle until you have re-derived $\Delta t$ and $\kappa$ for the new body. Always re-establish the loop period and the failure cost before reusing a controller across the spectrum.</p>
 </div>
 
+<div class="callout practical-example">
+  <div class="callout-title">🏗️ Application Example</div>
+  <h4>When a Simulation-Trained Planner Stalled in a Real Drone Pipeline</h4>
+  <p><strong>Who:</strong> Robotics software engineer at a 12-person aerial inspection startup</p>
+  <p><strong>Situation:</strong> The team was adapting a path-planner originally trained in Gymnasium on a discrete grid world to fly a DJI-based inspection drone across wind-turbine towers.</p>
+  <p><strong>Problem:</strong> The planner's inference loop averaged 95 ms per decision step, which was fine in simulation where the episode resets for free, but the drone's position-control layer expected waypoints at 10 Hz (100 ms budget total, including transmission latency).</p>
+  <p><strong>Dilemma:</strong> They could reduce the neural network from 3 hidden layers to 1, cutting inference to roughly 20 ms but sacrificing obstacle-avoidance quality; or they could run the planner asynchronously and cache its last output, accepting stale commands during high-wind gusts where the drone's attitude loop at 400 Hz was already fighting to stabilize. The first option risked collision with tower struts; the second risked issuing a waypoint that no longer matched the drone's actual position.</p>
+  <p><strong>Decision:</strong> They kept the full network but moved it to a dedicated thread with a 10 Hz output queue, while adding a lightweight 400 Hz watchdog that held position if no fresh waypoint arrived within 120 ms.</p>
+  <p><strong>How:</strong> Using ROS 2 Humble with a custom <code>rclpy</code> timer at 10 Hz feeding a PX4 offboard interface, they profiled with <code>ros2 topic hz</code> and confirmed consistent 10.2 Hz output; the watchdog was 30 lines of C++ in the PX4 companion-computer node.</p>
+  <p><strong>Result:</strong> End-to-end latency dropped from 95 ms average to 18 ms for the waypoint queue, with zero missed heartbeats across 47 test flights covering 12 km of tower perimeter.</p>
+  <p><strong>Lesson:</strong> <strong>Re-derive $\Delta t$ and $\kappa$ for the target body before porting any controller: a method that works when $\kappa \approx 0$ and the clock is free becomes a budget violation the moment the body can fall.</strong></p>
+</div>
+
 <div class="callout library-shortcut">
 <div class="callout-title">Library shortcut: match the environment contract to the body</div>
 <p>No single simulator spans the spectrum well. Gymnasium gives the clean episode contract for game agents (Part III); PettingZoo extends it to multi-agent games; MuJoCo and Isaac Lab provide the contact and high-rate dynamics that legged and manipulation work need (Part V); a CARLA-style stack supplies the traffic scene and sensor suite for vehicles (Parts IV and VI); Nav2 on ROS 2 grounds the vacuum and mobile-robot navigation case (Part IV). Choose the stack whose failure surface and control rate match the body, rather than forcing every example through one API.</p>
