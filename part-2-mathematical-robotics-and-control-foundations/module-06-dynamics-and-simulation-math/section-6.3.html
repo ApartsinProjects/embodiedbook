@@ -126,31 +126,31 @@ for e, mu in [(0.0, 2.0), (0.8, 0.5), (0.8, 0.05)]:
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Set the MuJoCo timestep to 2 ms for manipulation (Franka Panda fingertip contacts) and 4 ms for locomotion (Unitree H1 foot strikes); coarser steps cause tunneling at fingertip scale, finer steps waste compute without improving contact fidelity.</li>
+<li>Run a free-motion energy check before adding contact: integrate a Franka arm at zero torque for 5 s and confirm that kinetic energy drifts less than 0.1 % per second; a larger drift means inertia parameters in the URDF are inconsistent.</li>
+<li>Add a single flat-ground contact and verify that penetration depth stays below 0.1 mm at steady state; if depth grows monotonically, tighten <code>solref</code> from the MuJoCo default <code>"0.02 1"</code> to <code>"0.005 1"</code>.</li>
+<li>Test grasp stability with the Franka hand by logging the stick/slide mode at each finger pad contact across a 500 ms hold; if mode switches exceed 5 per second without a change in applied torque, the contact is chattering and <code>solimp</code> needs adjustment.</li>
+<li>Before scaling to Isaac Lab for parallel rollouts, reproduce the same grasp in a single-environment MuJoCo run and confirm that success rate, mean penetration, and energy error match to within 5 %; GPU-parallelism does not fix a broken contact model.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Contact, friction, and why contact-rich sim is hard is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>The most common mistake when training dexterous manipulation policies in simulation is trusting a high task-success rate before checking contact quality. Policies trained in IsaacGym with default <code>contact_offset=0.02</code> (20 mm) learn to exploit artificially thick contact shells: the robot "grasps" objects while the fingertips are still centimeters away. When transferred to a real Franka hand, where the actual contact shell is under 1 mm, grasp success drops by 40-60 % even when the visual observations match. Log mean fingertip penetration depth per episode; if it exceeds 3 mm on average, the policy is exploiting the soft contact model rather than learning true grasping.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Contact, friction, and why contact-rich sim is hard should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>The Open X-Embodiment dataset contains teleoperated manipulation trajectories from 22 robot embodiments, including Franka Panda, WidowX, and Google Robot. Contact events in those demonstrations are implicit: the operator felt resistance through haptic feedback, but the logged state contains only joint positions and end-effector pose. When using these demonstrations to train policies in MuJoCo or Isaac Lab, the contact model in simulation must be calibrated so that the simulated fingertip force at grasp initiation matches the force range seen in the real hardware logs (typically 1-5 N for a light grasp). A mismatch of more than a factor of two in contact stiffness produces policies that either drop objects immediately or crush them, even when the motion trajectory looks correct.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>For contact, friction, and why contact-rich sim is hard, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
+<p>Contact quality has one diagnostic number: mean penetration depth over a held grasp. Under 1 mm the simulator is physically plausible. Over 5 mm the policy is flying through objects. Everything between is a negotiation between solver speed and physical realism that every sim-to-real transfer will eventually expose.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For Contact, friction, and why contact-rich sim is hard, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Differentiable contact simulation (MJX on JAX, Drake's hydroelastic contact, NVIDIA Warp) allows gradient-based policy optimization directly through contact events. Early results show that gradient flow through contact improves sample efficiency by 3-10x on block-stacking tasks compared to gradient-free RL. However, the gradients are correct only when the contact is smooth enough (hydroelastic) or when the timestep is small enough (under 1 ms for rigid LCP). Verify that the gradient magnitude through a contact event is within an order of magnitude of the free-motion gradient before trusting the optimizer; if contact gradients are 100x larger, the optimizer will overfit to contact-mode boundaries rather than learning the task.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Contact, friction, and why contact-rich sim is hard? If not, the system boundary is still too vague.</p>
+<p>For a Franka Panda grasping a 200 g mug in MuJoCo: what timestep would you use, what penetration depth threshold flags a broken contact model, and what single log field distinguishes a chattering contact from a correctly sticking one? If you cannot answer all three, re-read the worked example and the MuJoCo tip above before moving to section 6.4.</p>
 </div>
 <h2>Production Pattern</h2>
 <p>Contact, friction, and why contact-rich sim is hard sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>

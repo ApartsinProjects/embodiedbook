@@ -111,31 +111,27 @@ print(f"final energy  mean={E.mean():.4f}  std={E.std():.4f}  max={E.max():.4f}"
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Fix the MJCF or URDF model first: confirm mass, inertia tensors, actuator gear ratios, and joint damping against the real robot's datasheet (Franka Panda torque limits are 87 N·m at the base joint; ANYmal C leg actuators saturate near 40 N·m). A 10% mass error propagates into every one of your 4096 parallel rollouts simultaneously.</li>
+<li>Choose a timestep matched to your contact stiffness. MuJoCo's default 2 ms timestep is appropriate for rigid manipulation; locomotion on compliant terrain often requires 0.5 ms to avoid contact penetration that accumulates across the batch and inflates reward.</li>
+<li>Establish a CPU single-environment baseline first. Run 10,000 steps in plain MuJoCo, log joint positions, velocities, contact forces, and actuator torques, and verify energy is bounded. This is your ground-truth rollout; the GPU-batched version must reproduce it within floating-point tolerance before you scale.</li>
+<li>Scale to MJX or Isaac Lab only after the single-environment baseline passes. Set <code>num_envs=256</code> first, not 4096. Measure GPU utilization with <code>nvidia-smi dmon</code>; if SM utilization is below 70%, your episode lengths are too variable or your reset logic is serialized.</li>
+<li>Record a sim-to-real gap metric before deploying. For locomotion policies trained in Isaac Lab on ANYmal or Unitree H1, the standard check is to compare foot contact timing (sim vs hardware IMU and force plate) over a 10-second trot. A gap larger than 15 ms average contact timing error predicts unstable transfer.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Why GPU-parallel simulation changed robot learning is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>The most common failure when scaling to GPU-parallel simulation is that reward hacking becomes invisible at speed. In CPU sequential training you notice when a biped learns to exploit a contact bug because you watch a few rollouts. With 4096 parallel environments, a policy that discovers an unintended stance (such as sitting on a Unitree Go2 to exploit a badly shaped survival reward) converges in minutes before any human reviews a trajectory. Log per-environment contact force distributions and base height histograms every 500 policy updates, not just final success rate.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Why GPU-parallel simulation changed robot learning should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
-</div>
-<div class="callout fun-note">
-<div class="callout-title">Memory Hook</div>
-<p>When why gpu-parallel simulation changed robot learning feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+<p>The ANYbotics ANYmal locomotion policy trained in Isaac Lab used 4096 parallel environments on a single A100. The team reported that domain randomization over terrain height (0 to 20 cm steps), friction coefficients (0.5 to 1.25), and payload mass (0 to 15 kg) required no additional wall-clock time compared to a single-terrain run because all variants ran simultaneously across the batch. Sim-to-real transfer was validated by comparing joint velocity tracking error: simulation showed under 0.3 rad/s RMS error at 2.0 m/s trot; hardware matched within 0.05 rad/s after the same policy was uploaded without fine-tuning.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For Why GPU-parallel simulation changed robot learning, treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Current GPU-parallel simulators handle rigid-body contact well but deformable objects, cloth, and granular media (sand, gravel terrain) remain slow because they break the homogeneous-kernel assumption: different cells of a deformable mesh require different numbers of constraint iterations. Genesis (2024) and Warp-based simulators are exploring mixed-precision and adaptive substep schedules to recover warp efficiency for these contact types. Treat throughput claims for deformable simulation with extra scrutiny until you see a reported contact timing error or energy conservation check alongside the steps-per-second number.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Why GPU-parallel simulation changed robot learning? If not, the system boundary is still too vague.</p>
+<p>Can you state the specific timestep, contact model, actuator model, and reset distribution used in your GPU-parallel training run? Can you name the sim-to-real gap metric and its acceptable threshold for your target robot? If not, the simulation contract is still too vague to trust transfer results.</p>
 </div>
 <h2>Production Pattern</h2>
 <p>Why GPU-parallel simulation changed robot learning sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>

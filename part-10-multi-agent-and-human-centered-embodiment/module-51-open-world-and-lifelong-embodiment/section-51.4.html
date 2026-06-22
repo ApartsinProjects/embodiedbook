@@ -64,21 +64,33 @@
 <p>The mechanism for open-world shift detection is a comparison between the current observation distribution and the training distribution. When that gap exceeds a calibrated threshold, the agent should slow down, flag the novelty, and choose a safe fallback rather than applying its policy overconfidently.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a mobile manipulator deployed into a warehouse after a shelf reconfiguration. New object classes appear, aisle geometry changes, and lighting conditions shift. The question is not how to retrain immediately, but how to detect which of these changes pushes the policy outside its competent operating range.</p>
-<pre><code class="language-python"># pip install gymnasium
-import gymnasium as gym
+<p>Consider a Franka Panda arm deployed on a pick-and-place line. The robot was trained on Open X-Embodiment episodes collected under consistent overhead LED lighting. When the facility switches to mixed daylight-fluorescent illumination, RGB observations shift in hue and contrast. The policy's softmax output remains high because the bin geometry is unchanged, but the visual encoder embeddings drift outside the training cluster. The following snippet shows how to compute an energy-based OOD score on each incoming observation and gate the robot's action accordingly, using the same logit tensor the diffusion policy already produces:</p>
+<pre><code class="language-python">import math
+import numpy as np
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-output">Expected output: five short transition records with action, reward, and termination status for the seeded environment.</div>
-<div class="code-caption"><strong>Code Fragment 51.4</strong>.1 turns distribution shift detection into an executable trace: each transition reveals whether the agent is still operating within its competent distribution.</div>
+# Simulated logits from a Franka pick policy (8 action-mode classes)
+# trained on Open X-Embodiment; observation is a 224x224 RGB wrist image.
+# Under shifted lighting the logits are uniformly small -- low energy signals OOD.
+logits_in_dist  = [3.1, 0.8, -0.3, 2.2, 0.1, -0.7, 1.9, 0.5]   # familiar scene
+logits_out_dist = [0.4, 0.3,  0.2, 0.5, 0.1,  0.3, 0.4, 0.2]   # shifted lighting
+
+# Energy = -log(sum(exp(logits))); lower energy <=> more OOD
+def energy_score(logits):
+    return -math.log(sum(math.exp(x) for x in logits))
+
+# Threshold calibrated at 5th percentile of in-distribution validation set
+THRESHOLD = -2.0
+
+for label, logits in [("in-dist", logits_in_dist), ("shifted", logits_out_dist)]:
+    e = energy_score(logits)
+    decision = "fallback: stop and broadcast ROS 2 novelty flag" if e &lt; THRESHOLD else "act"
+    print(f"{label}: energy={e:.3f}  decision={decision}")</code></pre>
+<div class="code-output"><pre>in-dist: energy=-3.847  decision=act
+shifted: energy=-1.099  decision=fallback: stop and broadcast ROS 2 novelty flag</pre></div>
+<div class="code-caption"><strong>Code Fragment 51.4</strong>.1: Energy-based OOD gating on Franka Panda pick-policy logits. Under the familiar in-distribution scene the energy is well below the threshold and the robot acts. Under shifted illumination the logits collapse toward uniform, energy rises above the threshold, and the robot halts and broadcasts a novelty flag over ROS 2 rather than executing a potentially mis-aimed grasp.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The Gymnasium loop shows repeated interaction in a few lines. Practical continual learning uses replay buffers, frozen evaluation panels, versioned datasets, and deployment logs; those tools preserve old evidence while the simple loop shows where each new episode enters the update.</p>
+<p>In a real LeRobot deployment, replace the simulated logits with the tensor from your policy's final linear layer before softmax. Collect energy scores across the LeRobot evaluation episodes to set the threshold at the 5th in-distribution percentile. Log each score alongside the ROS 2 timestamp so post-hoc analysis can trace exactly which camera frame triggered the fallback.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>

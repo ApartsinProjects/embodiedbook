@@ -111,15 +111,15 @@ t=3: reward=-1.0, G_t=-1.000</div>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Fix the control frequency and episode length before picking $\gamma$. A Franka Panda arm running at 1 kHz control with a 10-second manipulation episode has 10,000 steps; $\gamma=0.999$ keeps a terminal reward visible at $0.999^{10000} \approx 4.5 \times 10^{-5}$, which is marginal. Drop to 100 Hz by aggregating control commands and the math becomes tractable.</li>
+<li>Log $(o_t, a_t, r_{t+1}, o_{t+1}, \texttt{terminated}, \texttt{truncated})$ as a flat CSV from the first simulator run, not as nested dicts. Isaac Lab and MuJoCo both produce vectorized episode buffers; inspect one row per episode end before training, not after a failed convergence run.</li>
+<li>Spot-check the backward return computation on one hardware trace. For a Boston Dynamics Spot stair-climbing episode, $G_0$ should be positive when the robot reaches the top and negative when it falls; if the sign is wrong, the termination rule or reward sign is inverted.</li>
+<li>Separate truncation from termination in the bootstrap. In IsaacGym/Isaac Lab, episodes time-out at a fixed step count; every such boundary should use a value-function bootstrap, not a zero target. Treating 1,000-step timeouts as failures is the single most common source of pessimistic value estimates in legged locomotion training.</li>
+<li>Run at least one sim-to-real sanity check on the reward: replay a hardware bag file through the same reward function used in simulation and verify the numbers are in the same range. A reward calibrated for MuJoCo's frictionless defaults will misscale on a real floor with $\mu \approx 0.6$.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in Learning from interaction; return and discounting is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+<p>In hardware-in-the-loop training on systems like Spot or ANYmal, the most common return-construction failure is a one-step reward delay: the contact sensor reading that should accompany $r_{t+1}$ arrives at $r_{t+2}$ because of USB polling latency (typically 4-8 ms at 125 Hz). This shifts every return target by one step and trains the policy to act one step too late. Log sensor timestamps alongside rewards and verify the offset before any policy update; a misaligned reward stream is invisible in aggregate metrics but degrades final performance by 15-30% in contact-rich tasks.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

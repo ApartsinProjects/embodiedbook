@@ -70,13 +70,18 @@
 <li>Report: list $\{\Delta_s\}$ first, then $\Delta J$; a claim that $\pi_1$ improves is valid only when at least the required slice set shows non-negative $\Delta_s$ with no latency or intervention violations.</li>
 </ol>
 </div>
-<p>Code Fragment 1 computes this kind of slice table from one shared result panel.</p>
+<p>Code Fragment 1 computes this kind of slice table from one shared result panel, using the embodiment labels and task families drawn directly from an Open X-Embodiment replay log. The two embodiments here are a Franka Panda (7-DoF arm, 1 kHz torque loop) and a WidowX 250 (6-DoF arm, position-controlled at 10 Hz). That 100x control-rate difference matters: a policy that posts near-perfect success on the WidowX under position control can fail on the Franka simply because 10 ms of extra inference latency violates the torque-control timestep, a fact invisible in any combined average.</p>
 <pre><code class="language-python"># Compute matched slice metrics from one evaluation panel.
+# Embodiment labels match Open X-Embodiment episode metadata:
+#   "franka_panda"  -- torque-controlled, 1 kHz, contact-rich insertion tasks
+#   "widowx_250"    -- position-controlled, 10 Hz, pick-and-place tasks
+# Task family "peg_insertion" is a contact-rich Open X-Embodiment task requiring
+# sub-millimetre accuracy; "pick_place_cup" is a lower-contact tabletop task.
 results = [
-    {"embodiment": "arm", "task": "drawer", "success": 1},
-    {"embodiment": "arm", "task": "drawer", "success": 0},
-    {"embodiment": "mobile", "task": "drawer", "success": 1},
-    {"embodiment": "mobile", "task": "drawer", "success": 1},
+    {"embodiment": "franka_panda",  "task": "peg_insertion",  "success": 1},
+    {"embodiment": "franka_panda",  "task": "peg_insertion",  "success": 0},
+    {"embodiment": "widowx_250",    "task": "pick_place_cup", "success": 1},
+    {"embodiment": "widowx_250",    "task": "pick_place_cup", "success": 1},
 ]
 
 groups = {}
@@ -88,10 +93,10 @@ for key, values in groups.items():
     mean_success = sum(values) / len(values)
     print(f"{key}: success={mean_success:.2f}")
 </code></pre>
-<div class="code-output"><pre>('arm', 'drawer'): success=0.50
-('mobile', 'drawer'): success=1.00</pre></div>
-<p>The expected output is a slice table that exposes embodiment-specific performance rather than burying it in one aggregate score. A reader should immediately see that the overall mean would overstate capability because the arm embodiment is still failing half the time on the same task family.</p>
-<div class="code-caption"><strong>Code Fragment 1:</strong> The aggregate score for this panel would be 0.75, but the slice table shows a much more important fact: the arm embodiment is still failing half the time on the same task. This is why slice visibility is non-negotiable.</div>
+<div class="code-output"><pre>('franka_panda', 'peg_insertion'): success=0.50
+('widowx_250', 'pick_place_cup'): success=1.00</pre></div>
+<p>The aggregate score for this panel is 0.75, but that number hides a critical physical fact: the Franka Panda is failing every second peg-insertion attempt, which in a real deployment means a 50% chance of a misaligned peg jamming the gripper, tripping the torque-limit fault, and halting the cell. The WidowX result is genuinely good, but it cannot rescue a policy that will shut down a Franka line in minutes.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> Embodiment labels come from Open X-Embodiment episode metadata. The aggregate score (0.75) conceals a Franka Panda peg-insertion failure rate that would trigger torque-limit faults in a real deployment, while the WidowX result is legitimately strong. Merging them into one bar chart destroys the information that matters most for deployment decisions.</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The grouping code is short because the panel is tiny. In a real evaluation harness, LeRobot reports, LIBERO task panels, <a href="../../part-5-learning-from-demonstration-and-robot-data/module-24-robot-datasets-and-data-scaling-laws/section-24.1.html">DROID-style replay logs</a>, and your own benchmark runner should save one artifact with video, metrics, prompts, seeds, and slice labels, so you can regenerate the same table without re-running ad hoc notebook cells.</p></div>
 <div class="callout tip">
 <p>When using LeRobot's <code>lerobot.eval</code> script, always pin <code>eval.n_episodes</code> and <code>eval.batch_size</code> explicitly in your config rather than relying on defaults. The default episode count is low enough that per-slice success rates carry high variance, and if you compare two checkpoints run on different machines or different dates without fixing these values, the slice counts will differ and the delta table becomes meaningless. A single <code>eval_cfg.yaml</code> committed alongside the checkpoint is the minimum reproducibility contract: anyone re-running evaluation gets the same panel shape, same seeds, and the same artifact file that your slice table was derived from.</p>
@@ -105,7 +110,7 @@ for key, values in groups.items():
 <tr><td>Embodiment</td><td>Separates transfer quality from architecture hype.</td><td>The largest average gains come from the easiest robot.</td></tr>
 <tr><td>Task family</td><td>Different tasks stress different interface layers.</td><td>Pick-and-place improves while contact-rich insertion regresses.</td></tr>
 <tr><td>Perturbation type</td><td>Shows whether robustness is semantic, visual, or dynamical.</td><td>A model handles paraphrased instructions but fails shifted lighting.</td></tr>
-<tr><td>Intervention cost</td><td>Measures operator burden, not just headline success.</td><td>Success rises only because humans rescue more runs — a failure that only <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.2.html">path efficiency and intervention-cost metrics</a> would expose.</td></tr>
+<tr><td>Intervention cost</td><td>Measures operator burden, not just headline success.</td><td>Success rises only because humans rescue more runs, a failure that only <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.2.html">path efficiency and intervention-cost metrics</a> would expose.</td></tr>
 <tr><td>Latency band</td><td>Exposes whether improvements survive runtime constraints.</td><td>A stronger policy fails once inference is bounded to deployment speed.</td></tr>
 </tbody>
 </table>

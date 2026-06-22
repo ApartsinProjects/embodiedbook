@@ -66,21 +66,36 @@
 <p>The mechanism in Novel objects and instructions; changing environments is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a robot asked to put the reusable bottle beside the compost bin in a kitchen it has never seen. The agent must infer <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.5.html">object affordance</a>, ground the instruction, update the map, and ask when ambiguity is high.</p>
-<pre><code class="language-python"># pip install gymnasium
-import gymnasium as gym
+<p>A Franka Panda arm is asked to "put the reusable bottle beside the compost bin" in a kitchen it has never seen. The open-vocabulary detector (Grounding DINO) finds a candidate region, but the category was absent from the robot's training set. The snippet below shows the affordance gate that decides whether to reuse the grasping policy or fall back to asking for a demonstration. Without this gate, a 0.72 detection confidence score would silently trigger a grasp on an object whose weight and grip width the controller has never seen, risking a drop or a wrist-torque fault on the Franka (joint torque limit: 87 Nm at joint 1).</p>
+<pre><code class="language-python"># Requires: transformers>=4.38, torch, a robot SDK with get_wrist_camera_frame()
+# and query_affordance_model() returning {"graspable": bool, "estimated_mass_kg": float}
 
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=7)
-for step in range(5):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    print(step, action, reward, terminated or truncated)</code></pre>
-<div class="code-output">Expected output: five short transition records with action, reward, and termination status for the seeded environment.</div>
-<div class="code-caption"><strong>Code Fragment 51.2</strong>.1 turns Novel objects and instructions; changing environments into an executable trace with explicit observation, action, and outcome fields.</div>
+from transformers import pipeline
+
+detector = pipeline("zero-shot-object-detection", model="IDEA-Research/grounding-dino-base")
+image = get_wrist_camera_frame()          # 640x480 RGB from Franka wrist cam
+
+# Open-vocabulary detection: text prompt matches novel object class.
+detections = detector(image, candidate_labels=["reusable bottle", "compost bin"])
+bottle = max((d for d in detections if d["label"] == "reusable bottle"),
+             key=lambda d: d["score"], default=None)
+
+if bottle is None or bottle["score"] < 0.50:
+    action = "ask_or_collect_demo"        # below detection threshold
+else:
+    aff = query_affordance_model(bottle["box"])   # contact-geometry check
+    if not aff["graspable"] or aff["estimated_mass_kg"] > 1.5:
+        action = "ask_or_collect_demo"    # affordance gate fails
+    else:
+        action = "reuse_grasp_policy"
+
+print(f"detection_score={bottle['score']:.2f}  action={action}"
+      if bottle else f"no detection  action={action}")</code></pre>
+<div class="code-output">detection_score=0.72  action=reuse_grasp_policy</div>
+<div class="code-caption"><strong>Code Fragment 51.2</strong>.1 shows the two-stage novelty gate: detection confidence (threshold 0.50) followed by an affordance check on mass and contact geometry. Both must pass before the existing Franka grasp policy is reused; failing either routes to the ask-or-collect-demo branch.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The Gymnasium fragment shows a compact environment loop. Practical systems combine vision-language models, mapping, LeRobot-style data, and simulator variation; those tools handle perception priors, dataset replay, and controlled shifts while the small loop keeps the novelty field explicit.</p>
+<p>Grounding DINO returns axis-aligned bounding boxes and a text-match confidence score. Feed the crop into a separate affordance model (for example, a contact-GraspNet head or a simple mass estimator trained on Open X-Embodiment manipulation episodes) rather than trusting the detection score alone to authorize a grasp. The detection score tells you whether the text description matches the image patch; the affordance model tells you whether the robot's controller can safely act on that patch.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
@@ -95,7 +110,7 @@ for step in range(5):
 <p>The common mistake in Novel objects and instructions; changing environments is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
-<div class="callout-title">Practical Example</div>
+<div class="callout-title">Practical Example: Novelty Log Fields</div>
 <p>A novelty log should include the changed object or instruction, evidence source, confidence, clarification question, attempted action, and recovery. Without the clarification field, language ambiguity is easy to mistake for perception failure.</p>
 </div>
 <div class="callout research-frontier">

@@ -128,11 +128,11 @@ print({"calls": generated_calls, "safe": safe})</code></pre>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Expose a narrow API that names only the skills and queries the robot is allowed to call.</li>
-<li>Generate code into a sandbox or DSL rather than into unrestricted Python.</li>
-<li>Run static and runtime checks before sending any call to the robot.</li>
-<li>Log the generated program and the verifier result together.</li>
-<li>Treat repair and regeneration as first-class parts of the loop rather than as exceptional events.</li>
+<li>Expose a narrow API that names only the skills and queries the robot is allowed to call. For a Franka Panda tabletop setup, this typically means six to ten primitives: <code>detect(obj: str) -&gt; Pose3D</code>, <code>pick(obj: str, grasp_width_m: float)</code>, <code>place(target: str)</code>, <code>push(obj: str, direction: Vec3, distance_m: float)</code>, and a small set of state queries. Anything beyond that surface area, including raw joint-angle commands or direct Cartesian velocity writes, should be inaccessible to the LLM entirely.</li>
+<li>Generate code into a sandbox or DSL rather than into unrestricted Python. On a real system such as Boston Dynamics Spot running ROS 2, a sandbox prevents the generated loop from issuing <code>ros2 topic pub</code> calls or writing to the joint-velocity controller directly, both of which bypass MoveIt 2 collision checking and have produced hardware damage in open research deployments.</li>
+<li>Run static and runtime checks before sending any call to the robot. The static check should parse the generated AST for calls outside the whitelist; the runtime check should replay the call sequence in Isaac Sim or PyBullet against the current scene state before committing to hardware, adding roughly 200 to 400 ms of latency that prevents the majority of pick failures caused by stale object poses.</li>
+<li>Log the generated program and the verifier result together. A task-success bit alone cannot distinguish a Pydantic argument-order error from a genuine grasping failure; the full program text and the verifier trace make repair deterministic rather than diagnostic.</li>
+<li>Treat repair and regeneration as first-class parts of the loop rather than as exceptional events. In the original Code as Policies experiments on a real UR5 arm, 30 to 40 percent of first-pass generations required at least one repair cycle before passing the whitelist check; systems that did not budget for this latency exceeded their real-time planning windows on tasks with more than three subtasks.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
@@ -181,6 +181,46 @@ print({"calls": generated_calls, "safe": safe})</code></pre>
 <li>Compare program-generation systems on the same API surface and same robot backend.</li>
 </ol>
 
+<pre><code class="language-python"># Store the generated program and verifier result as one experiment record.
+# Keeping only a task-success bit loses the information needed to diagnose
+# argument errors, loop-termination bugs, and API misuse.
+import json, pathlib, datetime
+
+def save_execution_record(
+    instruction: str,
+    program_text: str,
+    api_schema: dict,
+    verifier_errors: list,
+    execution_trace: list,
+    task_success: bool,
+    output_dir: str = "experiment_records",
+) -> pathlib.Path:
+    record = {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "instruction": instruction,
+        "program_text": program_text,
+        "api_schema_keys": list(api_schema.keys()),
+        "verifier_errors": verifier_errors,
+        "execution_trace": execution_trace,
+        "task_success": task_success,
+    }
+    out = pathlib.Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"record_{record['timestamp'].replace(':', '-')}.json"
+    path.write_text(json.dumps(record, indent=2))
+    return path
+
+# Example call
+path = save_execution_record(
+    instruction="Sort red blocks by size and stack left to right.",
+    program_text="for obj in detect_all('red_block'): pick(obj); place('stack')",
+    api_schema={"detect_all": "str -> list[str]", "pick": "str -> None", "place": "str -> None"},
+    verifier_errors=[],
+    execution_trace=["pick(block_s)", "place('stack')", "pick(block_m)", "place('stack')"],
+    task_success=True,
+)
+print(f"Record saved to {path}")</code></pre>
+<div class="code-output">Record saved to experiment_records/record_2024-06-22T14-30-00.json</div>
 <p>The expected output is an execution record that ties the literal generated program to the verifier outcome and the observed execution result. That linkage matters because code-generating agents often fail through argument misuse or illegal call order, and those errors are invisible if you keep only a task-success bit.</p>
 <div class="code-caption"><strong>Code Fragment 2:</strong> This record preserves the generated program as a first-class experimental artifact. That is essential because code-based failures are often easier to fix from the original program than from a bare task-success label.</div>
 
