@@ -48,10 +48,6 @@
 
 <p>This section develops the technical contract for 2D and 3D transforms as a graph problem. First we define a transform tree as a directed acyclic frame graph with one parent per child. Then we show how a lookup composes edges along a path. Finally we connect the math to the ROS tf2 discipline of stamped transforms, buffer windows, and explicit lookup times.</p>
 <p>The key question is practical: when a camera detects an obstacle, which chain of transforms converts that obstacle into the planning frame at the time the planner needs it?</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In 2D and 3D transformations; transform trees (tf in ROS), the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
-</div>
 <h2>Theory</h2>
 <p>A transform tree stores edges such as $T_{\text{map},\text{odom}}$, $T_{\text{odom},\text{base}}$, and $T_{\text{base},\text{camera}}$. A lookup from camera to map follows the unique path through the tree and composes the transforms in path order:</p>
 <p>$$T_{\text{map},\text{camera}} = T_{\text{map},\text{odom}}T_{\text{odom},\text{base}}T_{\text{base},\text{camera}}.$$</p>
@@ -94,74 +90,43 @@ print(point_map[:3].round(3).tolist())</code></pre>
 <div class="callout-title">Library Shortcut</div>
 <p>The hand-built fragment keeps frame semantics visible. In production, SciPy Rotation handles rotation representations, ROS 2 tf2 keeps a time-buffered frame tree, spatialmath-python gives compact pose algebra, Drake exposes typed rigid transforms, and OpenCV calibration anchors camera intrinsics and extrinsics. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
 </div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
-</ol>
 <div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake in 2D and 3D transformations; transform trees (tf in ROS) is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example</div>
-<p>A robotics team using 2D and 3D transformations; transform trees (tf in ROS) should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<div class="callout-title">Failure Modes</div>
+<ul>
+<li><strong>Wrong lookup direction.</strong> Requesting <code>tf.lookup("camera", "map")</code> instead of <code>tf.lookup("map", "camera")</code> returns the transpose of the intended transform. In SE(3) those are different objects. One-point sanity checks (does the camera appear in front of the robot?) are faster than reading quaternion signs.</li>
+<li><strong>Timestamp mismatch.</strong> tf2 interpolates between buffered transforms. If you look up the camera-to-odom transform at wall time rather than the camera image timestamp, you introduce latency-proportional pose error. For a robot moving at 1 m/s and a 50 ms latency, that is 5 cm of systematic placement error.</li>
+<li><strong>Static transform republished on every tick.</strong> Publishing a calibration edge (base to camera) as a dynamic transform causes every downstream subscriber to receive a duplicate. Use <code>StaticTransformBroadcaster</code> in ROS 2 for edges that never move.</li>
+<li><strong>Cycle in the tree.</strong> tf silently fails if two nodes each claim to be the other's parent. The error appears far downstream as an impossible pose or a buffer timeout, not at the frame where the cycle was introduced.</li>
+</ul>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
-<p>When 2d and 3d transformations; transform trees (tf in ros) feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+<p>The tf tree is implicit matrix multiplication made explicit, named, and time-stamped. Every silent frame-direction bug in robot code is really a silent matrix-order bug that the transform tree disciplines away.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>For 2D and 3D transformations; transform trees (tf in ROS), treat frontier claims as hypotheses until they expose enough detail to reproduce the result: data boundary, embodiment, controller interface, evaluation panel, and failure cases.</p>
+<p>Static tf trees assume rigid bodies. Research on deformable robots, soft actuators, and contact-rich manipulation requires probabilistic or deformable frame representations. The <em>GTSAM</em> factor graph attaches covariance to each edge so that a SLAM back-end can propagate uncertainty through the tree. Neural implicit representations (NeRF-based SLAM) take a different approach: rather than maintaining a frame tree, they embed geometry directly in a continuous function and query poses by optimization. Both directions are active, and neither has displaced tf2 for real-time reactive control as of 2026.</p>
 </div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for 2D and 3D transformations; transform trees (tf in ROS)? If not, the system boundary is still too vague.</p>
+<p>Transform-tree bugs look like weak perception or control. Check parent-child direction, timestamp, static-vs-dynamic classification, and buffer latency before changing the robot policy.</p>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card">
+<p class="bib-ref">Foote, T. "tf: The transform library." IEEE Conference on Technologies for Practical Robot Applications (TePRA), 2013.</p>
+<p class="bib-annotation">The design document for the ROS tf system: frame naming, parent-child conventions, time-buffered lookup, and the motivation for separating static from dynamic edges.</p>
 </div>
-
-<h2>Production Pattern</h2>
-<p>2D and 3D transformations; transform trees (tf in ROS) sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
-<p>Treat the tf tree as a time-buffered data structure with one parent per frame and reproducible lookup times. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For 2D and 3D transformations; transform trees (tf in ROS), a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
-<div class="comparison-table">
-<div class="comparison-table-title">Library Choices And Verification Checks</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>What It Handles</th><th>Verification Check</th></tr></thead>
-<tbody>
-<tr><td>SciPy Rotation</td><td>converts, composes, applies, and inverts 3D rotations in Python</td><td>Verify quaternion order, degrees versus radians, and matrix orthogonality.</td></tr>
-<tr><td>ROS 2 tf2</td><td>maintains time-buffered coordinate-frame relationships for robot systems</td><td>Verify parent-child frame names, lookup time, and transform direction.</td></tr>
-<tr><td>spatialmath-python</td><td>supports practical work on 2D and 3D transformations; transform trees (tf in ROS)</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
-<tr><td>Drake</td><td>models dynamical systems, multibody plants, optimization, and controllers</td><td>Verify scalar type, plant finalization, frame convention, and solver status.</td></tr>
-<tr><td>OpenCV calibration</td><td>handles camera models, calibration, projection, and vision preprocessing</td><td>Verify intrinsics, distortion, image timestamp, and frame-to-camera transform.</td></tr>
-</tbody>
-</table>
+<div class="bib-entry-card">
+<p class="bib-ref">Lynch, K. M., and Park, F. C. "Modern Robotics: Mechanics, Planning, and Control." Cambridge University Press, 2017. <a href="http://modernrobotics.org" rel="noopener" target="_blank">http://modernrobotics.org</a></p>
+<p class="bib-annotation">Establishes the screw-theory view of SE(2) and SE(3) composition used throughout this chapter; the transform-tree lookup is Chapter 3 composition in graph form.</p>
 </div>
-
-<p>Use this recipe when turning 2D and 3D transformations; transform trees (tf in ROS) into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
-<ol>
-<li>Name every frame with a parent, child, unit convention, and timestamp policy.</li>
-<li>Write one hand-checked transform chain and verify identity, inverse, and composition tests.</li>
-<li>Run the same transform through ROS 2 tf2 or SciPy Rotation, then compare one point and one direction vector.</li>
-<li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
-<li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
-</ol>
-<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For 2D and 3D transformations; transform trees (tf in ROS), compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
-
-
-<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to 2D and 3D transformations; transform trees (tf in ROS) and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
-
-<p>Transform-tree bugs look like weak perception or control. Check parent-child direction, timestamp, static transform, and interpolation before changing the robot policy.</p>
-
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for 2D and 3D transformations; transform trees (tf in ROS): Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
-<div class="callout key-takeaway">
-<div class="callout-title">Key Takeaway</div>
-<p>2D and 3D transformations; transform trees (tf in ROS) is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<div class="bib-entry-card">
+<p class="bib-ref">ROS 2 tf2 documentation. <a href="https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Tf2.html" rel="noopener" target="_blank">https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Tf2.html</a></p>
+<p class="bib-annotation">The authoritative reference for buffer windows, lookup API, static vs. dynamic broadcasters, and tf2 migration from ROS 1.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 4.5.1</div><p>Design a method-matched experiment for 2D and 3D transformations; transform trees (tf in ROS). Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+</section>
+<div class="callout exercise">
+<div class="callout-title">Exercise 4.5.1</div>
+<p>Extend the Code Fragment above with a rotation. Give the <code>odom</code>-to-<code>base_link</code> edge a 90° yaw rotation (rotation matrix that swaps x and y). Compose the full path <code>map</code> to <code>camera</code> and verify: (a) the camera origin in map coordinates, (b) that a unit vector pointing forward in the camera frame maps to the correct direction in the map frame, and (c) that <code>map_from_camera @ camera_from_map = I</code>. Explain which intermediate transform is most likely to be wrong if the robot turns left when commanded to go forward.</p>
+</div>
 <nav class="chapter-nav">
 <a class="prev" href="section-4.4.html">Section 4.4: Rigid transforms, homogeneous coordinat...</a>
 <a class="up" href="index.html">Chapter 4: Spatial Representation and Coordinate Frames</a>
