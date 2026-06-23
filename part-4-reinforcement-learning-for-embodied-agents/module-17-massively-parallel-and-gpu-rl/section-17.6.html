@@ -140,6 +140,24 @@
 <li>Report throughput as $S / W_{\text{roll}}$ (steps per rollout second) and learning cost as $\$ / \hat{\rho}$ (dollars per unit success); never mix denominators across ledger rows.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Cost-Ledger Accounting Loop</h4>
+<p>Trace the cost ledger with two competing runs to the same 90 percent held-out target, plugging real numbers into $W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}$ and $\$ = (W / 3600) \cdot c$.</p>
+<p><strong>Run A (fast simulator, $c = 3.20$/hr).</strong> Reaches target with $W_{\text{roll}} = 600$ s, $W_{\text{learn}} = 240$ s, $W_{\text{eval}} = 900$ s, $W_{\text{sync}} = 180$ s, $W_{\text{log}} = 120$ s. Steps collected: $1.4 \times 10^9$.</p>
+<ol>
+<li>Throughput: $S / W_{\text{roll}} = 1.4 \times 10^9 / 600 = 2{,}333{,}333$ steps per rollout second. Impressive headline.</li>
+<li>Total wall-clock: $W = 600 + 240 + 900 + 180 + 120 = 2{,}040$ s.</li>
+<li>Rollout fraction: $600 / 2{,}040 = 29\%$. Evaluation fraction: $900 / 2{,}040 = 44\%$. The run is evaluation-bound, not simulation-bound.</li>
+<li>Cost: $\$ = (2{,}040 / 3600) \times 3.20 = \$1.81$.</li>
+</ol>
+<p><strong>Run B (slower simulator, $c = 2.20$/hr).</strong> Reaches the same target with $W_{\text{roll}} = 1{,}100$ s, $W_{\text{learn}} = 220$ s, $W_{\text{eval}} = 300$ s, $W_{\text{sync}} = 60$ s, $W_{\text{log}} = 40$ s. Steps collected: $5.0 \times 10^8$.</p>
+<ol>
+<li>Throughput: $5.0 \times 10^8 / 1{,}100 = 454{,}545$ steps per rollout second. Five times slower on the speedometer.</li>
+<li>Total wall-clock: $W = 1{,}100 + 220 + 300 + 60 + 40 = 1{,}720$ s.</li>
+<li>Cost: $\$ = (1{,}720 / 3600) \times 2.20 = \$1.05$.</li>
+</ol>
+<p><strong>Verdict.</strong> Run B is 42 percent cheaper ($\$1.05$ versus $\$1.81$) and reaches the target in less total wall-clock ($1{,}720$ s versus $2{,}040$ s), despite quoting one-fifth the steps per second. The step-rate headline pointed at the wrong winner; the ledger pointed at the right one.</p>
+</div>
 <div class="callout tip">
 <p>When timing CUDA-based simulators such as Isaac Lab or Isaac Gym, always call <code>torch.cuda.synchronize()</code> immediately before reading <code>time.perf_counter()</code>. CUDA kernel launches are asynchronous, so a timer that wraps the rollout call without a sync barrier measures kernel-launch latency rather than actual GPU compute time, silently reporting rollout as two to five times faster than it is. The resulting bottleneck diagnosis is wrong: the run looks learner-bound when it is actually simulation-bound, and you tune the wrong component. One sync call per phase boundary costs negligible overhead and makes the timing trustworthy.</p>
 </div>
@@ -196,6 +214,18 @@ cost per billion steps: $1.47</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A team choosing between two GPU instances should compare them on one script that trains to the same held-out success target. The faster instance can still be the worse choice if it runs out of memory, needs a smaller batch, or spends more time compiling and evaluating.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Quadruped Locomotion at ETH Zurich and NVIDIA</h4>
+<p>The "Learning to Walk in Minutes" pipeline behind ANYmal and the Isaac Lab locomotion stack reports its headline as wall-clock to a walking gait on a single GPU, not peak steps per second, precisely because the buying decision is which GPU reaches a deployable controller fastest. NVIDIA's Isaac Lab benchmarks pair throughput with time-to-target on identical held-out terrain so quadruped teams can compare an A100 against an L40S on cost-per-controller rather than on a raw speedometer number.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Profile Where Your RL Budget Actually Goes</h4>
+<p><strong>Goal:</strong> empirically discover that a higher step rate does not always mean a cheaper run by building a per-phase cost ledger for a real PPO training loop.</p>
+<p><strong>Tools needed:</strong> Python with <code>stable-baselines3</code>, <code>gymnasium</code>, and <code>time.perf_counter()</code>; a CPU or single GPU is enough. Train PPO on <code>CartPole-v1</code> or <code>LunarLander-v2</code> for about 100k timesteps.</p>
+<p><strong>What to do:</strong> instrument the loop to record rollout time, learner (gradient) time, and a periodic evaluation phase (run the greedy policy on 20 held-out seeds) separately. Set a success target (for example, mean return above 195 on CartPole) and stop the clock at the first checkpoint that reaches it. Compute total wall-clock, the fraction in each phase, and a synthetic cost using any dollars-per-hour rate.</p>
+<p><strong>What to vary:</strong> sweep evaluation frequency (every 2k, 10k, 50k steps) and rollout horizon (<code>n_steps</code> of 256, 1024, 4096).</p>
+<p><strong>What to observe:</strong> which configuration reaches the target with the lowest cost. You should see evaluation frequency dominating wall-clock at the aggressive setting while still using the same simulator, reproducing the headline lesson that the fastest-stepping run is rarely the cheapest successful one.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

@@ -136,6 +136,14 @@ print({
 <div class="code-output"><code>{'low_support_mass': 0.45, 'should_reweight': True}</code></div>
 <div class="code-caption"><strong>Code Fragment 41.5</strong>.1 implements diffusion_planner_probe for Risks of generated experience and prints the diagnostic quantity the controller or evaluator should inspect.</div>
 <p>The expected output should raise the reweight flag. The interpretation is simple: too much of the training objective is being spent on trajectories with weak real support, so the synthetic mix is no longer trustworthy as-is.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Synthetic Rollout Support Audit</h4>
+<p>Trace the audit on four generated trajectories with training weights $w = [0.30, 0.25, 0.25, 0.20]$ and estimated real support $\hat{p}_r = [0.82, 0.63, 0.11, 0.07]$, threshold $\epsilon = 0.15$, reweight trigger $\delta_{\max} = 0.30$, down-weight step $\alpha = 0.5$.</p>
+<p><strong>Step 1 (low-support indicators):</strong> compare each $\hat{p}_r$ to $\epsilon = 0.15$. We get $0.82 \geq 0.15$, $0.63 \geq 0.15$, $0.11 &lt; 0.15$, $0.07 &lt; 0.15$, so $\mathbf{1} = [0, 0, 1, 1]$. Trajectories 3 and 4 are flagged.</p>
+<p><strong>Step 2 (weighted low-support mass):</strong> $\Delta = (0.30)(0) + (0.25)(0) + (0.25)(1) + (0.20)(1) = 0.25 + 0.20 = 0.45$.</p>
+<p><strong>Step 3 (trigger check):</strong> $\Delta = 0.45 &gt; \delta_{\max} = 0.30$, so <em>reweight</em> = True. Nearly half the training objective is riding on trajectories the real world barely supports.</p>
+<p><strong>Step 4 (down-weight correction):</strong> apply $\tilde{w}_i = w_i (1 - \alpha\,\mathbf{1}_i)$. Unflagged weights are unchanged ($0.30, 0.25$); flagged weights are halved: $0.25 \to 0.125$ and $0.20 \to 0.10$. New mixture $\tilde{w} = [0.30, 0.25, 0.125, 0.10]$, summing to $0.775$. Re-running step 2 on $\tilde{w}$ gives $\Delta' = 0.125 + 0.10 = 0.225 &lt; 0.30$, so the corrected mixture now passes.</p>
+</div>
 <div class="callout tip">
 <p>The <code>epsilon</code> threshold in the support audit is not arbitrary: set it to the 10th percentile of real-rollout support scores computed on your held-out hardware evaluation set, then freeze that value before running any synthetic augmentation experiment. Calibrating <code>epsilon</code> post-hoc to whichever value makes the flag disappear is the single most common way practitioners convince themselves their synthetic data is clean when it is not. In DiffuserLite-style pipelines, log the chosen <code>epsilon</code> alongside <code>low_support_mass</code> in the same artifact so any reviewer can reproduce the threshold decision independently.</p>
 </div>
@@ -159,6 +167,10 @@ print({
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Risks Of Generated Experience</div>
 <p>A quadruped team augments training with generated stair-climbing episodes that look realistic in video but hide unrealistic foot-ground contact timing. Offline success improves, but on hardware the policy starts over-committing its front legs during ascent. The lesson is not "never use synthetic data." It is that contact realism must be part of the audit whenever <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.2.html">locomotion policies learn from generated experience</a>.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Physical Intelligence Pi0 Robot Fleet</h4>
+<p>Physical Intelligence ships Pi0, a flow-matching diffusion policy deployed across a fleet of seven distinct robot morphologies for tasks like laundry folding and table bussing. Because generated action chunks can encode physically invalid contact, the team gates synthetic experience behind hardware shadow tests and contact-realism checks before it ever enters the control-policy loss, exactly the tiered-trust discipline this section argues for. The payoff is sub-100 ms inference that closes a 10+ Hz loop while keeping fabricated trajectories out of the policy.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
@@ -210,6 +222,13 @@ print({
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Risks Of Generated Experience is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring Compounding Rollout Drift in MuJoCo</h4>
+<p><strong>Goal:</strong> empirically reproduce the super-linear drift curve from Figure 41.5B and find the horizon at which generated rollouts become untrustworthy.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium[mujoco]</code> and <code>numpy</code>; the HalfCheetah-v4 environment as the ground-truth physics oracle. No GPU required; runs on a laptop CPU in well under 30 minutes.</p>
+<p><strong>Procedure:</strong> reset the environment to a fixed seed and record the true state sequence under a fixed action sequence (your "real" trajectory). Then build a crude generator by adding 3% Gaussian noise to each predicted next-state and feeding that noisy state back as the input to the next step (an open-loop autoregressive rollout, the same closed-feedback mechanism that causes drift). At each step, log the L2 distance between the generated state and the true MuJoCo state.</p>
+<p><strong>What to vary:</strong> the per-step noise level (1%, 3%, 5%) and the rollout horizon (4, 8, 16, 32, 50 steps). <strong>What to observe:</strong> plot end-state error against horizon length on a log-y axis. Confirm that error grows super-linearly, identify the horizon where it exceeds 50% of the reachable workspace, and verify that doubling the noise roughly halves that safe horizon. This is your per-task horizon cap $H_{\max}$.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 41.5.1</div><p>Design a minimal experiment for Risks of generated experience. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <section class="bibliography">

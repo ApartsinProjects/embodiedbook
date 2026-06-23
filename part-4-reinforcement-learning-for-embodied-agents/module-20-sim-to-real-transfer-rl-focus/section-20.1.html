@@ -164,6 +164,19 @@ print(f"dominant_gap={gap}")</code></pre>
 <div class="code-output">sim_success=True, real_success=False
 dominant_gap=contact and friction</div>
 <div class="code-caption"><strong>Code Fragment 20.1</strong>.1 turns a failed transfer into a diagnosis by comparing <code>slip_cm</code>, <code>settle_ms</code>, and <code>success</code> under the same command. The important move is not the threshold itself, but the habit of storing enough trace fields to name the failure mechanism.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Reality-Gap Localization on a peg-insertion rollout</h4>
+<p>Trace through the localization algorithm with a tiny example. Two paired rollouts run the same checkpoint from the same start state. We log four fields at each step and compute the per-field divergence $\delta_f = \mathbb{E}[|f_{\text{real}} - f_{\text{sim}}|]$.</p>
+<p><strong>Field traces (averaged over the rollout):</strong></p>
+<ul>
+<li>Observation (peg tip pixel error): sim = 1.2 px, real = 1.5 px, so $\delta_{\text{obs}} = 0.3$ px.</li>
+<li>Timing (control loop period): sim = 20 ms, real = 22 ms, so $\delta_{\text{time}} = 2$ ms.</li>
+<li>Actuator (commanded vs. measured torque): sim = 0.05 Nm, real = 0.09 Nm, so $\delta_{\text{act}} = 0.04$ Nm.</li>
+<li>Contact (lateral slip at insertion): sim = 0.4 mm, real = 3.8 mm, so $\delta_{\text{contact}} = 3.4$ mm.</li>
+</ul>
+<p><strong>Normalize each by its task threshold</strong> (obs 2 px, time 5 ms, act 0.1 Nm, contact 1.0 mm): obs = 0.15, time = 0.40, act = 0.40, contact = 3.40. The argmax is contact at 3.40, the only field above 1.0, so $g^* = \text{contact}$.</p>
+<p><strong>Isolation check:</strong> rerun the simulator with friction lowered from $\mu = 0.6$ to $\mu = 0.35$. Sim slip jumps from 0.4 mm to 3.6 mm, matching the real trace, and the policy now also fails. The contact label is confirmed, so the narrow repair is to recalibrate $\mu$ rather than launch full domain randomization.</p>
+</div>
 <p><strong>Expected output:</strong> a useful reality-gap diagnostic reports the simulator outcome, the hardware outcome, and the suspected mismatch category. If the trace contains only final reward, the team cannot tell whether to fix sensing, dynamics, actuation, timing, or evaluation.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -191,6 +204,10 @@ dominant_gap=contact and friction</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A mobile manipulator that opens a drawer may fail because the simulated hinge friction is too low. The fix is not automatically more domain randomization. The first fix is a paired trace that shows whether the gripper slipped, the wrist saturated, the drawer contact stuck, or the success detector fired too early.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: OpenAI's Dactyl in-hand cube manipulation</h4>
+<p>OpenAI's Dactyl system trained a Shadow Hand to reorient a cube entirely in simulation, then transferred zero-shot to hardware. The dominant gap was a transition and actuator mismatch: the simulated tendon dynamics and contact behavior diverged from the real hand, so the team randomized physics parameters and added an LSTM that implicitly identified the live dynamics from observation history. This is exactly the diagnostic move from this section, localizing the gap to the dynamics interface before throwing fidelity at the renderer.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -252,6 +269,14 @@ dominant_gap=contact and friction</div>
 <p>The reality gap becomes useful engineering knowledge only after it is decomposed into measurable mismatches that a team can test, repair, and retest.</p>
 </div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): MuJoCo friction-gap demonstrator.</strong> Build a Gymnasium environment wrapping a MuJoCo tabletop pushing task, train a short Proximal Policy Optimization (PPO) policy with one friction coefficient, then replay the same policy checkpoint with a different coefficient and log the paired slip metrics side by side. The key challenge is setting up the paired trace schema so the gap label is computed automatically rather than eyeballed.<br/><br/><strong>Intermediate (1-2 weeks): Isaac Lab to ROS 2 transfer diagnostic for a pick-and-place task.</strong> Train a pick-and-place policy in Isaac Lab with GPU-parallel rollouts, export the checkpoint, deploy it inside a ROS 2 node on a simulated or physical arm, and produce a per-gap divergence report covering observation, actuator, and timing fields. The key challenge is aligning the Isaac Lab environment step rate with the ROS 2 control loop period so timing mismatch is measured rather than hidden in the interface.<br/><br/><strong>Intermediate (1-2 weeks): LeRobot sim-to-real gap audit for a teleoperated dataset.</strong> Use LeRobot to collect a small teleoperation dataset on a physical arm, retrain a diffusion policy in PyBullet on the same task, then compare real rollouts with simulated ones using the Reality-Gap Localization algorithm from this section to assign a dominant gap label. The key challenge is constructing comparable initial conditions in PyBullet that match the real setup closely enough for the paired trace comparison to be valid.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Inducing and localizing a friction gap in MuJoCo</h4>
+<p><strong>Goal:</strong> create a controlled reality gap in simulation, then localize it with a paired trace, all without touching real hardware.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium</code>, <code>mujoco</code> (the <code>Pusher-v5</code> or a tabletop push environment), and <code>stable-baselines3</code> for a quick PPO policy.</p>
+<p><strong>Steps:</strong> Train a PPO pushing policy for roughly 200k steps with the default friction. Save the checkpoint. Now build a "fake real" environment by editing the MuJoCo model so the contact friction (<code>geom_friction</code>) drops from 0.6 to 0.35, keeping every other parameter identical. Run 30 paired rollouts from matched start states in both environments and log four fields per rollout: final slip distance, settle time, commanded vs. measured displacement, and success.</p>
+<p><strong>What to vary:</strong> sweep the "real" friction over {0.6, 0.5, 0.4, 0.35, 0.25} and, separately, inject a one-step action delay instead of changing friction.</p>
+<p><strong>What to observe:</strong> compute the per-field divergence $\delta_f$ for each sweep point and confirm that the contact field dominates under friction changes while the timing field dominates under the action-delay injection. You should see success rate fall off a cliff between 0.5 and 0.35, demonstrating that a small parameter shift flips the action ranking rather than degrading it smoothly.</p>
+</div>
 <div class="callout exercise"><div class="callout-title">Exercise 20.1.1</div><p>Choose a real robot task and write a paired trace schema with at least one observation field, one action field, one timing field, one safety field, and one suspected gap label.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

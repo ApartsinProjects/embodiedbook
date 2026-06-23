@@ -141,6 +141,18 @@
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Measure, Anchor, Randomize Residual</h4>
+<p>Trace the calibration loop with a single dimension, the face length of a cube, using actual numbers. Suppose four calibration cubes measure 9.8, 10.1, 10.0, and 9.9 cm, and a fifth cube (object_E) is reserved as the untouched holdout.</p>
+<ol>
+<li><strong>Measure.</strong> Calibration set = [9.8, 10.1, 10.0, 9.9] cm. Min = 9.8, max = 10.1.</li>
+<li><strong>Anchor.</strong> Reconstructed mean $\hat{\theta}$ = (9.8 + 10.1 + 10.0 + 9.9) / 4 = 9.95 cm. The simulator mesh is scaled to 9.95 cm, not to any single guess.</li>
+<li><strong>Set residual margin.</strong> Choose $\delta$ = 0.3 cm to cover scan error plus manufacturing spread. Range becomes [min - 0.3, max + 0.3] = [9.5, 10.4] cm.</li>
+<li><strong>Sample a rollout.</strong> Draw $\theta \sim \mathcal{U}[9.5, 10.4]$. Say the draw is 10.2 cm; the simulator builds a 10.2 cm cube for this episode. Next episode might draw 9.6 cm.</li>
+<li><strong>Evaluate.</strong> object_E measures 10.3 cm. It falls inside [9.5, 10.4], so the trained distribution already covered it. Transfer success is recorded against the holdout, never against the calibration cubes.</li>
+</ol>
+<p>If object_E had measured 10.8 cm (outside the range), the failure would be labelled a residual range miss, not a policy failure. The numbers make the diagnosis mechanical rather than guesswork.</p>
+</div>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is measured anchoring plus residual uncertainty. Reconstruction narrows the randomization range, and residual randomization covers what the reconstruction did not capture.</p>
@@ -185,6 +197,10 @@ holdout=object_E, unseen during reconstruction</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A lab building a drawer-opening simulator might scan the drawer geometry, estimate handle pose, fit friction from calibration pulls, then randomize handle texture, rail friction, and camera pose around those measurements. The final test should use a different drawer or a different set of pulls that never shaped the reconstruction.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Warehouse Bin Picking</h4>
+<p>Ambidextrous Robotics (now part of the Ambi Robotics sorting stack) trains grasp policies almost entirely in simulation by scanning real parcels and packages, anchoring mesh geometry and mass to those scans, then randomizing residual surface friction and deformation. Policies trained this way drive production sortation lines handling tens of thousands of unseen package shapes per day, with the held-out real items never feeding the reconstruction pipeline.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -247,6 +263,14 @@ holdout=object_E, unseen during reconstruction</div>
 <p>real2sim2real is useful when reconstructed assets anchor simulation, residual randomization covers uncertainty, and final transfer is measured on real conditions excluded from the reconstruction process.</p>
 </div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Tabletop object scanner with MuJoCo residual randomization.</strong> Use a phone and a free photogrammetry app (Polycam or KIRI Engine) to scan a household object, import the resulting mesh into MuJoCo, measure the real object with a ruler, and write a Gymnasium wrapper that randomizes mass and friction within a measured interval around the caliper values. The key challenge is converting an exported OBJ mesh into a valid MuJoCo MJCF body with collision geometry without introducing phantom contacts that break the contact model.</p><p><strong>Intermediate (1 to 2 weeks): Drawer-opening policy with real2sim2real calibration split.</strong> Scan a single real drawer unit using Nerfstudio, export a textured mesh into Isaac Lab, fit rail friction from 20 calibration force pulls logged via ROS2 bags, train a MuJoCo or Isaac Lab policy with residual randomization around the fitted friction, then evaluate transfer on 10 holdout pulls never used during reconstruction. The key challenge is maintaining a strict calibration-versus-holdout split across the ROS2 bag collection, mesh fitting, and Isaac Lab training pipeline so the reported transfer metric is not contaminated by reconstruction leakage.</p><p><strong>Intermediate (1 to 2 weeks): LeRobot imitation baseline vs. sim-trained policy on a shared real holdout.</strong> Collect 50 real teleoperation trajectories for a pick-and-place task using LeRobot, use half for behavior cloning and use the other half as a held-out evaluation panel, then train a separate policy in PyBullet on a reconstructed scene mesh and compare real success rates on the same holdout. The key challenge is ensuring that the PyBullet reconstruction uses only the calibration half of the trajectory set so both policies face a fair, uncontaminated evaluation panel.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Anchored vs. Unanchored Friction in MuJoCo</h4>
+<p><strong>Goal.</strong> Empirically show that anchoring a randomization range to a measurement converges faster and transfers better than a wide unanchored guess.</p>
+<p><strong>Tools.</strong> Python 3, <code>mujoco</code> (pip install mujoco), <code>gymnasium</code>, and a tabletop push or slide task (the built-in <code>mujoco</code> sliding-block example, or a minimal MJCF with one box on a plane and a constant push force).</p>
+<p><strong>Setup.</strong> Treat a chosen friction coefficient (for example 0.8) as the unknown real value. Build two training configs: (a) anchored, sampling friction uniformly from a tight measured interval [0.7, 0.9]; (b) unanchored, sampling from a wide guess [0.1, 1.5]. Train an identical PPO or simple policy in each for the same number of rollouts.</p>
+<p><strong>What to vary.</strong> The residual margin width $\delta$ around the anchor (try 0.05, 0.1, 0.3), and the true held-out friction value (0.75, 0.8, 0.85, and one outside the range like 1.2).</p>
+<p><strong>What to observe.</strong> Rollouts-to-convergence for each config, and final success rate when deployed against the held-out friction. You should see the anchored config converge in far fewer rollouts and match or beat the wide config on in-range holdouts, while both fail on the 1.2 outlier, confirming that residual range misses produce a distinct, diagnosable failure mode. Budget 15 to 30 minutes including a short training run.</p>
+</div>
 <div class="callout exercise"><div class="callout-title">Exercise 13.5.1</div><p>Plan a real2sim2real workflow for one object or room. Specify calibration measurements, reconstructed parameters, residual randomization ranges, final holdout conditions, and the leakage guard.</p></div>
 <div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="section-13.6.html">Section 13.6 →</a> compares randomization, realism, and hybrid strategies on one shared transfer-readiness panel.</p></div>
 <section class="bibliography">

@@ -221,6 +221,10 @@ step 8: mismatch=0.089 ok
 
 Replanning triggered 3/8 steps</pre></div>
 <div class="code-caption">Code Fragment 58.3.1: CEM planning in a learned latent space with cosine-distance mismatch detection that triggers mid-episode replanning when the world model's predicted next state diverges from the real encoded observation.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: mismatch-triggered replanning at one control step</h4>
+<p>Trace one step of the loop with concrete vectors (latent dimension 4, threshold 0.25). The model predicts the next latent and normalizes it to the unit vector $\hat z_{t+1} = (0.80, 0.40, 0.40, 0.20)$ (its squared components sum to $0.64 + 0.16 + 0.16 + 0.04 = 1.00$, so it is unit length). The robot then executes the action, the block slips 8 degrees, and the encoder returns the actual next latent, which after normalization is $z_{t+1} = (0.50, 0.50, 0.50, 0.50)$ (squared components sum to $4 \times 0.25 = 1.00$). The cosine similarity is the dot product of these two unit vectors: $\hat z_{t+1} \cdot z_{t+1} = 0.80(0.50) + 0.40(0.50) + 0.40(0.50) + 0.20(0.50) = 0.40 + 0.20 + 0.20 + 0.10 = 0.90$. So the cosine distance is $1 - 0.90 = 0.10$, which is below the $0.25$ threshold, and the loop commits the next planned action without replanning. Now suppose instead the slip pushed the real latent to $z_{t+1} = (0.20, 0.60, 0.60, 0.49)$ (renormalized to unit length); recomputing the dot product gives a cosine similarity near $0.69$, hence a cosine distance of about $0.31 > 0.25$. In that case the detector fires: the planner discards the remaining four imagined steps and re-runs CEM from the corrected $z_{t+1}$.</p>
+</div>
 <p>A robot cannot pause physics to think. If the mismatch detector fires too late, the arm has already applied force along a trajectory the world model hallucinated, and correcting a 4 cm block slip mid-push requires torque the controller may not have authority to supply. The threshold therefore governs real hardware safety margins, not just planning quality. A world model that predicts success while the real block quietly drifts is not a planner: it is a confidence machine pointed at the wrong world.</p>
 <p>Cosine distance measures angular divergence between the predicted latent vector and the encoder's output for the actual observation. Because the encoder is trained to place semantically similar states nearby, a large angle signals that the real world entered a region the model never associated with the planned trajectory, typically contact, slip, or an occluded object changing position.</p>
 <div class="callout tip">
@@ -249,6 +253,10 @@ Replanning triggered 3/8 steps</pre></div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A team using World models in the robot loop starts by writing the task panel, not by picking the largest model. They keep a baseline run, a maintained-tool run, and a perturbation run in the same result folder. The comparison is accepted only when the action trace, metric, and failure labels come from one script.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: dexterous manipulation with TD-MPC2</h4>
+<p>TD-MPC2 (Hansen et al., 2024) runs exactly this loop on real and simulated manipulators, planning short horizons in a learned continuous latent space and executing only the first action each control step. A single TD-MPC2 agent trained across 80 diverse continuous-control tasks reaches goals by querying its latent model with sampled action sequences, scoring them with a learned value head, and re-encoding the true observation before re-planning. The same receding-horizon-plus-mismatch structure described here is what lets it recover when contact-rich rollouts diverge from its imagined dynamics.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -303,6 +311,14 @@ Replanning triggered 3/8 steps</pre></div>
 </ul>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 58.3.1</div><p>Design a method-matched experiment for World models in the robot loop. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: watch the mismatch detector fire at contact</h4>
+<p><strong>Goal:</strong> measure how the cosine-distance mismatch signal behaves as a learned latent model's predictions diverge from reality, and find the threshold that separates noise from real contact events.</p>
+<p><strong>Tools needed:</strong> Python with <code>numpy</code> and <code>matplotlib</code>; optionally <code>gymnasium[mujoco]</code> for the <code>Pusher-v5</code> environment. No GPU required.</p>
+<p><strong>Procedure (15 to 30 minutes):</strong> start from Code Fragment 58.3.1 above. (1) Run the 8-step episode as written and confirm the printed mismatch trace. (2) Replace the dummy linear dynamics with a deliberately wrong gain by setting <code>A = np.eye(LATENT_DIM) * 0.80</code> while keeping the "real" step at $0.95$, so the model systematically under-predicts. (3) Sweep <code>MISMATCH_THRESHOLD</code> over <code>[0.05, 0.10, 0.15, 0.20, 0.25, 0.30]</code> and, for each value, run 50 episodes and record the replan count. (4) Plot replan-rate versus threshold.</p>
+<p><strong>What to vary:</strong> the action noise scale (currently <code>0.1</code> on <code>obs_next</code>), the model-vs-real gain gap, and the planning horizon <code>HORIZON</code>.</p>
+<p><strong>What to observe:</strong> the replan-rate curve has a knee: below it, sensor noise alone trips the detector; above it, genuine model error slips through unflagged. The threshold that sits just past the knee is the empirical analogue of the 90th-percentile calibration recommended in the tip above. Widen the gain gap and watch the entire curve shift, which is what an underfit contact model would do on real hardware.</p>
+</div>
 <section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Open X-Embodiment Collaboration. Open X-Embodiment: Robotic Learning Datasets and RT-X Models. arXiv, 2023.</p><p class="bib-annotation">Use for cross-embodiment data scaling, RT-X evaluation, and dataset-standardization claims.</p></div><div class="bib-entry-card"><p class="bib-ref">Bardes, A. et al. Revisiting Feature Prediction for Learning Visual Representations from Video. arXiv, 2024.</p><p class="bib-annotation">Use for V-JEPA-style predictive representation learning and the limits of passive video priors.</p></div></section>
 <div class="whats-next"><h3>What's Next?</h3><p>Next, continue with <a href="section-58.4.html">The open-vs-closed model divide</a>, where this frontier question is connected to a different research bottleneck.</p></div>
 <nav class="chapter-nav">

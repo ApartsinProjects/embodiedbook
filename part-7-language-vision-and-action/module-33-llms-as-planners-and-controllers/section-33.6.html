@@ -111,6 +111,13 @@
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Typed Tool-Use Loop with Replanning</h4>
+<p>Trace the loop with a tiny example. Goal: place the red mug on the tray. Replan budget $R = 2$.</p>
+<p><strong>t = 0, r = 0.</strong> Planner emits <code>{"tool": "pick", "args": {"target": "red_mug"}}</code>. Schema validation: required field <code>target</code> present, type string, passes. Execute. Sensor returns <code>gripper_width = 0.0 cm</code> (fully closed on nothing). Verifier <code>v_pick</code> checks postcondition <code>grasp_success</code> by testing <code>gripper_width &gt; 1.5 cm</code>: 0.0 &gt; 1.5 is false, so $b_0 = $ fail. Build failure record <code>FR_0 = (pick, target=red_mug, violated="grasp_success", gripper_width=0.0, t=12.4s)</code>. Since $r = 0 &lt; 2$, append FR_0 to history, set $r = 1$, return to planner.</p>
+<p><strong>t = 0, r = 1.</strong> Planner now sees FR_0 and re-grounds: the mug was missed, so it lowers approach height by 2 cm and re-emits <code>{"tool": "pick", "args": {"target": "red_mug", "approach_dz": -0.02}}</code>. Execute. Sensor returns <code>gripper_width = 4.1 cm</code>. Verifier: 4.1 &gt; 1.5 is true, $b = $ pass. Append the successful step, increment $t$ to 1.</p>
+<p><strong>t = 1, r = 1.</strong> Planner emits <code>{"tool": "place", "args": {"target": "tray"}}</code>. Execute. Sensor returns <code>object_on_tray = True</code>. Verifier passes. Goal verifier $v_g$ confirms the mug rests on the tray, so the loop returns the terminal state. Total tool calls: 3, replans used: 1 of 2. The replan succeeded because FR_0 named the exact violated field, not because the planner re-read the whole trajectory.</p>
+</div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 models a single tool-call decision with verification and replanning. The point is to expose the contract between textual planning and executable interfaces.</p>
 <pre><code class="language-python"># Verify every tool call before advancing the high-level plan.
@@ -143,6 +150,10 @@ print({"tool": tool_call["tool"], "postcondition": postcondition, "next_step": n
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.7.html">mobile manipulator</a> may call `navigate(goal='sink')`, then `pick(target='sponge')`, then `wipe(region='spill')`. Each tool should expose a verifiable postcondition. If the sponge is not actually grasped, it is meaningless to continue the scripted sequence.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Warehouse Order Fulfillment</h4>
+<p>Amazon's Sequoia and Sparrow robotic systems wrap each manipulation skill as a typed action with an explicit postcondition: after a pick, a downstream weight sensor and camera confirm that exactly one item left the bin before the order advances. When the postcondition fails (a double-pick or a dropped item), the controller does not log and continue; it triggers a re-grasp or routes the tote to a human station, which is precisely the verifier-driven replanning contract described here.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -201,6 +212,13 @@ print({"tool": tool_call["tool"], "postcondition": postcondition, "next_step": n
 </div>
 <div class="callout key-insight"><p>Think of replanning like adjusting a recipe mid-cook after tasting the sauce. A chef who finds the sauce too salty does not simply re-read the original recipe and stir again; they taste the current state of the pot, identify the specific problem (too much salt, not too little acid), and choose a corrective action conditioned on that new information. Replanning an embodied agent works identically: the planner must ingest the failure evidence (which postcondition broke, what sensor value was observed, what the world looks like now) before proposing any new action. Without tasting the sauce first, every correction is just guessing.</p></div>
 <div class="callout warning"><p>A common assumption is that replanning means re-sending the original goal to the LLM and hoping for a different output. In embodied AI this is incorrect and dangerous: without injecting the structured failure record (which postcondition failed, what sensor value was observed, what the current world state is) into the new prompt or state graph, the planner has no new information and will statistically reproduce the same failed plan. The correct mental model is that replanning is conditioned on an updated state that includes failure evidence; the LLM is not retried, it is re-grounded. A replan without a new world state is not recovery, it is repetition.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Postcondition Verification Versus Blind Tool Calls</h4>
+<p><strong>Goal.</strong> Measure empirically how much a sensor-confirmed postcondition check raises task success over trusting the API return code alone.</p>
+<p><strong>Tools needed.</strong> Python, <code>gymnasium-robotics</code> (the <code>FetchPickAndPlace-v3</code> environment), and <code>numpy</code>. No LLM required: a scripted planner emits the pick-then-place sequence so you isolate the verifier effect.</p>
+<p><strong>Procedure.</strong> Run 100 episodes under two conditions. Condition A advances to <code>place</code> whenever the <code>pick</code> action completes (blind). Condition B advances only when a postcondition built from the observation dict confirms the grasp, for example the gripper-to-object distance is below a threshold and the gripper is not fully closed on empty space; on failure it retries the pick up to twice (replanning).</p>
+<p><strong>What to vary.</strong> The grasp-distance threshold (try 1, 3, and 5 cm) and the replan budget (0, 1, 2). <strong>What to observe.</strong> Per-condition task success rate, average tool calls per episode, and how many successes in Condition B came from a replan rather than the first attempt. You should see Condition B clear Condition A by a wide margin, and you will watch the false-replan rate climb as the threshold gets too tight, the same tuning tension flagged in the warning callout above.</p>
+</div>
 <div class="callout exercise"><div class="callout-title">Exercise 33.6.1</div><p>Design one typed action API and one postcondition verifier for a robot skill of your choice. Then describe the replanning information that should be passed back to the LLM if the verifier fails.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>

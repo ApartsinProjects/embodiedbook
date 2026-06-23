@@ -157,6 +157,15 @@ print(f"mean_latency={np.mean(lat):6.1f} ms   "
 # TAU=RHO=1.0 (always fast) or TAU=RHO=0.0 (always slow).
 </code></pre>
 <div class="code-caption"><strong>Code Fragment 3.6</strong>.1 implements the System 1 / System 2 router as a thresholded rule and scores it on latency and failure rate jointly. A good router improves both axes relative to either single-path baseline.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Routing four observations with TAU = RHO = 0.85</h4>
+<p>Trace the routing rule from the equation with four concrete incoming observations, each a pair (uncertainty $u$, risk $r$). The rule sends a case to System 1 only when <em>both</em> $u &lt; 0.85$ and $r &lt; 0.85$; otherwise it escalates to System 2 (latencies LAT1 = 10 ms, LAT2 = 250 ms).</p>
+<p><strong>Obs 1:</strong> $u = 0.20$, $r = 0.30$. Check: $0.20 &lt; 0.85$ (true) and $0.30 &lt; 0.85$ (true) → both true → <strong>S1</strong>, latency 10 ms. The fast path's expected failure here is $0.03 + 0.15 \times 0.20 = 0.06$, so it acts confidently.</p>
+<p><strong>Obs 2:</strong> $u = 0.91$, $r = 0.40$. Check: $0.91 &lt; 0.85$ (false) → the AND fails → <strong>S2</strong>, latency 250 ms. Even though risk is low, the fast path is extrapolating, so deliberation is worth 240 extra ms.</p>
+<p><strong>Obs 3:</strong> $u = 0.10$, $r = 0.97$. Check: $u$ passes but $0.97 &lt; 0.85$ (false) → <strong>S2</strong>, latency 250 ms. A confident-but-risky case, exactly the one a single combined score would mishandle.</p>
+<p><strong>Obs 4:</strong> $u = 0.60$, $r = 0.55$. Check: $0.60 &lt; 0.85$ (true) and $0.55 &lt; 0.85$ (true) → <strong>S1</strong>, latency 10 ms, expected failure $0.03 + 0.15 \times 0.60 = 0.12$. This is a near-routine case the router keeps fast.</p>
+<p>Across these four, mean latency is $(10 + 250 + 250 + 10)/4 = 130$ ms, versus 10 ms for always-S1 (but with the higher Obs 2 and Obs 3 failure exposure) and 250 ms for always-S2. The router pays the slow cost on exactly the two cases that need it.</p>
+</div>
 <p><strong>Expected output:</strong> the routed policy keeps mean latency far below the always-System-2 cost while keeping the failure rate far below the always-System-1 cost, because it spends the expensive path only on uncertain or risky cases. Set <code>TAU=RHO=1.0</code> to force everything onto System 1 (fast but more failures) or <code>0.0</code> to force System 2 (safe but slow); the routed numbers should dominate the relevant axis of each. The near-threshold cases are where calibration matters, which is why the router, not either subsystem, is the first thing to diagnose.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -180,6 +189,10 @@ print(f"mean_latency={np.mean(lat):6.1f} ms   "
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team using dual-system (system 1 / system 2) designs and where they come from should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Autonomous driving (Waymo Driver)</h4>
+<p>The Waymo Driver runs a fast reactive layer that handles emergency braking and collision avoidance within tens of milliseconds, decoupled from a slower behavior-prediction and planning stack that reasons over multi-second trajectories of surrounding agents. When a pedestrian darts out, the reflex layer decelerates immediately while the planner re-solves the route, exactly the dual-system split where the fast path preserves safety and the slow path optimizes the maneuver.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -211,6 +224,13 @@ print(f"mean_latency={np.mean(lat):6.1f} ms   "
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 3.6.1</div><p>Design a method-matched experiment for Dual-system (System 1 / System 2) designs and where they come from. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a dual-system router in Gymnasium's CartPole environment: a hardcoded PD controller acts as System 1 for low-angle states, and a simple Q-network acts as System 2 for high-uncertainty states; the key challenge is choosing an uncertainty threshold that keeps the pole stable without over-escalating to the slower path. <strong>Intermediate (1-2 weeks):</strong> Implement a dual-system manipulation controller in MuJoCo using a Franka Panda model: a torque-level impedance controller runs at 500 Hz as System 1, while a LeRobot diffusion policy runs at 10 Hz as System 2 to provide Cartesian waypoints; the key challenge is handling stale waypoints gracefully so that a delayed System 2 output does not cause a torque spike that destabilizes the fast loop. <strong>Intermediate-plus (2 weeks):</strong> Deploy the router pattern on a real or simulated ROS2 robot: System 1 publishes joint commands on a high-frequency topic, System 2 uses a MuJoCo or Isaac Sim planner to compute collision-free paths, and the router node subscribes to a Monte Carlo Dropout uncertainty stream to decide which path controls the arm; the key challenge is writing the ROS2 lifecycle transitions so that System 2 can preempt System 1 without losing the current joint state.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Sweep the router threshold and watch the latency-safety frontier</h4>
+<p><strong>Goal:</strong> see empirically that a dual-system router can dominate both single-path baselines, and find where it stops helping.</p>
+<p><strong>Tools needed:</strong> Python with NumPy and Matplotlib (no GPU). Start from Code Fragment 3.6.1 above; copy it into a script.</p>
+<p><strong>What to vary:</strong> wrap the simulation in a loop that sweeps the escalation threshold from <code>TAU = RHO = 0.0</code> (always System 2) to <code>1.0</code> (always System 1) in steps of 0.05. For each setting, record mean latency and failure rate over 5000 episodes. Then change the System 1 failure model (the <code>0.03 + 0.15 * u</code> term) to make the fast path either more reliable (<code>0.01 + 0.05 * u</code>) or much worse (<code>0.10 + 0.40 * u</code>) and rerun the sweep.</p>
+<p><strong>What to observe:</strong> plot failure rate (y) against mean latency (x), one point per threshold, as a Pareto frontier. With the default failure model you should see an interior knee where the routed policy beats both extremes. With the very-reliable fast path, the frontier collapses toward always-System-1 (the router earns nothing); with the much-worse fast path, it collapses toward always-System-2. The lesson lands quantitatively: a router only pays off when the fast path has a genuine, partial competence region, which is the same condition stated in the "When to Use This Architecture" insight above.</p>
+</div>
 <div class="whats-next"><h3>What's Next?</h3><p>Section 3.7 places LLMs, VLMs, and VLAs inside this architectural stack.</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>

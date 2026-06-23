@@ -142,6 +142,10 @@
 <li>Log raw advantages, value predictions, $G_t$, and $\delta_t$ per episode so critic failure does not silently corrupt the actor signal.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: GAE backward recursion</h4>
+<p>Trace GAE over a 3-step rollout with $\gamma = 0.9$, $\lambda = 0.5$, no early termination. Rewards $r = [0,\ 0,\ 1]$; critic values $V = [0.5,\ 0.4,\ 0.3,\ 0.0]$ (the last is the post-terminal bootstrap, 0). First compute the TD residuals $\delta_t = r_t + \gamma V_{t+1} - V_t$: $\delta_0 = 0 + 0.9(0.4) - 0.5 = -0.14$; $\delta_1 = 0 + 0.9(0.3) - 0.4 = -0.13$; $\delta_2 = 1 + 0.9(0.0) - 0.3 = 0.70$. Now run the backward pass with factor $\gamma\lambda = 0.45$. Start at the end: $\hat A_2 = \delta_2 = 0.70$. Step back: $\hat A_1 = \delta_1 + 0.45\,\hat A_2 = -0.13 + 0.45(0.70) = 0.185$. Step back again: $\hat A_0 = \delta_0 + 0.45\,\hat A_1 = -0.14 + 0.45(0.185) = -0.057$. So $\hat A = [-0.057,\ 0.185,\ 0.70]$. Notice how the reward at step 2 leaks backward: it gives step 1 a positive advantage even though its local residual was negative, while step 0 stays slightly negative because the decayed credit ($0.45^2 = 0.2025$ weight) cannot overcome its own negative residual.</p>
+</div>
 <div class="callout key-insight">
 <div class="callout-title">Advantage Means Better Than Expected</div>
 <p>The critic does not tell the actor whether the state is good in absolute terms. It tells the actor whether the sampled action led to a result above or below what the state already promised.</p>
@@ -204,6 +208,10 @@ print("advantages:", advantages)</code></pre>
 <div class="callout-title">Fun Note</div>
 <p>The critic is the agent's skeptical lab partner. It does not celebrate reward by itself; it asks whether the reward was better than the state already predicted.</p>
 </div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: quadruped locomotion (ANYmal / Isaac Gym)</h4>
+<p>ETH Zurich and NVIDIA's "Learning to walk in minutes" pipeline trains the ANYmal quadruped entirely in Isaac Gym using PPO with GAE at $\lambda = 0.95$ and $\gamma = 0.99$, where thousands of parallel robots generate rollouts and a critic absorbs the per-step contact noise so the advantage signal stays clean. Correct truncation handling at the fixed rollout-horizon boundary is what lets the critic bootstrap instead of treating every timeout as a fall, and that single convention is decisive for the policy reaching a stable trot in minutes of wall-clock training. The resulting policies transfer to the physical ANYmal with domain randomization.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
 <p><strong>Transformer critics and long-context advantage estimation (2024-2025).</strong> Advantage estimation with a fixed GAE window struggles when reward signals span hundreds of steps, as in whole-body manipulation or multi-stage assembly. The CMU Robotics Institute and ETH Zurich's Robotic Systems Lab have moved away from multilayer perceptron (MLP) critics toward Transformer-based value networks that attend over the entire rollout history. Shi et al. (2024) "Yell At Your Robot" (RSS 2024, CMU) show that a history-conditioned critic stabilizes policy learning for contact-rich bimanual tasks where a single misstep 60 steps earlier cascades into task failure, a regime where standard GAE with lambda=0.95 fails to trace credit accurately.</p>
@@ -264,6 +272,13 @@ print([round(x, 3) for x in normalized])</code></pre>
 <p>Actor-critic methods make policy gradients usable by asking a sharper question: was this action better than expected from this state? GAE controls how much delayed embodied evidence flows backward into that answer.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 15.3.1</div><p>Given a five-step rollout with rewards, values, and termination flags, compute TD residuals, GAE advantages, normalized advantages, and value targets. Mark which steps should bootstrap if the rollout ended by timeout instead of task failure.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Sweeping the GAE lambda dial</h4>
+<p><strong>Goal:</strong> Build direct intuition for the bias-variance tradeoff that $\lambda$ controls by measuring how it changes advantage variance and learning speed on a real control task.</p>
+<p><strong>Tools needed:</strong> Python with Gymnasium (<code>CartPole-v1</code>), Stable-Baselines3 (or CleanRL's single-file <code>ppo.py</code>), and Matplotlib. About 15-30 minutes including training runs.</p>
+<p><strong>What to vary:</strong> Run PPO with <code>gae_lambda</code> set to 0.0, 0.5, 0.9, 0.95, and 1.0, holding $\gamma = 0.99$, the seed, and all other hyperparameters fixed. For each run, also log the raw (pre-normalization) advantage tensor from one rollout batch.</p>
+<p><strong>What to observe:</strong> Plot episode return versus environment steps for each $\lambda$, and separately plot the standard deviation of the raw advantages per batch. You should see variance rise monotonically as $\lambda \to 1$ (Monte Carlo regime), while $\lambda = 0$ learns slowly or unstably because it leans entirely on an untrained critic. The middle values (0.9 to 0.95) typically reach a solved policy fastest. As a stretch, add a fixed time limit shorter than the natural episode and confirm that mishandling the truncation flag (treating timeout as termination) visibly degrades the higher-$\lambda$ runs.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Implement GAE from scratch on the CartPole-v1 environment in Gymnasium, then sweep lambda from 0 to 1 and plot how advantage variance and training speed change. The key challenge is correctly handling the truncation flag so the backward recursion stops bootstrapping only on true termination, not on rollout buffer boundaries.</p><p><strong>Intermediate (1-2 weeks):</strong> Train a hopper or ant locomotion policy in MuJoCo using CleanRL's PPO implementation, then replace the on-policy critic with a privileged critic that receives hidden simulator state (contact forces, joint velocities not passed to the actor). The key challenge is verifying that removing the privileged critic at deployment time does not collapse the policy, which requires logging explained variance separately for privileged and deployable observations throughout training.</p><p><strong>Intermediate (1-2 weeks):</strong> Use Isaac Lab to train a quadruped stand-up recovery task with GAE, then transfer the policy to PyBullet to test sim-to-real gap sensitivity. The key challenge is auditing which value-function shortcuts (ground-truth body orientation, contact state) break when the simulator changes, and patching the truncation convention so rollout boundaries in the faster Isaac Lab simulator do not silently suppress credit for late recovery rewards.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

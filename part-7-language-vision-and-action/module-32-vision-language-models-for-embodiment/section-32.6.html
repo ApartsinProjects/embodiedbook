@@ -167,6 +167,11 @@ print("4-frame window slope after :", np.polyfit(range(4), w_after, 1)[0])</code
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Temporal Staleness Guard on one timestep</h4>
+<p>Trace the guard with concrete numbers. Suppose the last VLM output came from $\delta = 180$ ms ago and reported "cup at $x = 0.40$ m". The threshold is $\tau = 0.03$ (an $L_2$ pixel-difference change score). At the current frame, the change detector returns $d = \Delta(o_t, o_{t-\delta}) = 0.11$. Step 3: since $0.11 > 0.03$, set STALE and re-query, getting "cup at $x = 0.32$ m" (it moved 8 cm). Step 4: stack the last $k = 4$ gripper-$z$ values $[0.30, 0.25, 0.20, 0.15]$. Step 5: the slope is $\nabla_t z = \tfrac{0.15 - 0.30}{3} = -0.05$ (descending), so $\phi_t = $ "approach". Step 7: median inter-contact interval is $T_{\text{contact}} = 8$ steps, so $H \le \lfloor 8/2 \rfloor = 4$; emit a 4-action chunk. Step 8: execute $a_t$, log (timestamp $t$, action, $d = 0.11$, STALE = true). Had $d$ been $0.01 < \tau$ instead, step 3 would reuse the cached output and skip the re-query, saving one 180 ms inference.</p>
+</div>
+
 <h2>The Fixes</h2>
 <p>All three theoretical failures share one cure: restore access to the history. There are three standard ways to do it:</p>
 <ul>
@@ -202,6 +207,10 @@ print("4-frame window slope after :", np.polyfit(range(4), w_after, 1)[0])</code
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>On a Franka Panda running OpenVLA through the LeRobot stack, do not log only the final grasp-success boolean. Record the per-frame camera timestamp, the VLM inference latency, the optical-flow change score at actuation time, the chunked action vector, and the staleness DEFER events. A policy can report 75% success on Franka Kitchen while its logs reveal it only completes the free-space reach stage and silently fails every contact-rich door-opening episode, exactly the temporal-aliasing failure the slope test in Code Fragment 32.6.1 predicts.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse manipulation (Physical Intelligence pi0)</h4>
+<p>Physical Intelligence's pi0 vision-language-action model does not query its 3B-parameter backbone once per servo tick; it emits action chunks at roughly 50 Hz so a manipulator can fold laundry and clear tables without stalling between forward passes. The chunked output is precisely the architectural patch this section derives: it bounds the staleness window by the chunk horizon instead of by the multi-hundred-millisecond inference latency, keeping motion smooth in a world that keeps moving during inference.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -281,6 +290,13 @@ print("4-frame window slope after :", np.polyfit(range(4), w_after, 1)[0])</code
 <span class="bib-meta">Paper</span>
 </div>
 </section>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring the temporal-aliasing gap on Franka Kitchen</h4>
+<p><strong>Goal:</strong> show empirically that a single-frame policy collapses on multi-stage tasks while a short context window recovers, reproducing the 1-in-4 versus 3-in-4 success pattern this section reports.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium-robotics</code> (FrankaKitchen-v1), <code>numpy</code>, and <code>imitation</code> or LeRobot for behavior cloning; the bundled D4RL kitchen demonstrations as the training set. Runs on CPU in well under 30 minutes for the small configs below.</p>
+<p><strong>What to vary:</strong> train two behavior-cloning policies that are identical except for the observation encoder. One consumes the latest RGB frame only; the other concatenates the last $k$ frames. Sweep $k \in \{1, 2, 4, 8\}$ and, optionally, the control rate.</p>
+<p><strong>What to observe:</strong> per-stage completion (approach, grasp, manipulate, release), not just the final boolean. Plot success rate against $k$ and confirm that the single-frame ($k = 1$) policy stalls at the first contact-rich stage while the gain saturates once the window spans the phase-defining motion (typically $k = 4$). Then add the slope test from Code Fragment 32.6.1 to your logging and verify the policy fails exactly where the gripper-$z$ slope sign is ambiguous to a single frame.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a staleness-guard wrapper around a pretrained VLM using Gymnasium's FetchReach-v3 environment and PyBullet. The system should compute per-frame optical-flow magnitude with OpenCV and skip the policy action when the scene-change score exceeds a tunable threshold, logging timestamp, change score, and action outcome to a CSV. The key challenge is choosing a threshold that avoids both false positives (blocking valid actions) and false negatives (acting on stale captions) without access to ground-truth object velocity.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement and compare single-frame versus 4-frame context policies on the Franka Kitchen multi-stage task using LeRobot's dataset and training pipeline, then deploy the better policy on a ROS2-connected simulated Franka arm in Isaac Lab. The key challenge is aligning the observation timestamp from the Isaac Lab ROS2 bridge with the LeRobot replay buffer so that the context window always contains causally ordered frames rather than frames from different rollout episodes.</p></div>
 <nav class="chapter-nav">
 <a class="prev" href="section-32.5.html">Section 32.5: Multimodal memory</a>

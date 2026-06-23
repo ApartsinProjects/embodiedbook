@@ -136,6 +136,12 @@ $$</p>
 <li>Send $a_{0:k}$ to the controller, observe the next state, update $o$, and return to step 1 for the next receding-horizon window.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: DDIM denoising of a 2-step action chunk</h4>
+<p>Trace one DDIM update with tiny numbers. Take a chunk of $H=2$ actions of dimension $A=1$, so $\tau$ is just $[\tau^{(0)}, \tau^{(1)}]$. Use a 2-step schedule with $\bar\alpha_1 = 0.36$ and $\bar\alpha_0 = 0.81$ (so $\sqrt{\bar\alpha_1}=0.6$, $\sqrt{1-\bar\alpha_1}=0.8$, $\sqrt{\bar\alpha_0}=0.9$, $\sqrt{1-\bar\alpha_0}=0.436$). Start from noise $\tau_1 = [1.0,\ -0.5]$. Suppose the trained denoiser predicts residual $\hat\epsilon = [0.8,\ -0.2]$.</p>
+<p><strong>Recover the clean estimate:</strong> $\hat\tau_0 = (\tau_1 - \sqrt{1-\bar\alpha_1}\,\hat\epsilon)/\sqrt{\bar\alpha_1}$. Component 0: $(1.0 - 0.8\times0.8)/0.6 = (1.0-0.64)/0.6 = 0.60$. Component 1: $(-0.5 - 0.8\times(-0.2))/0.6 = (-0.5+0.16)/0.6 = -0.567$. So $\hat\tau_0 = [0.60,\ -0.567]$.</p>
+<p><strong>DDIM step toward $\tau_0$:</strong> $\tau_0 = \sqrt{\bar\alpha_0}\,\hat\tau_0 + \sqrt{1-\bar\alpha_0}\,\hat\epsilon$. Component 0: $0.9\times0.60 + 0.436\times0.8 = 0.540 + 0.349 = 0.889$. Component 1: $0.9\times(-0.567) + 0.436\times(-0.2) = -0.510 - 0.087 = -0.597$. The final chunk is $\tau_0 = [0.889,\ -0.597]$. With $k=1$, only the first entry $0.889$ is sent to the controller before re-observing. Notice both entries were denoised in the same pass using the same residual prediction, which is exactly why adjacent actions stay correlated instead of jittering.</p>
+</div>
 <h2>Worked Example</h2>
 <p>The probe below shows how to structure a Diffusion Policy inference loop. It denoises an action chunk of shape $(H, A)$ from Gaussian noise over $T$ DDIM steps, conditioning every step on a fixed observation embedding, then executes the first $k$ actions. The denoiser here is a stand-in; in a real system it is a trained U-Net or transformer. The control logic around it, start from noise, iterate the reverse step, condition on the observation, slice the first $k$, is exactly what production code does.</p>
 <pre><code class="language-python"># Diffusion Policy inference: denoise an action chunk conditioned on an observation.
@@ -189,6 +195,10 @@ execute first k = 2 actions: [[0.6, -0.2], [0.6, -0.2]]</code></div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Diffuser And Decision Diffuser</div>
 <p>A manipulation team uses Diffuser to sample several reach-and-grasp trajectories from an offline dataset, then discovers that the shortest geometric path often clips the table edge. Switching to a Decision Diffuser objective that includes sparse reward, time penalty, and collision penalty produces plans that are less direct geometrically but more executable in the real loop.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse and lab manipulation</h4>
+<p>Toyota Research Institute uses Diffusion Policy as the action backbone for its dexterous manipulation fleet, teaching robots skills like pouring, peeling, and tool use from a few hundred teleoperated demonstrations per skill. The denoised action chunk handles the multimodal, contact-rich motions that per-step behavior cloning smears into an unusable average, which is why the same recipe now ships in open robot stacks such as Hugging Face LeRobot for benchmarking on real hardware.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -246,6 +256,14 @@ execute first k = 2 actions: [[0.6, -0.2], [0.6, -0.2]]</code></div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Diffuser And Decision Diffuser is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: DDIM step count versus plan quality and latency</h4>
+<p><strong>Goal.</strong> Feel the DDPM-versus-DDIM trade-off empirically by measuring how the number of denoising steps affects both action-chunk quality and wall-clock inference time.</p>
+<p><strong>Tools.</strong> Python with <code>numpy</code>, <code>time</code>, and <code>matplotlib</code>; optionally Hugging Face <code>diffusers</code> for a real <code>DDIMScheduler</code>, and Gymnasium (<code>Pendulum-v1</code>) if you want a live closed loop. No GPU required for the toy version.</p>
+<p><strong>Procedure.</strong> Start from Code Fragment 41.2.1. Wrap the denoising loop in a function parameterized by step count $T$, and time it with <code>time.perf_counter()</code> averaged over 200 calls.</p>
+<p><strong>What to vary.</strong> Sweep $T \in \{2, 5, 10, 25, 50, 100, 250\}$. Optionally also vary the execute count $k$ and observe replanning frequency in the Pendulum loop.</p>
+<p><strong>What to observe.</strong> Plot mean inference time against $T$ (expect a near-linear rise) and plot the distance between the final chunk and the observation-consistent target against $T$. You should see quality saturate well before $T=100$ while latency keeps climbing, reproducing the core claim that 10 to 50 DDIM steps capture nearly all the quality at a fraction of the DDPM cost. Then deliberately hand-slice the first $T$ entries of a 250-step schedule instead of re-indexing it, and watch the chunk quality collapse, confirming the Tip callout about <code>set_timesteps</code>.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 41.2.1</div><p>Design a minimal experiment for Diffuser and Decision Diffuser. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <section class="bibliography">

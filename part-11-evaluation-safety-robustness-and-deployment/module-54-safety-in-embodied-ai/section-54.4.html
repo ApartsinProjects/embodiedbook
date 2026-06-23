@@ -145,6 +145,14 @@ print({"nominal": nominal, "safe": safe, "intervened": nominal != safe})</code><
 <div class="code-output"><pre>{'nominal': {'vx': 0.8, 'vy': 0.0}, 'safe': {'vx': 0.4, 'vy': 0.0}, 'intervened': True}</pre></div>
 <div class="code-caption"><strong>Code Fragment 54.4</strong>.1 applies a simple projection-style shield by clipping an unsafe velocity command into the admissible set.</div>
 <p><strong>Expected output:</strong> The shield preserves the command direction but reduces its magnitude to stay within the allowed envelope. The boolean intervention flag is crucial for later audit and policy improvement.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Projection filter on a 2D velocity command</h4>
+<p>Trace the projection filter with concrete numbers. Suppose the safe set is the box $|v_x| \le 0.4$, $|v_y| \le 0.2$ (units m/s), and the nominal policy proposes $u^{nom} = (0.8, 0.0)$.</p>
+<p><strong>Step 1, check admissibility:</strong> $|0.8| = 0.8 > 0.4$, so the $v_x$ component is out of bounds. The command is inadmissible.</p>
+<p><strong>Step 2, clip each axis:</strong> $v_x = \text{clip}(0.8, -0.4, 0.4) = 0.4$; $v_y = \text{clip}(0.0, -0.2, 0.2) = 0.0$. The safe command is $u^{safe} = (0.4, 0.0)$.</p>
+<p><strong>Step 3, measure the correction:</strong> $\|u^{nom} - u^{safe}\|^2 = (0.8 - 0.4)^2 + 0^2 = 0.16$, so the residual distance is $0.4$ m/s. Direction is preserved (still pure forward motion); only magnitude shrank.</p>
+<p><strong>Step 4, log:</strong> write the record (nominal $(0.8, 0.0)$, safe $(0.4, 0.0)$, active constraint <code>vx_max</code>, intervened <code>True</code>). Now retry with $u^{nom} = (0.3, 0.1)$: both components already inside the box, so $u^{safe} = (0.3, 0.1)$, residual $0$, intervened <code>False</code>, and nothing is logged. The intervention rate over these two calls is $1/2 = 50\%$, a number you would track over thousands of steps to decide whether to retrain.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Safety wrappers, controller-side filters, and runtime supervisors provide reusable infrastructure for shield logic. The point of the maintained stack is consistency and auditability, not just shorter code.</p>
@@ -177,6 +185,10 @@ print({"nominal": nominal, "safe": safe, "intervened": nominal != safe})</code><
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For a drone, a shield may clip velocity near no-fly boundaries. For a manipulator, it may project a pose command into a joint-safe or force-safe subspace. For autonomous driving, it may veto accelerations that violate a rule set.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: autonomous driving</h4>
+<p>NVIDIA's Safety Force Field, deployed in the DRIVE autonomy stack, is a production shield: a learned planner proposes a trajectory, and an independent analytical layer computes the safe acceleration envelope from the predicted motion of every nearby actor, then vetoes or scales any command that would breach a recoverable braking margin. Mobileye's Responsibility-Sensitive Safety (RSS) plays the same role with a formal rule set, blocking accelerations that violate codified minimum-following-distance constraints. In both systems the shield runs separately from the neural planner so that a planner bug cannot silently disable the safety check.</p>
 </div>
 
 <p>Consider a specific case: the Boston Dynamics Spot robot running a third-party locomotion policy. The onboard safety supervisor monitors estimated contact forces and joint torques at 500 Hz. If a policy proposes a step that would require more than 120 Nm at the hip abductor (the hardware limit), the supervisor replaces the full foot trajectory with a stationary hold and logs the veto. In a 30-minute stress-test session across uneven outdoor terrain, this filter intervened on roughly 2% of proposed footfalls, and inspection of those logs revealed that the nominal policy had a systematic blind spot for slopes exceeding 18 degrees. The filter did not fix the policy; it made the blind spot visible. In practice, retraining on those 2% vetoed footfalls required roughly 400 targeted episodes to close the slope blind spot; undirected exploration in the same simulator needed over 60,000 episodes to encounter enough steep-slope failures to produce the same correction. Alshiekh et al. (2018) formalize this pattern: a shield that logs every intervention accumulates a dataset that is, in effect, a curriculum of the policy's worst-case failures.</p>

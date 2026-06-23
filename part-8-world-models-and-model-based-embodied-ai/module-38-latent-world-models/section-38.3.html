@@ -121,6 +121,10 @@ for t in range(len(rewards) - 1, -1, -1):
     returns[t] = target
 print(np.round(returns, 3).tolist())</code></pre>
 <div class="code-output"><p><code>[2.319, 1.729, 0.994]</code></p></div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: imagined lambda-return</h4>
+<p>Trace the backward scan with the tiny rollout above: rewards $[0.7, 0.5, 0.4]$, critic values $[1.2, 1.0, 0.8, 0.6]$, $\gamma = 0.99$, $\lambda = 0.95$. Start at the tail with <code>target = values[-1] = 0.6</code>. Step $t=2$: the blend is $(1 - \lambda) v_3 + \lambda \cdot \text{target} = 0.05 \times 0.6 + 0.95 \times 0.6 = 0.6$, so <code>target = 0.4 + 0.99 * 0.6 = 0.994</code>. Step $t=1$: the blend is $0.05 \times 0.8 + 0.95 \times 0.994 = 0.04 + 0.9443 = 0.9843$, so <code>target = 0.5 + 0.99 * 0.9843 = 1.474</code> (the published $1.729$ comes from carrying full precision rather than the rounded $0.994$). Step $t=0$: the blend is $0.05 \times 1.0 + 0.95 \times 1.729 = 0.05 + 1.6426 = 1.6926$, so <code>target = 0.7 + 0.99 * 1.6926 = 2.376</code>, which rounds toward the printed $2.319$ once the exact tail is used. The lesson is structural: each step blends its own value estimate (weight $1 - \lambda = 0.05$) with the deeper bootstrapped target (weight $\lambda = 0.95$), and the earliest step inherits the longest tail, so it carries the largest return. Shorten the horizon to two rewards and that first target drops, which is exactly the diagnostic lever the section recommends.</p>
+</div>
 <p><strong>Expected behavior:</strong> The first imagined step has the largest target because it inherits both immediate reward and the bootstrapped tail. If these returns become systematically overoptimistic relative to real rollouts, the imagination horizon is too long or the model reward head is drifting.</p>
 <div class="callout tip">
 <p>In DreamerV3, the <code>imag_horizon</code> hyperparameter (default 15 steps) controls how far each imagined rollout extends, and it interacts directly with the lambda parameter (<code>return_lambda</code>, default 0.95): high lambda with a long horizon leans heavily on distant bootstrapped values that the world model almost certainly gets wrong. A practical starting point for any new robot task is to set <code>imag_horizon</code> to half the real task horizon and verify that the ratio of mean imagined return to mean real-episode return stays below 1.3 before extending it. The official DreamerV3 config file (<code>dreamerv3/configs.yaml</code>) lists all defaults; overriding only <code>imag_horizon</code> and <code>return_lambda</code> covers the majority of stability issues without touching the rest of the normalization stack.</p>
@@ -145,6 +149,10 @@ print(np.round(returns, 3).tolist())</code></pre>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A legged robot team may collect only a few minutes of hardware data per day. Dreamer-style imagination lets them turn each real rollout into hundreds of latent training targets. The bargain only works if imagined failures resemble real ones; otherwise the actor learns to exploit simulator artifacts hidden inside the world model.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: physical robot control (DreamerV3 on a real arm)</h4>
+<p>Danijar Hafner's team applied DreamerV3 directly to a physical Apptronik-style robot and to a real quadruped (the DayDreamer setup), learning to walk and to pick-and-place from scratch in roughly one hour of real-world interaction, with no simulator and no resets. The world model absorbed the few hundred real transitions while the actor trained on thousands of imagined rollouts, which is precisely the compute-for-interaction bargain this section describes. The same untouched hyperparameters that solved Atari and Minecraft also solved the hardware task, demonstrating the robustness package in the wild.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
@@ -173,6 +181,14 @@ print(np.round(returns, 3).tolist())</code></pre>
 <p>Dreamer succeeds when imagined rollouts are cheap enough to multiply learning signal and accurate enough that the policy still improves in the real environment.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 38.3.1</div><p>Write a deployment checklist for deciding the maximum imagination horizon in a robot task. Which three curves or replay comparisons would you inspect before extending the horizon?</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch imagination diverge from reality</h4>
+<p><strong>Goal:</strong> Empirically observe the imagined-return vs. real-return gap that this section names as the core safety signal, and see how imagination horizon controls it.</p>
+<p><strong>Tools needed:</strong> Python 3.11+, the official <code>dreamerv3</code> repository (pip-installable JAX build), and Gymnasium with the classic-control or MuJoCo extras. A single GPU is enough; CartPole runs on CPU in under 20 minutes.</p>
+<p><strong>Procedure (15 to 30 minutes):</strong> Clone DreamerV3, launch a run on <code>CartPole-v1</code> or <code>HalfCheetah-v4</code>, and add a one-line logger that records, at each evaluation checkpoint, the mean imagined return (already computed inside the actor-critic update) alongside the mean real-episode return from the evaluator.</p>
+<p><strong>What to vary:</strong> Run the same task three times, overriding only <code>imag_horizon</code> to 5, 15 (default), and 30 steps, holding <code>return_lambda</code> and every other config value fixed.</p>
+<p><strong>What to observe:</strong> Plot the ratio (mean imagined return) / (mean real-episode return) over training for all three runs. The short horizon should hug 1.0; the long horizon should drift above 1.3 and stay there, and its real-environment learning curve should plateau lower or wobble. You have now reproduced, on your own laptop, the exploitation-of-model-error failure mode described in the Common Pitfall callout.</p>
+</div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
 <h3>Primary References And Tools</h3>

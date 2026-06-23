@@ -158,6 +158,18 @@
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: RMA Two-Phase Training on One Parameter</h4>
+<p>Trace the privileged-to-encoder handoff with a tiny example where the only randomized dynamics parameter is ground friction $\mu$, encoded as a one-dimensional privileged input $e_t = \mu$.</p>
+<ol>
+<li><strong>Phase 1, episode A:</strong> sampler draws $\mu = 0.40$ (slippery). Base policy $\pi_\phi$ receives $o_t$ plus privileged $e_t = 0.40$ and learns a cautious, short-stride gait that earns reward 18.2.</li>
+<li><strong>Phase 1, episode B:</strong> sampler draws $\mu = 1.10$ (grippy). With $e_t = 1.10$ the same $\pi_\phi$ takes longer strides and earns reward 24.7. The policy is now conditioned on $e_t$.</li>
+<li><strong>Freeze:</strong> fix $\phi$. No more weight updates.</li>
+<li><strong>Phase 2 rollout at $t = 0.50$ s:</strong> robot runs on $\mu = 0.40$ ground. History buffer holds the last 50 state-action pairs (foot slips, small torques). Encoder predicts $z_t = \mu_\psi(\mathcal{H}_t) = 0.43$, very close to the true 0.40.</li>
+<li><strong>Imitation loss this step:</strong> $\|z_t - e_t\|^2 = (0.43 - 0.40)^2 = 0.0009$. Gradient nudges $\psi$ so the next prediction lands even closer.</li>
+<li><strong>Deployment:</strong> privileged channel removed. Robot steps onto wet tile; over 0.5 s the encoder output slides from 0.95 (its last grippy guess) down to 0.41. The frozen $\pi_\phi$, now fed $z_t = 0.41$, switches to the cautious gait it learned in episode A, without one gradient update on hardware.</li>
+</ol>
+</div>
 <div class="callout tip">
 <p>When implementing an RMA-style adaptation encoder, the history window length (50 steps in the original paper) is tied to the control frequency: at 100 Hz that window covers 0.5 seconds, which is enough to observe a gait cycle and sense friction or payload changes. If you change the control frequency, recompute the window in seconds rather than in steps, otherwise the encoder sees either a fraction of a stride or several strides and its latent vector loses the timing structure it was trained on. In Isaac Lab, set <code>num_history_steps</code> explicitly in the environment config and verify it matches your policy's <code>dt</code> before launching a training run.</p>
 </div>
@@ -205,6 +217,18 @@ delay_ms: sample from [26.00, 42.00]</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A quadruped team may identify motor strength and actuator delay on the real robot, randomize friction and terrain height because they vary by deployment site, and adapt online to payload shifts. Reporting those choices is more useful than saying the policy used domain randomization.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: ANYmal industrial inspection</h4>
+<p>ANYbotics deploys the ANYmal quadruped for autonomous inspection in oil-and-gas plants and offshore platforms, where the same robot must walk on steel grating, oily floors, and snow. Its locomotion controller is trained with massive dynamics randomization in Isaac Gym and uses an RMA-style adaptation module so the policy infers terrain friction and payload from proprioceptive history rather than from any pre-mapped surface label. This is why a single trained policy survives surfaces the engineers never recorded during development.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch the adaptation vector track a friction change</h4>
+<p><strong>Goal:</strong> see empirically that an RMA-style latent vector moves toward the true dynamics before performance collapses, and that a frozen base policy survives a parameter shift only when the latent is allowed to update.</p>
+<p><strong>Tools:</strong> Python, Gymnasium with MuJoCo (<code>pip install gymnasium[mujoco]</code>), the <code>HalfCheetah-v4</code> or <code>Ant-v4</code> environment, and Stable-Baselines3 PPO. Budget 15 to 30 minutes.</p>
+<p><strong>Steps:</strong> Train a PPO policy whose observation is augmented with the environment's ground-friction coefficient (a one-dimensional privileged input) by wrapping the env and appending <code>model.geom_friction</code> to each observation. After training, freeze the policy. Then build a tiny encoder (a 2-layer MLP) that predicts that friction value from the last 20 observation-action pairs, training it on rollouts of the frozen policy.</p>
+<p><strong>What to vary:</strong> at evaluation time, halve the ground friction mid-episode (set <code>env.model.geom_friction[:,0] *= 0.5</code>). Run two conditions: (a) feed the encoder's predicted friction to the frozen policy, and (b) feed the stale pre-change friction value.</p>
+<p><strong>What to observe:</strong> log the encoder output each step and overlay it on the true friction; you should see it converge within roughly 20 steps. Compare episode return between conditions (a) and (b). The adaptive condition should retain most of its reward while the stale condition degrades, demonstrating that tracking the latent, not retraining the policy, is what closes the gap.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

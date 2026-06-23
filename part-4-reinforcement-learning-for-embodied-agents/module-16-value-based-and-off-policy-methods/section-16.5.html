@@ -166,6 +166,14 @@ lift rho=0.8 clipped=0.8
 fast_recovery rho=10.0 clipped=2.0</div>
 <p>The expected output shows mild correction for the first two logged actions and an extreme mismatch for <code>fast_recovery</code>. A ratio of <code>10.0</code> means the target policy wants that action far more often than the behavior policy ever demonstrated it, so clipping to <code>2.0</code> is a variance-control patch, not proof of support.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> <code>fast_recovery</code> has an importance ratio of 10.0 because <code>pi</code> is much larger than <code>mu</code>. Clipping the ratio reduces variance, but it also records that the replay data gives weak evidence for the action the target policy now wants.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: TD3 twin-critic target with overestimation correction</h4>
+<p>Trace one critic update on a single replay transition to see why the twin-critic minimum suppresses overestimation. Take transition $(s, a, r=1.0, s')$ with discount $\gamma = 0.99$. The two target critics evaluate the smoothed next action and disagree, exactly the situation that signals out-of-distribution extrapolation.</p>
+<p><strong>Step 1, raw critic estimates at $s'$:</strong> critic 1 returns $Q_{\phi_1}(s', a') = 12.0$ and critic 2 returns $Q_{\phi_2}(s', a') = 8.0$. The 4.0 gap is the extrapolation warning sign.</p>
+<p><strong>Step 2, take the minimum:</strong> TD3 uses $\min(12.0, 8.0) = 8.0$. A single-critic method like DDPG would instead trust the optimistic 12.0.</p>
+<p><strong>Step 3, build the target:</strong> $y = r + \gamma \cdot \min(\ldots) = 1.0 + 0.99 \times 8.0 = 8.92$. DDPG's target would be $1.0 + 0.99 \times 12.0 = 12.88$, inflated by 3.96.</p>
+<p><strong>Step 4, the update:</strong> both critics regress toward $8.92$, not $12.88$. Over thousands of updates that 3.96 per-step inflation is what compounds into the DDPG collapse from 60% to under 10% grasp success; the minimum operator quietly subtracts it on every transition.</p>
+</div>
 <p>In an embodied dataset, that weak evidence is not an abstract statistical problem. It may mean the robot almost never attempted the emergency recovery motion during collection, yet the learned policy now depends on it during deployment.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -204,6 +212,10 @@ fast_recovery rho=10.0 clipped=2.0</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A fleet-learning project may reuse thousands of delivery-robot logs. That is valuable only if the logs cover the new policy's turns, speeds, obstacle types, lighting conditions, and recovery maneuvers. Otherwise off-policy learning becomes confident imitation of yesterday's easy routes plus speculation about today's hard ones.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: in-the-wild quadruped locomotion (DreamWaQ / Dreamer-on-hardware)</h4>
+<p>NVIDIA and ETH Zurich locomotion stacks for ANYmal and Unitree robots train off-policy critics on hundreds of millions of replayed IsaacGym transitions, then deploy to real legs where contact dynamics differ; teams report that twin-critic disagreement spikes at the exact foot-strike states the simulator under-samples. Berkeley's RLPD recipe (a small critic ensemble mixing offline demonstrations with online rollouts) is now used to fine-tune these policies on real hardware with near-zero collapse events, turning what was a multi-day sim-to-real ordeal into a few hours of supervised on-robot adaptation.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -285,6 +297,14 @@ print(record.as_row())</code></pre>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 16.5.1</div><p>Design a sample-efficiency table for two off-policy methods. Include real steps, simulator steps, replay samples, gradient updates, success, one safety metric, and one coverage warning that would block a strong claim.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Importance-ratio visualizer in Gymnasium.</strong> Build a CartPole-v1 training loop using CleanRL's SAC implementation and log the per-transition importance ratio between a frozen behavior policy checkpoint and the live target policy at every replay sample; plot the ratio distribution over training to see when and where dangerous high-ratio regions appear. The key challenge is correctly extracting log-probabilities from the stochastic actor so ratios are computed under the same action parameterization that was used during collection.</p><p><strong>Intermediate (1-2 weeks): Off-policy coverage auditor for a MuJoCo manipulation task.</strong> Train a TD3 agent on the MuJoCo FetchPickAndPlace-v3 environment (Gymnasium-Robotics 1.x, 2023+) using Tianshou, implement the coverage audit algorithm from this section (twin-critic disagreement logged at gripper-close transitions, action-support count per torque bin), and surface a per-episode SAFE/WARN/BLOCK verdict in a live dashboard. The key challenge is binning the 7-DOF joint-torque action space finely enough to catch real coverage gaps without making the audit so slow it blocks training throughput.</p><p><strong>Intermediate (1-2 weeks): Sim-to-real replay mismatch detector with ROS2 bags.</strong> Collect 30 minutes of real robot arm trajectories via ROS2 bag files on a low-cost manipulator (or a PyBullet surrogate), merge them into a replay buffer alongside MuJoCo-simulated transitions tagged by source, and train a classifier to predict which buffer source each transition came from; high classifier accuracy on held-out transitions quantifies the distributional gap that off-policy methods must bridge. The key challenge is aligning observation spaces between the ROS2 joint-state messages and the MuJoCo state vector so the classifier sees a fair comparison rather than trivial format differences.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch DDPG overestimate, then watch TD3 stop it</h4>
+<p><strong>Goal:</strong> empirically reproduce the off-policy overestimation collapse and confirm that the twin-critic minimum prevents it, by plotting predicted Q against the true discounted return.</p>
+<p><strong>Tools:</strong> Python, <code>stable-baselines3</code> (or CleanRL), <code>gymnasium[mujoco]</code>, and the <code>Hopper-v4</code> or <code>HalfCheetah-v4</code> continuous-control environment. A laptop CPU is enough for a short run; a GPU just makes it faster.</p>
+<p><strong>Procedure (15-30 min):</strong> train DDPG and TD3 on the same environment for about 50,000 steps each with identical seeds. During training, periodically sample a batch of states from the replay buffer, record the critic's predicted Q-value, and separately roll out the current policy from those states to estimate the actual discounted return.</p>
+<p><strong>What to vary:</strong> swap DDPG for TD3, then sweep <code>policy_delay</code> (1, 2, 4) and the number of training steps before evaluation.</p>
+<p><strong>What to observe:</strong> plot predicted Q minus realized return over training. DDPG's gap should grow steeply and the return curve should eventually drop, while TD3's gap stays bounded. Raising <code>policy_delay</code> should visibly shrink the early-training gap. You have just reproduced Figure 5 of Fujimoto et al. (2018) on your own machine.</p>
+</div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned sample efficiency and off-policy failure modes into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="index.html">Chapter 16</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>

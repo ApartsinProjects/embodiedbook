@@ -150,6 +150,14 @@ print(
 <p>Read the two absolute errors as a comparison of prediction targets: the state predictor is slightly less accurate here, but it requires no decode step. The observation route recovers extra precision only after converting back through a pixel scale, adding a computation the controller must pay on every step. The useful question is whether that precision gain actually changes a control decision, not merely which number is smaller.</p>
 </div>
 <div class="code-caption"><strong>Code Fragment 36.2.1:</strong> The observation route is slightly more accurate here, but it pays an extra decode step. In real systems, that trade-off is only worth it when the observation contains control-relevant structure that a smaller state cannot preserve.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: latent forward model rollout versus observation rollout</h4>
+<p>Trace a 3-step rollout of a 1D pushing task under both targets, with the same true dynamics $x_{t+1} = x_t + a_t$ and the same start $x_0 = 0.40$ and action sequence $a = (0.10, 0.10, 0.10)$. The latent model uses $f(z,a) = z + 0.96\,a$ (a slightly lossy dynamics, no decode). The observation model decodes to pixels with scale 320 and offset 2, predicts the pixel, then converts back: $\hat{x} = (320(x + 0.92\,a) + 2)/320$.</p>
+<p><strong>Step 1.</strong> True $x_1 = 0.50$. Latent: $0.40 + 0.96(0.10) = 0.496$, error 0.004, zero decode work. Observation: pixel $= 320(0.40 + 0.92\cdot0.10) + 2 = 159.4$, back to $159.4/320 = 0.498$, error 0.002, one decode plus one inverse-decode.</p>
+<p><strong>Step 2.</strong> Feed each model its own prediction. True $x_2 = 0.60$. Latent: $0.496 + 0.96(0.10) = 0.592$, error 0.008. Observation: $320(0.498 + 0.092) + 2 = 190.8$, back to $0.5963$, error 0.0037.</p>
+<p><strong>Step 3.</strong> True $x_3 = 0.70$. Latent: $0.592 + 0.096 = 0.688$, error 0.012. Observation: $320(0.5963 + 0.092) + 2 = 222.4$, back to $0.6951$, error 0.0049.</p>
+<p>The observation route stays closer to truth (final error 0.0049 versus 0.012) but pays a decode and an inverse-decode at every one of the three steps. Over a 512-step planner that is 512 extra decode passes for a precision gain that, here, never crosses the threshold needed to flip a grasp-or-wait decision. That is the whole design tension in one tiny example: the cheaper target compounds error faster, and you keep it anyway unless the lost precision actually changes an action.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Use <code>PyTorch</code> or <code>JAX</code> for the predictors, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-10-environments-with-gymnasium-and-pettingzoo/section-10.1.html"><code>Gymnasium</code></a> for the transition contract, and <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-11-physics-simulators-mujoco-mjx-isaac-lab-genesis/section-11.2.html"><code>MuJoCo</code></a> when the state variable should include contact, velocity, or actuator dynamics rather than only kinematic position.</p>
@@ -170,6 +178,10 @@ print(
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A drone dodging cables in clutter may need pixel-space or depth-space prediction because the obstacle geometry matters directly. A torque-limited arm tracking a known part usually benefits more from joint-state and contact prediction than from reconstructing the entire camera view.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: autonomous driving prediction stacks</h4>
+<p>Wayve's GAIA-1 driving world model predicts future driving scenes by rolling forward a learned latent and only decoding to video tokens when a frame is actually needed, exactly the predict-in-latent, decode-on-demand split described here. The planner queries compact latent state for fast multi-step rollouts while the video decoder is reserved for visualization and rare scene-detail checks, keeping the prediction loop within an onboard compute budget.</p>
 </div>
 <div class="callout note">
 <div class="callout-title">Cross-References</div>
@@ -195,6 +207,14 @@ print(
 <p>Prediction targets should be chosen by control relevance, not by visual appeal. The cleanest target is the one that best supports the next decision under the real system budget.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise</div><p>Pick one robot task and specify a state-space predictor and an observation-space predictor for it. Write the exact metric that would tell you which target is more useful for action.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: state-target versus observation-target rollout error on CartPole</h4>
+<p><strong>Goal.</strong> Measure empirically how prediction-target choice changes multi-step rollout accuracy and per-step cost, the core trade-off of this section.</p>
+<p><strong>Tools needed.</strong> Python with <code>gymnasium</code>, <code>numpy</code>, and <code>scikit-learn</code> (or a tiny PyTorch MLP). No GPU required; runs on a laptop CPU in well under 30 minutes.</p>
+<p><strong>Setup (about 10 minutes).</strong> Collect roughly 5,000 transitions from <code>CartPole-v1</code> under a random policy, storing tuples of (observation, action, next observation). Train two one-step forward models on this data: a <em>state model</em> that predicts the 4-dimensional next observation vector directly, and an <em>observation model</em> that first maps state to a higher-dimensional encoded feature (for example a 32-dimensional random Fourier feature lift), predicts in that lifted space, then projects back with a fitted linear inverse.</p>
+<p><strong>What to vary.</strong> (1) The rollout horizon: feed each model its own prediction and unroll 1, 5, 10, and 20 steps. (2) The lifted-feature dimension for the observation model (8, 32, 128). (3) The amount of training data (1k versus 5k versus 20k transitions).</p>
+<p><strong>What to observe.</strong> Plot per-step absolute error in pole angle versus horizon for both models, and time each rollout with <code>time.perf_counter</code>. You should see the state model compound error gracefully while the observation model is slightly more accurate per step but several times slower per rollout, and you should find a horizon beyond which neither model's pole-angle prediction is trustworthy. Confirm that the higher lifted dimension buys accuracy only up to a point and then mostly buys wall-clock cost, the empirical signature of paying for observation-space detail the controller does not need.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a one-step latent-state predictor for a cart-pole task in Gymnasium using a small MLP (Multilayer Perceptron) trained on (observation, action) pairs to predict the next observation vector; the key challenge is choosing a loss that punishes errors on the pole angle more than on cart position, since only the angle drives the terminal condition. <strong>Intermediate (1-2 weeks):</strong> Implement a multi-step forward model in MuJoCo's <code>Ant-v4</code> environment using PyTorch, with one head predicting joint-angle state and a second head predicting a rendered depth frame, then compare 10-step rollout accuracy and wall-clock planning cost at each horizon to see exactly where the observation head starts hurting throughput. <strong>Intermediate (1-2 weeks):</strong> Wire a learned latent dynamics model into a LeRobot pipeline for a tabletop push task, train the encoder jointly with a reconstruction loss and a one-step consistency loss as described in this section, then ablate each loss term to confirm that removing either one degrades multi-step prediction accuracy on held-out trajectories.</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>

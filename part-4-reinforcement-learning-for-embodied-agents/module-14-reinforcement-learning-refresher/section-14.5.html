@@ -183,6 +183,13 @@ fast: return=2.94, cost=0.85, reject
 reckless: return=3.52, cost=1.40, reject</div>
 <p>The expected output ranks the policies two ways at once: by return and by discounted safety cost. The correct interpretation is that <code>careful</code> is the deployable winner because it stays under budget, while the higher-return policies fail the constraint and therefore do not count as acceptable solutions.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The audit computes task return and safety cost with the same `gamma` for `careful`, `fast`, and `reckless`. The highest-return policy is rejected because it violates `safety_budget`, which is exactly why embodied RL needs constrained evaluation instead of reward-only ranking.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Lagrange-multiplier safety update</h4>
+<p>Trace the dual update from the feasibility checklist on the <code>fast</code> policy above, with budget $d = 0.45$ and dual learning rate $\eta_\lambda = 0.5$, starting from $\lambda_0 = 0.1$.</p>
+<p><strong>Iteration 1.</strong> Measured discounted cost $\hat{J}_C = 0.85$. Constraint violation is $\hat{J}_C - d = 0.85 - 0.45 = 0.40$. Update: $\lambda \leftarrow \max(0,\ 0.1 + 0.5 \times 0.40) = \max(0,\ 0.30) = 0.30$. The penalty on cost in the objective $\hat{J}_R - \lambda \hat{J}_C$ has tripled, so the policy gradient now pushes harder away from costly trajectories.</p>
+<p><strong>Iteration 2.</strong> Suppose the policy responds and cost falls to $\hat{J}_C = 0.50$. Violation is $0.50 - 0.45 = 0.05$. Update: $\lambda \leftarrow \max(0,\ 0.30 + 0.5 \times 0.05) = 0.325$. Still above budget, so $\lambda$ keeps creeping up, just more slowly.</p>
+<p><strong>Iteration 3.</strong> Cost now undershoots to $\hat{J}_C = 0.40$. Violation is negative: $0.40 - 0.45 = -0.05$. Update: $\lambda \leftarrow \max(0,\ 0.325 + 0.5 \times (-0.05)) = 0.30$. The multiplier relaxes because the policy is now inside the budget, freeing the objective to recover some reward. This back-and-forth is the dual variable hunting for the smallest penalty that holds the constraint, and starting $\lambda_0$ too low (say 0.001) means iterations 1-2 would still permit costly behavior before the penalty grows large enough to bite.</p>
+</div>
 <p>The result is a wins-only lesson for deployment: report the policy that satisfies the safety constraint and achieves the strongest validated return. Keep unsafe exploratory candidates in the experiment registry and diagnostics, not in the headline result.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -253,6 +260,17 @@ reckless: return=3.52, cost=1.40, reject</div>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
 <p>For embodied RL difficulty claims, co-compute sample count, return, reward components, safety cost, reset count, and intervention count in one evaluation run. A reward-only table is incomplete for this section's topic.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse manipulation at Covariant</h4>
+<p>Covariant's Brain platform runs pick-and-place arms in live fulfillment centers, where every physical trial competes with paying throughput, so the team trains in simulation and bounds on-robot exploration with hard force and grasp-stability limits rather than learning from scratch on the line. The deployed policy is accepted only when it clears a per-item success threshold without exceeding the suction and joint-force budget, which is exactly the constrained objective $\max J_R$ subject to $J_C \le d$ in operational form. Sample cost, reward proxy, and safety budget here are not abstractions; they are the difference between shipping orders and crushing inventory.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a safety budget bend the reward curve</h4>
+<p><strong>Goal:</strong> See empirically how a hard safety budget trades return for constraint compliance, and how the Lagrange multiplier's initial value changes how many violations slip through early training.</p>
+<p><strong>Tools needed:</strong> Python, <code>safety-gymnasium</code> (pip-installable, MuJoCo-backed), and a PPO-Lagrangian implementation from <code>omnisafe</code> (<code>pip install omnisafe</code>). Use the <code>SafetyPointGoal1-v0</code> environment, which rewards reaching a goal while charging cost for entering hazard regions.</p>
+<p><strong>What to vary:</strong> (1) the <code>cost_limit</code> budget $d$, sweeping it across roughly 5, 25, and 50; and (2) the <code>lagrangian_multiplier_init</code>, comparing 0.001 against 0.1. Run each configuration for about 200k steps (a few minutes on CPU per run is enough to see the trend).</p>
+<p><strong>What to observe:</strong> Plot episode return and episode cost on the same time axis for each run. Confirm that a tighter <code>cost_limit</code> lowers the final return (the price of safety), and that the higher multiplier init produces far fewer cumulative cost violations in the first 50k steps because the penalty bites earlier. You have reproduced, on a real benchmark, the reward-versus-cost tension that the worked example computed by hand.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>

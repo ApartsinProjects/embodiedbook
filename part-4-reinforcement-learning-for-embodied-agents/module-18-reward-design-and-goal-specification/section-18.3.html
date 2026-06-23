@@ -153,6 +153,16 @@ for transition in episode:
 <div class="code-output">push g= 10 r= 0 her_g= 3 her_r= 1
 push g= 10 r= 0 her_g= 7 her_r= 1</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The <code>requested_goal</code> remains 10, so the original reward is zero. The HER entries use each <code>achieved_goal</code> as a relabeled goal, producing extra positive training examples without changing the final evaluation task.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: HER "future" relabeling on a 4-step push</h4>
+<p>Trace HER with the future strategy on a tiny 1D pushing episode. The robot is asked to push a block to position $g = 10$ (tolerance $\pm 0$), but it only manages to nudge it forward. The episode produces four transitions, with achieved goal (block position) after each step:</p>
+<p>Transitions (state -&gt; next state, achieved goal): T1: 0 -&gt; 2 (achieved 2); T2: 2 -&gt; 5 (achieved 5); T3: 5 -&gt; 6 (achieved 6); T4: 6 -&gt; 6 (achieved 6).</p>
+<p><strong>Original rewards</strong> (sparse, $r=1$ only if achieved $= 10$): T1 $r=0$, T2 $r=0$, T3 $r=0$, T4 $r=0$. The whole episode is a failure, so vanilla replay learns nothing.</p>
+<p><strong>Future relabel for T1</strong> (sample one future achieved goal from $\{2, 5, 6, 6\}$, say 5): store extra entry $(s{=}0, s'{=}2, \tilde g{=}5, \tilde r{=}0)$, because position 2 is not yet 5. Now sample again, say 2: store $(s{=}0, s'{=}2, \tilde g{=}2, \tilde r{=}1)$, a positive example, because step 1 actually reached 2.</p>
+<p><strong>Future relabel for T2</strong> (futures $\{5, 6, 6\}$, say 5): store $(s{=}2, s'{=}5, \tilde g{=}5, \tilde r{=}1)$. The transition 2 -&gt; 5 is a perfect success for goal 5.</p>
+<p><strong>Future relabel for T3</strong> (futures $\{6, 6\}$, value 6): store $(s{=}5, s'{=}6, \tilde g{=}6, \tilde r{=}1)$.</p>
+<p>Result: from one all-zero episode the buffer gains three positive transitions (rewards 1, 1, 1) that teach $Q(s, a, g)$ how to reach 2, 5, and 6. Evaluation still asks only for $g = 10$, so the failure is honestly recorded while the supervision is fully recycled.</p>
+</div>
 <p><strong>Expected output:</strong> the same physical transitions are visible under two labels: failed for goal 10, successful for goals 3 and 7. The relabeled reward is a replay trick, not a deployment metric.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -267,6 +277,18 @@ print(record.as_row())</code></pre>
 <div class="callout production-pattern">
 <div class="callout-title">Evaluation Recipe</div>
 <p>For goal-conditioned policies, compare requested-goal success, hindsight relabel ratio, safety cost, and goal coverage only when they are co-computed in one pass on one configuration. Save desired goals, achieved goals, relabeled goals, reward values, and failure labels so every number can be traced back to the same replay and evaluation settings.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: in-hand object reorientation</h4>
+<p>OpenAI's Dactyl system trains a Shadow Hand to rotate a block to an arbitrary commanded orientation, exactly the sparse-reward, any-goal setting that defeats vanilla RL. Goal-conditioned policies let one network accept the target quaternion at run time, and hindsight relabeling recycles the countless rollouts that reach the wrong pose, turning near-zero reward density into a trainable signal. The same recipe now underpins goal-conditioned manipulation stacks built on Gymnasium's Fetch and Shadow Hand environments.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Does HER actually buy sample efficiency?</h4>
+<p><strong>Goal:</strong> measure, in one sitting, how much hindsight relabeling improves requested-goal success on a sparse-reward task.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium-robotics</code> (for <code>FetchReach-v3</code> or <code>FetchPush-v3</code>), and <code>stable-baselines3</code> with <code>HerReplayBuffer</code> wrapping a <code>SAC</code> or <code>DDPG</code> agent.</p>
+<p><strong>Steps:</strong> Train two agents for the same short budget (about 20-30k timesteps each): one with <code>replay_buffer_class=HerReplayBuffer</code>, one with a plain replay buffer (no relabeling). Keep every other hyperparameter identical and fix the seed.</p>
+<p><strong>What to vary:</strong> first the on/off of HER, then sweep <code>n_sampled_goal</code> over {1, 4, 8} and the <code>goal_selection_strategy</code> over {"future", "final", "episode"}.</p>
+<p><strong>What to observe:</strong> the evaluation success rate on requested goals (use <code>evaluate_policy</code> with the env's own success metric, never the relabeled reward). Expect the no-HER agent to sit near zero success while the HER agent climbs within the same budget; note how "future" with higher <code>n_sampled_goal</code> typically wins on the tightly clustered FetchPush goals. Confirm your <code>compute_reward</code> accepts batched arrays before trusting any curve.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>

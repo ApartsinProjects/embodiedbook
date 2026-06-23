@@ -149,6 +149,14 @@
 <div class="callout-title">Practical Example</div>
 <p>A team using Fine-tune an open VLA on a custom task (LeRobot) starts by writing the task panel, not by picking the largest model. They keep a baseline run, a maintained-tool run, and a perturbation run in the same result folder. The comparison is accepted only when the action trace, metric, and failure labels come from one script.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Action-token to physical displacement</h4>
+<p>Trace one predicted action token through OpenVLA's uniform quantization to see exactly where the scale mismatch bites. Take the x-axis of the delta end-effector action. The model emits token index 178 out of 256. The model's quantizer maps the per-dimension range to the interval [-1.0, +1.0], so token <em>t</em> decodes to the normalized value (t / 255) * 2 - 1 = (178 / 255) * 2 - 1 = 0.698 * 2 - 1 = +0.396. Now apply the dataset's physical scale. The pretrained corpus used action_scale = 0.05 m, so this token <em>would</em> mean 0.396 * 0.05 = 0.0198 m, roughly 2 cm. But your Franka data was collected at action_scale = 0.02 m, so the same normalized +0.396 should mean 0.396 * 0.02 = 0.0079 m, roughly 0.8 cm. The model learns to emit token 178 correctly, yet the robot executes 0.0198 m instead of 0.0079 m, overshooting by a factor of 0.05 / 0.02 = 2.5x on every single step. Across a 15-step grasp the per-step 1.2 cm excess accumulates: the gripper ends up about 3 cm past the towel edge, exactly the symptom seen on hardware. Notice the offline loss never sees meters; it only checks that token 178 was predicted, which it was. The fix, action_scale_m_per_token: 0.02 in the dataset card, changes the decoder's multiplier from 0.05 to 0.02 and the overshoot disappears.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Hugging Face LeRobot and the SO-100 arm</h4>
+<p>The exact workflow in this section drives Hugging Face's LeRobot community, where users fine-tune the open ACT and pi0 policies on the low-cost SO-100 / SO-ARM100 (a roughly 100-dollar 3D-printed arm) using a few hundred teleoperated episodes each. Hundreds of these custom LeRobotDataset cards now sit on the Hub, and the same dataset-card discipline (embodiment, camera layout, action scale) is what lets one operator's towel-folding data train reliably on another operator's identically built arm.</p>
+</div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>When Fine-tune an open VLA on a custom task (LeRobot) feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
@@ -227,6 +235,14 @@ for batch in dataloader:
 <li>Treat fine-tuning as a data and evaluation project before it is a model project.</li>
 <li>Strong evidence is saved as one artifact containing the baseline, the maintained-tool path, the metric panel, and labeled failures.</li>
 </ul>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Catch an action-scale mismatch before it reaches hardware</h4>
+<p><strong>Goal (15-30 min):</strong> Build the action-scale sanity check that the section argues is invisible to offline loss, using a tiny synthetic dataset so no robot or GPU is needed.</p>
+<p><strong>Tools needed:</strong> Python with <code>numpy</code> and <code>matplotlib</code> (no LeRobot or GPU required). Optionally <code>lerobot</code> if you want to load a real LeRobotDataset from the Hub.</p>
+<p><strong>Steps:</strong> (1) Generate 200 synthetic 7-DoF delta actions whose x-displacements are drawn from a normal distribution centered at 0.008 m (an 0.8 cm per-step grasp). (2) Quantize each action to a token index with a quantizer assuming action_scale = 0.02 m, then decode it back with a <em>wrong</em> scale of 0.05 m to simulate a borrowed pretrained head. (3) Compute the per-step error in meters and the cumulative error over a 15-step rollout.</p>
+<p><strong>What to vary:</strong> the decode scale (0.02, 0.03, 0.05, 0.08 m) and the number of steps in a rollout (5, 15, 30).</p>
+<p><strong>What to observe:</strong> per-step error stays small and looks tolerable, but cumulative error grows linearly and crosses the ~3 cm collision threshold around step 15 when the decode scale is 0.05 m, while the token-prediction accuracy stays a perfect 100% the entire time. The takeaway: an offline metric can read 100% correct while the robot is guaranteed to overshoot, and only an explicit meters-space check reveals it.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 59.4.1</div><p>Design a method-matched experiment for Fine-tune an open VLA on a custom task (LeRobot). Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
 <section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Savva, M. et al. Habitat: A Platform for Embodied AI Research. ICCV, 2019.</p><p class="bib-annotation">Use for simulated navigation projects, reproducible scene tasks, and embodied evaluation loops.</p></div><div class="bib-entry-card"><p class="bib-ref">Cadene, R. et al. LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch. GitHub project and technical documentation, 2024.</p><p class="bib-annotation">Use for dataset conversion, policy training, and capstone projects built around open robot-learning workflows.</p></div></section>

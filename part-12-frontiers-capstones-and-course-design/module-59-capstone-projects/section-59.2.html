@@ -151,6 +151,10 @@
 <div class="callout-title">Library Shortcut</div>
 <p>Use Habitat, VLN-CE style interfaces, ROS 2 Nav2, or a small Gymnasium wrapper for replanning. The preserved fields are instruction parse, map state, local obstacle update, planner revision, executed waypoint, and language-grounding failure label.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: cost-ratio replanning trigger</h4>
+<p>Trace the trigger with concrete numbers from the "17DRP5sb8fy" rollout. The robot is at grid cell (10, 22) heading toward the kitchen centroid (14, 22). At step 46 the planner returns two candidate path lengths. <strong>Before the obstacle:</strong> current-plan length to next waypoint = 2.1 m, best-alternative length = 2.0 m, so the ratio is 2.1 / 2.0 = 1.05. Since 1.05 &lt; 1.5, no replan fires; the 0.1 m deviation is treated as costmap noise. <strong>At step 47</strong> a cart spawns in the corridor. The next <code>compute_path_to_pose</code> call now returns current-plan length = 8.4 m (the only open route wraps around), while the best-alternative length computed after clearing the blocked cell stays 2.0 m. The ratio jumps to 8.4 / 2.0 = 4.2. Since 4.2 &gt; 1.5, the trigger fires, the LLM replanner reparses the instruction, and the new dining-room route comes back at 2.8 m with the sink-exclusion zone still weighted. Final inflation = (2.8 - 2.1) / 2.1 = 33%, constraint violations = 0, replans = 1.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
@@ -171,6 +175,10 @@
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A team building a TurtleBot 4 delivery agent on Nav2 Humble starts by fixing the instruction panel (say, 50 templates over the Habitat MP3D scene "17DRP5sb8fy"), not by reaching for the largest VLM. They keep three runs in one result folder: a classical baseline (CLIP-grounded constraints plus <code>NavfnPlanner</code>), a maintained-tool run (NaVILA as the replanning oracle), and a perturbation run with a cart injected at corridor cell (14, 22) mid-episode. The comparison is accepted only when the path trace, the four metrics (success, replans, path inflation, constraint violations), and the grounding-failure labels all come from one rollout script, so a 0-violation score cannot hide a silently dropped sink-avoidance constraint.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse logistics</h4>
+<p>Amazon's warehouse drive units run exactly this division of labor: a fleet planner converts task strings like "retrieve pod A7 then route to packing station 3" into ordered waypoints with no-go constraints around human work zones, and a local costmap planner aboard each unit executes them while rerouting around stopped robots and dropped items. When a corridor blocks, the unit replans geometrically against the live grid but keeps the human-exclusion constraint intact, the same constraint-preserving recovery this section builds.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -235,6 +243,14 @@ print(validate_card(card))</code></pre>
 <div class="callout self-check"><div class="callout-title">Expected Output Interpretation</div><p>For language-guided navigation, the artifact should show which instruction phrase changed the route, where replanning happened, and whether the final path obeyed both geometry and language constraints.</p></div>
 </section>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a Gymnasium wrapper around a gridworld where a text instruction such as "go to the blue cell, avoid the red zone" is parsed into waypoints and a simple A* planner executes it; the key challenge is converting free-form room names to grid coordinates without a semantic map, forcing you to confront grounding ambiguity immediately with no simulator overhead. <strong>Intermediate (1-2 weeks):</strong> Implement the cost-ratio replanning trigger in a ROS2 Nav2 stack on a TurtleBot 4 (or in Habitat with a virtual TurtleBot), where an LLM parses a natural-language instruction into (waypoint, constraint) pairs and a Nav2 <code>NavfnPlanner</code> computes paths; the key challenge is re-evaluating soft constraints such as landmark ordering at each replan cycle and logging constraint-relaxation events rather than silently dropping them when the rerouted path cannot satisfy the original instruction. <strong>Advanced (3-4 weeks):</strong> Extend the intermediate project into a full benchmark using the Habitat MP3D scene set or Isaac Lab, injecting dynamic obstacles mid-episode and scoring navigation success, replans per meter, path inflation, and instruction-constraint violations across at least 50 instruction variants; the key challenge is producing a reproducible evaluation panel where the same script generates the baseline, the language-guided policy, and the perturbation results as a single artifact.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Tune the cost-ratio replanning trigger</h4>
+<p><strong>Goal:</strong> measure how the replanning threshold controls the trade-off between path stability and obstacle responsiveness, and find the value where the agent stops oscillating without ignoring real blockages.</p>
+<p><strong>Tools needed:</strong> Python 3.11+, <code>gymnasium</code>, <code>numpy</code>, and a simple grid A* (about 30 lines, or <code>pathfinding</code> from PyPI). No simulator or GPU required; a 20x20 occupancy grid is enough.</p>
+<p><strong>Setup:</strong> create a gridworld with a start, a goal, and a corridor. Parse the instruction "go to the goal, avoid the red zone" into a goal waypoint plus an exclusion-cost region. Run an episode where, at step 10, you inject an obstacle that blocks the shortest corridor. At each step compute the current-plan length and the best-alternative length, then replan only when their ratio exceeds a threshold <code>r</code>.</p>
+<p><strong>What to vary:</strong> sweep <code>r</code> over {1.0, 1.1, 1.5, 2.0, 4.0} and, separately, the obstacle severity (partial vs full corridor block).</p>
+<p><strong>What to observe:</strong> for each <code>r</code>, record replans per meter traveled, total path inflation, and whether the red-zone constraint was ever violated. You should see <code>r = 1.0</code> oscillate (many replans per meter), <code>r = 4.0</code> ignore the partial block (constraint or collision risk), and a stable basin around 1.5 that matches the heuristic in the Topic-Native Deepening section. Plot replans-per-meter against <code>r</code> to make the basin visible.</p>
+</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <ul>

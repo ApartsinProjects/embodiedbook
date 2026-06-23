@@ -193,6 +193,20 @@ print(f"labels={labels_per_frame}")</code></pre>
 label_records=19200
 labels=('rgb', 'depth', 'mask', 'pose')</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The render budget multiplies scenes, tiled cameras, and random seeds to expose dataset scale before rendering starts. The <code>labels_per_frame</code> tuple makes clear that RGB alone is not the artifact; depth, masks, and pose labels must stay synchronized too.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Sensor-Faithful Tiled-Camera Dataset Generation</h4>
+<p>Trace the algorithm with tiny concrete numbers for a single object, one block at world position $P_\text{world} = (0.30, 0.10, 0.05)$ m, and $N = 2$ tiled cameras.</p>
+<ol>
+<li><strong>Load real calibration.</strong> A RealSense D435 reports intrinsics $K$ with $f_x = f_y = 600$ px, principal point $(c_x, c_y) = (320, 240)$, depth noise $\sigma_n = 0.004$ m at 0.5 m range, and latency $\tau = 0.012$ s.</li>
+<li><strong>Configure 2 cameras.</strong> Camera 1 sits 0.5 m in front looking straight on; camera 2 sits 0.5 m to the side at a 30 degree yaw. Both copy $K$ exactly.</li>
+<li><strong>Sample visual factors.</strong> Scene 1 draws lighting intensity 800 lux, material roughness 0.6, seed $r_1 = 41$.</li>
+<li><strong>Render both tiles from one frozen state.</strong> The block transform $T_1$ is shared, so both frames describe the same physical pose.</li>
+<li><strong>Project to pixels.</strong> For camera 1, the block centre projects to $u = f_x \cdot (X/Z) + c_x = 600 \cdot (0.0/0.5) + 320 = 320$ px (dead centre). For camera 2, after the 30 degree yaw the block sits off-axis, projecting to roughly $u \approx 528$ px, a different pixel for the same pose.</li>
+<li><strong>Apply the sensor model.</strong> True depth 0.50 m becomes a noisy reading drawn from $\mathcal{N}(0.50, 0.004^2)$, e.g. 0.4972 m on tile 1.</li>
+<li><strong>Calibration gate.</strong> Render a static checkerboard, compute $\Delta = |0.4972 - 0.4990| = 0.0018$ m. With threshold $\epsilon = 0.005$ m, $0.0018 < 0.005$, so generation proceeds.</li>
+<li><strong>Result:</strong> two frames, one shared 6-DoF pose label, two distinct pixel locations and occlusion patterns, all gated by a passing depth check.</li>
+</ol>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The from-scratch fragment is for understanding the bookkeeping. In a practical renderer, use tiled-camera APIs and annotation exporters that preserve camera calibration, object IDs, and label channels beside every generated frame.</p>
@@ -213,6 +227,10 @@ labels=('rgb', 'depth', 'mask', 'pose')</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>Amazon Robotics and Ambidextrous (now part of Ambi Robotics) bin-picking stacks render thousands of tiled views over one shelf state in Isaac Sim, then ask the only question that matters: do detectors trained on those views cut real shelf pose error, reflective-bag occlusion, and the depth holes a RealSense D435 drops on transparent shrink-wrap? The report must separate three numbers that beginners collapse into one: RGB detection AP, 6-DoF pose error in millimeters, and closed-loop pick success rate on the physical arm. A pipeline can lift RGB AP by 10 points while pick success stays flat, because the depth-hole failures that abort a real grasp never showed up in the screenshot-pretty training frames.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Autonomous Driving Perception (Waymo)</h4>
+<p>Waymo's simulator renders sensor-faithful camera and lidar data across many synchronized viewpoints to train and stress-test its perception stack on rare events without driving the miles to collect them. The pipeline matches each rendered camera to the real vehicle's intrinsics and lidar-camera extrinsics so that depth and projected 3D boxes line up exactly as on the physical car. The payoff is measured the same way this section insists on: held-out real detection and tracking error, not how convincing the rendered street looks.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -265,6 +283,14 @@ labels=('rgb', 'depth', 'mask', 'pose')</div>
 <p>Photoreal rendering and tiled cameras are useful when they improve real held-out perception and closed-loop metrics with camera metadata, labels, and render settings preserved in the artifact.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 13.4.1</div><p>Design a tiled-camera render plan for one perception task. Specify the number of scenes, cameras per scene, label channels, held-out camera poses, and the real perception failure the dataset should reduce.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Does More Tiles Or Better Calibration Help Transfer?</h4>
+<p><strong>Goal:</strong> show empirically that tiled-camera scale cannot substitute for a correct depth-noise model, the core warning of this section.</p>
+<p><strong>Tools needed:</strong> Python with NumPy, Matplotlib, and scikit-learn (or PyTorch); no GPU or simulator required for the minimal version. Optional: BlenderProc or Isaac Lab if you want true rendered frames.</p>
+<p><strong>Setup:</strong> Generate a synthetic dataset where each "frame" is a small feature vector (object 3D position plus a depth reading) for a fixed set of object poses. Build a clean "real" test set whose depth carries Gaussian noise $\sigma_n = 0.004$ m. Train a tiny regressor to predict object range from the depth feature.</p>
+<p><strong>What to vary:</strong> (1) number of tiled cameras per scene (1, 4, 16, 64), holding the training depth-noise model fixed at the wrong value $\sigma_\text{train} = 0.02$ m; then (2) sweep $\sigma_\text{train}$ from 0.02 m down toward the true 0.004 m at a fixed small camera count.</p>
+<p><strong>What to observe:</strong> Plot held-out real range error against both knobs. You should see error stay roughly flat (or worsen) as you add tiles under the mismatched noise model, but drop sharply as $\sigma_\text{train}$ approaches the true 0.004 m. That contrast is the lab's whole point: calibrate the sensor model first, then scale tiles.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Tiled-camera render budget tool in Isaac Lab.</strong> Build a Python script that configures a small Isaac Lab scene with 4 to 8 tiled cameras, exports synchronized RGB, depth, and segmentation masks for a simple tabletop object, and prints a dataset manifest with camera intrinsics and label counts. The key challenge is matching the virtual camera intrinsic matrix to a real RealSense D435 calibration file so that the exported depth values align with real sensor measurements rather than arbitrary simulation defaults.</p><p><strong>Intermediate (1 to 2 weeks): Sim-to-real depth calibration verifier with BlenderProc and ROS2.</strong> Build a pipeline using BlenderProc to render a checkerboard calibration scene with randomized lighting, then compare rendered depth against ROS2 camera logs from a real sensor mounted on a Gymnasium-controlled robot arm, and report per-channel alignment error automatically. The key challenge is constructing a reproducible scene graph with known ground-truth geometry so the alignment metric isolates sensor-model error from rendering artifacts rather than conflating the two.</p></div>
 <div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="section-13.5.html">Section 13.5 →</a> starts from real measurements instead of pure rendering, then shows how reconstructed assets become simulators without leaking the test set.</p></div>
 <section class="bibliography">

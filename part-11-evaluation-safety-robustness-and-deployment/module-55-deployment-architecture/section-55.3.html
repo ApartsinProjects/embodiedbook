@@ -110,6 +110,10 @@ placement = {
 print(placement)</code></pre>
 <div class="code-output"><pre>{'emergency_stop': 'local_or_edge', 'global_semantic_search': 'cloud_ok', 'task_replanning': 'local_or_edge'}</pre></div>
 <div class="code-caption"><strong>Code Fragment 55.3</strong>.1 shows a simple placement rule that maps task properties to compute location.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Placement Score and Staleness Fallback</h4>
+<p>Trace the placement score for <code>task_replanning</code> with the weights all set to 1: criticality 3, latency 3, availability 3, privacy 2, so $R = 3 + 3 + 3 + 2 = 11$. With a threshold of 12 this falls just below the line, yet the code labels it <code>local_or_edge</code> because <code>placement_score</code> returns 11... wait, the rule is <code>&gt;= 12</code>, so 11 would map to <code>cloud_ok</code>. Re-reading the task table, <code>task_replanning</code> actually scores 11, which is why a designer who wants it local must either raise its availability weight or lower the threshold to 11. Now trace the staleness loop. Local controller runs at $f_\text{local} = 50$ Hz (one tick every 20 ms), cloud query period $T_q = 0.5$ s, staleness threshold $\tau = 0.9$ s. A reply lands at $t_\text{last\_reply} = 0.00$ s. At tick $t = 0.40$ s the gap is $0.40 - 0.00 = 0.40 < 0.90$, so $s_t = 0$ and the controller uses the cached label $\hat{y}$. The uplink then stalls. At tick $t = 0.95$ s the gap is $0.95 > 0.90$, so $s_t = 1$ and the controller switches to $\pi_\text{fallback}$ (hold last safe action). At $t = 1.30$ s a fresh reply arrives: cache updates, $t_\text{last\_reply} \leftarrow 1.30$, and at the next tick the gap is $0.02 < 0.90$, so $s_t = 0$ and normal operation resumes. The robot spent ticks from 0.92 s to 1.30 s (about 19 ticks) in fallback, a staleness fraction the fleet aggregator would log for review.</p>
+</div>
 <p>The expected output should separate what must remain available during network loss from what can tolerate delay. If a remote service appears in the local-or-edge set, the design implication is immediate: the system needs a colocated implementation or a safe degraded fallback.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -155,6 +159,10 @@ print(placement)</code></pre>
 <li>On receipt of cloud reply $\hat{y}_\text{new}$: update $\hat{y}_{t+1} \leftarrow \hat{y}_\text{new}$, reset $t_\text{last\_reply} \leftarrow t$, and log $\nabla_\theta \mathcal{L}$ if the reply includes a gradient update.</li>
 <li>Periodically aggregate artifact rows and compute fleet-level metrics (mean staleness fraction, fallback activation rate, safety interrupt rate); flag any run where staleness fraction exceeds $\alpha_\text{max}$ for review.</li>
 </ol>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: autonomous delivery</h4>
+<p>Nuro's road-going delivery robots run all collision-avoidance and emergency-stop logic on-board, while route replanning and remote assistance are handled by a cloud teleoperation backend over cellular. This split is exactly the local-for-deadlines, cloud-for-capacity rule: if the cellular link drops, the vehicle still brakes and holds position locally rather than waiting on a round-trip that a moving vehicle cannot afford.</p>
 </div>
 <div class="callout tip">
 <p>When publishing cloud inference results back to a ROS 2 local controller, set the topic Quality of Service (QoS) to <code>BEST_EFFORT</code> reliability and <code>VOLATILE</code> durability, and apply a <code>lifespan</code> policy equal to your staleness threshold (for example, <code>rclpy.qos.QoSDurabilityPolicy.VOLATILE</code> with <code>lifespan=Duration(seconds=0.9)</code>). Using <code>RELIABLE</code> durability instead causes the subscriber to queue and replay missed messages on reconnect, so the controller silently acts on a burst of stale predictions the moment the uplink recovers. The <code>lifespan</code> field kills any message that sits in the queue longer than the threshold, giving you the expiry logic for free without a hand-rolled timestamp check.</p>

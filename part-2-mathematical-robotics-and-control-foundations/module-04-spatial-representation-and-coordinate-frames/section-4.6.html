@@ -180,6 +180,13 @@
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Pixel-to-World Projection</h4>
+<p>Trace the full chain with concrete numbers. Intrinsics: $f_x = f_y = 600$, $c_x = 320$, $c_y = 240$. Detection: pixel $(u, v) = (380, 210)$ with depth $Z = 2.0$ m. Extrinsic and pose are pure translations here so the rotation does not obscure the arithmetic.</p>
+<p><strong>Step 1, back-project to camera frame.</strong> $X = (380 - 320)\cdot 2.0 / 600 = 60 \cdot 2.0 / 600 = 0.2$ m. $Y = (210 - 240)\cdot 2.0 / 600 = -30 \cdot 2.0 / 600 = -0.1$ m. So $\mathbf{p}_{\text{cam}} = [0.2,\, -0.1,\, 2.0]$. The negative $Y$ means the pixel is above center in the OpenCV $y$-down convention, which is below center on screen.</p>
+<p><strong>Step 2, camera to body.</strong> With camera origin in body at $[0.30,\, 0.00,\, 0.80]$ and no rotation, $\mathbf{p}_{\text{body}} = [0.30 + 0.2,\, 0.00 - 0.1,\, 0.80 + 2.0] = [0.5,\, -0.1,\, 2.8]$.</p>
+<p><strong>Step 3, body to world.</strong> With the robot at world position $[1.0,\, 0.5,\, 0.0]$ and no yaw, $\mathbf{p}_{\text{world}} = [1.0 + 0.5,\, 0.5 - 0.1,\, 0.0 + 2.8] = [1.5,\, 0.4,\, 2.8]$. That world-frame point is what the planner consumes; reversing any step, for instance adding the body pose before the extrinsic, would place the target meters away.</p>
+</div>
 <div class="callout tip">
 <p>When using ROS 2 tf2, always look up the transform from <code>camera_optical_frame</code> to your body frame rather than constructing the rotation by hand. REP-103 (the ROS Enhancement Proposal that standardizes coordinate conventions and units across the ROS ecosystem) defines the optical frame with $x$ right, $y$ down, $z$ forward and the body frame with $x$ forward, $y$ left, $z$ up; the fixed rotation between them is a 90-degree rotation about $x$ followed by a 90-degree rotation about $z$, and getting even one sign wrong flips targets to the opposite side of the robot. Calling <code>tf_buffer.lookup_transform("base_link", "camera_optical_frame", rclpy.time.Time())</code> lets tf2 supply this rotation from the URDF rather than trusting a hand-coded matrix.</p>
 </div>
@@ -262,6 +269,10 @@ in world frame: [1.543, 1.891, 0.1]</div>
 <div class="callout-title">Practical Example</div>
 <p>When the Toyota Research Institute kitchen-manipulation team debugged a bimanual robot that grasped 8 cm short on a wrist-mounted RealSense D435i, the final success rate alone hid the cause. Only by logging every frame hop (camera-frame centroid, body-frame point after $T_{\text{body},\text{cam}}$, world-frame target, plus the depth and odometry timestamps) did the trace reveal a 30 ms gap between depth capture and the Franka FR3 joint-state update during reach, not a weak detector. Logging the world-frame point next to the controller setpoint, rather than just pass/fail, is what separates a frame-chain bug from a perception bug.</p>
 </div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Warehouse Bin Picking</h4>
+<p>Amazon Robotics' Sparrow picking arm runs exactly this chain: a wrist-mounted depth camera detects an item in a tote, back-projects the grasp pixel through intrinsics, then composes the camera-to-arm-to-cell extrinsics so the suction cup reaches the right point. Because the camera moves with the arm, the camera-to-body extrinsic is recomputed from the live joint state at every frame, and a stale transform is the difference between a clean pick and a crushed package.</p>
+</div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>For camera, body, and world frames, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
@@ -319,6 +330,15 @@ in world frame: [1.543, 1.891, 0.1]</div>
 <div class="callout exercise"><div class="callout-title">Exercise 4.6.1</div><p>Design a method-matched experiment for Camera, body, and world frames. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
 
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): ROS 2 frame visualizer.</strong> Build a Python ROS 2 node that subscribes to a USB camera, back-projects a clicked pixel into the camera frame using OpenCV intrinsics, then broadcasts the result as a tf2 stamped transform so it appears in RViz2 as a marker in the world frame. The key challenge is configuring the <code>camera_optical_frame</code> to <code>base_link</code> static transform correctly so the marker appears at the right position rather than reflected or rotated to the wrong side of the robot.</p><p><strong>Intermediate (1 to 2 weeks): MuJoCo wrist-camera grasp pipeline.</strong> Place a Franka Panda model in MuJoCo with a simulated RealSense D435 mounted on the wrist, detect a target object with a color threshold, back-project the centroid pixel using the simulated intrinsics and depth buffer, compose the full camera-to-body-to-world chain, then command the arm to the resulting world-frame point using a simple position controller. The key challenge is keeping the extrinsic transform synchronized with the wrist joint state at each timestep so the grasp target remains accurate as the arm moves.</p><p><strong>Intermediate (1 to 2 weeks): LeRobot frame-chain debugger.</strong> Instrument the LeRobot manipulation benchmark to log the camera-frame, body-frame, and world-frame coordinates of each object detection alongside the corresponding action, then replay failed episodes and plot which frame-chain step introduced the largest positional error. The key challenge is aligning the depth timestamp with the robot state timestamp across the dataset's variable-rate recordings so the frame composition uses consistent snapshots.</p></div>
+
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measure The Cost Of A Tilted Camera</h4>
+<p><strong>Goal.</strong> See first-hand how ignoring the rotational part of the extrinsic transform turns a small mount tilt into a large world-frame grasp error.</p>
+<p><strong>Tools.</strong> Python with NumPy and SciPy (<code>scipy.spatial.transform.Rotation</code>); optional Matplotlib for plotting. No robot or camera hardware needed.</p>
+<p><strong>Procedure.</strong> Start from the back-projection in Code Fragment 4.6.1 to get a camera-frame point at depth 1.0 m. Build a correct extrinsic $T_{\text{body},\text{cam}}$ with a pitch rotation (use <code>Rot.from_euler("xyz", [pitch, 0, 0], degrees=True)</code>) plus the mount translation, and a wrong extrinsic that keeps the same translation but sets rotation to identity. Transform the same point through both and record the world-frame distance between the two results.</p>
+<p><strong>What to vary.</strong> Sweep the pitch angle from 0 to 30 degrees in 1-degree steps, and repeat the sweep at depths of 0.5 m, 1.0 m, and 2.0 m.</p>
+<p><strong>What to observe.</strong> Plot world-frame error against pitch for each depth. Confirm the error grows roughly linearly with both tilt and depth, and find the pitch at which the error exceeds a 1 cm gripper tolerance. You should reproduce the book's figure that a 1-degree tilt at 0.5 m gives about 8 mm of offset, while a 5-degree tilt at 1 m gives roughly 87 mm.</p>
+</div>
 
 <nav class="chapter-nav">
 <a class="prev" href="section-4.5.html">Section 4.5: 2D and 3D transformations; transform tr...</a>

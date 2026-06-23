@@ -174,6 +174,14 @@ for contract in contracts:
 rl_games: actor=obs, critic=states
 SKRL: actor=states, critic=state_values</div>
 <div class="code-caption"><strong>Code Fragment 17.3</strong>.1 shows why runner wrappers must be documented, not treated as interchangeable. The actor and critic keys differ across conventions, which matters when privileged simulator state is allowed for value learning but not for deployment.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: routing one observation step through the wrapper</h4>
+<p>Trace one simulator step for a tiny 2-environment Anymal task. The task config defines two groups: <code>proprio</code> (3 values per env) and <code>terrain</code> (2 values per env, critic-only). Suppose the simulator returns, for the 2 environments, <code>proprio = [[0.10, -0.20, 0.05], [0.30, 0.00, -0.10]]</code> and <code>terrain = [[0.40, 0.45], [0.10, 0.12]]</code>.</p>
+<p><strong>Step 1, actor tensor.</strong> The wrapper reads only <code>proprio</code> for the actor: <code>obs = [[0.10, -0.20, 0.05], [0.30, 0.00, -0.10]]</code>, shape (2, 3).</p>
+<p><strong>Step 2, critic tensor.</strong> The wrapper concatenates <code>proprio</code> then <code>terrain</code> for the critic: <code>states = [[0.10, -0.20, 0.05, 0.40, 0.45], [0.30, 0.00, -0.10, 0.10, 0.12]]</code>, shape (2, 5). The actor width stays 3; the critic width is 5.</p>
+<p><strong>Step 3, contiguity.</strong> The terrain slice is a non-contiguous view, so <code>states.contiguous()</code> copies it into a fresh buffer before storage. Skip this and rl_games copies stale memory: the critic might silently see <code>[..., 0.00, 0.00]</code> instead of <code>[..., 0.40, 0.45]</code>.</p>
+<p><strong>Step 4, the leak you are guarding against.</strong> A buggy wrapper that builds <code>obs</code> from the concatenated 5-wide tensor trains an actor on <code>[0.10, -0.20, 0.05, 0.40, 0.45]</code>. On the real robot the last two slots arrive as <code>0.00, 0.00</code>, and the policy that scored highest in simulation falls first outdoors.</p>
+</div>
 <p><strong>Expected output:</strong> the trace should reveal which tensor group reaches the actor and which reaches the critic. If the manifest cannot answer that question, an asymmetric training result is not reproducible.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -201,6 +209,18 @@ SKRL: actor=states, critic=state_values</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team comparing RSL-RL and SKRL on the same Isaac Lab task should keep terrain seeds, reward terms, action scale, command distribution, and evaluation script identical. The result artifact should include both runner configs plus one shared evaluation table.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: ANYbotics legged inspection robots</h4>
+<p>The ANYmal quadruped policies that patrol offshore platforms and industrial sites were trained in Isaac Lab (and its Isaac Gym predecessor) with the RSL-RL runner, using exactly this asymmetric setup: the critic consumed privileged terrain-height scans during training while the deployed actor saw only onboard proprioception and commands. Keeping that wrapper boundary explicit is what let the same locomotion policy transfer to hardware that has no terrain oracle.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Detect a privileged-state leak before it reaches hardware</h4>
+<p><strong>Goal:</strong> Empirically show that an actor trained on critic-only observations collapses when that signal disappears at deployment, the exact failure the wrapper contract prevents.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium</code>, and SKRL (or any PPO implementation). Use <code>Pendulum-v1</code> or <code>CartPole-v1</code> as a stand-in for an Isaac Lab task; no GPU required.</p>
+<p><strong>Procedure:</strong> Wrap the environment so it exposes two observation tensors: an actor tensor with the standard observation, and a critic tensor that appends one privileged value (for CartPole, the pole angular velocity scaled up; for Pendulum, the raw angle). Train run A as a correct asymmetric setup (actor sees only its tensor). Train run B with a deliberate bug: feed the full critic tensor to the actor. At evaluation, zero out the privileged slots for both policies, mimicking a robot with no simulator oracle.</p>
+<p><strong>What to vary:</strong> the number of privileged slots leaked into the actor (0, 1, 3) and the evaluation behavior of those slots (true value versus zero-padded).</p>
+<p><strong>What to observe:</strong> run A keeps its return when the privileged slots vanish; run B's return drops sharply once the leaked slots are zeroed, and the drop grows with the number of leaked slots. The gap is your quantitative signature of a broken wrapper contract, visible in 15 to 30 minutes without ever touching a real robot.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

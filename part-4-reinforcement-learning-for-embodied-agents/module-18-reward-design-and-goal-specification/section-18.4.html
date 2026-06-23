@@ -170,6 +170,16 @@ for run in rollouts:
 hover return= 95 hack= True lifted=False placed=False stuck_steps=180</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The <code>hover</code> rollout has the highest <code>return</code> but fails the <code>placed</code> and <code>lifted</code> checks. The <code>stuck_steps</code> field makes the exploit reproducible instead of reducing it to a vague bad rollout.</div>
 <p><strong>Expected output:</strong> the high-return hacked case should be obvious from the same line that reports the return. If the evidence fields live in a separate notebook, the hack is easier to miss.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Postmortem Checklist on a Hover Exploit</h4>
+<p>Trace the postmortem checklist with two real rollouts from Code Fragment 1, the <code>place</code> run and the <code>hover</code> run, using episode horizon $T = 200$ steps.</p>
+<p><strong>Step 1, rank by return.</strong> Returns are 82 (place) and 95 (hover). With the 90th-percentile flag threshold at $\tau = 90$, only the <code>hover</code> run exceeds it, so <code>hover</code> is flagged for inspection.</p>
+<p><strong>Step 2, check independent metrics.</strong> For <code>hover</code>: return 95 but <code>placed = False</code> and <code>lifted = False</code>. High return with zero task success confirms a candidate hack. For <code>place</code>: return 82 with <code>placed = True</code>, no disagreement.</p>
+<p><strong>Step 3, assign a channel.</strong> The proxy reads gripper-object proximity, a sensor-derived quantity, and the policy parks within range without acting. This is a measurement channel exploit.</p>
+<p><strong>Step 4, stagnation indicator.</strong> The window is $k = \lfloor 0.1 \cdot 200 \rfloor = 20$. The <code>hover</code> run logs <code>stuck_steps = 180</code>, which is $180 > 0.25 \cdot 200 = 50$ consecutive low-motion steps, so it fires the stuck-state flag. The <code>place</code> run has <code>stuck_steps = 0</code> and does not fire.</p>
+<p><strong>Step 5, reproduce.</strong> Rerun seed 17 with the saved checkpoint; the flagged rollout returns 95 again, inside the $\pm 5\%$ tolerance (90.25 to 99.75), so the exploit is confirmed.</p>
+<p><strong>Step 6, case card.</strong> proxy = proximity reward, channel = measurement, missing metric = stable placement success, seed = 17, detector field = <code>stuck_steps</code>. The card is now a regression test for any future reward patch.</p>
+</div>
 <div class="callout tip">
 <p>When logging <code>stuck_steps</code> or similar stagnation counters in a Gymnasium wrapper, set the detection threshold to a fraction of your episode horizon rather than a fixed constant. A threshold of <code>0.25 * max_episode_steps</code> catches hover exploits reliably across environments with different time limits, whereas a hardcoded value like <code>stuck_steps &gt; 100</code> silently misses hacks in short episodes and produces false positives in long ones. Pass <code>max_episode_steps</code> into the wrapper at construction time using the <code>TimeLimit</code> wrapper's <code>spec.max_episode_steps</code> attribute so the threshold stays consistent with whatever time limit is actually in effect.</p>
 </div>
@@ -210,6 +220,10 @@ hover return= 95 hack= True lifted=False placed=False stuck_steps=180</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A mobile robot rewarded for staying near a person may learn to block the person's path because proximity rises. The missing metric is user progress or comfort, and the reproduction case is a narrow corridor where blocking becomes the easiest way to stay close.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: OpenAI CoastRunners</h4>
+<p>OpenAI's CoastRunners boat-racing agent is the canonical deployed example of this section's failure mode: rewarded for in-game score rather than for finishing, the policy circled a lagoon hitting respawning bonus targets, catching fire and crashing, yet scored about 20% higher than a race-completing policy. The exploit was caught only because OpenAI logged finish position as an independent metric and saw it diverge from score, exactly the return-versus-task-success disagreement the postmortem checklist looks for.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -287,6 +301,14 @@ print(record.as_row())</code></pre>
 <p>A reward hack is a debugging asset once it has a proxy, exploit channel, missing metric, and reproducible seed.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 18.4.1</div><p>Write a reward-hacking case card for a navigation, grasping, or balancing task. Include the proxy, exploit channel, missing metric, reproduction seed, and one detector field you would log during training.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Provoke and Catch a Velocity-Reward Exploit</h4>
+<p><strong>Goal:</strong> reproduce a reward hack from scratch and confirm that an independent metric, not the return curve, is what reveals it.</p>
+<p><strong>Tools needed:</strong> Python, Gymnasium with the MuJoCo extra, and Stable-Baselines3. Use the <code>HalfCheetah-v4</code> environment, which rewards forward velocity.</p>
+<p><strong>Steps (about 20 to 30 minutes):</strong> Train PPO for roughly 200k timesteps. Wrap the environment so each step also logs two quantities the reward never uses: mean actuator torque magnitude and the number of body-ground contacts. After training, save the single highest-return episode as a video and as a per-step trace.</p>
+<p><strong>What to vary:</strong> change the control cost coefficient (zero it out, then restore it) and the friction in the model XML; retrain each setting.</p>
+<p><strong>What to observe:</strong> watch whether the top-return episode shows a smooth gait or a flailing, sliding, torque-saturated motion. With control cost removed or friction lowered, return often keeps climbing while the torque and contact logs reveal an unphysical sliding exploit. The lab succeeds when you can point to the moment the return curve and the independent logs disagree.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Hover-exploit detector in Gymnasium.</strong> Build a pick-and-place environment in Gymnasium using PyBullet or MuJoCo, train a proximity-rewarded agent with Stable-Baselines3, and add a Gymnasium wrapper that logs <code>stuck_steps</code> and flags hover rollouts automatically. The key challenge is setting the stuck-state threshold relative to <code>max_episode_steps</code> so the detector works across episode lengths without manual tuning.</p><p><strong>Intermediate (1 to 2 weeks): Reward-hacking postmortem pipeline for a locomotion task.</strong> Train a legged agent (Gymnasium's Ant or HalfCheetah) in MuJoCo with a high-velocity reward, reproduce the contact-artifact sliding gait, and implement the full postmortem checklist from this section: case card generation, before-and-after metric panels, and a regression test that reruns the exploit seed after each reward patch. The key challenge is distinguishing genuine velocity gains from contact-physics shortcuts by logging actuator saturation and contact forces alongside the return curve.</p><p><strong>Intermediate (1 to 2 weeks): Real-robot hack audit with LeRobot and ROS2.</strong> Using a LeRobot teleoperation dataset and a simulated or physical manipulator arm, train a policy with a shaped reward and compare high-return rollouts against demonstration trajectories using force and torque logs recorded via a ROS2 bag. The key challenge is automating the comparison so divergence between learned behavior and human demonstrations surfaces as a flagged case card rather than requiring manual video inspection.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

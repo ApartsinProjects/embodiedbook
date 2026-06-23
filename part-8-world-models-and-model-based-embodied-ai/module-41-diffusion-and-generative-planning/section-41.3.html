@@ -95,6 +95,10 @@ $$</p>
 <div class="callout-title">Mechanism</div>
 <p>At inference, draw $x_0$ from a Gaussian, then take a few Euler steps $x \mathrel{+}= v_\theta(x, t, c)\,\Delta t$ from $t=0$ to $t=1$. Because the trained path is nearly straight, even 4 to 10 steps land close to a valid action, which is why flow-matching action experts can hit higher control rates than long DDPM chains.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: scoring and filtering three candidates</h4>
+<p>Trace the scoring stage with a tiny example. The generator returns $K=3$ scalar-action candidates. Use weights $\lambda_r=1.0$, $\lambda_c=2.0$, $\lambda_d=0.5$, $\lambda_\ell=0.1$ and feasibility threshold $\epsilon=0.30$. The measured per-candidate terms are: <strong>$\tau^{(1)}$</strong>: $R=0.9, C=0.40, D=0.2, L=1.0$; <strong>$\tau^{(2)}$</strong>: $R=0.7, C=0.10, D=0.3, L=1.5$; <strong>$\tau^{(3)}$</strong>: $R=0.6, C=0.05, D=0.1, L=2.0$. Compute $S = \lambda_r R - \lambda_c C - \lambda_d D - \lambda_\ell L$ for each. $S(\tau^{(1)}) = 0.9 - 2.0(0.40) - 0.5(0.2) - 0.1(1.0) = 0.9 - 0.80 - 0.10 - 0.10 = -0.10$. $S(\tau^{(2)}) = 0.7 - 0.20 - 0.15 - 0.15 = 0.20$. $S(\tau^{(3)}) = 0.6 - 0.10 - 0.05 - 0.20 = 0.25$. Now apply the hard feasibility gate: $\tau^{(1)}$ has $C=0.40 > \epsilon=0.30$, so it is discarded outright even though its raw reward $R=0.9$ is highest. Among the survivors $\{\tau^{(2)}, \tau^{(3)}\}$, the planner executes $\tau^{(3)}$ because $0.25 > 0.20$. Note the lesson: the highest-reward proposal lost twice over, once to the score and once to the safety gate.</p>
+</div>
 <h2>Worked Example</h2>
 <p>The probe below shows a flow-matching forward pass and a few-step ODE integration. We interpolate linearly between a noise sample $x_0$ and a target action $x_1$, read off the constant target velocity $x_1 - x_0$, then integrate the ODE from noise to action with a handful of Euler steps. In a trained system the constant velocity is replaced by the learned field $v_\theta(x_t, t, c)$, but the path geometry and the integration loop are identical.</p>
 <pre><code class="language-python"># Conditional flow matching: straight-line path from noise to action.
@@ -151,6 +155,10 @@ integrated endpoint: [1.0, -0.0]  target: [1.0, 0.0]</code></div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>Sampling proposes the future, scoring negotiates with reality.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: general-purpose manipulation with Physical Intelligence pi_0</h4>
+<p>Physical Intelligence's pi_0 model ships a flow-matching action expert as its decoder: a pretrained vision-language backbone proposes intent, and a learned velocity field integrated in a handful of ODE steps emits 50 Hz continuous action chunks for tasks like folding laundry and bussing tables across multiple robot embodiments. The few-step integration is precisely what makes a large semantic model compatible with a real-time control loop, exactly the latency win this section develops.</p>
 </div>
 <div class="callout paper-spotlight">
 <div class="callout-title">Paper Spotlight: pi_0</div>
@@ -242,6 +250,14 @@ integrated endpoint: [1.0, -0.0]  target: [1.0, 0.0]</code></div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Generative Trajectory Planning And Scoring is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: race a flow-matching sampler against a DDPM chain</h4>
+<p><strong>Goal:</strong> measure empirically why few-step flow matching unlocks real-time replanning, by timing both samplers and counting how many integration steps each needs to land on the action manifold.</p>
+<p><strong>Tools needed:</strong> Python with PyTorch and NumPy; optionally <code>torchdiffeq</code>. No GPU required. Allow 15 to 30 minutes.</p>
+<p><strong>Setup:</strong> Build a 1D toy target distribution as a mixture of two Gaussians (the "action manifold"). Train two tiny MLPs on the same data: one a conditional flow-matching velocity network $v_\theta(x_t, t)$ with the straight-line target $x_1 - x_0$, the other a DDPM noise-predictor $\epsilon_\theta(x_t, t)$ over a 100-step cosine schedule.</p>
+<p><strong>What to vary:</strong> the number of inference steps $N$. Sample 2,000 trajectories from the flow-matching model at $N \in \{1, 2, 4, 8, 16\}$ Euler steps, and from the DDPM model at $N \in \{10, 25, 50, 100\}$ denoising steps. Time each configuration with <code>time.perf_counter()</code>.</p>
+<p><strong>What to observe:</strong> plot sample-quality (1D Wasserstein distance to the true mixture, via <code>scipy.stats.wasserstein_distance</code>) against wall-clock latency for both samplers on one axis. You should see the flow-matching curve reach low Wasserstein distance at roughly 4 to 8 steps, while the DDPM curve needs 50 to 100 steps for comparable quality, a 10x-plus latency gap. Then push flow matching to $N=1$ and watch quality collapse: that failure reproduces the "too few ODE steps cut corners off the manifold" pitfall from the warning above.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 41.3.1</div><p>Design a minimal experiment for Generative trajectory planning and scoring. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <section class="bibliography">

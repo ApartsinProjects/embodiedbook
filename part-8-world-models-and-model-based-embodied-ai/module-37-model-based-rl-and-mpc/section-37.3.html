@@ -107,6 +107,10 @@ print({"best_plan": best_name, "first_action": candidates[best_name][0], "score"
 <p>Read the best-plan name and first action as the receding-horizon contract: the planner evaluated the full three-step cost for every candidate and selected u1 because its steady, uniform actions kept the cumulative distance-to-goal penalty lowest. Only the first action, 0.18, is actually sent to the actuator; the rest of the sequence is discarded and the planner will rescore from the next real observation.</p>
 </div>
 <div class="code-caption"><strong>Code Fragment 37.3.1:</strong> The planner cares about the full sequence score, but the controller executes only the first action before the next replan. That receding-horizon structure is why imperfect rollouts can still help.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: MPPI weighting of three candidate sequences</h4>
+<p>Trace one MPPI update for a one-dimensional system with three sampled action sequences and temperature $\lambda = 1.0$. Suppose scoring the rollouts yields costs $J = [2.0, 3.0, 5.0]$ for sequences A, B, and C, whose first actions are $a_0 = [0.40, 0.10, -0.30]$. MPPI weights each sequence by $w_i = \exp(-J_i/\lambda)$ before normalizing. Step 1, raw weights: $\exp(-2.0) = 0.1353$, $\exp(-3.0) = 0.0498$, $\exp(-5.0) = 0.0067$. Step 2, sum of weights: $0.1353 + 0.0498 + 0.0067 = 0.1918$. Step 3, normalized weights: $[0.7053, 0.2596, 0.0351]$. Step 4, weighted first action: $0.7053 \times 0.40 + 0.2596 \times 0.10 + 0.0351 \times (-0.30) = 0.2821 + 0.0260 - 0.0105 = 0.2976$. The executed command is $a_0 \approx 0.298$, pulled toward the cheapest sequence A but softened by B and C. Now raise the temperature to $\lambda = 4.0$: the raw weights become $\exp(-0.5), \exp(-0.75), \exp(-1.25) = [0.6065, 0.4724, 0.2865]$, normalizing to $[0.4445, 0.3462, 0.2099]$, and the blended action drops to $0.4445 \times 0.40 + 0.3462 \times 0.10 + 0.2099 \times (-0.30) = 0.150$. Higher temperature flattens the weights and blends the expensive sequences in more heavily, which is exactly the knob the MPPI tuning tip above describes.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Use <code>mujoco_mpc</code> when you need production-grade predictive sampling or derivative-based planners. Use <code>tdmpc</code> or <code>tdmpc2</code> when you want a learned latent model plus an online optimizer that already handles the value tail. For vehicle-style domains, <code>acados</code> and <code>CasADi</code> remain strong anchors when you need explicit constraint handling beside the learned model.</p>
@@ -172,6 +176,18 @@ print({"best_plan": best_name, "first_action": candidates[best_name][0], "score"
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For a mobile manipulator pushing open a heavy door, CEM may be good enough if the door dynamics are smooth and rollouts are cheap. For a quadruped balancing on uncertain footholds, MPPI or predictive sampling can behave better because many noisy candidate controls are evaluated around a nominal command.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: autonomous off-road driving</h4>
+<p>Georgia Tech's AutoRally platform runs MPPI directly on a learned vehicle dynamics model to drift a one-fifth-scale rally car around a dirt track at the limits of tire friction. The GPU samples roughly 2,000 candidate control sequences every control tick and reweights them by exponentiated cost, replanning fast enough to keep the car stable through slides no fixed trajectory could anticipate. This is the same MPPI loop you implement here, scaled to a 50 Hz real-time controller on physical hardware.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: CEM versus MPPI on cartpole swing-up</h4>
+<p><strong>Goal:</strong> empirically compare CEM and MPPI as the planner search and feel how temperature, horizon, and sample count trade off against control quality and per-tick wall-clock time.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> (the <code>CartPole</code> or continuous <code>InvertedPendulum</code> MuJoCo environment), NumPy, and a stopwatch (<code>time.perf_counter</code>). No GPU required; everything runs on CPU in a few minutes.</p>
+<p><strong>Procedure:</strong> implement a shooting planner that, at each step, samples action sequences of horizon $H$, rolls them out through the environment's own dynamics as a stand-in learned model, and scores upright-angle plus control cost. Wrap two selection rules: CEM (refit a Gaussian over the top-K elites for a few iterations) and MPPI (exponentiated-cost weighting with temperature $\lambda$). Execute only the first action, then replan.</p>
+<p><strong>What to vary:</strong> horizon $H \in \{5, 15, 30\}$, sample count $N \in \{64, 256, 1024\}$, the CEM elite fraction, and the MPPI temperature $\lambda$ across two orders of magnitude.</p>
+<p><strong>What to observe:</strong> log episode return, first-action variance across consecutive replans, elite-set variance per CEM iteration, and milliseconds per planning tick. You should see CEM's elite variance collapse within two or three iterations when $H$ is short, MPPI's commands turn jittery when $\lambda$ is too small and sluggish when it is too large, and per-tick time grow roughly linearly in $N \times H$ until you blow past the control period.</p>
 </div>
 <div class="callout note">
 <div class="callout-title">Cross-References</div>

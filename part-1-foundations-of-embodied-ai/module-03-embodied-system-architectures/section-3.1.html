@@ -157,6 +157,20 @@ for t in range(12):
 print(f"final error = {TARGET - true_x:+.3f} m")
 </code></pre>
 <div class="code-caption"><strong>Code Fragment 3.1</strong>.1 runs one rollout through all seven stages of the canonical stack. Each line of the trace is a typed handoff: observation, estimate, prediction, command, and the new world state.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: one tick of the canonical loop</h4>
+<p>Trace the very first iteration ($t=0$) with concrete numbers, starting from $\text{true\_x}=0.0$, $\hat{s}=0.0$, $a=0.0$, $\text{TARGET}=1.00$, $\text{STEP\_MAX}=0.20$, $\alpha=0.7$, and assume the noise draw for this step is $\epsilon = +0.012$ m.</p>
+<ol>
+<li><strong>Sense:</strong> $o = \text{true\_x} + \epsilon = 0.0 + 0.012 = 0.012$.</li>
+<li><strong>Perceive:</strong> remove the $0.01$ m bias: $x = 0.012 - 0.01 = 0.002$.</li>
+<li><strong>Estimate:</strong> $\hat{s} = 0.7\cdot 0.002 + 0.3\cdot 0.0 = 0.0014$.</li>
+<li><strong>Predict:</strong> roll forward $H=3$ steps with $a_{\text{prev}}=0.0$: $\hat{s}_{\text{pred}} = 0.0014 + 3\cdot 0.0 = 0.0014$.</li>
+<li><strong>Plan:</strong> displacement to goal: $\tau = 1.00 - 0.0014 = 0.9986$.</li>
+<li><strong>Control:</strong> saturate to the limit: $a = \operatorname{clip}(0.9986,\,-0.20,\,0.20) = 0.20$.</li>
+<li><strong>Act:</strong> apply to the world: $\text{true\_x} = 0.0 + 0.20 = 0.20$.</li>
+</ol>
+<p>So one tick advances the body from $0.0$ to $0.20$ m while the estimate still reads $0.0014$ m, and the saturated command of $0.20$ shows the actuator limit binding on the first move. Notice the estimate lags the true position by almost the full step: that gap is exactly what the predict stage exists to close on the next tick.</p>
+</div>
 <p><strong>Expected output:</strong> the agent drives the error toward zero in under ten steps, with the command $a$ saturating at $\text{STEP\_MAX}=0.20$ on the first moves and then shrinking as $\hat{s}$ approaches the target. The value of the trace is that each column is one arrow in the equation above: if the robot misses, you can read off which stage first reported a wrong number. Try injecting a stale estimate (skip the <code>estimate</code> update for one step) and watch the error grow even though every other stage is correct.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -181,6 +195,10 @@ print(f"final error = {TARGET - true_x:+.3f} m")
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>When the LeRobot team trains an ACT or pi0 policy on a Franka Panda pick-and-place task, success rate alone hides the failure mode. A policy can score 80 percent by only attempting the easy front-bin grasps and silently aborting on the cluttered rear bin. So the rollout logger records each stage handoff: the RealSense depth frame and its <code>frame_id</code>, the estimated gripper pose, the planned approach trajectory, the joint-torque command against the 87 Nm limit, and every recovery event (re-grasp, retreat, human takeover). Replaying those traces shows whether the 80 percent came from solving the task or from the policy learning to skip the hard episodes, the same distinction that separates a benchmark number from a deployable robot.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Waymo Driver</h4>
+<p>The Waymo Driver runs exactly this stack on every public-road ride: lidar and camera sensing feed a perception stack that emits tracked objects, a state estimator fuses them with map priors, a behavior predictor rolls out other agents' likely trajectories over the next several seconds, and a planner picks a path that a low-level controller turns into steering and throttle. The staged boundaries are why Waymo can attribute a hard-brake event to a specific layer (a perception false positive versus an over-cautious predictor) when reviewing logged disengagements.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -212,6 +230,14 @@ print(f"final error = {TARGET - true_x:+.3f} m")
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 3.1.1</div><p>Design a method-matched experiment for The canonical stack: sense, perceive, estimate, predict, plan, control, act. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build the 1-D reaching stack from Code Fragment 3.1.1 inside a Gymnasium <code>CartPole-v1</code> environment, replacing the toy sense/perceive functions with real observation parsing and logging every inter-stage handoff to a CSV; the key challenge is getting the frame labels and timestamps right so a replay of any logged trace produces the same output as the live run. <strong>Intermediate (1-2 weeks):</strong> Implement all seven stages as separate ROS 2 nodes talking over typed topics (sensor_msgs, geometry_msgs, nav_msgs) in a MuJoCo or PyBullet sim of a differential-drive robot navigating a cluttered room, then deliberately inject 20 ms of artificial latency at the perception-to-estimation boundary and measure how control torque spikes change; the key challenge is keeping the nodes rate-matched (sensing at 50 Hz, planning at 10 Hz) without stale-data bugs crossing the boundaries.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Break one stage and watch the loop fail</h4>
+<p><strong>Goal:</strong> see empirically that the canonical stack is a fault-isolation tool by injecting a single-stage defect and observing which downstream symptom appears.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> and <code>numpy</code> (<code>pip install gymnasium numpy</code>); the <code>CartPole-v1</code> environment is enough, no GPU required. Budget 15 to 30 minutes.</p>
+<p><strong>Setup:</strong> wrap a working baseline as the seven named functions from Code Fragment 3.1.1. For CartPole, treat the pole angle as the state, a proportional rule as <code>plan</code>, and a binary push as <code>control</code>/<code>act</code>. Log every inter-stage handoff (observation, calibrated percept, estimate, prediction, plan, action) to a list each tick.</p>
+<p><strong>What to vary:</strong> run three conditions. (1) Baseline, all stages correct. (2) Stale estimate: skip the <code>estimate</code> update every other tick so $\hat{s}$ is one step old. (3) Frame/unit error: multiply the percept by $-1$ (a flipped sign convention) before it reaches the estimator. Hold the random seed fixed across all three so the only difference is the injected defect.</p>
+<p><strong>What to observe:</strong> record episode length (steps balanced) and, from the logged traces, the first tick where the estimate diverges from the true state. You should find that the stale-estimate run degrades gradually while the sign-flip run fails almost immediately, and that in both cases the trace pinpoints the offending boundary one or two ticks before the pole visibly falls, exactly the staged-replay diagnosis described in the section.</p>
+</div>
 <div class="whats-next"><h3>What's Next?</h3><p>Section 3.2 compares this stack with the classical modular robotics pipeline.</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>

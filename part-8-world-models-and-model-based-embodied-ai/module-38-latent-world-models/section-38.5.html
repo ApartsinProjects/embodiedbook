@@ -103,6 +103,15 @@ The planner searches directly in latent space, often with a <a href="../../part-
 </svg>
 <figcaption>The latent MPC loop in TD-MPC2: a single encode feeds an inner search that samples and rolls candidate sequences in latent space, scores them by predicted reward plus terminal value, and refits the proposal to the elites (dashed inner cycle); only the first action is executed before replanning at the next real observation (dashed outer cycle).</figcaption>
 </figure>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: latent CEM planner inner loop</h4>
+<p>Trace one planning step with horizon H=2, four candidate sequences, and a top-2 elite cutoff. Suppose the encoder gives current latent $z_t$ and the reward head and value head produce these scores for each sampled sequence:</p>
+<p>Candidate A: $\hat r$ = 0.4 + 0.5, $\hat V(\hat z_{t+2})$ = 1.2, total J = 2.1.<br/>
+Candidate B: $\hat r$ = 0.1 + 0.2, $\hat V$ = 0.3, total J = 0.6.<br/>
+Candidate C: $\hat r$ = 0.6 + 0.3, $\hat V$ = 1.0, total J = 1.9.<br/>
+Candidate D: $\hat r$ = 0.0 + 0.1, $\hat V$ = 0.2, total J = 0.3.</p>
+<p>Rank by J: A (2.1) &gt; C (1.9) &gt; B (0.6) &gt; D (0.3). The top-2 elites are A and C. If their first actions are $a^A_0$ = 0.8 and $a^C_0$ = 0.6, the refit proposal mean for action slot 0 becomes (0.8 + 0.6) / 2 = 0.7. Notice the terminal value did the deciding work: by raw reward alone C (0.9) beats A (0.9 tie), but A's larger $\hat V$ of 1.2 versus C's 1.0 pushes A to the top. The planner now executes the first action drawn around 0.7 and replans at the next real observation.</p>
+</div>
 <h2>Minimal Probe</h2>
 <p>The code below implements a tiny CEM-style search in latent space. It is not the full algorithm, but it exposes the planning primitive that makes TD-MPC2 different from imagined actor learning.</p>
 <pre><code class="language-python"># Sample action sequences, score them in latent space, and keep elites.
@@ -146,6 +155,10 @@ print(
 <div class="callout-title">Practical Example</div>
 <p>A manipulator reaching around clutter may need to replan every few tens of milliseconds as the target shifts or a human enters the workspace. A decoder-free latent planner is attractive here because the action search can stay cheap. The danger is local model bias: if the latent oversmooths collision or contact dynamics, the planner will confidently choose unsafe elites.</p>
 </div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: agile legged locomotion</h4>
+<p>The TD-MPC2 team deployed the latent MPC controller on real quadruped and bipedal hardware, where the decoder-free planner runs the CEM search onboard fast enough to track shifting terrain and disturbances without reconstructing camera frames. The same single policy that scored across 100-plus simulated tasks transferred to physical locomotion, because the latent only needed to preserve the reward and value signal that the leg controllers actually consume.</p>
+</div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
 <p><strong>Cross-embodiment latent alignment (2024-2025).</strong> Scaling latent MPC to heterogeneous robots requires latent spaces that stay geometry-aware even when encoders are shared across limb counts and joint ranges. Hansen et al. (2024) at UC San Diego follow up TD-MPC2 with experiments showing that task-conditioned latent heads significantly slow embodiment collapse, but a principled alignment loss remains an open design choice.</p>
@@ -163,6 +176,13 @@ print(
 <p>Its broader importance is scale. The paper argues that the same core design can cover many continuous-control tasks and <a href="../../part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/section-35.2.html">multi-embodiment settings</a>. For embodied AI builders, that matters because it suggests a practical path between narrow task-specific MPC and fully general policy models.</p>
 
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Implement a minimal latent MPC loop in Gymnasium's Pendulum-v1 environment: train a small MLP encoder and one-step latent transition model from random rollouts, then run a CEM planner with 64 candidates and horizon H=3 in the learned latent space. The key challenge is verifying that your terminal value head, even if it is just a linear layer, produces scores that correlate with actual episode return before you trust the planner's elite selection.</p><p><strong>Intermediate (1-2 weeks):</strong> Port the TD-MPC2 planning loop to a manipulation task in MuJoCo using the official td-mpc2 codebase, then swap the CEM sampler for MPPI and compare replanning latency and task success rate on dm_control's reacher-hard. The key challenge is keeping the per-step wall-clock below the task's control frequency (50 Hz for reacher) while increasing the candidate count enough for MPPI's weighted averaging to outperform CEM's hard elite cutoff.</p><p><strong>Intermediate-plus (2 weeks):</strong> Build a multitask latent world model in LeRobot that shares a single 256-dimensional encoder across two embodiments (a simulated Franka arm and a wheeled base in PyBullet), train it jointly on reaching and navigation demos, then run a nearest-neighbor audit on encoded states to check whether intra-embodiment contact phases cluster before cross-embodiment collapse occurs. The key challenge is designing a task-conditioning mechanism, such as a task embedding concatenated to the latent, that prevents the shared encoder from averaging away the joint-space geometry that separates manipulation from locomotion.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Does the terminal value head actually carry the planner?</h4>
+<p><strong>Goal:</strong> Empirically confirm that the terminal value head, not the short-horizon reward sum, is what makes latent MPC select good actions on a sparse-reward task.</p>
+<p><strong>Tools needed:</strong> Python, the official <code>tdmpc2</code> repository (or a small CEM planner you write yourself), and Gymnasium with a continuous-control task such as <code>Pendulum-v1</code> or a <code>dm_control</code> reacher. Budget 15-30 minutes.</p>
+<p><strong>What to do and vary:</strong> Load a trained TD-MPC2 checkpoint (or train a tiny encoder, transition, reward, and value head on random rollouts). Run the CEM planner normally and record episode return. Then ablate the planner in two ways: (1) zero out the terminal value term $\hat V(\hat z_{t+H})$ so candidates are scored by reward sum alone, and (2) sweep the horizon H from 1 up to 20 with the value term restored.</p>
+<p><strong>What to observe:</strong> With the value head zeroed, episode return should collapse on the sparse task and the spread of elite scores should shrink toward zero (all candidates look alike). With the value head restored, short horizons like H=3 should already perform well, and pushing H higher should give diminishing returns while replanning latency climbs. Plotting return and per-step wall-clock against H makes the reward-versus-latency trade-off concrete.</p>
+</div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
 <p>Can you explain why TD-MPC2 can skip image reconstruction, what role the terminal value plays, and what measurement would tell you the planner is too slow to justify its better sample efficiency?</p>

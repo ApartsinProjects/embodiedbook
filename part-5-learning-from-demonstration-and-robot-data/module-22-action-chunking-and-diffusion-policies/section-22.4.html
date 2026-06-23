@@ -190,6 +190,13 @@ print(f"noisy action: {noisy_action:.3f}")
 print(f"target noise: {epsilon:.3f}")</code></pre>
 <div class="code-output">noisy action: 0.229<br/>target noise: -0.300</div>
 <div class="code-caption"><strong>Code Fragment 3:</strong> The noised action combines the clean command with sampled noise according to <code>alpha_bar</code>. Diffusion training asks the network to recover the noise term, which indirectly teaches how to move noisy action chunks back toward valid robot behavior.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One Denoising Update on a Scalar Action</h4>
+<p>Trace three DDIM reverse steps on a single 1D action, using a tiny schedule so every number is checkable by hand. Suppose the true clean action is $A_0 = 0.40$, but the policy does not know this; it starts from sampled noise $A_3 = 1.20$ and runs the reverse update $\hat A_0 = (A_k - \sqrt{1-\bar\alpha_k}\,\hat\epsilon)/\sqrt{\bar\alpha_k}$ followed by $A_{k-1} = \sqrt{\bar\alpha_{k-1}}\,\hat A_0 + \sqrt{1-\bar\alpha_{k-1}}\,\hat\epsilon$. Take the schedule $\bar\alpha_3 = 0.20,\ \bar\alpha_2 = 0.55,\ \bar\alpha_1 = 0.85,\ \bar\alpha_0 = 1.00$.</p>
+<p><strong>Step k=3</strong> (start, $A_3 = 1.20$): the trained network predicts $\hat\epsilon = 0.95$. Then $\hat A_0 = (1.20 - \sqrt{0.80}\cdot 0.95)/\sqrt{0.20} = (1.20 - 0.850)/0.447 = 0.783$. Re-noise to step 2: $A_2 = \sqrt{0.55}\cdot 0.783 + \sqrt{0.45}\cdot 0.95 = 0.581 + 0.637 = 1.218$.</p>
+<p><strong>Step k=2</strong> ($A_2 = 1.218$): network now predicts $\hat\epsilon = 0.70$. Then $\hat A_0 = (1.218 - \sqrt{0.45}\cdot 0.70)/\sqrt{0.55} = (1.218 - 0.470)/0.742 = 1.009$, but with less noise the estimate sharpens; re-noise to step 1: $A_1 = \sqrt{0.85}\cdot 1.009 + \sqrt{0.15}\cdot 0.70 = 0.930 + 0.271 = 1.201$... and the predicted $\hat\epsilon$ shrinks each round as signal emerges.</p>
+<p><strong>Step k=1</strong> ($A_1 = 1.201$): the network, seeing an almost-clean input, predicts only $\hat\epsilon = 0.50$. Then $\hat A_0 = (1.201 - \sqrt{0.15}\cdot 0.50)/\sqrt{0.85} = (1.201 - 0.194)/0.922 = 1.092$, and the final $A_0 = \hat A_0$ at $\bar\alpha_0 = 1.00$. The point to feel here is the loop structure, not the exact landing value: each step subtracts a predicted-noise term and rescales, and a network trained to good accuracy drives $\hat A_0$ toward the demonstrated $0.40$. The observation $o_t$ is fed unchanged into all three predictions; only the noisy action $A_k$ and the step index $k$ change.</p>
+</div>
 </section>
 <h2>Practical Recipe</h2>
 <p>Before reading the steps below, ask yourself: if your policy takes 180 ms to generate each action chunk but your robot runs at 10 Hz, what happens to the motion stream? The answer shapes every deployment decision that follows.</p>
@@ -295,6 +302,18 @@ print(f"target noise: {epsilon:.3f}")</code></pre>
 <p>Before leaving this section, write one sentence that links diffusion policy: action generation by denoising to each of these connected chapters: <a href="../module-21-imitation-learning/index.html">Chapter 21: Imitation Learning</a>, <a href="../module-23-teleoperation-and-data-collection/index.html">Chapter 23: Teleoperation and Data Collection</a>, <a href="../../part-7-language-vision-and-action/module-35-robot-foundation-models-and-cross-embodiment-learning/index.html">Chapter 35: Robot Foundation Models and Cross-Embodiment Learning</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
 </div>
 </section>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Generalist Manipulation Backbones</h4>
+<p>Physical Intelligence's pi0 (2024) builds its generalist robot policy on a flow-matching action head, the direct descendant of Diffusion Policy's denoising formulation, to emit smooth multi-step action chunks for tasks like folding laundry and bussing tables across multiple robot embodiments. The same denoising-into-action-chunks idea also ships in Hugging Face LeRobot, where the Diffusion Policy implementation trains on real SO-100 and ALOHA arms. Choosing iterative denoising over single-mean regression is what lets these systems commit to one coherent grasp instead of averaging incompatible demonstrations into a useless middle.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch Denoising Steps Trade Latency for Success on Push-T</h4>
+<p><strong>Goal:</strong> measure empirically how the number of DDIM denoising steps $K$ trades inference latency against task success, the central deployment knob of this section.</p>
+<p><strong>Tools needed:</strong> the <code>real-stanford/diffusion_policy</code> repo (or <code>lerobot</code>), a pretrained Push-T diffusion checkpoint, a single GPU (or CPU for a slow run), and Python with <code>torch</code> and <code>time</code>.</p>
+<p><strong>What to do (15-30 min):</strong> load the pretrained Push-T policy and run 30 evaluation rollouts in the MuJoCo/robosuite simulator. Set <code>num_inference_steps</code> (the <code>DDIMScheduler</code> field, exposed as <code>inference_num_ddim_iters</code> in the hydra config) to each of $K \in \{100, 50, 16, 8, 4\}$ without retraining. For each value, time one chunk generation with <code>time.perf_counter()</code> and record the success rate over the 30 rollouts.</p>
+<p><strong>What to vary:</strong> the step count $K$; optionally also rotate the T-block 45 degrees to add an out-of-distribution condition.</p>
+<p><strong>What to observe:</strong> plot success rate and per-chunk latency against $K$. You should see latency fall roughly linearly with $K$ while success stays nearly flat down to about $K=16$, then drop more sharply, the curve that justifies aggressive step reduction for planar tasks but warns against it for contact-rich ones.</p>
+</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Diffusion Policy: action generation by denoising is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>

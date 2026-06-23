@@ -112,6 +112,19 @@
 <li>Repeat from step 1 with updated $m_{t+1}$ until task completion or maximum replanning attempts $N_\text{max}$ reached.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: LLM-Proposal Grounding and Verification</h4>
+<p>Trace the algorithm with a tiny example. Instruction $x_t$ = "pick up the sponge"; state estimate $\hat{s}_t$ = {sponge_pose: 12 cm beyond reach, gripper: open}; schema $\mathcal{A}$ = {pick(obj), place(obj)}; $\alpha_{\min}$ = 0.4; $T_\text{budget}$ = 300 ms.</p>
+<ol>
+<li><strong>Encode + query:</strong> the LLM returns $\tilde{a}_t$ = <code>pick(sponge)</code> with token probability 0.92.</li>
+<li><strong>Type-check:</strong> <code>pick(sponge)</code> matches schema $\mathcal{A}$, so pass.</li>
+<li><strong>Precondition check:</strong> precondition <code>target_visible</code> = True, pass.</li>
+<li><strong>Affordance score:</strong> embodied model returns $\alpha$ = 0.05 because the sponge is 12 cm outside the workspace. Since 0.05 &lt; 0.40, <strong>reject</strong> and return $\perp$.</li>
+<li><strong>Failure tag:</strong> the high token probability 0.92 versus the affordance 0.05 localizes this as a state-feasibility failure, not a language error.</li>
+<li><strong>Replan (step 1 again):</strong> with $m_{t+1}$ now holding "sponge unreachable", the LLM proposes <code>navigate(closer)</code>, which scores $\alpha$ = 0.71 and executes.</li>
+</ol>
+<p>The numbers make the boundary visible: a 0.92 text score and a 0.05 affordance score sit side by side, and the verifier, not the LLM, decides.</p>
+</div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 implements the smallest planner boundary: the LLM proposes one symbolic subgoal, but the executor only accepts it if the required tool and state preconditions are satisfied.</p>
 <pre><code class="language-python"># Accept an LLM proposal only when the grounded stack can execute it.
@@ -156,6 +169,10 @@ print({"proposal": proposal["step"], "can_execute": can_execute, "decision": dec
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>On a Toyota HSR or a Hello Robot Stretch 3 doing mobile manipulation, an LLM can select the sequence 'navigate to sink, grasp sponge, wipe spill,' but it should not be the module that estimates whether the sponge is within the 76 cm telescoping reach of the Stretch arm or whether the planned base pose clears the counter overhang. Those checks belong to the grounded stack: the head RGB-D camera feeding a perception node for sponge visibility, and MoveIt 2 collision checking against the live occupancy map for reachability. The LLM never sees the joint encoders or the depth point cloud, so it cannot answer either question even when its subtask sequence is correct.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse mobile manipulation</h4>
+<p>Google DeepMind's RT-2 and the SayCan stack deployed at Everyday Robots used exactly this split: a PaLM-class LLM proposed kitchen and tidying subgoals while a separately trained affordance value function scored each one against the live scene before any skill ran. The LLM never touched the joint controllers; its proposals were gated by grounded affordances, which lifted long-horizon task completion from roughly 47% (language-only) to about 84% on the 101-instruction evaluation suite.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -210,6 +227,13 @@ print({"proposal": proposal["step"], "can_execute": can_execute, "decision": dec
 <p>LLMs help embodied systems most when they are boxed into a typed planning role and surrounded by grounded verifiers and controllers.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 33.1.1</div><p>Pick one embodied task and write a boundary contract for an LLM planner. List exactly which inputs it sees, which outputs it may emit, and which module rejects invalid proposals before execution.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring the language-physics gap with affordance gating</h4>
+<p><strong>Goal:</strong> empirically show that high LLM token probability does not predict physical feasibility, and that a grounded verifier recovers task success.</p>
+<p><strong>Tools needed:</strong> Python, the <code>gymnasium-robotics</code> package (FetchPickAndPlace-v2, a MuJoCo-backed tabletop arm), and any LLM API (OpenAI or Anthropic) with structured tool calling. About 20-30 minutes.</p>
+<p><strong>Steps:</strong> (1) Reset the environment and read the object and gripper positions from the observation dict. (2) Prompt the LLM with the goal and ask it, via a typed <code>pick(obj)</code> / <code>place(obj, pos)</code> schema, for the next subgoal; log its returned proposal and the reported logprob. (3) Write a 5-line verifier that rejects any proposal whose target is outside the arm's reach radius (compute Euclidean distance from gripper to object). (4) Run 30 episodes twice: once executing every LLM proposal directly, once gating through the verifier.</p>
+<p><strong>What to vary:</strong> the reach radius threshold, and the fraction of episodes where the object spawns out of reach (force this to 50%). <strong>What to observe:</strong> compare task success rate with and without the verifier, and plot LLM logprob against the verifier's accept/reject decision. You should see proposals with near-top logprobs that the verifier correctly rejects, mirroring the 0.92-vs-0.05 split in the step-through above.</p>
+</div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Primary Sources and Tools</div>

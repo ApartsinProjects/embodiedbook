@@ -175,6 +175,16 @@ The useful payoff is composition. If a camera frame $C$ is attached to a wrist f
 </ol>
 </div>
 
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Composing two SE(3) transforms by hand</h4>
+<p>Trace the camera-to-base conversion with the same numbers as Code Fragment 4.4.1, but written out arithmetic by arithmetic. Both rotation blocks are the identity here, so the multiply reduces to adding translation columns.</p>
+<p><strong>Setup.</strong> Detected point in the camera frame: $\bar p_C = [0.30,\ 0.10,\ 0.20,\ 1]^\top$. Wrist-from-camera translation: $t_{WC} = [0.50,\ 0.00,\ 0.25]$. Base-from-wrist translation: $t_{BW} = [0.00,\ 0.00,\ 1.00]$.</p>
+<p><strong>Step 1, camera to wrist.</strong> Apply $T_{WC}$. With $R = I$, each coordinate is just the point plus the translation: $x = 0.30 + 0.50 = 0.80$, $y = 0.10 + 0.00 = 0.10$, $z = 0.20 + 0.25 = 0.45$. The homogeneous coordinate stays $1$. So $\bar p_W = [0.80,\ 0.10,\ 0.45,\ 1]^\top$.</p>
+<p><strong>Step 2, wrist to base.</strong> Apply $T_{BW}$ to $\bar p_W$: $x = 0.80 + 0.00 = 0.80$, $y = 0.10 + 0.00 = 0.10$, $z = 0.45 + 1.00 = 1.45$. Result $\bar p_B = [0.80,\ 0.10,\ 1.45,\ 1]^\top$, matching the printed <code>base point: [0.8, 0.1, 1.45]</code>.</p>
+<p><strong>Step 3, round-trip check.</strong> Apply the inverse (which negates each translation, since $R = I$): $z = 1.45 - 1.00 - 0.25 = 0.20$, $x = 0.80 - 0.50 = 0.30$, $y = 0.10$. Back to $[0.30,\ 0.10,\ 0.20]$, so $\epsilon \approx 0$ and the chain is trusted.</p>
+<p><strong>What reversing the order would do.</strong> Composing $T_{WC} T_{BW}$ instead of $T_{BW} T_{WC}$ would add $t_{BW}$ before $t_{WC}$; with identity rotations the sum is the same here, but introduce any non-identity $R$ in the wrist and the two orders diverge, placing the block (0.30, 0.10, 0.70) in the worked case discussed above. Order only looks harmless when every rotation is the identity.</p>
+</div>
+
 <h2>Worked Example</h2>
 <p>Consider a wrist camera that detects a block at $(0.30, 0.10, 0.20)$ meters in the camera frame. The transform below converts that point into the robot base frame. Code Fragment 4.4.1 keeps the numbers small enough to check by hand: the camera is offset 0.50 meters forward and 0.25 meters upward from the wrist, and the wrist is 1.00 meter above the base.</p>
 <pre><code class="language-python"># Compose two SE(3) transforms and apply them to one detected point.
@@ -259,6 +269,14 @@ round trip: [0.3, 0.1, 0.2]</div>
 <div class="callout exercise">
 <div class="callout-title">Exercise 4.4.1</div>
 <p>Build a three-link transform chain: <code>world</code> to <code>shoulder</code> (translate 0 m, 0 m, 1 m), <code>shoulder</code> to <code>elbow</code> (translate 0.4 m forward, rotated 45° around the z-axis), <code>elbow</code> to <code>gripper</code> (translate 0.3 m forward). Compose the three $T$ matrices to get $T_{\text{world},\text{gripper}}$, then verify the round-trip: $T_{\text{world},\text{gripper}} \cdot T_{\text{world},\text{gripper}}^{-1} = I_{4\times 4}$. Report the gripper position in world coordinates and explain what breaks if you apply the rotation matrix to the translation offset in the wrong order.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a rotation block drift out of SO(3) and re-project it</h4>
+<p><strong>Goal.</strong> See empirically how repeated SE(3) composition silently corrupts the rotation block, why the round-trip check $T \cdot T^{-1} = I$ starts to fail, and how SVD re-projection restores group structure. 15-30 minutes.</p>
+<p><strong>Tools needed.</strong> Python with NumPy and SciPy (<code>scipy.spatial.transform.Rotation</code>). Optional: <code>spatialmath-python</code> for a cross-check, or PyBullet to visualize the drifting frame axes.</p>
+<p><strong>Steps.</strong> (1) Build one $4\times 4$ transform with a non-trivial rotation, say a $30^\circ$ rotation about a random axis plus a translation. (2) In a loop, repeatedly multiply the transform by itself and then by its inverse, writing the result back: <code>T = T @ T @ np.linalg.inv(T)</code>, so mathematically $T$ should never change. (3) After each iteration, log the orthogonality error <code>np.linalg.norm(R.T @ R - np.eye(3))</code> and the round-trip error <code>np.linalg.norm(T @ np.linalg.inv(T) - np.eye(4))</code>.</p>
+<p><strong>What to vary.</strong> The number of iterations (10, 100, 1000), the floating-point dtype (<code>float64</code> vs <code>float32</code>, the latter drifts dramatically faster), and the re-projection cadence (every iteration, every 10, never). For re-projection use <code>R = Rotation.from_matrix(T[:3,:3]).as_matrix()</code> and write it back.</p>
+<p><strong>What to observe.</strong> With <code>float64</code> and no re-projection the orthogonality error stays near $10^{-15}$ for a long time, then climbs; with <code>float32</code> it crosses $10^{-6}$ within a few dozen iterations. With re-projection enabled, the error is reset to machine epsilon each time, so the round-trip check keeps passing indefinitely. The takeaway: long transform chains need periodic re-projection, and the round-trip identity is the cheap canary that tells you when.</p>
 </div>
 <nav class="chapter-nav">
 <a class="prev" href="section-4.3.html">Section 4.3: Rotations: matrices, Euler angles, axis...</a>

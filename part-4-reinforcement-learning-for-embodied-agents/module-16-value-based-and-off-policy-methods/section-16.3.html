@@ -157,6 +157,15 @@ bootstrap=0.90
 td3_target=1.18</div>
 <p>The expected output shows the TD3 target being anchored by the lower critic value, not the optimistic one. Readers should interpret the <code>td3_target</code> of <code>1.18</code> as a deliberately conservative bootstrap built from a slightly perturbed target action.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> <code>bootstrap</code> uses the smaller of <code>critic_1_target</code> and <code>critic_2_target</code>, which is TD3's clipped double-Q idea. The <code>smoothed_action</code> value represents target policy smoothing, a guard against learning a critic spike at one precise continuous action.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One TD3 Critic Update</h4>
+<p>Trace through a single TD3 critic update for a one-dimensional torque action with concrete numbers. Suppose a sampled transition is observation $o$, action $a=0.50$, reward $r=0.20$, next observation $o'$, with $\gamma=0.99$, noise clip $c=0.10$.</p>
+<p><strong>Step 1, target action.</strong> The target actor outputs $\mu_{\phi^-}(o')=0.62$. Draw smoothing noise $\epsilon=0.30$, then clip it to $[-0.10, 0.10]$, giving $0.10$. The smoothed target action is $\tilde a = 0.62 + 0.10 = 0.72$.</p>
+<p><strong>Step 2, twin target critics.</strong> Evaluate both target critics at $(o', \tilde a)$: $Q_{\theta_1^-}=1.40$ and $Q_{\theta_2^-}=0.90$. Take the minimum: $\min(1.40, 0.90) = 0.90$. The optimistic critic ($1.40$) is discarded.</p>
+<p><strong>Step 3, bootstrap target.</strong> $y = r + \gamma \cdot 0.90 = 0.20 + 0.99 \times 0.90 = 0.20 + 0.891 = 1.091$.</p>
+<p><strong>Step 4, critic loss.</strong> The online critics predict $Q_{\theta_1}(o,a)=1.25$ and $Q_{\theta_2}(o,a)=0.80$ at the real action $a=0.50$. The squared residuals are $(1.25 - 1.091)^2 = 0.0253$ and $(0.80 - 1.091)^2 = 0.0847$. Both critics step toward $y=1.091$; critic 2 takes the larger step because it was further off.</p>
+<p>Notice the actor was not touched. If this step is not a multiple of the delay $d=2$, the actor and all target networks stay frozen, and only $\theta_1, \theta_2$ move. That delay is what gives the critics time to settle before the actor chases their estimate.</p>
+</div>
 <p>The same target logic maps cleanly to embodied control. For a torque-controlled arm, target smoothing says the critic should value a small neighborhood of torques, not a single fragile torque vector that only works in simulation.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -182,6 +191,10 @@ td3_target=1.18</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A manipulation team can compare TD3 and SAC on the same pushing task by co-computing success, contact force, action saturation, and recovery after an object slip. TD3 may produce crisp deterministic pushes, while SAC may preserve enough stochasticity to recover from surprising contact changes.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Data-Center Cooling</h4>
+<p>Google DeepMind applied a continuous-control RL controller to the cooling systems of Google's data centers, where the agent sets continuous setpoints (valve openings, fan speeds) every five minutes from sensor observations. The deployed system reduced cooling energy use by up to 40%, exactly the kind of high-dimensional continuous action space, with hard safety bounds on each actuator, that DDPG-family methods were built to handle.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -263,6 +276,14 @@ print(record.as_row())</code></pre>
 <p>Continuous off-policy control is about managing actor-critic feedback. TD3 reduces overestimation, SAC preserves exploration through entropy, and both need action-level logs before embodied deployment.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 16.3.1</div><p>Choose a continuous-control task and define one co-computed metric panel for DDPG, TD3, and SAC. Include at least one task metric, one safety metric, one action-distribution metric, and one critic diagnostic.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watching Entropy Decide Robustness in SAC vs TD3</h4>
+<p><strong>Goal.</strong> Empirically see how SAC's entropy bonus produces a more robust policy than TD3 under a dynamics shift, and watch what happens when entropy collapses.</p>
+<p><strong>Tools needed.</strong> Python with <code>stable-baselines3</code>, <code>gymnasium[mujoco]</code>, and <code>matplotlib</code>. Use the <code>Hopper-v4</code> environment (a continuous-torque locomotion task that is sensitive to dynamics).</p>
+<p><strong>Steps.</strong> Train SAC and TD3 on <code>Hopper-v4</code> for 200k steps each, logging episode return and (for SAC) the entropy coefficient via a callback. Then evaluate both frozen policies on a perturbed copy of the environment where you scale the agent's mass by 1.3x (set it through the MuJoCo model before <code>reset</code>).</p>
+<p><strong>What to vary.</strong> Sweep the mass scale from 1.0 to 1.5 in steps of 0.1, and separately rerun SAC once with <code>ent_coef=0.0</code> (entropy disabled) to simulate entropy collapse.</p>
+<p><strong>What to observe.</strong> Plot evaluation return versus mass scale for the three configurations. The entropy-regularized SAC should degrade more gracefully than TD3, while the <code>ent_coef=0.0</code> SAC should fall off as sharply as, or worse than, TD3, confirming that the entropy term, not the twin critics alone, is carrying the robustness. This experiment fits comfortably in 15 to 30 minutes of agent runtime if you reduce step counts on a CPU-only machine.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Train a SAC agent on the MuJoCo HalfCheetah-v4 environment using Stable-Baselines3, then swap to TD3 and plot critic disagreement and episode return side by side to see the effect of clipped double-Q targeting. The key challenge is setting up MuJoCo and Gymnasium correctly on your machine and writing the logging callback that captures entropy and critic values per step.<br/><br/><strong>Intermediate (1 to 2 weeks):</strong> Implement a TD3 agent in PyBullet's Kuka arm environment and extend the <code>ContinuousControlAudit</code> dataclass from this section to record per-joint saturation, then visualize which joints hit their limits most often and whether clipping correlates with task failure. The key challenge is bridging PyBullet's action space conventions with TD3's target-smoothing noise range so that clipped Gaussian perturbations stay physically meaningful rather than pushing joints into unsafe configurations.<br/><br/><strong>Advanced (2 to 4 weeks):</strong> Use LeRobot with Isaac Lab to train a SAC policy for a 6-DoF pick-and-place task under domain randomization (varying friction and object mass), then transfer the policy to a simulated UR5 and measure the success-rate drop; compare against a TD3 baseline trained without entropy regularization. The key challenge is choosing an Isaac Lab friction randomization range that is wide enough to improve transfer but not so wide that the policy never learns reliable grasping in the first place.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

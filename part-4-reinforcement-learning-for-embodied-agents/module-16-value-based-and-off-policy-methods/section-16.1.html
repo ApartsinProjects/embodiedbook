@@ -186,6 +186,13 @@ td_error=0.22
 updated_q=0.46</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The variables <code>target</code>, <code>td_error</code>, and <code>new_q</code> show how one transition changes an action value. The update is modest because <code>alpha</code> is 0.25, which keeps one noisy contact event from rewriting the policy.</div>
 <p>This numeric trace is the same logic DQN applies at scale. The difference is that DQN computes the current value and the target value with neural networks, then uses gradient descent to reduce the TD error over many replayed transitions.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Tabular Q-learning over two transitions</h4>
+<p>Trace the update rule with $\alpha = 0.5$, $\gamma = 0.9$, and two actions per state. Start with all Q values at 0. The robot is in state $s_0$.</p>
+<p><strong>Transition 1:</strong> take action $a_0$ in $s_0$, receive $r = 1$, land in $s_1$. Current next-state values are $Q(s_1, \cdot) = [0, 0]$, so the target is $y = 1 + 0.9 \times \max(0, 0) = 1.0$. The TD error is $1.0 - 0 = 1.0$. Update: $Q(s_0, a_0) \leftarrow 0 + 0.5 \times 1.0 = 0.5$. Now $Q(s_0, a_0) = 0.5$.</p>
+<p><strong>Transition 2:</strong> later, take action $a_1$ in $s_1$, receive $r = 0$, land back in $s_0$. The next-state values are now $Q(s_0, \cdot) = [0.5, 0]$, so the target is $y = 0 + 0.9 \times \max(0.5, 0) = 0.45$. The TD error is $0.45 - 0 = 0.45$. Update: $Q(s_1, a_1) \leftarrow 0 + 0.5 \times 0.45 = 0.225$. Now $Q(s_1, a_1) = 0.225$.</p>
+<p>Notice how the reward of 1 from transition 1 propagated one step backward into $Q(s_1, a_1)$ during transition 2, attenuated by $\gamma$ and $\alpha$. Repeated sweeps push that signal further back through the state graph, which is exactly how a one-step rule learns long-horizon value.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>After the TD target is clear, Stable-Baselines3, CleanRL, and Tianshou provide maintained DQN implementations that handle replay sampling, target-network synchronization, epsilon schedules, batching, and logging. The important engineering choice is not the library name alone, it is whether the observation wrapper and reward design preserve the physical facts the Q value needs.</p>
@@ -209,6 +216,10 @@ updated_q=0.46</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>In the RoboNav benchmark (Clearpath Jackal in Isaac Sim, 4 discrete actions: forward 0.5 m/s, left 30 deg, right 30 deg, stop), a DQN trained with a 100,000-transition replay buffer and a target network frozen for 2,000 steps reaches 87 % corridor-completion at 50 Hz. The fragility surface appears when the same checkpoint is evaluated in the real Jackal under flickering warehouse LED lighting: completion drops to 61 % because the convolutional encoder was never exposed to 5 Hz luminance flicker in simulation. Grounding the replay buffer with 20 % of transitions collected under randomized Isaac Sim lighting (0.3 to 1.8 lux multiplier) restores real-world completion to 79 % without retraining the Q-head. The lesson for embodied DQN is specific: replay coverage of the sensor-noise distribution matters as much as coverage of the state-action space.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Magnetic confinement fusion control</h4>
+<p>DeepMind and the Swiss Plasma Center used deep reinforcement learning with a value-based critic to control the 19 magnetic coils of the TCV tokamak, sculpting the plasma into target shapes that previously required hand-tuned controllers. The agent learns Q-style value estimates over coil-voltage actions in a high-fidelity simulator, then transfers zero-shot to the real reactor, holding plasma configurations like elongated and droplet shapes for hundreds of milliseconds. It is a striking case of an off-policy value signal driving a safety-critical embodied control loop at kilohertz rates.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -294,6 +305,14 @@ print(record.as_row())</code></pre>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 16.1.1</div><p>For a discrete navigation or manipulation task, write one DQN audit row with observation summary, action id, reward, online Q value, target Q value, TD error, and replay source. Then state which field would reveal a bootstrapping error.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Discrete navigation agent in Gymnasium.</strong> Build a DQN agent that solves the FrozenLake or MiniGrid discrete navigation environment using Stable-Baselines3, logging TD errors and Q values for every step so the replay-coverage gap becomes visible. The key challenge is choosing a reward shaping and epsilon schedule that keeps the replay buffer from filling with the agent spinning in place.</p><p><strong>Intermediate (1-2 weeks): DQN pick-and-place with discretized actions in PyBullet.</strong> Train a DQN policy on a PyBullet tabletop task where the action set is discretized into 12 named gripper moves (four cardinal translations, two heights, grasp, release); use CleanRL as the baseline and instrument the audit record from Code Fragment 2 to trace which replay transitions drive each policy improvement. The key challenge is preventing the max operator from locking the policy onto one high-variance grasp action before the replay buffer has seen enough contact diversity.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a target network tame divergence</h4>
+<p><strong>Goal:</strong> see firsthand how the target network stops Q values from spiraling, and measure the cost of removing it.</p>
+<p><strong>Tools:</strong> Python, Gymnasium (<code>CartPole-v1</code>), and Stable-Baselines3 (<code>pip install gymnasium stable-baselines3</code>). About 20 minutes including two training runs on CPU.</p>
+<p><strong>Steps:</strong> Train a default <code>DQN("MlpPolicy", "CartPole-v1")</code> for 50,000 timesteps and log mean episode return plus the mean predicted Q value (pull it from the replay buffer via a short evaluation callback). Then train a second agent with the target network effectively disabled by setting <code>target_update_interval=1</code> so the bootstrap target chases every gradient step.</p>
+<p><strong>What to vary:</strong> sweep <code>target_update_interval</code> over {1, 100, 1000, 10000} and, separately, set <code>buffer_size</code> very small (e.g. 500) to cripple experience replay.</p>
+<p><strong>What to observe:</strong> with a fast or absent target sync, mean predicted Q values inflate well above the maximum achievable return (200 for CartPole) and the return curve becomes unstable or collapses; with a slow target sync and a large buffer, predicted Q values track the true return and learning is smooth. You will have reproduced two-thirds of the deadly triad and watched both stabilizers earn their place.</p>
+</div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned Q-learning; deep Q-networks into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="section-16.2.html">Section 16.2</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
