@@ -60,6 +60,97 @@
 <p>Visual realism and sensor realism can diverge. A frame may look plausible to a person while producing depth holes, wrong exposure behavior, rolling-shutter artifacts, or segmentation boundaries that the real sensor never generates. Embodied AI practitioners call this gap <strong>the sensor-faithful rendering constraint</strong>. It separates renderers that improve transfer from renderers that merely look impressive. Without it, a pose estimator trained on 500,000 rendered frames can fail on the first real shelf because simulated depth was 3 cm shallower than the physical sensor. With it, those same 500,000 frames cut real-scene pose error by more than half in published warehouse-picking benchmarks (as of 2024). The camera model is part of the experiment, not a cosmetic setting.</p>
 <div class="callout key-insight"><p>Think of a recipe photograph versus the dish itself. A food stylist can make raw chicken look golden, sauce look glossy, and steam look appetizing using paint, glycerin, and a blowtorch, yet if you cooked by following what your eyes see in that photo, the timing and temperatures would be completely wrong. Sensor-faithful rendering is the insistence that the simulation produce the actual cooking instructions, not just a beautiful plate: depth values, noise patterns, and distortion must match what the real sensor measures, not merely what the scene would look like to a human eye standing in the same spot.</p></div>
 <p>Consider a specific case: Isaac Sim's tiled-camera API places 64 virtual cameras at fixed offsets around a manipulation workspace, all sampling the same physics state at the same timestep. Each camera has its own intrinsic matrix, so the renderer exports 64 calibrated frames per step rather than one. A robot arm reaching for a block at position (0.3, 0.1, 0.05) m appears at a different pixel coordinate, scale, and occlusion pattern in every tile. The downstream pose estimator therefore sees the same ground-truth pose label paired with 64 appearance variations, which is a strict superset of what sequential camera sweeps would produce in the same wall-clock time. The mechanism that makes this work is that the scene graph holds one authoritative object transform and each camera's projection is computed independently, so labels stay consistent across tiles even though pixel content varies. Without tiling, reaching 64 calibrated viewpoints requires 64 sequential simulation steps, each advancing time and accumulating physics drift; with tiling, all 64 frames come from a single frozen state, so the pose label is identical across every view and the dataset that would take hours of wall-clock rendering collapses to minutes.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8f9fa" rx="6"/>
+  <!-- Title -->
+  <text x="300" y="24" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">Tiled Camera Pipeline: One Scene State, Many Synchronized Views</text>
+
+  <!-- Scene Graph box -->
+  <rect x="20" y="50" width="120" height="60" rx="5" fill="#d0e8ff" stroke="#3a7aba" stroke-width="1.5"/>
+  <text x="80" y="76" text-anchor="middle" fill="#1a3a5c" font-weight="bold">Scene Graph</text>
+  <text x="80" y="94" text-anchor="middle" fill="#1a3a5c">poses + lights</text>
+
+  <!-- Arrow from Scene Graph to Renderer -->
+  <line x1="140" y1="80" x2="200" y2="80" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Renderer box -->
+  <rect x="200" y="50" width="120" height="60" rx="5" fill="#d4f1d4" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="260" y="76" text-anchor="middle" fill="#1b4c1d" font-weight="bold">PBR Renderer</text>
+  <text x="260" y="94" text-anchor="middle" fill="#1b4c1d">sensor-faithful</text>
+
+  <!-- Arrow from Renderer to Tiled Cameras -->
+  <line x1="320" y1="80" x2="380" y2="80" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="350" y="72" text-anchor="middle" fill="#555" font-size="10">x N tiles</text>
+
+  <!-- Tiled Cameras box -->
+  <rect x="380" y="50" width="120" height="60" rx="5" fill="#fff3cd" stroke="#c8a000" stroke-width="1.5"/>
+  <text x="440" y="72" text-anchor="middle" fill="#5a4000" font-weight="bold">Tiled Cameras</text>
+  <text x="440" y="88" text-anchor="middle" fill="#5a4000">N viewpoints</text>
+  <text x="440" y="104" text-anchor="middle" fill="#5a4000">same timestep</text>
+
+  <!-- Arrows from Tiled Cameras down to output frames -->
+  <line x1="440" y1="110" x2="440" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Output frames row -->
+  <!-- RGB -->
+  <rect x="60" y="155" width="80" height="50" rx="4" fill="#c9e4ff" stroke="#3a7aba" stroke-width="1.2"/>
+  <text x="100" y="176" text-anchor="middle" fill="#1a3a5c" font-weight="bold">RGB</text>
+  <text x="100" y="194" text-anchor="middle" fill="#1a3a5c">frame</text>
+
+  <!-- Depth -->
+  <rect x="170" y="155" width="80" height="50" rx="4" fill="#c9e4ff" stroke="#3a7aba" stroke-width="1.2"/>
+  <text x="210" y="176" text-anchor="middle" fill="#1a3a5c" font-weight="bold">Depth</text>
+  <text x="210" y="194" text-anchor="middle" fill="#1a3a5c">map</text>
+
+  <!-- Mask -->
+  <rect x="280" y="155" width="80" height="50" rx="4" fill="#c9e4ff" stroke="#3a7aba" stroke-width="1.2"/>
+  <text x="320" y="176" text-anchor="middle" fill="#1a3a5c" font-weight="bold">Mask</text>
+  <text x="320" y="194" text-anchor="middle" fill="#1a3a5c">segmentation</text>
+
+  <!-- Pose -->
+  <rect x="390" y="155" width="80" height="50" rx="4" fill="#c9e4ff" stroke="#3a7aba" stroke-width="1.2"/>
+  <text x="430" y="176" text-anchor="middle" fill="#1a3a5c" font-weight="bold">Pose</text>
+  <text x="430" y="194" text-anchor="middle" fill="#1a3a5c">label 6-DoF</text>
+
+  <!-- Lines from Tiled Cameras fan out to each output -->
+  <line x1="400" y1="155" x2="100" y2="155" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="440" y1="155" x2="210" y2="155" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="460" y1="155" x2="320" y2="155" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>
+  <!-- direct line already drawn above to 440 -->
+
+  <!-- Shared label note -->
+  <line x1="100" y1="205" x2="430" y2="205" stroke="#888" stroke-width="1"/>
+  <line x1="100" y1="205" x2="100" y2="215" stroke="#888" stroke-width="1"/>
+  <line x1="430" y1="205" x2="430" y2="215" stroke="#888" stroke-width="1"/>
+  <text x="265" y="228" text-anchor="middle" fill="#444" font-size="11">all labels tied to ONE scene state (same object transforms)</text>
+
+  <!-- Calibration check annotation -->
+  <rect x="500" y="155" width="85" height="60" rx="4" fill="#fdecea" stroke="#c62828" stroke-width="1.2"/>
+  <text x="542" y="174" text-anchor="middle" fill="#7f0000" font-weight="bold">Calibration</text>
+  <text x="542" y="190" text-anchor="middle" fill="#7f0000">check</text>
+  <text x="542" y="206" text-anchor="middle" fill="#7f0000">delta depth</text>
+
+  <line x1="470" y1="180" x2="500" y2="180" stroke="#c62828" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#arrred)"/>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arrred" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#c62828"/>
+    </marker>
+  </defs>
+
+  <!-- Bottom note -->
+  <text x="300" y="260" text-anchor="middle" fill="#666" font-size="10">N tiled cameras share one scene graph; labels are consistent across all viewpoints</text>
+  <text x="300" y="276" text-anchor="middle" fill="#c62828" font-size="10">calibration check gates scale: abort if depth alignment error exceeds threshold</text>
+</svg>
+<figcaption>Figure 13.4B: The tiled camera pipeline. A single scene graph is rendered by a physically based renderer into N simultaneous viewpoints. RGB, depth, mask, and pose labels are all derived from the same frozen scene state, keeping labels consistent across tiles. A calibration check compares rendered depth against real sensor measurements before dataset generation scales up.</figcaption>
+</figure>
+
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is synchronized rendering at scale. Tiled cameras multiply viewpoint coverage, while the renderer keeps labels tied to the same scene state, object transforms, and camera calibration.</p>

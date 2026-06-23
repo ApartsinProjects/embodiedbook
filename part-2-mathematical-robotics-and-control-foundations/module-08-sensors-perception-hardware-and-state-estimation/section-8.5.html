@@ -48,6 +48,69 @@
 <p>A warehouse robot trusts its LiDAR enough to drive at 2 m/s, then clips a pallet because the sensor returned a clean-looking range that was off by 30 cm. The measurement looked right; the noise model was wrong. Today, as embodied agents leave the lab and enter hospitals, kitchens, and construction sites, the gap between "sensor reading" and "ground truth" is the single biggest source of real-world failure. Here you will build the mathematical vocabulary for that gap: Gaussian additive noise, multiplicative scale errors, fat-tailed outliers, and the covariance matrices that carry uncertainty forward into every state estimate your robot will ever compute.</p>
 </div>
 <p>This section builds the mathematical vocabulary for the gap between what a sensor reports and what is physically true. Every noise model here feeds directly into the Kalman and extended Kalman filters of section 8.6, where the $R$ matrix you derive from real data determines whether the filter trusts an IMU reading during a vibration event or a LiDAR return near a glass surface. The three types of model covered are: additive Gaussian noise (the tractable baseline), multiplicative and context-dependent errors (bias, scale, and drift that change with temperature or contact), and fat-tailed outlier distributions (the non-Gaussian events that corrupt state estimates and cause falls or collisions if left ungated).</p>
+<figure class="diagram-container">
+<svg font-family="monospace" role="img" viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+  <title>Sensor noise types feeding into the measurement model and state estimator</title>
+  <!-- Background -->
+  <rect fill="#f8fafc" height="300" rx="0" width="600" x="0" y="0"/>
+
+  <!-- Noise source boxes (left column) -->
+  <!-- Additive Gaussian noise -->
+  <rect fill="#e3f2fd" height="56" rx="6" stroke="#1565c0" stroke-width="1.5" width="148" x="20" y="30"/>
+  <text font-size="11" text-anchor="middle" x="94" y="53">Additive Gaussian</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="94" y="72">z = h(x) + v,  v ~ N(0,R)</text>
+
+  <!-- Multiplicative / context-dependent -->
+  <rect fill="#fff3e0" height="56" rx="6" stroke="#e65100" stroke-width="1.5" width="148" x="20" y="122"/>
+  <text font-size="11" text-anchor="middle" x="94" y="145">Multiplicative / Drift</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="94" y="164">bias, scale, temperature</text>
+
+  <!-- Fat-tailed outliers -->
+  <rect fill="#fce4ec" height="56" rx="6" stroke="#c62828" stroke-width="1.5" width="148" x="20" y="214"/>
+  <text font-size="11" text-anchor="middle" x="94" y="237">Fat-Tailed Outliers</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="94" y="256">glass, multipath, slip</text>
+
+  <!-- Arrows from noise boxes to measurement model -->
+  <line stroke="#555" stroke-width="1.5" x1="168" x2="236" y1="58" y2="148"/>
+  <polygon fill="#555" points="236,148 226,142 228,154"/>
+  <line stroke="#555" stroke-width="1.5" x1="168" x2="236" y1="150" y2="150"/>
+  <polygon fill="#555" points="236,150 226,145 226,155"/>
+  <line stroke="#555" stroke-width="1.5" x1="168" x2="236" y1="242" y2="152"/>
+  <polygon fill="#555" points="236,152 226,148 228,160"/>
+
+  <!-- Measurement model box (center) -->
+  <rect fill="#e8f5e9" height="70" rx="6" stroke="#2e7d32" stroke-width="1.5" width="148" x="236" y="115"/>
+  <text font-size="11" text-anchor="middle" x="310" y="140">Measurement</text>
+  <text font-size="11" text-anchor="middle" x="310" y="156">Model</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="310" y="176">z_t = h(x_t) + v_t</text>
+
+  <!-- Arrow to R matrix / covariance -->
+  <line stroke="#555" stroke-width="1.5" x1="384" x2="432" y1="150" y2="150"/>
+  <polygon fill="#555" points="432,150 422,145 422,155"/>
+
+  <!-- R matrix box -->
+  <rect fill="#f3e5f5" height="70" rx="6" stroke="#6a1b9a" stroke-width="1.5" width="128" x="432" y="115"/>
+  <text font-size="11" text-anchor="middle" x="496" y="140">Noise</text>
+  <text font-size="11" text-anchor="middle" x="496" y="156">Covariance R</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="496" y="176">trust per sensor cycle</text>
+
+  <!-- Arrow to state estimator -->
+  <line stroke="#555" stroke-width="1.5" x1="560" x2="560" y1="150" y2="210"/>
+  <polygon fill="#555" points="560,210 555,200 565,200"/>
+
+  <!-- State estimator box -->
+  <rect fill="#fffde7" height="56" rx="6" stroke="#f57f17" stroke-width="1.5" width="128" x="432" y="210"/>
+  <text font-size="11" text-anchor="middle" x="496" y="234">State Estimator</text>
+  <text fill="#555" font-size="10" text-anchor="middle" x="496" y="253">Kalman / EKF</text>
+
+  <!-- Column labels -->
+  <text fill="#888" font-size="9" text-anchor="middle" x="94" y="285">noise sources</text>
+  <text fill="#888" font-size="9" text-anchor="middle" x="310" y="285">model</text>
+  <text fill="#888" font-size="9" text-anchor="middle" x="496" y="285">filter input</text>
+</svg>
+<figcaption>Three sensor noise categories (additive Gaussian, multiplicative drift, and fat-tailed outliers) feed into the measurement model, which produces a covariance matrix R that controls how much the downstream state estimator trusts each sensor reading.</figcaption>
+</figure>
+
 <p>The practical question driving each model is: given this sensor reading arriving at this timestamp, how much should the state estimator move its belief? A wheel encoder on a Franka Panda arm reports joint position to 0.1 mrad resolution under static load, but flex in the link structure introduces an effective error of 0.3 to 0.8 mrad at the end-effector under dynamic load. A depth camera such as the Intel RealSense D435 has a depth noise standard deviation of roughly 2 mm at 0.5 m that grows to 30 mm at 3 m and becomes bimodal near edges due to half-pixel coverage; that 30 mm figure is already wider than the 20 mm clearance margin a typical indoor doorframe navigation planner uses, so raw depth readings at 3 m cannot safely guide a door traverse without a noise model that tells the planner to widen its safety margin accordingly. Knowing which model applies to which sensor at which operating point is what separates a filter that works in the lab from one that works on a real robot.</p>
 <div class="callout key-insight">
 <div class="callout-title">Noise Model as Action Budget</div>

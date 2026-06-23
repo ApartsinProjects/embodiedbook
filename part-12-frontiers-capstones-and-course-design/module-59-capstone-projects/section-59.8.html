@@ -47,6 +47,73 @@
 <p>A robot receives the instruction "make breakfast" and generates a flawless plan: open the fridge, retrieve eggs, crack them into a pan. Then it reaches for the drawer that holds the spatula and fails, because no one told the LLM which drawers the gripper can actually open. This gap between fluent language reasoning and physical reality is the defining challenge of embodied AI right now, when LLMs are powerful enough to plan complex sequences but still blind to what a body can and cannot do. In this capstone you will build a household task planner that closes that gap: grounding each LLM-generated step against real affordance checks, triggering replanning when execution fails, and producing a system you can interrogate end to end.</p>
 </div>
 <p>This section develops the technical contract for llm-based household task planner into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8f9fa" rx="8"/>
+
+  <!-- Step 1: User Goal -->
+  <rect x="20" y="110" width="110" height="50" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="75" y="130" text-anchor="middle" fill="#1e3a5f" font-size="12">User Goal</text>
+  <text x="75" y="148" text-anchor="middle" fill="#1e3a5f" font-size="11">"make coffee"</text>
+
+  <!-- Arrow 1 -->
+  <line x1="132" y1="135" x2="160" y2="135" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 2: LLM Planner -->
+  <rect x="162" y="100" width="110" height="70" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="217" y="122" text-anchor="middle" fill="#3b0764" font-size="12">LLM Planner</text>
+  <text x="217" y="140" text-anchor="middle" fill="#3b0764" font-size="11">generates</text>
+  <text x="217" y="156" text-anchor="middle" fill="#3b0764" font-size="11">subgoals</text>
+
+  <!-- Arrow 2 -->
+  <line x1="274" y1="135" x2="302" y2="135" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 3: Affordance Gate -->
+  <rect x="304" y="100" width="120" height="70" rx="6" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="364" y="122" text-anchor="middle" fill="#713f12" font-size="12">Affordance Gate</text>
+  <text x="364" y="140" text-anchor="middle" fill="#713f12" font-size="11">checks scene</text>
+  <text x="364" y="156" text-anchor="middle" fill="#713f12" font-size="11">graph</text>
+
+  <!-- Replan arrow: Gate back to LLM -->
+  <path d="M364,100 C364,60 217,60 217,100" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrRed)"/>
+  <text x="290" y="52" text-anchor="middle" fill="#dc2626" font-size="11">PRECONDITION_FAIL</text>
+  <text x="290" y="66" text-anchor="middle" fill="#dc2626" font-size="11">replan</text>
+
+  <!-- Arrow 3: Gate to Executor -->
+  <line x1="426" y1="135" x2="454" y2="135" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 4: Robot Executor -->
+  <rect x="456" y="100" width="120" height="70" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="516" y="122" text-anchor="middle" fill="#14532d" font-size="12">Robot Executor</text>
+  <text x="516" y="140" text-anchor="middle" fill="#14532d" font-size="11">issues motor</text>
+  <text x="516" y="156" text-anchor="middle" fill="#14532d" font-size="11">commands</text>
+
+  <!-- World state feedback arrow -->
+  <path d="M516,170 C516,240 364,240 364,170" fill="none" stroke="#0891b2" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrBlue)"/>
+  <text x="440" y="230" text-anchor="middle" fill="#0891b2" font-size="11">updated scene graph</text>
+
+  <!-- Labels row -->
+  <text x="75" y="200" text-anchor="middle" fill="#6b7280" font-size="10">1. input</text>
+  <text x="217" y="200" text-anchor="middle" fill="#6b7280" font-size="10">2. plan</text>
+  <text x="364" y="200" text-anchor="middle" fill="#6b7280" font-size="10">3. ground</text>
+  <text x="516" y="200" text-anchor="middle" fill="#6b7280" font-size="10">4. execute</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arrRed" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arrBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#0891b2"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption><strong>Figure 59.8B</strong>: Affordance-gated LLM planning loop. A user goal enters the LLM Planner (step 2), which generates subgoals. The Affordance Gate (step 3) checks each subgoal against the live scene graph; a failed precondition triggers replanning (red dashed path). Only validated subgoals reach the Robot Executor (step 4), which feeds the updated scene state back to the gate (blue dashed path).</figcaption>
+</figure>
 <p>The key question in LLM-based household task planner is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

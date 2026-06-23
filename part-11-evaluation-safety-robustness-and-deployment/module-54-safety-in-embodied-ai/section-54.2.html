@@ -57,6 +57,83 @@
 <p>If violations are genuinely unacceptable, they cannot be left to the optimizer to trade away implicitly. They need explicit budgets, shields, or action filters.</p>
 </div>
 <p>Three algorithm families address this in practice. Lagrangian relaxation methods (used in Constrained Policy Optimization, or CPO, by Achiam et al. 2017) add one multiplier per constraint and update it alongside the policy. They work well when violations are rare but can oscillate when budgets are tight. Projection-based methods pass each chosen action through a convex quadratic program. The filter accepts the action if it satisfies all constraints; otherwise it projects the action to the nearest safe command. Projection is fast enough for real-time control on robotic arms (the Franka Emika Panda runs at 1 kHz) but requires a differentiable constraint model. Model-based safe RL (Conservative Safety Critics, Yu et al. 2022) trains a safety critic offline. That critic then vetoes rollouts before they run on hardware, holding physical violations near zero during early training when the policy is most erratic. In benchmark comparisons on Safety-Gym Point tasks (as of 2023), unconstrained PPO accumulates roughly 800 constraint violations across 1 million training steps. A model-based shield cuts that count to under 20 over the same budget, a 40x reduction before the policy has learned anything reliable. Choose Lagrangian methods when you can tolerate a small budget overrun during convergence; choose projection or model-based shields when any physical violation is unacceptable.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Safe exploration constraint pipeline diagram">
+  <style>
+    .box { fill: #f0f4ff; stroke: #3a5fc8; stroke-width: 1.5; rx: 6; }
+    .box-danger { fill: #fff0f0; stroke: #c83a3a; stroke-width: 1.5; }
+    .box-safe { fill: #f0fff4; stroke: #2a9a4a; stroke-width: 1.5; }
+    .box-log { fill: #fffbe6; stroke: #b8860b; stroke-width: 1.5; }
+    .arrow { stroke: #555; stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
+    .label { font-family: monospace; font-size: 11px; fill: #222; text-anchor: middle; }
+    .label-small { font-family: monospace; font-size: 9.5px; fill: #555; text-anchor: middle; }
+    .edge-label { font-family: monospace; font-size: 9px; fill: #444; text-anchor: middle; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Agent / Policy box -->
+  <rect x="20" y="110" width="110" height="50" rx="6" class="box"/>
+  <text x="75" y="131" class="label">Policy</text>
+  <text x="75" y="148" class="label-small">proposes action</text>
+
+  <!-- Arrow: policy to filter -->
+  <line x1="130" y1="135" x2="188" y2="135" class="arrow"/>
+  <text x="159" y="127" class="edge-label">raw action</text>
+
+  <!-- Action Filter box -->
+  <rect x="188" y="100" width="130" height="70" rx="6" class="box"/>
+  <text x="253" y="124" class="label">Action Filter</text>
+  <text x="253" y="141" class="label-small">constraint check</text>
+  <text x="253" y="157" class="label-small">budget check</text>
+
+  <!-- Arrow: filter to environment (pass) -->
+  <line x1="318" y1="120" x2="398" y2="95" class="arrow"/>
+  <text x="365" y="101" class="edge-label">PASS</text>
+
+  <!-- Environment box -->
+  <rect x="398" y="70" width="110" height="50" rx="6" class="box-safe"/>
+  <text x="453" y="91" class="label">Environment</text>
+  <text x="453" y="108" class="label-small">action executed</text>
+
+  <!-- Arrow: filter to blocked (fail) -->
+  <line x1="318" y1="152" x2="398" y2="195" class="arrow"/>
+  <text x="363" y="188" class="edge-label">BLOCK</text>
+
+  <!-- Blocked action box -->
+  <rect x="398" y="195" width="110" height="50" rx="6" class="box-danger"/>
+  <text x="453" y="216" class="label">Blocked</text>
+  <text x="453" y="233" class="label-small">safe fallback</text>
+
+  <!-- Arrow: both outcomes to log -->
+  <line x1="453" y1="120" x2="453" y2="148" class="arrow"/>
+  <line x1="453" y1="195" x2="453" y2="152" class="arrow"/>
+  <!-- vertical connector -->
+  <line x1="453" y1="148" x2="453" y2="152" stroke="#555" stroke-width="1.8" fill="none"/>
+
+  <!-- Log box -->
+  <rect x="398" y="148" width="110" height="4" fill="#bbb"/>
+
+  <!-- Exploration ledger -->
+  <rect x="20" y="215" width="340" height="50" rx="6" class="box-log"/>
+  <text x="190" y="236" class="label">Exploration Ledger</text>
+  <text x="190" y="253" class="label-small">proposed action | filter decision | constraint index | margin | outcome</text>
+
+  <!-- Arrow: environment to ledger -->
+  <line x1="453" y1="148" x2="253" y2="215" class="arrow"/>
+  <text x="370" y="186" class="edge-label">log entry</text>
+
+  <!-- Arrow: budget feedback to filter -->
+  <path d="M253,170 Q253,200 190,240 Q130,250 130,170 Q130,135 188,135" class="arrow" fill="none"/>
+  <text x="118" y="208" class="label-small" style="text-anchor:end">budget</text>
+  <text x="118" y="220" class="label-small" style="text-anchor:end">update</text>
+</svg>
+<figcaption><strong>Figure 54.2.2</strong>: Safe exploration pipeline. At each step the policy proposes an action; the action filter checks it against constraint margins and the remaining safety budget. Passing actions reach the environment; blocked actions trigger a safe fallback. Both outcomes feed the exploration ledger, and cumulative budget state feeds back to the filter.</figcaption>
+</figure>
+
 <div class="callout key-insight"><p>A Lagrangian multiplier works like the pressure valve on a boiler: when the system runs too close to its safety limit, the valve tightens and throttles the flow; when the system is well within limits, the valve relaxes and allows more throughput. Set the valve too sensitive and it slams shut at the first fluctuation, starving the process of useful work. Set it too sluggish and the pressure spike has already done its damage before the valve responds. Tuning the multiplier learning rate is precisely this calibration: slow enough to ignore transient spikes, fast enough to catch a genuine budget overrun before it compounds.</p></div>
 <div class="callout tip">
 <p>When using CPO or TRPO-Lagrangian, set the multiplier learning rate (typically <code>lambda_lr</code> or <code>cost_lr</code> in Safety-Gym and OmniSafe implementations) to at least one order of magnitude lower than the policy learning rate, and clamp the multiplier to a maximum value such as 10.0. Without the clamp, a single run of back-to-back violations can drive the multiplier to extreme values, causing the policy update to collapse to near-zero step sizes and stall training entirely. A conservative <code>lambda_lr</code> of 0.001 against a policy <code>lr</code> of 0.01 is a reliable starting point for contact-rich manipulation tasks.</p>

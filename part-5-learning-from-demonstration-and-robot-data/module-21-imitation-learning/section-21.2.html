@@ -79,6 +79,77 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>Behavior cloning turns imitation into supervised learning. Given expert pairs $\mathcal{D}_E = \{(o_i, a_i^E)\}_{i=1}^N$, the learner fits $\pi_\theta$ by minimizing an action loss under the expert visitation distribution:</p>
 <p>$$\min_\theta \; \mathbb{E}_{(o,a^E) \sim \mathcal{D}_E}\left[\ell\left(\pi_\theta(o), a^E\right)\right].$$</p>
 <p>For continuous robot actions, $\ell$ is often mean squared error or negative log likelihood under a Gaussian policy. For discrete actions, it is usually cross entropy. The hidden assumption is stronger than it looks: test-time observations must remain close to the expert observations used during training. Once the learned policy makes an error, it visits observations the dataset barely covers. The next prediction then runs out of distribution. This failure mode is called <strong>covariate shift</strong>: the input distribution $p(o)$ changes at test time while the optimal action given a state stays the same. A cloned policy trained only on expert states is a map drawn only for roads the expert never left. Throughout this section the two terms are used interchangeably because behavior cloning exhibits both. The cost compounds quadratically. A policy with 1% per-step error over a 100-step horizon accumulates roughly ten times the total deviation of a policy with 10% error over just 10 steps ($100^2 \times 0.01 = 100$ versus $10^2 \times 0.10 = 10$). Doubling the task horizon can therefore matter far more than halving the error rate.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Behavior cloning distribution shift: expert manifold versus policy rollout divergence">
+  <style>
+    text { font-family: monospace; font-size: 12px; fill: currentColor; }
+    .label-sm { font-size: 10px; }
+    .axis-line { stroke: currentColor; stroke-width: 1.5; opacity: 0.4; }
+    .expert-path { stroke: #2a7ae2; stroke-width: 2.5; fill: none; }
+    .policy-path { stroke: #e05d44; stroke-width: 2.5; fill: none; stroke-dasharray: 6 3; }
+    .manifold-fill { fill: #2a7ae2; fill-opacity: 0.08; stroke: #2a7ae2; stroke-width: 1; stroke-dasharray: 4 3; }
+    .error-arrow { stroke: #e05d44; stroke-width: 1.5; fill: none; }
+    .dot-expert { fill: #2a7ae2; }
+    .dot-policy { fill: #e05d44; }
+    .legend-line-expert { stroke: #2a7ae2; stroke-width: 2.5; }
+    .legend-line-policy { stroke: #e05d44; stroke-width: 2.5; stroke-dasharray: 6 3; }
+  </style>
+
+  <!-- Y-axis label -->
+  <text transform="translate(18,220) rotate(-90)" text-anchor="middle" class="label-sm" opacity="0.7">state error</text>
+
+  <!-- X-axis label -->
+  <text x="510" y="275" text-anchor="middle" class="label-sm" opacity="0.7">timestep t</text>
+
+  <!-- Axes -->
+  <line class="axis-line" x1="50" y1="40" x2="50" y2="255"/>
+  <line class="axis-line" x1="50" y1="255" x2="540" y2="255"/>
+
+  <!-- Expert manifold band (y=0 is TOP; the "safe zone" is near bottom of chart = high y values = low error) -->
+  <!-- Band from y=200 to y=230 (low error region near bottom) -->
+  <rect class="manifold-fill" x="50" y="195" width="490" height="40" rx="4"/>
+  <text x="300" y="222" text-anchor="middle" class="label-sm" opacity="0.8">expert manifold (in-distribution states)</text>
+
+  <!-- Expert trajectory: stays flat near bottom of chart (low error = high y value) -->
+  <polyline class="expert-path" points="50,210 130,212 210,208 290,211 370,209 450,212 530,210"/>
+
+  <!-- Policy trajectory: starts near expert manifold then drifts upward (increasing error = decreasing y) -->
+  <polyline class="policy-path" points="50,210 130,205 210,185 290,155 370,115 450,72 530,45"/>
+
+  <!-- Error bracket at t=450 -->
+  <line class="error-arrow" x1="455" y1="72" x2="455" y2="212" marker-end="url(#arrowhead)"/>
+  <line x1="450" y1="72" x2="460" y2="72" stroke="#e05d44" stroke-width="1.5"/>
+  <line x1="450" y1="212" x2="460" y2="212" stroke="#e05d44" stroke-width="1.5"/>
+  <text x="470" y="145" text-anchor="start" class="label-sm" fill="#e05d44">compounding</text>
+  <text x="470" y="158" text-anchor="start" class="label-sm" fill="#e05d44">error O(T²ε)</text>
+
+  <!-- Drift onset marker -->
+  <circle cx="210" cy="185" r="5" class="dot-policy"/>
+  <text x="215" y="178" text-anchor="start" class="label-sm" fill="#e05d44">drift onset t*</text>
+
+  <!-- Start dot -->
+  <circle cx="50" cy="210" r="5" class="dot-expert"/>
+
+  <!-- Labels for endpoints -->
+  <text x="535" y="214" text-anchor="start" class="label-sm" fill="#2a7ae2">expert π_E</text>
+  <text x="535" y="49" text-anchor="start" class="label-sm" fill="#e05d44">BC policy π_θ</text>
+
+  <!-- Legend -->
+  <line class="legend-line-expert" x1="60" y1="58" x2="100" y2="58"/>
+  <text x="106" y="62" class="label-sm">expert trajectory (in-distribution)</text>
+  <line class="legend-line-policy" x1="60" y1="76" x2="100" y2="76"/>
+  <text x="106" y="80" class="label-sm">cloned policy (distribution shift)</text>
+
+  <!-- Arrow marker definition -->
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="4" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#e05d44"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Distribution shift in behavior cloning: the expert policy stays within the in-distribution manifold (blue band, low error region), while the cloned policy drifts off the manifold starting at t* and accumulates compounding error growing as O(T squared times epsilon). High y values correspond to low error; error increases as the red dashed line rises toward the top of the chart.</figcaption>
+</figure>
+
 <p>For an embodied robot, covariate shift is not merely a statistical inconvenience: it collides with hard physical limits. A robot arm that drifts 4 cm off-center does not stall gracefully; it applies unexpected contact forces, saturates joint torque limits, or topples an object that cannot be repositioned without human intervention. Unlike a software agent that can reset with a keystroke, a physical robot accumulates irreversible consequences: bent fingers, scattered parts, or a safety-stop that halts the entire cell. This is why a cloned policy that looks excellent on held-out frames can become genuinely dangerous on hardware the moment it enters an undemonstrated state.</p>
 <p>The mechanism that produces compounding error runs as follows. At timestep 1 the policy makes a small action error $\epsilon_1$; this shifts $o_2$ slightly off the expert manifold. The policy was never trained on $o_2$, so it produces a larger error $\epsilon_2 \geq \epsilon_1$. Each successive observation drifts further, and the prediction error grows with it. Because the policy has no gradient signal for recovery states, there is no self-correcting pressure: the drift is monotone in expectation, which is why the $O(T^2\epsilon)$ bound is tight in practice rather than pessimistic. To put that quadratic scaling in concrete terms: a policy with 1% per-step error over a 100-step task accumulates roughly the same total cost as collecting 10,000 demonstrations would need to cover, whereas halving the horizon to 50 steps cuts that cost by four-fold, not two-fold, which is why task decomposition often matters more than dataset size.</p>
 <p><em>Before reading the algorithm below, consider: if a cloned policy has just a 1% per-step error rate and the task takes 200 steps, how large is the total accumulated cost compared with a policy that has 2% error over only 50 steps? The answer changes how you should think about task horizon when designing your demonstration collection protocol.</em></p>

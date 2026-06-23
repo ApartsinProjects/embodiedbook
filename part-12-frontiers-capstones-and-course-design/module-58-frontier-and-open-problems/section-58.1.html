@@ -179,6 +179,79 @@ Warning: scaling curve is valid only within this (task, embodiment) support.</pr
 <p><strong>Intervention cost</strong> is the physical expense of obtaining one corrective demonstration: a human operator must watch a live robot, recognize a failure, teleop a recovery, and log the trace. On a real manipulator arm this takes 30 to 90 seconds per episode and demands a skilled operator nearby. To put the cost in concrete terms: reaching 80% task success on a new tabletop pick-and-place task through random rollout collection requires roughly 40,000 episodes, while a data engine that routes only flagged low-confidence states to a human operator reaches the same threshold with around 400 targeted interventions, a 100-fold reduction in operator time. That cost makes intervention-sourced data intrinsically scarce, which means a data engine must prioritize which failure states trigger an intervention rather than collecting corrections indiscriminately. Unlike synthetic augmentation, each intervention also carries hardware wear and operator fatigue, so the refresh budget is genuinely finite.</p>
 <p>The mechanism is a priority queue over robot states: the deployment policy estimates confidence (for example, ensemble disagreement or flow-matching variance) and flags low-confidence states. A dispatcher routes those flagged states to the intervention queue. A human operator recovers from the flagged state, the recovery trace is labeled with the failure cluster and episode metadata, and the trace enters the next training batch. Because only states where the current policy is likely to fail receive interventions, each new demonstration reduces a specific gap rather than adding redundant coverage of already-mastered behaviors.</p>
 <div class="callout key-insight"><p>Think of it like a chef who only calls a cooking instructor when a sauce is about to break. The chef handles every familiar step alone, but the moment uncertainty spikes, an expert steps in, corrects the technique, and leaves. That one corrective session teaches something no amount of practicing well-mastered steps ever could. The data engine works the same way: it withholds the expensive human intervention until the policy reaches a state it genuinely cannot handle, then collects exactly that recovery trace, so each lesson fills a real gap instead of rehearsing competence the policy already has.</p></div>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <!-- Background -->
+  <rect width="600" height="300" fill="none"/>
+
+  <!-- Node: Deploy Policy -->
+  <rect x="20" y="115" width="110" height="44" rx="6" fill="#e8f4f8" stroke="#3a7abf" stroke-width="1.5"/>
+  <text x="75" y="134" text-anchor="middle" fill="#1a3a5c" font-size="11">Deploy</text>
+  <text x="75" y="150" text-anchor="middle" fill="#1a3a5c" font-size="11">Policy</text>
+
+  <!-- Arrow Deploy -> Rollout -->
+  <line x1="130" y1="137" x2="158" y2="137" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Node: Rollout + Confidence -->
+  <rect x="158" y="107" width="120" height="60" rx="6" fill="#e8f4f8" stroke="#3a7abf" stroke-width="1.5"/>
+  <text x="218" y="130" text-anchor="middle" fill="#1a3a5c" font-size="11">Live Rollout</text>
+  <text x="218" y="147" text-anchor="middle" fill="#1a3a5c" font-size="10">+ Confidence</text>
+  <text x="218" y="161" text-anchor="middle" fill="#1a3a5c" font-size="10">Estimate</text>
+
+  <!-- Arrow Rollout -> High Confidence (loop back) -->
+  <path d="M278 120 Q340 60 400 90" stroke="#3a7abf" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+  <text x="340" y="58" text-anchor="middle" fill="#3a7abf" font-size="10">high confidence</text>
+  <text x="340" y="72" text-anchor="middle" fill="#3a7abf" font-size="10">(no intervention)</text>
+
+  <!-- Arrow Rollout -> Priority Queue (low confidence) -->
+  <line x1="278" y1="155" x2="318" y2="180" stroke="#c0392b" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="290" y="175" text-anchor="middle" fill="#c0392b" font-size="10">low conf.</text>
+
+  <!-- Node: Priority Queue -->
+  <rect x="318" y="170" width="120" height="44" rx="6" fill="#fdf0ee" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="378" y="189" text-anchor="middle" fill="#7b1a10" font-size="11">Failure Priority</text>
+  <text x="378" y="205" text-anchor="middle" fill="#7b1a10" font-size="11">Queue</text>
+
+  <!-- Arrow Priority Queue -> Human Intervention -->
+  <line x1="438" y1="192" x2="468" y2="192" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Node: Human Intervention -->
+  <rect x="468" y="170" width="112" height="44" rx="6" fill="#fef9e7" stroke="#d4ac0d" stroke-width="1.5"/>
+  <text x="524" y="189" text-anchor="middle" fill="#7d6608" font-size="11">Human</text>
+  <text x="524" y="205" text-anchor="middle" fill="#7d6608" font-size="11">Intervention</text>
+
+  <!-- Arrow Human -> Retrain (down and left) -->
+  <path d="M524 214 Q524 260 378 260 Q218 260 218 250" stroke="#2e7d32" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+  <text x="378" y="275" text-anchor="middle" fill="#2e7d32" font-size="10">recovery trace added to training batch</text>
+
+  <!-- Arrow Retrain -> Deploy (up to Deploy node) -->
+  <path d="M218 250 Q100 250 75 159" stroke="#2e7d32" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+
+  <!-- Node label: Retrain -->
+  <text x="145" y="268" text-anchor="middle" fill="#2e7d32" font-size="10">Retrain</text>
+
+  <!-- High-conf loop arrow to Deploy -->
+  <path d="M400 90 Q470 90 524 115" stroke="#3a7abf" stroke-width="1.5" fill="none" stroke-dasharray="5,3"/>
+  <path d="M400 90 Q310 90 75 115" stroke="#3a7abf" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arr-blue)"/>
+
+  <!-- Arrowhead markers -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#c0392b"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#2e7d32"/>
+    </marker>
+    <marker id="arr-blue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3a7abf"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 58.1B: The robot data engine loop. The deployed policy runs live rollouts and estimates confidence at each state. High-confidence states continue without human involvement (dashed blue). Low-confidence states enter a failure priority queue, triggering a targeted human intervention. The recovery trace is added to the training batch, the policy is retrained, and the loop repeats. Each cycle fills a specific coverage gap rather than accumulating redundant successes.</figcaption>
+</figure>
 <div class="comparison-table"><div class="comparison-table-title">Data-Engine Design Questions</div><table><thead><tr><th>Dimension</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
 <tr><td>Data source</td><td>Teleoperation, scripted policies, fleet logs, or synthetic augmentation</td><td>It determines covariate shift and label quality.</td></tr>
 <tr><td>Coverage axis</td><td>Task family, embodiment family, horizon length, or perturbation family</td><td>It prevents a single aggregate curve from hiding blind spots.</td></tr>

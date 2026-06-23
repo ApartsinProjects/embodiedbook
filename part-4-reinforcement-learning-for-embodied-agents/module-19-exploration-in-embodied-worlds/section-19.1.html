@@ -51,6 +51,82 @@
 <p>It builds on reward specification in <a class="cross-ref" href="../module-18-reward-design-and-goal-specification/index.html">Chapter 18: Reward Design and Goal Specification</a>, reuses partial observability from <a class="cross-ref" href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2: The Agent-Environment Interface</a>, and prepares transfer testing in <a class="cross-ref" href="../module-20-sim-to-real-transfer-rl-focus/index.html">Chapter 20: Sim-to-Real Transfer</a>.</p>
 
 <p>This section turns exploration cost into a concrete design variable. The central object is a probe: an action chosen mainly to <a class="cross-ref" href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.3.html">reduce uncertainty</a> rather than to complete the task immediately. In a simulator, a random-walk agent can execute 10,000 such probes in a training session at zero marginal cost; on a physical robot in a warehouse, that same number of unpriced probes consumes roughly 80 hours of human reset labor and risks hardware damage well before episode 500, which is <strong>the hidden tax on physical curiosity</strong>. A cost-gated policy that prices each probe before committing can reach the same behavioral competence in roughly 300 physical episodes; an unpriced curiosity policy typically requires 50,000 before the task-success curve stabilizes, and most real teams exhaust their reset budget around episode 2,000 and declare the method impractical.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Probe cost accounting flow: information gain minus reset burden and hazard risk yields a net probe score">
+  <style>
+    .box { fill: #f5f5f5; stroke: #555; stroke-width: 1.5; rx: 6; }
+    .label { font-family: monospace; font-size: 12px; fill: #222; text-anchor: middle; }
+    .sublabel { font-family: monospace; font-size: 10px; fill: #555; text-anchor: middle; }
+    .arrow { stroke: #555; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    .minus { font-family: monospace; font-size: 16px; fill: #b00; text-anchor: middle; }
+    .plus { font-family: monospace; font-size: 16px; fill: #080; text-anchor: middle; }
+    .gate { fill: #fff3cd; stroke: #b8860b; stroke-width: 1.5; }
+    .score { fill: #e8f5e9; stroke: #2e7d32; stroke-width: 1.5; }
+  </style>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Candidate probe (left) -->
+  <rect class="box" x="10" y="110" width="110" height="52" rx="6"/>
+  <text class="label" x="65" y="132">candidate</text>
+  <text class="label" x="65" y="150">probe a</text>
+
+  <!-- Arrow from probe to information gain -->
+  <line class="arrow" x1="120" y1="136" x2="158" y2="90"/>
+  <!-- Arrow from probe to reset burden -->
+  <line class="arrow" x1="120" y1="136" x2="158" y2="136"/>
+  <!-- Arrow from probe to hazard risk -->
+  <line class="arrow" x1="120" y1="136" x2="158" y2="182"/>
+
+  <!-- Information gain box -->
+  <rect class="box" x="160" y="62" width="120" height="52" rx="6"/>
+  <text class="label" x="220" y="84">information</text>
+  <text class="label" x="220" y="102">gain  i(a)</text>
+
+  <!-- Reset burden box -->
+  <rect class="box" x="160" y="110" width="120" height="52" rx="6"/>
+  <text class="label" x="220" y="132">reset</text>
+  <text class="label" x="220" y="150">burden  r(a)</text>
+
+  <!-- Hazard risk box -->
+  <rect class="box" x="160" y="158" width="120" height="52" rx="6"/>
+  <text class="label" x="220" y="180">hazard</text>
+  <text class="label" x="220" y="198">risk  h(a)</text>
+
+  <!-- Operator labels on arrows going into score box -->
+  <text class="plus"  x="315" y="92">+</text>
+  <text class="minus" x="315" y="140">-</text>
+  <text class="minus" x="315" y="188">-</text>
+
+  <!-- Arrows to score node -->
+  <line class="arrow" x1="280" y1="88"  x2="338" y2="120"/>
+  <line class="arrow" x1="280" y1="136" x2="338" y2="136"/>
+  <line class="arrow" x1="280" y1="184" x2="338" y2="152"/>
+
+  <!-- Score box -->
+  <rect class="score" x="340" y="100" width="120" height="72" rx="6"/>
+  <text class="label" x="400" y="124">probe score</text>
+  <text class="sublabel" x="400" y="142">i(a) - a_r*r(a)</text>
+  <text class="sublabel" x="400" y="158">      - a_h*h(a)</text>
+
+  <!-- Arrow to budget gate -->
+  <line class="arrow" x1="460" y1="136" x2="498" y2="136"/>
+
+  <!-- Budget gate box -->
+  <rect class="gate" x="500" y="100" width="90" height="72" rx="6"/>
+  <text class="label" x="545" y="124">budget</text>
+  <text class="label" x="545" y="142">gate</text>
+  <text class="sublabel" x="545" y="162">pass / reject</text>
+
+  <!-- Key at bottom -->
+  <text class="sublabel" x="300" y="270">a_r = reset weight,  a_h = hazard weight,  gate enforces C_max and H_max</text>
+</svg>
+<figcaption><strong>Figure 19.1B</strong>: Probe cost accounting. A candidate probe is decomposed into information gain (positive) and reset burden plus hazard risk (negative). The weighted sum forms a net probe score that must also clear a budget gate before the probe executes.</figcaption>
+</figure>
+
 <p>The key question is practical: what uncertainty does the probe reduce, what does it cost to execute, what does it cost to reset, and what evidence shows that the probe was worth taking?</p>
 <p>A policy that works in simulation but destroys hardware on day one is not a policy: it is a liability waiting for a robot. Reset burden matters in embodied AI because the environment does not restore itself. In simulation a reset is a function call; on a physical robot, it is a person walking over, repositioning objects, and clearing faults. That asymmetry means two probes with identical information gain can differ by an order of magnitude in true cost, and any exploration policy that ignores reset burden will systematically overspend it until a human or a safety cutoff intervenes.</p>
 <p>In practice, reset burden is estimated by timing manual resets during a pilot run, then fitting a linear model over object displacement, contact count, and floor area affected. The resulting scalar $r(a)$ is multiplied by $\alpha_r$ in the probe score so that actions pushing objects far from their nominal positions or into hard-to-reach corners score lower even when their information gain is high.</p>

@@ -56,6 +56,60 @@
 
 <p>Before diving into formalism, consider why the kinematic chain abstraction exists at all. A robot arm must map a high-level task goal, such as "place the gripper 30 cm above the conveyor," into specific motor commands for each of its joints. Without a systematic way to track how each joint rotation propagates through the structure, a planner would need to re-derive geometry from scratch for every configuration. The kinematic chain gives the agent a single composable model: <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.4.html">multiply the transforms in order</a> and you immediately know where every link and the end-effector sit in the world frame. This composability is what makes motion planning, workspace analysis, and closed-loop control tractable. A six-joint arm has 6 transform multiplications to reach any configuration; re-deriving that geometry per query without the chain would require recomputing up to 36 frame relationships from scratch on every call, and in practice a motion planner that samples 10,000 candidate configurations would invoke that recomputation 360,000 times instead of 60,000 multiplications, making the chain abstraction not a convenience but a prerequisite for real-time planning. Without the chain, embodied systems cannot reliably reason about reachability, avoid collisions, or hand off a grasp target to a controller.</p>
 <p>For Robot arms, joints, the kinematic chain, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kinematic chain showing base frame, three links connected by revolute joints, and end-effector">
+  <!-- Base frame -->
+  <rect x="20" y="120" width="50" height="60" rx="6" fill="#cfd8dc" stroke="#455a64" stroke-width="2"/>
+  <text x="45" y="145" text-anchor="middle" font-family="monospace" font-size="11" fill="#263238">BASE</text>
+  <text x="45" y="163" text-anchor="middle" font-family="monospace" font-size="10" fill="#455a64">frame 0</text>
+
+  <!-- Joint 1 circle -->
+  <circle cx="110" cy="150" r="16" fill="#b3e5fc" stroke="#0277bd" stroke-width="2"/>
+  <text x="110" y="155" text-anchor="middle" font-family="monospace" font-size="11" fill="#01579b">J1</text>
+  <text x="110" y="195" text-anchor="middle" font-family="monospace" font-size="10" fill="#0277bd">revolute</text>
+  <!-- connector base to J1 -->
+  <line x1="70" y1="150" x2="94" y2="150" stroke="#455a64" stroke-width="3"/>
+
+  <!-- Link 1 -->
+  <rect x="126" y="140" width="90" height="20" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="171" y="154" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d32">link 1</text>
+
+  <!-- Joint 2 circle -->
+  <circle cx="252" cy="150" r="16" fill="#b3e5fc" stroke="#0277bd" stroke-width="2"/>
+  <text x="252" y="155" text-anchor="middle" font-family="monospace" font-size="11" fill="#01579b">J2</text>
+  <text x="252" y="195" text-anchor="middle" font-family="monospace" font-size="10" fill="#0277bd">revolute</text>
+  <!-- connector link1 to J2 -->
+  <line x1="216" y1="150" x2="236" y2="150" stroke="#455a64" stroke-width="3"/>
+
+  <!-- Link 2 (angled upward to show arm posture) -->
+  <line x1="268" y1="150" x2="358" y2="100" stroke="#2e7d32" stroke-width="8" stroke-linecap="round"/>
+  <text x="313" y="118" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d32">link 2</text>
+
+  <!-- Joint 3 circle -->
+  <circle cx="368" cy="95" r="16" fill="#b3e5fc" stroke="#0277bd" stroke-width="2"/>
+  <text x="368" y="100" text-anchor="middle" font-family="monospace" font-size="11" fill="#01579b">J3</text>
+  <text x="368" y="140" text-anchor="middle" font-family="monospace" font-size="10" fill="#0277bd">prismatic</text>
+
+  <!-- Link 3 (angled down-right) -->
+  <line x1="384" y1="95" x2="464" y2="130" stroke="#2e7d32" stroke-width="8" stroke-linecap="round"/>
+  <text x="430" y="108" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d32">link 3</text>
+
+  <!-- End-effector -->
+  <polygon points="480,110 510,130 480,150" fill="#fff9c4" stroke="#f57f17" stroke-width="2"/>
+  <text x="540" y="128" text-anchor="middle" font-family="monospace" font-size="11" fill="#e65100">EE</text>
+  <text x="540" y="145" text-anchor="middle" font-family="monospace" font-size="10" fill="#e65100">frame n</text>
+
+  <!-- Transform chain label -->
+  <text x="300" y="255" text-anchor="middle" font-family="monospace" font-size="12" fill="#37474f">T_0e = T_01(q1) * T_12(q2) * T_23(q3) * T_3e</text>
+
+  <!-- Upstream/downstream annotation -->
+  <text x="45" y="215" text-anchor="middle" font-family="monospace" font-size="9" fill="#78909c">upstream</text>
+  <text x="510" y="175" text-anchor="middle" font-family="monospace" font-size="9" fill="#78909c">downstream</text>
+  <line x1="90" y1="212" x2="460" y2="212" stroke="#b0bec5" stroke-width="1" stroke-dasharray="4,3"/>
+  <polygon points="460,208 470,212 460,216" fill="#b0bec5"/>
+</svg>
+<figcaption>The kinematic chain: each joint (J1 revolute, J2 revolute, J3 prismatic) adds one controlled degree of freedom and one transform. The end-effector pose T_0e is the ordered product of all per-joint transforms from base frame 0 to tool frame n. Perturbing any joint displaces it and every downstream frame; upstream frames are unaffected.</figcaption>
+</figure>
 <p>A robot arm is a sequence of rigid links connected by joints. Each joint contributes one controlled motion, usually a rotation for a revolute joint or a translation for a prismatic joint. The kinematic chain is the ordered product of those link transforms, so a small upstream joint change moves every downstream frame.</p>
 <p>Joint type matters for embodied AI because it determines the workspace geometry and the actuator hardware. A revolute joint sweeps a circular arc, so its reach depends on the arm's posture; stacking multiple revolute joints produces the curved, dexterous workspaces seen in industrial arms. A prismatic joint translates linearly, offering direct, predictable reach extension but limited angular coverage. Choosing the wrong joint type for a task (for example, a prismatic wrist trying to reorient a screwdriver) forces awkward compensations across the entire chain, often pushing the arm toward singularities or joint-limit boundaries in real operation.</p>
 <p>Before reading on, consider this: if you swap the order of just two joints in the kinematic chain description while leaving the physical arm unchanged, where does the end-effector end up, and does any error get raised?</p>

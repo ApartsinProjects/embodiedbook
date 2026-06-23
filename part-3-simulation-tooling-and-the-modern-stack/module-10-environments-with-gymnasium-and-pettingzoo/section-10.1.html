@@ -53,6 +53,75 @@
 <p>The migration from legacy Gym to Gymnasium is operational, not cosmetic. The important change is the environment contract that every later RL script, <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-09-why-simulation-is-central/section-9.2.html">simulator wrapper</a>, benchmark, and debugging trace will assume.</p>
 <p>The goal is a reproducible habit: call <code>reset(seed=...)</code>, unpack <code>step</code> into five values, treat <code>terminated</code> and <code>truncated</code> as different signals, and save enough <code>info</code> to explain what happened.</p>
 <p>Consider a specific case: a mobile robot navigating a 10 x 10 grid has a 200-step episode limit. After 200 steps without reaching the goal, Gymnasium returns <code>terminated=False, truncated=True</code>. The robot is still alive and the task is still solvable, so a PPO trainer should bootstrap the value from the 201st state rather than treating the boundary as a death. If the robot falls into an obstacle at step 137, Gymnasium returns <code>terminated=True, truncated=False</code>, and bootstrapping from the next state would be wrong because the episode is genuinely over. The two flags tell the trainer which arithmetic to apply, and getting this wrong silently degrades sample efficiency over thousands of rollouts without producing any obvious error message.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Gymnasium step contract flow diagram">
+  <style>
+    text { font-family: monospace; font-size: 13px; fill: currentColor; }
+    .label-sm { font-size: 11px; }
+    .box { fill: none; stroke: currentColor; stroke-width: 1.5; rx: 6; }
+    .arrow { stroke: currentColor; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .flag-term { fill: #c0392b; stroke: #c0392b; }
+    .flag-trunc { fill: #2980b9; stroke: #2980b9; }
+    .flag-text { fill: #fff; font-family: monospace; font-size: 11px; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="currentColor"/>
+    </marker>
+  </defs>
+
+  <!-- Agent box -->
+  <rect x="20" y="115" width="110" height="50" class="box" rx="6"/>
+  <text x="75" y="136" text-anchor="middle">Agent</text>
+  <text x="75" y="153" text-anchor="middle" class="label-sm">selects action</text>
+
+  <!-- Arrow: agent -> env.step() -->
+  <line x1="130" y1="140" x2="210" y2="140" class="arrow"/>
+  <text x="170" y="132" text-anchor="middle" class="label-sm">action</text>
+
+  <!-- env.step() box -->
+  <rect x="210" y="105" width="150" height="70" class="box" rx="6"/>
+  <text x="285" y="128" text-anchor="middle">env.step(action)</text>
+  <text x="285" y="146" text-anchor="middle" class="label-sm">obs, reward,</text>
+  <text x="285" y="162" text-anchor="middle" class="label-sm">terminated, truncated, info</text>
+
+  <!-- Arrow: env.step -> branch -->
+  <line x1="360" y1="140" x2="420" y2="140" class="arrow"/>
+
+  <!-- Branch point -->
+  <circle cx="420" cy="140" r="5" style="fill:currentColor"/>
+
+  <!-- Arrow up: terminated -->
+  <line x1="420" y1="135" x2="420" y2="65" class="arrow"/>
+  <line x1="420" y1="65" x2="480" y2="65" class="arrow"/>
+
+  <!-- terminated label box -->
+  <rect x="480" y="42" width="105" height="46" class="flag-term" rx="5" opacity="0.85"/>
+  <text x="532" y="60" text-anchor="middle" class="flag-text">terminated=True</text>
+  <text x="532" y="76" text-anchor="middle" class="flag-text">V(next) = 0</text>
+
+  <!-- Arrow down: truncated -->
+  <line x1="420" y1="145" x2="420" y2="215" class="arrow"/>
+  <line x1="420" y1="215" x2="480" y2="215" class="arrow"/>
+
+  <!-- truncated label box -->
+  <rect x="480" y="192" width="105" height="46" class="flag-trunc" rx="5" opacity="0.85"/>
+  <text x="532" y="210" text-anchor="middle" class="flag-text">truncated=True</text>
+  <text x="532" y="226" text-anchor="middle" class="flag-text">bootstrap V(next)</text>
+
+  <!-- "neither" path: continue loop arrow back -->
+  <text x="425" y="138" text-anchor="start" class="label-sm">?</text>
+  <text x="376" y="132" text-anchor="middle" class="label-sm">5 values</text>
+
+  <!-- loop back arrow: neither flag set -->
+  <line x1="285" y1="175" x2="285" y2="255" class="arrow"/>
+  <line x1="285" y1="255" x2="75" y2="255" class="arrow"/>
+  <line x1="75" y1="255" x2="75" y2="165" class="arrow"/>
+  <text x="180" y="270" text-anchor="middle" class="label-sm">neither flag: continue episode</text>
+</svg>
+<figcaption>Figure 10.1B: The Gymnasium step contract. Each call to <code>env.step(action)</code> returns five values. When <code>terminated</code> is true the episode ended at a genuine task boundary and the bootstrap value is zero. When <code>truncated</code> is true a time limit interrupted an ongoing task and the algorithm must estimate the value of the next state. When neither flag is set the loop continues.</figcaption>
+</figure>
+
 <div class="callout key-insight">
 <div class="callout-title">The Interface Is The Test</div>
 <p>This environment is ready when another reader can reset it with the same seed, inspect Gymnasium API compatibility, reset and step signatures, termination versus truncation, and wrapper behavior, reproduce the same rollout, and recover the same logged evidence.</p>

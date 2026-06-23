@@ -57,6 +57,82 @@
 
 <p>Why discretize at all? Continuous action spaces like 7-DOF joint velocities sampled at 50 Hz create a high-dimensional prediction target where diffusion models must denoise across every dimension simultaneously. When demonstrations cluster into a small set of reusable motion primitives (reach, grasp close, transfer, release), a codebook can compress that space dramatically: instead of predicting 14 floats per step, the transformer predicts one integer token per chunk. Lee et al. (2024) introduced VQ-BeT to exploit exactly this structure, demonstrating that a 2048-entry codebook trained on the LIBERO benchmark captured the modal diversity of bimanual manipulation without the iterative sampling cost of diffusion. The tradeoff is precision: a token can only resolve motion to the granularity of the nearest codebook entry, which matters most for delicate contact tasks. A codebook that cannot name the motion cannot teach it. A vocabulary of a thousand words can tell a rich story, but it cannot whisper. That compression is why a transformer trained on token sequences can generalize across robot bodies with a few hundred demonstrations, whereas the same transformer predicting raw joint velocities typically needs tens of thousands of episodes to cover the same behavioral diversity.</p>
 
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <!-- Background -->
+  <rect width="600" height="300" fill="none"/>
+
+  <!-- Stage 1: Action Chunk -->
+  <rect x="20" y="110" width="100" height="60" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="70" y="136" text-anchor="middle" font-size="11">Action</text>
+  <text x="70" y="151" text-anchor="middle" font-size="11">Chunk</text>
+  <text x="70" y="166" text-anchor="middle" font-size="10" opacity="0.7">H x d floats</text>
+
+  <!-- Arrow 1 -->
+  <line x1="120" y1="140" x2="148" y2="140" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Stage 2: VQ-VAE Encoder -->
+  <rect x="148" y="100" width="110" height="80" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="203" y="126" text-anchor="middle" font-size="11">VQ-VAE</text>
+  <text x="203" y="141" text-anchor="middle" font-size="11">Encoder</text>
+  <text x="203" y="158" text-anchor="middle" font-size="10" opacity="0.7">z = E(A)</text>
+  <text x="203" y="173" text-anchor="middle" font-size="10" opacity="0.7">nearest e_j</text>
+
+  <!-- Arrow 2 -->
+  <line x1="258" y1="140" x2="286" y2="140" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Stage 3: Codebook (center, prominent) -->
+  <rect x="286" y="80" width="120" height="120" rx="6" fill="none" stroke="currentColor" stroke-width="2"/>
+  <text x="346" y="104" text-anchor="middle" font-size="11" font-weight="bold">Codebook</text>
+  <text x="346" y="120" text-anchor="middle" font-size="10" opacity="0.7">K entries</text>
+  <!-- Grid of code entries -->
+  <rect x="302" y="128" width="14" height="12" rx="2" fill="currentColor" opacity="0.3"/>
+  <rect x="320" y="128" width="14" height="12" rx="2" fill="currentColor" opacity="0.6"/>
+  <rect x="338" y="128" width="14" height="12" rx="2" fill="currentColor" opacity="0.15"/>
+  <rect x="356" y="128" width="14" height="12" rx="2" fill="currentColor" opacity="0.9"/>
+  <rect x="374" y="128" width="14" height="12" rx="2" fill="currentColor" opacity="0.2"/>
+  <rect x="302" y="146" width="14" height="12" rx="2" fill="currentColor" opacity="0.1"/>
+  <rect x="320" y="146" width="14" height="12" rx="2" fill="currentColor" opacity="0.4"/>
+  <rect x="338" y="146" width="14" height="12" rx="2" fill="currentColor" opacity="0.7"/>
+  <rect x="356" y="146" width="14" height="12" rx="2" fill="currentColor" opacity="0.3"/>
+  <rect x="374" y="146" width="14" height="12" rx="2" fill="currentColor" opacity="0.5"/>
+  <text x="346" y="178" text-anchor="middle" font-size="10" opacity="0.7">j* = argmin||z - e_j||</text>
+
+  <!-- Arrow 3: codebook -> transformer (output: integer token) -->
+  <line x1="406" y1="140" x2="434" y2="140" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="420" y="133" text-anchor="middle" font-size="10" opacity="0.7">token j*</text>
+
+  <!-- Stage 4: Transformer -->
+  <rect x="434" y="100" width="110" height="80" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="489" y="126" text-anchor="middle" font-size="11">Transformer</text>
+  <text x="489" y="141" text-anchor="middle" font-size="11">Policy</text>
+  <text x="489" y="158" text-anchor="middle" font-size="10" opacity="0.7">pi(j | o_t)</text>
+  <text x="489" y="173" text-anchor="middle" font-size="10" opacity="0.7">1 integer out</text>
+
+  <!-- Arrow 4: to decoder (goes down then right) -->
+  <line x1="489" y1="180" x2="489" y2="220" stroke="currentColor" stroke-width="1.5"/>
+  <line x1="489" y1="220" x2="346" y2="220" stroke="currentColor" stroke-width="1.5"/>
+  <line x1="346" y1="220" x2="346" y2="200" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="420" y="236" text-anchor="middle" font-size="10" opacity="0.7">decode via VQ-VAE decoder</text>
+
+  <!-- Output label -->
+  <text x="346" y="255" text-anchor="middle" font-size="11">Executed Action Chunk</text>
+  <text x="346" y="270" text-anchor="middle" font-size="10" opacity="0.7">D(e_j*): H x d floats</text>
+
+  <!-- Top label -->
+  <text x="300" y="30" text-anchor="middle" font-size="13" font-weight="bold">VQ-BeT: Continuous to Discrete and Back</text>
+  <text x="300" y="50" text-anchor="middle" font-size="11" opacity="0.7">Training: encode chunks to tokens   |   Inference: predict token, decode to chunk</text>
+
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="currentColor"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption><strong>Figure 22.6B</strong>: VQ-BeT pipeline. A continuous action chunk is encoded by the VQ-VAE encoder and assigned to the nearest codebook entry (token index j*). The transformer policy learns to predict that token index from the observation. At inference, the predicted token is decoded back to a continuous action chunk by the VQ-VAE decoder. The key compression: H x d floats become one integer, enabling fast transformer inference and cross-embodiment token sharing.</figcaption>
+</figure>
+
 <div class="callout warning"><p>A common assumption is that VQ-BeT's single integer token means the robot operates in a truly discrete action space with no precision loss relative to the original demonstrations. That assumption is wrong whenever physical contact matters. The VQ-VAE decoder always outputs a continuous action chunk from the nearest codebook vector. Quantization error is therefore unavoidable: it accumulates whenever the true motion falls between codebook entries. Discretization trades reconstruction fidelity for inference speed and cross-embodiment transferability. Token prediction is fast and composable, but each decoded chunk carries a spatial error floor set by codebook granularity. That error floor explains why precision tasks such as peg insertion can regress even when coarse pick-and-place scores improve.</p></div>
 <div class="callout key-insight"><p>Think of a paint-by-number palette with only 2,048 colors. A skilled painter mixing pigments can hit any hue they want, but a paint-by-number artist must pick the closest swatch on the palette, leaving every subtly different shade rounded to the nearest available chip. For broad regions of sky or grass the rounding is invisible, but for a narrow sliver of shadow between two objects the nearest swatch may be noticeably wrong. VQ-BeT's codebook works the same way: coarse reaching and grasping motions land comfortably on a nearby entry, while the precise fingertip adjustments needed for peg insertion fall between swatches and incur an unavoidable gap.</p></div>
 <p>For VQ-BeT and discretized behavior modeling, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>

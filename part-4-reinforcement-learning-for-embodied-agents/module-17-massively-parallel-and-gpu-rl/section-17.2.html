@@ -51,6 +51,66 @@
 <p>For Learning to walk in minutes: the parallel-RL recipe, GPU RL depends on simulator fidelity, PPO rollout semantics, reward terms, and reset distribution being versioned in the same training artifact.</p>
 
 <p>This section develops the parallel-RL recipe behind fast locomotion training. We focus on the control decisions that make a huge rollout useful: short horizons, many environments, stable normalization, randomized starts, and a held-out evaluation panel.</p>
+
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Parallel-RL training loop diagram">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+  </defs>
+  <!-- Background panels -->
+  <rect x="10" y="30" width="140" height="80" rx="6" fill="#e8f4e8" stroke="#4a8a4a" stroke-width="1.5"/>
+  <rect x="10" y="130" width="140" height="60" rx="6" fill="#e8f0fb" stroke="#4a6aaa" stroke-width="1.5"/>
+  <rect x="230" y="20" width="140" height="100" rx="6" fill="#fff8e8" stroke="#aa8a2a" stroke-width="1.5"/>
+  <rect x="450" y="30" width="130" height="80" rx="6" fill="#fce8e8" stroke="#aa4a4a" stroke-width="1.5"/>
+  <rect x="450" y="160" width="130" height="80" rx="6" fill="#e8f4f8" stroke="#2a8aaa" stroke-width="1.5"/>
+
+  <!-- Labels inside boxes -->
+  <text x="80" y="62" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a5a2a">N = 4096</text>
+  <text x="80" y="78" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a5a2a">parallel envs</text>
+  <text x="80" y="96" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a5a2a">T = 24 steps each</text>
+
+  <text x="80" y="156" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a3a7a">randomized</text>
+  <text x="80" y="172" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a3a7a">terrain / mass /</text>
+  <text x="80" y="188" text-anchor="middle" font-family="monospace" font-size="11" fill="#2a3a7a">friction seeds</text>
+
+  <text x="300" y="52" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a5a00">98,304 transitions</text>
+  <text x="300" y="68" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a5a00">per update block</text>
+  <text x="300" y="90" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a5a00">GAE advantages</text>
+  <text x="300" y="106" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a5a00">+ normalization</text>
+
+  <text x="515" y="58" text-anchor="middle" font-family="monospace" font-size="11" fill="#7a1a1a">PPO update</text>
+  <text x="515" y="74" text-anchor="middle" font-family="monospace" font-size="11" fill="#7a1a1a">shared policy</text>
+  <text x="515" y="90" text-anchor="middle" font-family="monospace" font-size="11" fill="#7a1a1a">theta + stats</text>
+
+  <text x="515" y="186" text-anchor="middle" font-family="monospace" font-size="11" fill="#005a7a">held-out eval</text>
+  <text x="515" y="202" text-anchor="middle" font-family="monospace" font-size="11" fill="#005a7a">panel (no noise)</text>
+  <text x="515" y="218" text-anchor="middle" font-family="monospace" font-size="11" fill="#005a7a">fall rate + error</text>
+
+  <!-- Section titles above boxes -->
+  <text x="80" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="#555" font-weight="bold">COLLECT</text>
+  <text x="300" y="14" text-anchor="middle" font-family="monospace" font-size="10" fill="#555" font-weight="bold">PROCESS</text>
+  <text x="515" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="#555" font-weight="bold">UPDATE</text>
+  <text x="515" y="153" text-anchor="middle" font-family="monospace" font-size="10" fill="#555" font-weight="bold">EVALUATE</text>
+
+  <!-- Arrows: envs -> rollout block -->
+  <line x1="150" y1="70" x2="228" y2="70" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- randomization feeds into collect -->
+  <line x1="80" y1="130" x2="80" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- rollout block -> PPO update -->
+  <line x1="370" y1="70" x2="448" y2="70" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- PPO update -> back to envs (loop) -->
+  <path d="M515,110 L515,260 L80,260 L80,212" stroke="#555" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  <!-- PPO -> eval -->
+  <line x1="515" y1="110" x2="515" y2="158" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Loop label -->
+  <text x="290" y="278" text-anchor="middle" font-family="monospace" font-size="10" fill="#777">repeat until held-out metrics pass</text>
+</svg>
+<figcaption><strong>Figure 17.2B</strong>: The parallel-RL training loop. N = 4096 environments (with randomized terrain and physics seeds) each contribute T = 24 steps, yielding one large rollout block per update. Advantages are computed and the shared policy is updated via PPO. A separate held-out evaluation panel (no exploration noise) measures fall rate and command-tracking error and is the only signal that determines transfer readiness.</figcaption>
+</figure>
+
 <p>The key question is practical: how much simulated walking experience reaches the learner per update, and how do we keep that experience fresh enough that PPO is still optimizing the policy that collected it?</p>
 <div class="callout key-insight">
 <div class="callout-title">Fast Does Not Mean Long Horizons</div>

@@ -51,6 +51,73 @@
 <div class="callout warning"><p>A common assumption is that a robot achieving 85-90% success on short benchmark tasks means these problems are nearly solved and only incremental engineering remains. This is wrong in the embodied AI context because short-episode success does not compose: each small error in a long-horizon task compounds rather than cancels, so a policy that succeeds 90% of the time on 5-minute trials may succeed 0% of the time on a 20-minute real-world deployment where memory decays, sensor conditions shift, and no human reset is available. The correct mental model treats reliability as a curve over deployment horizon, not a single percentage: the open problems named in this section are structural gaps in how learning systems handle time, distribution shift, and physical sample cost, not just accuracy shortfalls that a larger model will automatically close.</p></div>
 <p>This section develops the technical contract for what is still unsolved (long-horizon reasoning, reliability, real-world rl) into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
 <p>These three problems persist not because researchers have ignored them but because each one attacks a different structural assumption that most learning pipelines take for granted. Long-horizon reasoning breaks the assumption that a good local policy composes into a good global trajectory. Reliability breaks the assumption that a held-out test set predicts deployment performance. Real-world RL (reinforcement learning) breaks the assumption that the number of training interactions is cheap. A household robot asked to tidy a kitchen, retrieve a specific medication, and then report back has to handle all three simultaneously: it must commit to a multi-step plan, stay safe around humans and fragile objects, and do so after only hours of on-hardware experience rather than millions of simulated steps.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Three structural gaps in embodied AI and the pipeline assumptions they break">
+  <style>
+    .dbox { fill: none; stroke: currentColor; stroke-width: 1.5; }
+    .darrow { stroke: currentColor; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    .dbroken { stroke-dasharray: 6 3; stroke: currentColor; stroke-width: 1.5; fill: none; marker-end: url(#arr2); }
+    .dlabel-sm { font-family: monospace; font-size: 10px; fill: currentColor; }
+    .dlabel-md { font-family: monospace; font-size: 11px; fill: currentColor; }
+    .dlabel-hd { font-family: monospace; font-size: 12px; font-weight: bold; fill: currentColor; }
+  </style>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="currentColor"/>
+    </marker>
+    <marker id="arr2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="currentColor" opacity="0.5"/>
+    </marker>
+  </defs>
+
+  <!-- Pipeline stages -->
+  <rect class="dbox" x="10" y="120" width="90" height="40" rx="4"/>
+  <text text-anchor="middle" x="55" y="144" class="dlabel-md">Perception</text>
+
+  <line class="darrow" x1="100" y1="140" x2="148" y2="140"/>
+
+  <rect class="dbox" x="150" y="120" width="80" height="40" rx="4"/>
+  <text text-anchor="middle" x="190" y="144" class="dlabel-md">Memory</text>
+
+  <line class="darrow" x1="230" y1="140" x2="278" y2="140"/>
+
+  <rect class="dbox" x="280" y="120" width="80" height="40" rx="4"/>
+  <text text-anchor="middle" x="320" y="144" class="dlabel-md">Planning</text>
+
+  <line class="darrow" x1="360" y1="140" x2="408" y2="140"/>
+
+  <rect class="dbox" x="410" y="120" width="80" height="40" rx="4"/>
+  <text text-anchor="middle" x="450" y="144" class="dlabel-md">Control</text>
+
+  <line class="darrow" x1="490" y1="140" x2="548" y2="140"/>
+
+  <rect class="dbox" x="550" y="120" width="40" height="40" rx="4"/>
+  <text text-anchor="middle" x="570" y="144" class="dlabel-md">World</text>
+
+  <!-- Gap 1: Reliability (sensor boundary, top) -->
+  <path class="dbroken" d="M55,120 Q55,55 190,55"/>
+  <rect class="dbox" x="80" y="18" width="148" height="48" rx="4" stroke-dasharray="4 2"/>
+  <text text-anchor="middle" x="154" y="36" class="dlabel-hd">Reliability gap</text>
+  <text text-anchor="middle" x="154" y="51" class="dlabel-sm">Test distrib. != deployment</text>
+  <text text-anchor="middle" x="154" y="62" class="dlabel-sm">sensor shift, new scenes</text>
+
+  <!-- Gap 2: Long-horizon (memory to planning, bottom) -->
+  <path class="dbroken" d="M190,160 Q190,215 320,215"/>
+  <rect class="dbox" x="120" y="224" width="168" height="48" rx="4" stroke-dasharray="4 2"/>
+  <text text-anchor="middle" x="204" y="242" class="dlabel-hd">Long-horizon gap</text>
+  <text text-anchor="middle" x="204" y="257" class="dlabel-sm">context truncates early steps</text>
+  <text text-anchor="middle" x="204" y="269" class="dlabel-sm">reward sparse over 40+ steps</text>
+
+  <!-- Gap 3: Real-world RL (world feedback loop, bottom right) -->
+  <path class="dbroken" d="M570,160 Q570,290 320,290 Q180,290 55,160"/>
+  <rect class="dbox" x="380" y="220" width="168" height="48" rx="4" stroke-dasharray="4 2"/>
+  <text text-anchor="middle" x="464" y="238" class="dlabel-hd">Real-world RL gap</text>
+  <text text-anchor="middle" x="464" y="253" class="dlabel-sm">hardware episodes costly;</text>
+  <text text-anchor="middle" x="464" y="265" class="dlabel-sm">sim contact != real friction</text>
+</svg>
+<figcaption>The agent pipeline (Perception, Memory, Planning, Control, World) and the three structural gaps. The reliability gap breaks the sensor-to-memory link when deployment distribution shifts. The long-horizon gap breaks memory-to-planning when the context window truncates early steps. The real-world RL gap breaks the world-to-learning feedback loop when hardware episodes are too costly to collect at scale.</figcaption>
+</figure>
+
 <p>The key question in What is still unsolved (long-horizon reasoning, reliability, real-world RL) is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

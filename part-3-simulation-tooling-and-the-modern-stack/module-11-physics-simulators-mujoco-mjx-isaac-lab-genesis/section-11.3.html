@@ -45,6 +45,82 @@
 <div class="callout key-insight"><div class="callout-title">Parallelism Changes The Experiment</div><p>Vectorized simulation is not only a speed trick. It changes which experiments become feasible: sweep friction, randomize masses, run many seeds, estimate uncertainty, and train policies against a distribution rather than a single convenient world.</p></div>
 <h2>MJX: MuJoCo Through JAX</h2>
 <p>MJX is useful when the rest of the learning stack is written in JAX or when you want <code>jit</code>, <code>vmap</code>, and accelerator execution to organize simulation at scale. This pattern is called <strong>batch-first simulation design</strong>, and it means the parallelism is expressed at the data level rather than through explicit loops. The mental model is simple: keep the model structure close to MuJoCo, but represent batched simulation state as arrays that JAX can transform.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Diagram showing how a single MuJoCo model fans out to N parallel worlds via vmap or Warp kernels, then results are collected back.">
+  <style>
+    .box { fill: #1e293b; stroke: #60a5fa; stroke-width: 1.5; rx: 6; ry: 6; }
+    .box-warp { fill: #1e293b; stroke: #34d399; stroke-width: 1.5; }
+    .box-collect { fill: #1e293b; stroke: #f59e0b; stroke-width: 1.5; }
+    .lbl { fill: #f1f5f9; font-family: monospace; font-size: 12px; text-anchor: middle; dominant-baseline: middle; }
+    .lbl-small { fill: #94a3b8; font-family: monospace; font-size: 10px; text-anchor: middle; dominant-baseline: middle; }
+    .arrow { stroke: #94a3b8; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    .arrow-green { stroke: #34d399; stroke-width: 1.5; fill: none; marker-end: url(#arr-green); }
+    .arrow-amber { stroke: #f59e0b; stroke-width: 1.5; fill: none; marker-end: url(#arr-amber); }
+  </style>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#34d399"/>
+    </marker>
+    <marker id="arr-amber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <!-- Model source -->
+  <rect x="20" y="115" width="110" height="50" rx="6" ry="6" class="box"/>
+  <text x="75" y="135" class="lbl">MuJoCo</text>
+  <text x="75" y="152" class="lbl">Model (MJCF)</text>
+
+  <!-- Fan-out label -->
+  <text x="165" y="100" class="lbl-small">vmap / kernel batch</text>
+
+  <!-- Arrows fan-out -->
+  <line x1="130" y1="130" x2="175" y2="80" class="arrow"/>
+  <line x1="130" y1="140" x2="175" y2="148" class="arrow"/>
+  <line x1="130" y1="150" x2="175" y2="218" class="arrow"/>
+
+  <!-- World 1: MJX -->
+  <rect x="180" y="55" width="130" height="48" rx="6" ry="6" class="box"/>
+  <text x="245" y="73" class="lbl">World 1 ... N</text>
+  <text x="245" y="91" class="lbl">MJX (JAX / XLA)</text>
+
+  <!-- World 2: Warp -->
+  <rect x="180" y="123" width="130" height="48" rx="6" ry="6" class="box-warp"/>
+  <text x="245" y="141" class="lbl">World 1 ... N</text>
+  <text x="245" y="159" class="lbl">MuJoCo Warp</text>
+
+  <!-- World 3: CPU ref -->
+  <rect x="180" y="193" width="130" height="48" rx="6" ry="6" class="box-collect"/>
+  <text x="245" y="211" class="lbl">Single World</text>
+  <text x="245" y="229" class="lbl">CPU MuJoCo (ref)</text>
+
+  <!-- Arrows to collect -->
+  <line x1="310" y1="79" x2="388" y2="120" class="arrow"/>
+  <line x1="310" y1="147" x2="388" y2="147" class="arrow"/>
+  <line x1="310" y1="217" x2="388" y2="175" class="arrow"/>
+
+  <!-- Collect box -->
+  <rect x="390" y="105" width="130" height="72" rx="6" ry="6" class="box-collect"/>
+  <text x="455" y="130" class="lbl">Collect Results</text>
+  <text x="455" y="149" class="lbl">R_i, gradients,</text>
+  <text x="455" y="167" class="lbl">parity check</text>
+
+  <!-- Arrow to policy update -->
+  <line x1="520" y1="141" x2="565" y2="141" class="arrow-amber"/>
+  <rect x="565" y="118" width="25" height="48" rx="4" ry="4" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="577" y="138" class="lbl" font-size="9">Policy</text>
+  <text x="577" y="152" class="lbl" font-size="9">Update</text>
+
+  <!-- Backend labels on left of fan-out boxes -->
+  <text x="245" y="108" class="lbl-small">JAX ecosystem</text>
+  <text x="245" y="178" class="lbl-small">NVIDIA GPU kernels</text>
+  <text x="245" y="248" class="lbl-small">sanity / debug ref</text>
+</svg>
+<figcaption><strong>Figure 11.3B:</strong> A single MuJoCo model fans out to N parallel worlds via two accelerator backends (MJX using JAX vmap, MuJoCo Warp using NVIDIA GPU kernels) and a CPU reference. Results converge into a collect step that computes rollout metrics, optional gradients, and a parity check before feeding the policy update.</figcaption>
+</figure>
 <div class="callout key-insight"><div class="callout-title">How vmap Turns One Simulator Into Many</div><p>JAX's <code>vmap</code> transforms a function that steps one simulation state into a function that steps a whole batch simultaneously. You write <code>step(model, state, action)</code> for a single world, then call <code>jax.vmap(step)(model, batched_states, batched_actions)</code> to advance 4096 worlds in one kernel launch. The batch dimension is added at the data level, not the code level, so randomized masses, friction coefficients, or initial conditions become extra array axes rather than explicit loops. MJX represents simulation state as a pytree of arrays shaped <code>(batch, ...)</code>, which fits naturally into this pattern and avoids Python-level iteration entirely.</p></div>
 <p>The sharp edge is that MJX earns its keep on large batches of similar worlds. It is not automatically the best route for a single interactive scene, a debugging session, or a model feature that is not supported by the accelerator backend. Keep a small CPU MuJoCo case nearby, then use MJX when the experiment really needs thousands of parallel states, domain-randomized parameters, or JAX-native policy updates.</p>
 <p>Code Fragment 1 does not require MJX. It teaches the vectorization pattern MJX makes valuable: one equation runs across many worlds with different parameters.</p>
