@@ -71,6 +71,41 @@ p_\theta(\tau_{t-1} \mid \tau_t, c) = \mathcal{N}\!\left(\tau_{t-1};\ \mu_\theta
 $$</p>
 <p>The network learns the mean $\mu_\theta$ (equivalently, the noise that was added), and sampling chains these reverse steps from $t=T$ down to $t=0$. Because each reverse step is stochastic and conditioned on $c$, repeated sampling from the same observation yields different valid trajectories: this is <strong>committing to one coherent mode</strong>, exactly the multimodal behavior a regression policy cannot produce.
 
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+<!-- forward arrow (corruption) -->
+<line x1="80" y1="50" x2="520" y2="50" stroke="#999" stroke-width="1.5" marker-end="url(#ah1)"/>
+<text x="300" y="38" text-anchor="middle" font-size="13" fill="#999">forward: add noise   q(&#964;_t | &#964;_0)</text>
+<!-- reverse arrow (denoising) -->
+<line x1="520" y1="250" x2="80" y2="250" stroke="#2a6" stroke-width="2" marker-end="url(#ah2)"/>
+<text x="300" y="272" text-anchor="middle" font-size="13" fill="#2a6">reverse: denoise (conditioned on c)   p&#952;(&#964;_{t-1} | &#964;_t, c)</text>
+<!-- defs -->
+<defs>
+<marker id="ah1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#999"/></marker>
+<marker id="ah2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2a6"/></marker>
+</defs>
+<!-- tau_0 : clean trajectory (smooth curve) -->
+<g>
+<path d="M40,170 Q70,120 100,150" stroke="#222" stroke-width="2.5" fill="none"/>
+<text x="70" y="200" text-anchor="middle" font-size="13" fill="#222">&#964;_0</text>
+<text x="70" y="216" text-anchor="middle" font-size="10" fill="#666">clean plan</text>
+</g>
+<!-- tau_t : partially noised -->
+<g>
+<path d="M250,165 L262,135 L274,158 L286,128 L298,160" stroke="#a60" stroke-width="2" fill="none"/>
+<text x="274" y="200" text-anchor="middle" font-size="13" fill="#a60">&#964;_t</text>
+<text x="274" y="216" text-anchor="middle" font-size="10" fill="#666">partly noised</text>
+</g>
+<!-- tau_T : pure noise -->
+<g>
+<path d="M470,160 L478,125 L486,168 L494,130 L502,170 L510,132 L518,158" stroke="#c33" stroke-width="2" fill="none"/>
+<text x="494" y="200" text-anchor="middle" font-size="13" fill="#c33">&#964;_T</text>
+<text x="494" y="216" text-anchor="middle" font-size="10" fill="#666">Gaussian noise</text>
+</g>
+</svg>
+<figcaption>Figure 41.1B: The diffusion planner as a two-way chain. The fixed forward process corrupts a clean trajectory &#964;_0 into pure Gaussian noise &#964;_T; the trained reverse process, conditioned on context c, walks noise back to a coherent plan. Sampling means running the green reverse chain from a fresh noise draw, so each run commits to one valid mode rather than averaging them.</figcaption>
+</figure>
+
 <p>The variance schedule matters for embodied AI because robot action spaces mix signals of very different magnitudes: a wrist joint moves in milliradians while a base translates in meters. A schedule that decays $\bar\alpha_t$ too fast corrupts small-magnitude dimensions into pure noise before the network has learned to recover them, causing systematic drift in those joints during rollout. To see why this is not a minor rounding error: a wrist joint moving 0.01 radians and a base translating 1 meter sit three orders of magnitude apart on the same input vector, so at $t = T/2$ the wrist signal is already buried in noise while the base signal is still clearly visible, and the denoiser trains almost entirely on recovering the base channel. A schedule that decays too slowly leaves the final noised sample still correlated with the original trajectory, so the reverse chain cannot explore alternative grasp modes and collapses to the dominant training mode. On a physical robot, both failures produce incorrect end-effector poses that no amount of downstream control can compensate.</p>
 <p>So which schedule is right for a robot arm whose wrist joint operates in milliradians while its base moves in meters? There is no universal answer, and that tension is precisely what makes schedule design a persistent source of silent failure in deployed systems.</p>
 <p>Mechanically, the schedule works by fixing a sequence of signal-retention values $\bar\alpha_t \in (0,1)$ that decreases monotonically from near one to near zero. At each training step a random $t$ is sampled, the clean trajectory is scaled by $\sqrt{\bar\alpha_t}$ and a zero-mean unit-variance noise draw is scaled by $\sqrt{1-\bar\alpha_t}$, then summed. The network sees the mixture and must predict the noise component. Because this reparameterization allows sampling any noise level in one closed-form step, training does not simulate the full chain; only the noise prediction at a single level is required per gradient update.</p>

@@ -51,6 +51,50 @@
 <p>One useful decomposition is</p>
 <p>$$a_t^{(r)} = A_r\big(\pi_{\theta + \Delta\theta}(E(o_t, m_r), q_t, e_r)\big),$$</p>
 <p>where $m_r$ is embodiment metadata, $e_r$ is an embodiment token or descriptor, $A_r$ is the robot-specific action adapter, and $\Delta\theta$ is any fine-tuning update. The builder's job is to keep each term honest: metadata handles known configuration, embodiment tokens capture coarse robot identity, adapters handle command semantics, and weight updates are reserved for the part that genuinely needs learning.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+<defs>
+<marker id="arr355" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<text x="300" y="24" text-anchor="middle" font-size="15" font-weight="bold">Staged Embodiment Adaptation: from observation to robot action</text>
+<!-- Observation input -->
+<rect x="20" y="120" width="100" height="56" rx="6" fill="#eef4fb" stroke="#3b6ea5"/>
+<text x="70" y="143" text-anchor="middle" font-size="12">observation</text>
+<text x="70" y="160" text-anchor="middle" font-size="12">o_t , q_t</text>
+<!-- Encoder + metadata -->
+<rect x="160" y="120" width="110" height="56" rx="6" fill="#eef9ef" stroke="#3a8a4a"/>
+<text x="215" y="139" text-anchor="middle" font-size="12">encoder E</text>
+<text x="215" y="156" text-anchor="middle" font-size="11">+ metadata m_r</text>
+<text x="215" y="170" text-anchor="middle" font-size="11">+ token e_r</text>
+<!-- Shared policy -->
+<rect x="310" y="120" width="110" height="56" rx="6" fill="#fbf3e6" stroke="#b5832a"/>
+<text x="365" y="143" text-anchor="middle" font-size="12">shared policy</text>
+<text x="365" y="160" text-anchor="middle" font-size="12">pi (theta)</text>
+<!-- Action adapter -->
+<rect x="460" y="120" width="110" height="56" rx="6" fill="#f9eef4" stroke="#a53b7a"/>
+<text x="515" y="143" text-anchor="middle" font-size="12">adapter A_r</text>
+<text x="515" y="160" text-anchor="middle" font-size="11">scale + reorder</text>
+<!-- Output action below adapter -->
+<rect x="460" y="232" width="110" height="40" rx="6" fill="#ffffff" stroke="#444"/>
+<text x="515" y="257" text-anchor="middle" font-size="12">action a_t (r)</text>
+<!-- Weight update fallback -->
+<rect x="310" y="232" width="110" height="40" rx="6" fill="#f3f3f3" stroke="#888" stroke-dasharray="4 3"/>
+<text x="365" y="250" text-anchor="middle" font-size="11">weight update</text>
+<text x="365" y="265" text-anchor="middle" font-size="11">delta theta (fallback)</text>
+<!-- Arrows left to right -->
+<line x1="120" y1="148" x2="158" y2="148" stroke="#444" stroke-width="1.5" marker-end="url(#arr355)"/>
+<line x1="270" y1="148" x2="308" y2="148" stroke="#444" stroke-width="1.5" marker-end="url(#arr355)"/>
+<line x1="420" y1="148" x2="458" y2="148" stroke="#444" stroke-width="1.5" marker-end="url(#arr355)"/>
+<!-- Adapter down to action -->
+<line x1="515" y1="176" x2="515" y2="230" stroke="#444" stroke-width="1.5" marker-end="url(#arr355)"/>
+<!-- Fallback dashed into policy -->
+<line x1="365" y1="230" x2="365" y2="178" stroke="#888" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arr355)"/>
+<text x="300" y="296" text-anchor="middle" font-size="11" fill="#555">Align the interface first (E, m_r, e_r, A_r); reach for delta theta only if the gap remains.</text>
+</svg>
+<figcaption>The adaptation equation as a data path: an observation is encoded with embodiment metadata and an embodiment token, passed through the shared frozen policy, then rescaled and reordered by the robot-specific action adapter to yield the final action. Weight updates (delta theta) sit as a dashed fallback, used only when interface alignment leaves a residual gap.</figcaption>
+</figure>
 <p>Consider a specific case: a shared policy trained on a 7-DoF (degrees of freedom) tabletop arm at 10 Hz transfers to a 6-DoF arm with a parallel-jaw gripper running at 25 Hz. The metadata term $m_r$ encodes the new control frequency and gripper type as structured fields. The policy reads these directly rather than inferring them from context. The embodiment token $e_r$ is a short learned descriptor, for example a 16-dimensional vector, that shifts the policy's latent distribution toward the new <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.4.html">kinematic regime</a>.</p>
 <p>The token matters because a shared backbone trained across diverse robots learns an average motor behavior that is wrong for any single robot. Counterintuitively, a policy trained on 50 robots often performs worse out of the box on robot 51 than a policy trained on just 5 robots in the same kinematic family, because the larger training set pulls the average further from any individual embodiment. Without a bias toward the target embodiment, the policy issues torques calibrated for an arm that never existed. On hardware, that mismatch produces overshoot, wrist instability, or gripper commands sized for the wrong jaw width, causing physical damage or task failure rather than merely lower accuracy. Mechanically, the system concatenates $e_r$ with the observation embedding before the first transformer layer. During adaptation, only $e_r$ updates via gradient descent on a small demonstration set while the backbone stays frozen, so the token pulls activations toward the subspace the new robot occupies. The action adapter $A_r$ rescales <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.7.html">joint-velocity commands</a> from the original normalized range to the new hardware limits and reorders the DoF indices to match the new URDF. Because the camera setup is unchanged, $\Delta\theta$ is zero: no weight updates are needed, and adaptation costs a few minutes of calibration rather than hours of fine-tuning.</p>
 <div class="callout tip">

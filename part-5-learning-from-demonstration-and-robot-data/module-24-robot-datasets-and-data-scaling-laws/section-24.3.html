@@ -43,6 +43,95 @@
 </div>
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>A warehouse arm in Tokyo and a kitchen robot in Pittsburgh have never met, yet both know how to pick up a mug. That shared skill is worth something, but only if their recorded demonstrations can be pooled without one robot's motion commands corrupting the other's training. Robotics is at the point where data volume is the binding constraint, and no single lab can collect enough episodes alone. <strong>cross-embodiment pooling</strong> is the mechanism that lets dozens of incompatible hardware platforms contribute to one policy, but it demands careful normalization: joints, grippers, workspaces, and action limits all differ. The sections below identify exactly where pooling succeeds, where it silently fails, and how to design a dataloader that keeps each body's identity intact.</p></div>
 <p>A robot that shares its data but hides its body is not a collaborator; it is a source of silent corruption in every policy that trains on its trajectories.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Title -->
+  <text x="300" y="20" font-size="16" font-weight="bold" text-anchor="middle" font-family="monospace">Cross-Embodiment Pooling Process</text>
+
+  <!-- Left side: Multiple embodiments with their raw action spaces -->
+  <g id="embodiment-1">
+    <rect x="20" y="50" width="90" height="60" fill="none" stroke="#0066cc" stroke-width="2" rx="4"/>
+    <text x="65" y="70" font-size="12" font-weight="bold" text-anchor="middle" font-family="monospace">UR5 (6-DOF)</text>
+    <text x="65" y="87" font-size="10" text-anchor="middle" font-family="monospace">Actions: joints</text>
+    <text x="65" y="100" font-size="10" text-anchor="middle" font-family="monospace">[j1, j2, ..., j6]</text>
+  </g>
+
+  <g id="embodiment-2">
+    <rect x="20" y="130" width="90" height="60" fill="none" stroke="#00aa44" stroke-width="2" rx="4"/>
+    <text x="65" y="150" font-size="12" font-weight="bold" text-anchor="middle" font-family="monospace">Franka (7-DOF)</text>
+    <text x="65" y="167" font-size="10" text-anchor="middle" font-family="monospace">Actions: joints</text>
+    <text x="65" y="180" font-size="10" text-anchor="middle" font-family="monospace">[j1, ..., j7]</text>
+  </g>
+
+  <g id="embodiment-3">
+    <rect x="20" y="210" width="90" height="60" fill="none" stroke="#dd5500" stroke-width="2" rx="4"/>
+    <text x="65" y="230" font-size="12" font-weight="bold" text-anchor="middle" font-family="monospace">Mobile Dual Arm</text>
+    <text x="65" y="247" font-size="10" text-anchor="middle" font-family="monospace">Actions: mixed</text>
+    <text x="65" y="260" font-size="10" text-anchor="middle" font-family="monospace">[j1, ..., j14]</text>
+  </g>
+
+  <!-- Middle: Normalization and embodiment tokens -->
+  <g id="normalization">
+    <rect x="140" y="70" width="100" height="200" fill="#f0f0f0" stroke="#666" stroke-width="1" rx="4"/>
+    <text x="190" y="90" font-size="11" font-weight="bold" text-anchor="middle" font-family="monospace">Normalization</text>
+    <text x="190" y="110" font-size="9" text-anchor="middle" font-family="monospace">Per-embodiment:</text>
+    <text x="190" y="125" font-size="9" text-anchor="middle" font-family="monospace">(a_t - mu_e) / sigma_e</text>
+    <line x1="140" y1="145" x2="240" y2="145" stroke="#999" stroke-width="1"/>
+    <text x="190" y="170" font-size="9" font-weight="bold" text-anchor="middle" font-family="monospace">+ Embodiment Token:</text>
+    <text x="190" y="188" font-size="8" text-anchor="middle" font-family="monospace">dof_count, gripper,</text>
+    <text x="190" y="200" font-size="8" text-anchor="middle" font-family="monospace">workspace, ctrl_freq</text>
+    <text x="190" y="216" font-size="8" text-anchor="middle" font-family="monospace">= identity intact</text>
+  </g>
+
+  <!-- Arrows from embodiments to normalization -->
+  <path d="M 110 80 L 140 110" stroke="#0066cc" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+  <path d="M 110 160 L 140 160" stroke="#00aa44" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+  <path d="M 110 240 L 140 210" stroke="#dd5500" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+
+  <!-- Right side: Shared representation and pooled policy -->
+  <g id="shared-pool">
+    <rect x="270" y="70" width="90" height="80" fill="none" stroke="#9933ff" stroke-width="2" rx="4"/>
+    <text x="315" y="90" font-size="11" font-weight="bold" text-anchor="middle" font-family="monospace">Shared Pool</text>
+    <text x="315" y="108" font-size="9" text-anchor="middle" font-family="monospace">Normalized</text>
+    <text x="315" y="121" font-size="9" text-anchor="middle" font-family="monospace">+ Embodiment</text>
+    <text x="315" y="134" font-size="9" text-anchor="middle" font-family="monospace">Metadata</text>
+  </g>
+
+  <!-- Policy with conditioned decoder -->
+  <g id="policy">
+    <rect x="400" y="50" width="100" height="120" fill="none" stroke="#ff3333" stroke-width="2" rx="4"/>
+    <text x="450" y="70" font-size="11" font-weight="bold" text-anchor="middle" font-family="monospace">Policy</text>
+    <line x1="400" y1="85" x2="500" y2="85" stroke="#999" stroke-width="1"/>
+    <text x="450" y="105" font-size="9" text-anchor="middle" font-family="monospace">Shared visual</text>
+    <text x="450" y="118" font-size="9" text-anchor="middle" font-family="monospace">backbone</text>
+    <line x1="400" y1="130" x2="500" y2="130" stroke="#999" stroke-width="1"/>
+    <text x="450" y="150" font-size="9" font-weight="bold" text-anchor="middle" font-family="monospace">Conditioned</text>
+    <text x="450" y="163" font-size="9" font-weight="bold" text-anchor="middle" font-family="monospace">action decoder</text>
+  </g>
+
+  <!-- Validation outputs -->
+  <g id="validation">
+    <rect x="400" y="190" width="100" height="90" fill="none" stroke="#1a7f1a" stroke-width="2" rx="4"/>
+    <text x="450" y="210" font-size="10" font-weight="bold" text-anchor="middle" font-family="monospace">Per-Embodiment</text>
+    <text x="450" y="225" font-size="10" font-weight="bold" text-anchor="middle" font-family="monospace">Validation</text>
+    <text x="450" y="245" font-size="9" text-anchor="middle" font-family="monospace">Success rate</text>
+    <text x="450" y="258" font-size="9" text-anchor="middle" font-family="monospace">per robot,</text>
+    <text x="450" y="271" font-size="9" text-anchor="middle" font-family="monospace">not aggregate</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M 360 110 L 400 110" stroke="#9933ff" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+  <path d="M 500 170 L 450 190" stroke="#ff3333" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+
+  <!-- Arrow marker definition -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#333"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Cross-embodiment pooling: incompatible action spaces are normalized per-embodiment while preserving identity metadata (DOF count, gripper, workspace, control frequency). A shared visual backbone encodes observations, and a conditioned action decoder produces valid hardware commands for each robot type. Validation always separates results by embodiment to detect negative transfer.</figcaption>
+</figure>
 <h2>Normalization Targets</h2>
 <p>Pooling can happen in observation space, action space, latent space, or task space. A common strategy is to express actions as <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.6.html">end-effector deltas</a>, normalize continuous values, and provide embodiment tokens or metadata so the model knows which body produced the trajectory.</p>
 <p>End-effector deltas matter for pooling because joint angles are not portable: a 7-DOF (Degrees of Freedom) Franka and a 6-DOF UR5 do not share a joint-angle representation at all, so any model trained on joint actions from one robot produces meaningless output for the other. By expressing movement as a small Cartesian displacement of the gripper tip relative to its current pose, both robots describe "move forward 2 cm" in the same units. This directly reduces the data wasted on incompatible hardware: demonstrations that would otherwise be unusable across platforms become compatible training signal. The scale difference is stark: in the RT-X study, switching from joint-angle actions to end-effector deltas before pooling cut the number of single-arm episodes needed to match a bimanual baseline from roughly 50,000 to around 300, because the shared representation let the policy treat arm morphology as a conditioning variable rather than a training-distribution boundary.</p>
