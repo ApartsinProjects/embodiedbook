@@ -123,6 +123,50 @@ Command shift due to domain gap: dv=0.056  dw=0.072</pre></div>
 <div class="code-caption">Code Fragment 30.5.1: Learned navigation policy step with safety clamping. The same policy produces noticeably different velocity commands when the observation is shifted by sensor noise, illustrating the sim-to-real gap that causes success-rate drops at deployment.</div>
 <p>Safety clamping matters in embodied AI because a learned policy has no intrinsic knowledge of motor hardware. A neural network trained in simulation can output a linear velocity of 2.5 m/s for a robot whose motors physically saturate at 0.5 m/s, causing the low-level controller to interpret the overflow as an illegal command, trip a fault, and halt the robot mid-corridor. On a differential-drive platform, unclamped angular velocity commands can also destroy wheel odometry calibration by spinning one wheel against friction limits. Without a safety layer, a single out-of-distribution observation can cascade into a hardware fault, not merely a wrong turn.</p>
 <p>The clamping mechanism works by intercepting the raw action tensor immediately after the policy's output head and before the command reaches the motor driver. Each velocity dimension is clipped independently to the robot's certified kinematic envelope, typically derived from the manufacturer's velocity limits and the friction model used in the motion controller. This is a hard constraint, not a learned one: the clip values come from the robot's datasheet, not from training data, so they remain valid even when the policy is retrained or fine-tuned.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+<defs>
+<marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<!-- Observation -->
+<rect x="20" y="120" width="110" height="60" rx="6" fill="#eef4fb" stroke="#3a6ea5" stroke-width="1.5"/>
+<text x="75" y="145" text-anchor="middle" font-size="12" fill="#1a2a3a">observation</text>
+<text x="75" y="162" text-anchor="middle" font-size="10" fill="#5a6a7a">depth + goal</text>
+<!-- Policy -->
+<rect x="180" y="120" width="110" height="60" rx="6" fill="#fdf3e7" stroke="#c8861f" stroke-width="1.5"/>
+<text x="235" y="145" text-anchor="middle" font-size="12" fill="#3a2a10">policy</text>
+<text x="235" y="162" text-anchor="middle" font-size="10" fill="#7a6a4a">&#960;&#952;(a|o,g)</text>
+<!-- Safety monitor -->
+<rect x="340" y="120" width="110" height="60" rx="6" fill="#fdeef0" stroke="#b03a4a" stroke-width="1.5"/>
+<text x="395" y="142" text-anchor="middle" font-size="12" fill="#3a1015">safety</text>
+<text x="395" y="157" text-anchor="middle" font-size="12" fill="#3a1015">monitor</text>
+<text x="395" y="172" text-anchor="middle" font-size="10" fill="#7a4a50">clip to limits</text>
+<!-- Robot -->
+<rect x="500" y="120" width="80" height="60" rx="6" fill="#eaf6ee" stroke="#3a8a55" stroke-width="1.5"/>
+<text x="540" y="145" text-anchor="middle" font-size="12" fill="#103a1a">robot</text>
+<text x="540" y="162" text-anchor="middle" font-size="10" fill="#4a7a5a">motors</text>
+<!-- Arrows main path -->
+<line x1="130" y1="150" x2="178" y2="150" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="290" y1="150" x2="338" y2="150" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="450" y1="150" x2="498" y2="150" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="314" y="142" text-anchor="middle" font-size="9" fill="#555">raw cmd</text>
+<text x="474" y="142" text-anchor="middle" font-size="9" fill="#555">safe cmd</text>
+<!-- Sim-to-real shift annotation -->
+<rect x="180" y="40" width="110" height="40" rx="6" fill="#f4f0fb" stroke="#7a5ab0" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="235" y="58" text-anchor="middle" font-size="10" fill="#3a1a5a">sim-to-real</text>
+<text x="235" y="72" text-anchor="middle" font-size="10" fill="#3a1a5a">domain shift</text>
+<line x1="235" y1="80" x2="235" y2="118" stroke="#7a5ab0" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<!-- Fallback planner -->
+<rect x="340" y="230" width="110" height="44" rx="6" fill="#f0f0f0" stroke="#666" stroke-width="1.5"/>
+<text x="395" y="250" text-anchor="middle" font-size="11" fill="#222">classical</text>
+<text x="395" y="265" text-anchor="middle" font-size="11" fill="#222">fallback</text>
+<line x1="395" y1="230" x2="395" y2="182" stroke="#666" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+<text x="455" y="210" text-anchor="start" font-size="9" fill="#555">low confidence</text>
+</svg>
+<figcaption><strong>Figure 30.5.2</strong>: A learned navigation policy maps observations to a raw velocity command, but that command never reaches the motors directly. The safety monitor clips it to hardware limits, and a classical fallback takes over when confidence drops. Sim-to-real domain shift perturbs the observation, which is why the same policy emits different commands in deployment than in simulation.</figcaption>
+</figure>
 
 <p>Consider a specific case: a differential-drive robot trained in Habitat-Sim on the Gibson dataset must navigate a 12 m corridor and turn into an office. The learned policy achieves 91% episode success in simulation. Deployed on a real Fetch robot under fluorescent flicker, success drops to 67% because the policy was never trained with that lighting spectrum, a textbook example of <strong>the sim-to-real transfer gap</strong>, where policies that learned under one distribution fail silently under another. Adding randomized lighting during training closes most of that gap, but the cost is steep: reaching 88% real-world success without lighting randomization requires roughly 50,000 training episodes, while a policy trained with randomized lighting reaches the same threshold in about 300 episodes, because the varied signal forces the network to learn illumination-invariant features rather than memorizing a single lighting palette. A Nav2 DWB (Dynamic Window Approach B) classical baseline running on the same hardware achieves 84% success and zero safety interventions, because it replans from a fresh costmap every 200 ms regardless of lighting. The lesson is concrete: simulation-to-real gap matters more than raw benchmark numbers, and the comparison must be on the same physical platform with the same intervention metric.</p>
 <p><strong>Expected output interpretation.</strong> The learned policy has the higher raw success rate, but it still loses after intervention cost is accounted for. This is the key reading of the output: a navigation policy that needs more human or safety-layer correction is not outperforming the classical baseline in the deployed sense that matters. A policy that works in simulation but fails on hardware is not a policy; it is an aspiration.</p>
