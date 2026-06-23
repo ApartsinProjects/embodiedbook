@@ -46,6 +46,84 @@
 
 <div class="callout big-picture"><div class="callout-title">Big Picture</div><p>A warehouse robot spends six weeks mastering shelf retrieval, then receives a three-day fine-tuning update to handle a new product category. On day four it navigates flawlessly to the new aisle and completely fails to find the old ones. Nobody changed the shelves. The network simply overwrote what it knew. This is <strong>the silent overwrite problem</strong>, and it is why continual learning is one of the sharpest open problems in embodied AI: deployed robots are updated constantly, yet every gradient step on new data threatens competencies operators already trust. Here you will understand why forgetting happens at the parameter level, compare the three principal mitigation families (replay, regularization, and parameter isolation), and practice measuring forgetting quantitatively so you can make deployment decisions with a real budget.</p></div>
 <div class="callout key-insight"><div class="callout-title">Key Insight</div><p>Forgetting is not an afterthought metric. It is the main reason post-deployment learning can destroy trust, because regressions often appear in tasks that operators assume are already solved.</p></div>
+
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Catastrophic forgetting mitigation process diagram">
+  <style>
+    .diag-label { font-family: monospace; font-size: 12px; fill: currentColor; }
+    .diag-title { font-family: monospace; font-size: 11px; font-weight: bold; fill: currentColor; }
+    .diag-axis  { stroke: currentColor; stroke-width: 1; fill: none; opacity: 0.4; }
+    .diag-line-forget { stroke: #e05555; stroke-width: 2.5; fill: none; }
+    .diag-line-ewc    { stroke: #4aaa6e; stroke-width: 2.5; fill: none; stroke-dasharray: 5,3; }
+    .diag-line-new    { stroke: #5588cc; stroke-width: 2; fill: none; }
+    .diag-phase       { fill: currentColor; opacity: 0.06; }
+    .diag-phase-label { font-family: monospace; font-size: 10px; fill: currentColor; opacity: 0.65; text-anchor: middle; }
+    .diag-legend-dot  { r: 5; }
+  </style>
+
+  <!-- Phase background: Train Task A -->
+  <rect class="diag-phase" x="60" y="30" width="160" height="210"/>
+  <text class="diag-phase-label" x="140" y="48">Train Task A</text>
+
+  <!-- Phase background: Train Task B (forgetting zone) -->
+  <rect class="diag-phase" x="220" y="30" width="320" height="210" fill="#cc4444" opacity="0.05"/>
+  <text class="diag-phase-label" x="380" y="48">Fine-tune Task B (overwrite zone)</text>
+
+  <!-- Y axis -->
+  <line class="diag-axis" x1="60" y1="30" x2="60" y2="240"/>
+  <!-- X axis -->
+  <line class="diag-axis" x1="60" y1="240" x2="560" y2="240"/>
+
+  <!-- Y axis label -->
+  <text class="diag-label" x="14" y="140" text-anchor="middle" transform="rotate(-90,14,140)">Task A accuracy</text>
+
+  <!-- Y tick marks and labels -->
+  <text class="diag-label" x="54" y="244" text-anchor="end">0%</text>
+  <text class="diag-label" x="54" y="194" text-anchor="end">25%</text>
+  <text class="diag-label" x="54" y="144" text-anchor="end">50%</text>
+  <text class="diag-label" x="54" y="94"  text-anchor="end">75%</text>
+  <text class="diag-label" x="54" y="44"  text-anchor="end">100%</text>
+  <line class="diag-axis" x1="57" y1="44"  x2="63" y2="44"/>
+  <line class="diag-axis" x1="57" y1="94"  x2="63" y2="94"/>
+  <line class="diag-axis" x1="57" y1="144" x2="63" y2="144"/>
+  <line class="diag-axis" x1="57" y1="194" x2="63" y2="194"/>
+
+  <!-- X axis label -->
+  <text class="diag-label" x="310" y="262" text-anchor="middle">Gradient steps (time)</text>
+
+  <!-- Phase divider line -->
+  <line x1="220" y1="30" x2="220" y2="240" stroke="currentColor" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+
+  <!-- Task A accuracy line WITHOUT mitigation: rises during train-A, then drops sharply during train-B -->
+  <!-- Train A phase: x=60 -> x=220, y rises from 200 (low) to 52 (high ~92%) -->
+  <!-- Train B phase: x=220 -> x=540, y drops from 52 to 183 (~63%) -->
+  <polyline class="diag-line-forget"
+    points="60,200 100,140 140,90 180,60 220,52 280,80 340,120 400,155 460,175 540,183"/>
+
+  <!-- Task A accuracy line WITH EWC: rises same during train-A, then holds much better during train-B -->
+  <!-- Train B phase: x=220 -> x=540, y stays near 57 (~87%) -->
+  <polyline class="diag-line-ewc"
+    points="60,200 100,140 140,90 180,60 220,52 280,58 340,63 400,67 460,70 540,73"/>
+
+  <!-- New task B accuracy line: rises during train-B -->
+  <polyline class="diag-line-new"
+    points="220,230 280,190 340,150 400,118 460,100 540,92"/>
+
+  <!-- Forgetting budget threshold line -->
+  <line x1="220" y1="72" x2="540" y2="72" stroke="#e05555" stroke-width="1" stroke-dasharray="2,4" opacity="0.5"/>
+  <text class="diag-label" x="544" y="75" text-anchor="start" font-size="10" fill="#e05555">budget</text>
+
+  <!-- Legend -->
+  <circle class="diag-legend-dot" cx="80" cy="275" fill="#e05555"/>
+  <text class="diag-label" x="89" y="279">Task A, no mitigation (forgetting)</text>
+  <circle class="diag-legend-dot" cx="300" cy="275" fill="#4aaa6e"/>
+  <text class="diag-label" x="309" y="279">Task A with EWC</text>
+  <circle class="diag-legend-dot" cx="430" cy="275" fill="#5588cc"/>
+  <text class="diag-label" x="439" y="279">Task B (new)</text>
+</svg>
+<figcaption><strong>Figure 57.2B</strong>: Catastrophic forgetting in the parameter overwrite zone. Without mitigation (red), Task A accuracy collapses as gradient steps for Task B overwrite shared weights. EWC regularization (green dashed) anchors critical parameters and holds Task A accuracy above the forgetting budget threshold. The new task (blue) improves in both cases, though slightly less so under EWC.</figcaption>
+</figure>
+
 <h2>Theory</h2>
 <p>Forgetting is a multi-objective optimization problem. One common mitigation is elastic weight consolidation, which adds a penalty</p>
 <p>$$L(\theta)=L_{\text{new}}(\theta)+\lambda\sum_i F_i(\theta_i-\theta_i^\star)^2,$$</p>

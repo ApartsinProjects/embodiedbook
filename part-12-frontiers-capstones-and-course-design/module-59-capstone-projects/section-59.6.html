@@ -48,6 +48,67 @@
 <p>A robot arm pauses before a cluttered shelf, runs forty imagined futures in under a millisecond, picks the one least likely to knock anything over, then reaches. That pause is the entire bet of world-model planning: simulate cheaply inside a learned model, act selectively in the expensive real world. Embodied AI has reached the point where this is no longer theoretical. Compact latent models (as of 2024) plan faster than reactive controllers react, yet robots still crash on day one in real kitchens. The gap is uncertainty: the model drifts, and nothing punishes it for drifting. In this capstone you build a planner that penalizes its own prediction variance, measure where it fails at longer horizons, and compare it against a model-free baseline on a shared tabletop scene.</p>
 </div>
 <p>This section develops the technical contract for world-model-based planning agent into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8f9fa" rx="8"/>
+
+  <!-- Real World box -->
+  <rect x="20" y="110" width="110" height="60" rx="6" fill="#d0e8ff" stroke="#3a7abf" stroke-width="1.5"/>
+  <text x="75" y="135" text-anchor="middle" fill="#1a3a5c" font-size="12">Real</text>
+  <text x="75" y="152" text-anchor="middle" fill="#1a3a5c" font-size="12">World</text>
+
+  <!-- Encoder box -->
+  <rect x="175" y="110" width="110" height="60" rx="6" fill="#d4f0d4" stroke="#3a8f3a" stroke-width="1.5"/>
+  <text x="230" y="135" text-anchor="middle" fill="#1a401a" font-size="12">Encoder</text>
+  <text x="230" y="152" text-anchor="middle" fill="#1a401a" font-size="12">z_t, u(z_t)</text>
+
+  <!-- World Model box -->
+  <rect x="330" y="50" width="120" height="60" rx="6" fill="#fff0cc" stroke="#b8860b" stroke-width="1.5"/>
+  <text x="390" y="75" text-anchor="middle" fill="#5a3a00" font-size="12">World Model</text>
+  <text x="390" y="92" text-anchor="middle" fill="#5a3a00" font-size="12">Imagine H steps</text>
+
+  <!-- MPC Planner box -->
+  <rect x="330" y="175" width="120" height="60" rx="6" fill="#f0d4ff" stroke="#7a3abf" stroke-width="1.5"/>
+  <text x="390" y="200" text-anchor="middle" fill="#3a005a" font-size="12">MPC Planner</text>
+  <text x="390" y="217" text-anchor="middle" fill="#3a005a" font-size="12">score - lam*u</text>
+
+  <!-- Arrows: Real World -> Encoder -->
+  <line x1="130" y1="140" x2="173" y2="140" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="152" y="133" text-anchor="middle" fill="#555" font-size="11">obs</text>
+
+  <!-- Arrows: Encoder -> World Model -->
+  <line x1="285" y1="125" x2="328" y2="98" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="305" y="103" text-anchor="middle" fill="#555" font-size="11">z_t</text>
+
+  <!-- Arrows: Encoder -> MPC Planner -->
+  <line x1="285" y1="155" x2="328" y2="188" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="305" y="182" text-anchor="middle" fill="#555" font-size="11">u(z_t)</text>
+
+  <!-- Arrows: World Model -> MPC Planner -->
+  <line x1="390" y1="110" x2="390" y2="173" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="408" y="147" text-anchor="middle" fill="#555" font-size="11">rollouts</text>
+
+  <!-- Arrow: MPC Planner -> Real World (feedback loop) -->
+  <path d="M330 205 Q230 260 130 170" fill="none" stroke="#bf3a3a" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="5,3"/>
+  <text x="215" y="265" text-anchor="middle" fill="#bf3a3a" font-size="11">execute a_t</text>
+
+  <!-- Arrowhead marker black -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#bf3a3a"/>
+    </marker>
+  </defs>
+
+  <!-- Uncertainty label note -->
+  <text x="480" y="147" text-anchor="middle" fill="#7a3abf" font-size="11">penalize</text>
+  <text x="480" y="160" text-anchor="middle" fill="#7a3abf" font-size="11">variance</text>
+</svg>
+<figcaption>World-model-based MPC planning loop: observations are encoded into a latent state with uncertainty estimate; the world model imagines candidate rollouts; the MPC planner scores sequences by expected return minus an uncertainty penalty; the best first action is executed in the real world and the loop replans from a fresh observation.</figcaption>
+</figure>
 <p>The key question in World-model-based planning agent is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

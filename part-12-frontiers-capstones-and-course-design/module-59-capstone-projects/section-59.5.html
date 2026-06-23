@@ -48,6 +48,82 @@
 <p>A quadruped scores near-perfect in simulation, then stumbles on carpet because nobody measured actuator latency before shipping the policy. That 35-millisecond gap between the simulator's assumption and the hardware's reality collapses performance more than any architectural choice. Right now, as legged robots leave research labs for warehouses and disaster sites, closing that gap systematically is the skill separating deployable locomotion from demo-only locomotion. You will train a policy in simulation, measure the real transfer gap on hardware or a hardware-replay log, trace it to one dominant factor, fix it, and confirm the fix quantitatively. The methodology generalizes to any embodied system where simulation and reality disagree.</p>
 </div>
 <p>This section develops the technical contract for learned locomotion with sim-to-real analysis into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
+  <!-- Background lanes -->
+  <rect x="10" y="10" width="270" height="280" rx="8" fill="#eef4fb" stroke="#7aaed6" stroke-width="1.5"/>
+  <rect x="320" y="10" width="270" height="280" rx="8" fill="#fef6ec" stroke="#e0a040" stroke-width="1.5"/>
+
+  <!-- Lane labels -->
+  <text x="145" y="34" text-anchor="middle" font-weight="bold" fill="#2a5a8c" font-size="13">SIMULATION</text>
+  <text x="455" y="34" text-anchor="middle" font-weight="bold" fill="#8c5a10" font-size="13">HARDWARE</text>
+
+  <!-- Sim steps -->
+  <rect x="55" y="52" width="180" height="36" rx="5" fill="#b8d4f0" stroke="#4a80b8" stroke-width="1.2"/>
+  <text x="145" y="74" text-anchor="middle" fill="#1a3a5c">PPO Training (Isaac/MuJoCo)</text>
+
+  <rect x="55" y="112" width="180" height="36" rx="5" fill="#b8d4f0" stroke="#4a80b8" stroke-width="1.2"/>
+  <text x="145" y="134" text-anchor="middle" fill="#1a3a5c">J_sim = 0.92</text>
+
+  <rect x="55" y="172" width="180" height="36" rx="5" fill="#b8d4f0" stroke="#4a80b8" stroke-width="1.2"/>
+  <text x="145" y="194" text-anchor="middle" fill="#1a3a5c">Delay injection +35ms</text>
+
+  <rect x="55" y="232" width="180" height="36" rx="5" fill="#b8d4f0" stroke="#4a80b8" stroke-width="1.2"/>
+  <text x="145" y="254" text-anchor="middle" fill="#1a3a5c">Replay: J = 0.71</text>
+
+  <!-- Vertical arrows in sim -->
+  <line x1="145" y1="88" x2="145" y2="112" stroke="#4a80b8" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <line x1="145" y1="148" x2="145" y2="172" stroke="#4a80b8" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <line x1="145" y1="208" x2="145" y2="232" stroke="#4a80b8" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+
+  <!-- Hardware steps -->
+  <rect x="365" y="52" width="180" height="36" rx="5" fill="#f8dfa8" stroke="#c08020" stroke-width="1.2"/>
+  <text x="455" y="74" text-anchor="middle" fill="#5c3a00">Deploy on A1 / Go2</text>
+
+  <rect x="365" y="112" width="180" height="36" rx="5" fill="#f8dfa8" stroke="#c08020" stroke-width="1.2"/>
+  <text x="455" y="134" text-anchor="middle" fill="#5c3a00">J_real = 0.67</text>
+
+  <rect x="365" y="172" width="180" height="36" rx="5" fill="#f8dfa8" stroke="#c08020" stroke-width="1.2"/>
+  <text x="455" y="186" text-anchor="middle" fill="#5c3a00">Measure latency,</text>
+  <text x="455" y="200" text-anchor="middle" fill="#5c3a00">drift, falls</text>
+
+  <rect x="365" y="232" width="180" height="36" rx="5" fill="#f8dfa8" stroke="#c08020" stroke-width="1.2"/>
+  <text x="455" y="254" text-anchor="middle" fill="#5c3a00">Gap factor identified</text>
+
+  <!-- Vertical arrows in hardware -->
+  <line x1="455" y1="88" x2="455" y2="112" stroke="#c08020" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <line x1="455" y1="148" x2="455" y2="172" stroke="#c08020" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <line x1="455" y1="208" x2="455" y2="232" stroke="#c08020" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+
+  <!-- Cross arrow: transfer gap -->
+  <line x1="235" y1="130" x2="365" y2="130" stroke="#cc3333" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr-red)"/>
+  <text x="300" y="122" text-anchor="middle" fill="#cc3333" font-size="11">gap</text>
+  <text x="300" y="145" text-anchor="middle" fill="#cc3333" font-size="11">delta_sr</text>
+
+  <!-- Cross arrow: fix propagates back -->
+  <line x1="365" y1="188" x2="235" y2="188" stroke="#226622" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr-green)"/>
+  <text x="300" y="183" text-anchor="middle" fill="#226622" font-size="11">fix injected</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arr-blue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#4a80b8"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#c08020"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#cc3333"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#226622"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Sim-to-real transfer process: a policy trained in simulation achieves J_sim, is deployed on hardware yielding J_real, the transfer gap delta_sr is measured, and the dominant factor (actuator latency) is injected back into the simulator to confirm and close the gap.</figcaption>
+</figure>
+
 <p>The key question in Learned locomotion with sim-to-real analysis is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

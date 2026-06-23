@@ -66,6 +66,60 @@
 <div class="callout warning"><p>A common assumption is that calling <code>env.reset(seed=s)</code> alone is sufficient to make an evaluation run reproducible. In embodied AI, this is wrong: the environment's internal random state and the action space's random state are independent, so stochastic action sampling and any randomized wrappers (observation noise, domain randomization, frame-skip jitter) each carry their own RNG that must be seeded separately with <code>env.action_space.seed(s)</code> and wrapper-level seed arguments. Omitting any of these streams leaves a hidden source of variance that can silently favor or penalize one method over another across runs. The correct mental model is that a reproducible evaluation seeds every random stream in the pipeline, not just the one that controls the starting observation.</p></div>
 <p>Gymnasium supports this discipline by passing a seed into <code>reset</code> and allowing the action space to be seeded for reproducible sampling. A strong protocol records both, then evaluates methods under the same seed list instead of reporting numbers from separate runs.</p>
 <p>A panel matters for embodied AI because physical contact, gravity, and joint-angle initialization interact nonlinearly: one lucky starting posture can make a brittle locomotion policy look robust, while a single unlucky terrain seed can hide a strong one. Policies that will run on hardware must prove reliability across a distribution of starts, not just a favorable singleton. A panel forces that proof into the evaluation rather than leaving it to the reader's interpretation. A policy that looks reliable on one seed and crumbles on thirty is not a robust policy; it is a well-placed bet.</p>
+
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Co-computed seed-panel evaluation protocol flow">
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+    </marker>
+  </defs>
+
+  <!-- Seed Panel box -->
+  <rect x="20" y="110" width="120" height="80" rx="6" ry="6" fill="#e8f0fe" stroke="#4a6fa5" stroke-width="1.5"/>
+  <text x="80" y="144" text-anchor="middle" font-family="monospace" font-size="12" fill="#1a2e5a">Seed Panel</text>
+  <text x="80" y="160" text-anchor="middle" font-family="monospace" font-size="10" fill="#4a6fa5">S = {s1, s2, ..., sk}</text>
+  <text x="80" y="176" text-anchor="middle" font-family="monospace" font-size="10" fill="#4a6fa5">frozen + versioned</text>
+
+  <!-- Arrow: Seed Panel to Co-Eval Loop -->
+  <line x1="140" y1="150" x2="188" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+  <!-- Co-Evaluation Loop box -->
+  <rect x="190" y="85" width="160" height="130" rx="6" ry="6" fill="#fef9e7" stroke="#b8860b" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="270" y="107" text-anchor="middle" font-family="monospace" font-size="11" fill="#7a5c00">Co-Eval Loop</text>
+  <text x="270" y="124" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a5c00">for each pi in Pi:</text>
+  <text x="270" y="141" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a5c00">  for each s in S:</text>
+  <text x="270" y="157" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a5c00">    env.reset(seed=s)</text>
+  <text x="270" y="173" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a5c00">    action_space.seed(s)</text>
+  <text x="270" y="189" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a5c00">    run episode</text>
+
+  <!-- Arrow: Co-Eval Loop to Per-Seed Rows -->
+  <line x1="350" y1="150" x2="398" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+  <!-- Per-Seed Rows box -->
+  <rect x="400" y="100" width="130" height="100" rx="6" ry="6" fill="#eafaf1" stroke="#2e7d52" stroke-width="1.5"/>
+  <text x="465" y="124" text-anchor="middle" font-family="monospace" font-size="11" fill="#1a4d30">Per-Seed Rows</text>
+  <text x="465" y="142" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d52">(pi, s, metric,</text>
+  <text x="465" y="158" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d52"> term, trunc)</text>
+  <text x="465" y="174" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d52">one row per pair</text>
+
+  <!-- Arrow: Per-Seed Rows down to Artifact -->
+  <line x1="465" y1="200" x2="465" y2="238" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+  <!-- Artifact box -->
+  <rect x="360" y="240" width="210" height="45" rx="6" ry="6" fill="#fdecea" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="465" y="258" text-anchor="middle" font-family="monospace" font-size="11" fill="#7b1a1a">Comparison Artifact</text>
+  <text x="465" y="275" text-anchor="middle" font-family="monospace" font-size="10" fill="#c0392b">aggregate ONLY from rows</text>
+
+  <!-- Protocol Config annotation above Co-Eval Loop -->
+  <text x="270" y="62" text-anchor="middle" font-family="monospace" font-size="11" fill="#333">Protocol Config: env_id + wrappers + S + metrics</text>
+  <line x1="190" y1="70" x2="350" y2="70" stroke="#999" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="190" y1="70" x2="190" y2="85" stroke="#999" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="350" y1="70" x2="350" y2="85" stroke="#999" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<figcaption><strong>Figure 10.6B</strong>: Co-computed seed-panel evaluation protocol. A frozen seed list feeds into a single co-evaluation loop that runs every policy on every seed, writes one row per (policy, seed) pair, and derives the comparison artifact only from those rows. Aggregating before all rows are written, or evaluating methods on separate panels, invalidates the comparison.</figcaption>
+</figure>
+
 <p>In practice, a seed panel is a fixed list of integers declared before any rollout begins. Each integer seeds both <code>env.reset()</code> and <code>env.action_space.seed()</code>, so the starting observation and any random baseline actions are jointly controlled. Panel size is chosen to keep the standard error of the mean metric below a target threshold; 30 to 50 seeds is typical for continuous-control benchmarks. To see why size matters, consider that a single-seed evaluation has a roughly 20% chance of landing in the top or bottom quartile of the start distribution by pure luck, while a 30-seed panel reduces that misclassification probability below 1%. The list is frozen, version-controlled alongside the environment config, and never extended post-hoc to favor a particular method.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>

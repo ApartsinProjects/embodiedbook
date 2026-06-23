@@ -53,6 +53,70 @@
 <p>The goal is to stop treating a reward curve as the whole story. An embodied environment should produce enough trace evidence to answer which observation arrived, which action was sent, what the environment returned, and why the episode ended. In practice, this is called <strong>the render-log gap</strong>, and it is where most simulation bugs hide: in typical practice, a policy trained for millions of steps with only a reward scalar can take days to debug; the same failure identified from a short render-plus-log trace can take minutes.</p>
 <p>The render-log gap matters in embodied AI because physical robots have no rewind button. A gap that goes undetected in simulation transfers directly to hardware: a grasping policy that exploits a contact bug never seen in logs will apply the same exploit on a real arm, causing drops, collisions, or joint limit violations that damage equipment. The gap is especially dangerous when a reward improves despite the underlying behavior being wrong, because the learning signal actively suppresses the investigator's motivation to look deeper.</p>
 <p>The gap arises because rendering and logging operate on different views of the simulator state. The renderer queries the full physics state, including geometry, contact normals, and visual meshes, and produces a pixel or text snapshot. The observation returned to the policy is a filtered, lower-dimensional projection of that same state, and the <code>info</code> dictionary is whatever the environment author chose to expose. When those projections omit a variable, the renderer can show it visually while the log contains no record of it, creating a discrepancy that is only detectable by comparing both artifacts side by side.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Diagram showing the render-log gap: simulator physics state splits into three projections consumed by different consumers">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <!-- Physics state box (source) -->
+  <rect x="210" y="20" width="180" height="60" rx="6" fill="#ddeeff" stroke="#3a7abf" stroke-width="1.5"/>
+  <text x="300" y="46" text-anchor="middle" font-family="monospace" font-size="13" fill="#1a3a5c">Simulator Physics State</text>
+  <text x="300" y="65" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a5a7c">geometry · contacts · meshes</text>
+
+  <!-- Three arrows down from physics state -->
+  <!-- Arrow to Render -->
+  <line x1="240" y1="80" x2="90" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Arrow to Observation -->
+  <line x1="300" y1="80" x2="300" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Arrow to Info dict -->
+  <line x1="360" y1="80" x2="510" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Label: full query -->
+  <text x="145" y="120" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">full query</text>
+  <!-- Label: filtered -->
+  <text x="318" y="120" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">filtered</text>
+  <!-- Label: author-chosen -->
+  <text x="456" y="120" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">author-chosen</text>
+
+  <!-- Render box -->
+  <rect x="20" y="155" width="140" height="60" rx="6" fill="#e8f8e8" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="90" y="180" text-anchor="middle" font-family="monospace" font-size="12" fill="#1b5e20">render()</text>
+  <text x="90" y="198" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d32">pixel / text frame</text>
+
+  <!-- Observation box -->
+  <rect x="210" y="155" width="180" height="60" rx="6" fill="#fff8e1" stroke="#e65100" stroke-width="1.5"/>
+  <text x="300" y="180" text-anchor="middle" font-family="monospace" font-size="12" fill="#bf360c">observation</text>
+  <text x="300" y="198" text-anchor="middle" font-family="monospace" font-size="10" fill="#e65100">low-dim projection</text>
+
+  <!-- Info dict box -->
+  <rect x="440" y="155" width="140" height="60" rx="6" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+  <text x="510" y="180" text-anchor="middle" font-family="monospace" font-size="12" fill="#4a148c">info dict</text>
+  <text x="510" y="198" text-anchor="middle" font-family="monospace" font-size="10" fill="#6a1b9a">diagnostic keys</text>
+
+  <!-- Consumers row -->
+  <!-- Arrow render -> human debugger -->
+  <line x1="90" y1="215" x2="90" y2="258" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Arrow obs -> policy -->
+  <line x1="300" y1="215" x2="300" y2="258" stroke="#e65100" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- Arrow info -> log -->
+  <line x1="510" y1="215" x2="510" y2="258" stroke="#6a1b9a" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <text x="90" y="278" text-anchor="middle" font-family="monospace" font-size="11" fill="#2e7d32">human debugger</text>
+  <text x="300" y="278" text-anchor="middle" font-family="monospace" font-size="11" fill="#e65100">policy / trainer</text>
+  <text x="510" y="278" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a1b9a">step log</text>
+
+  <!-- Gap annotation between render and observation -->
+  <line x1="162" y1="185" x2="208" y2="185" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-red)"/>
+  <text x="185" y="177" text-anchor="middle" font-family="monospace" font-size="9" fill="#c0392b">gap</text>
+</svg>
+<figcaption>Figure 10.5B: The render-log gap. The simulator physics state is queried three ways: the renderer receives the full state and produces a visual frame for the human debugger; the observation is a filtered low-dimensional projection sent to the policy and trainer; and the info dictionary exposes only author-chosen diagnostic keys written to the step log. Variables present in the render frame but absent from the observation or info dict create the gap, visible only by comparing all three artifacts side by side.</figcaption>
+</figure>
 <div class="callout key-insight">
 <div class="callout-title">The Interface Is The Test</div>
 <p>This environment is ready when another reader can reset it with the same seed, inspect render modes, episode logs, videos, info dictionaries, and debugging artifacts, reproduce the same rollout, and recover the same logged evidence.</p>

@@ -51,6 +51,66 @@
 
 
 <p>Proximal Policy Optimization (PPO) looks compact on paper, but practical implementations have a strict data lifecycle. Rollouts are collected by a fixed behavior policy. The optimizer then reuses that rollout for a small number of minibatch epochs. During those epochs, the <em>old</em> log probabilities must remain frozen, otherwise the ratio no longer compares the new policy to the behavior that generated the data.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="PPO data lifecycle diagram">
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8f9fa" rx="6"/>
+  <!-- Stage boxes -->
+  <!-- 1: Collect Rollout -->
+  <rect x="20" y="110" width="110" height="80" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="75" y="142" text-anchor="middle" font-family="monospace" font-size="11" fill="#1e40af" font-weight="bold">COLLECT</text>
+  <text x="75" y="157" text-anchor="middle" font-family="monospace" font-size="11" fill="#1e40af">ROLLOUT</text>
+  <text x="75" y="177" text-anchor="middle" font-family="monospace" font-size="9" fill="#1e40af">pi_theta(env)</text>
+
+  <!-- 2: Freeze Evidence -->
+  <rect x="165" y="110" width="110" height="80" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="220" y="142" text-anchor="middle" font-family="monospace" font-size="11" fill="#92400e" font-weight="bold">FREEZE</text>
+  <text x="220" y="157" text-anchor="middle" font-family="monospace" font-size="11" fill="#92400e">EVIDENCE</text>
+  <text x="220" y="177" text-anchor="middle" font-family="monospace" font-size="9" fill="#92400e">old_log_prob</text>
+
+  <!-- 3: Compute GAE -->
+  <rect x="310" y="110" width="110" height="80" rx="6" fill="#d1fae5" stroke="#059669" stroke-width="1.5"/>
+  <text x="365" y="142" text-anchor="middle" font-family="monospace" font-size="11" fill="#065f46" font-weight="bold">COMPUTE</text>
+  <text x="365" y="157" text-anchor="middle" font-family="monospace" font-size="11" fill="#065f46">GAE</text>
+  <text x="365" y="177" text-anchor="middle" font-family="monospace" font-size="9" fill="#065f46">advantages</text>
+
+  <!-- 4: Minibatch Epochs + KL Stop -->
+  <rect x="455" y="110" width="125" height="80" rx="6" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="517" y="135" text-anchor="middle" font-family="monospace" font-size="11" fill="#4c1d95" font-weight="bold">MINIBATCH</text>
+  <text x="517" y="150" text-anchor="middle" font-family="monospace" font-size="11" fill="#4c1d95">EPOCHS</text>
+  <text x="517" y="165" text-anchor="middle" font-family="monospace" font-size="9" fill="#4c1d95">clip + update</text>
+  <text x="517" y="180" text-anchor="middle" font-family="monospace" font-size="9" fill="#4c1d95">KL stop</text>
+
+  <!-- Arrows between stages -->
+  <line x1="130" y1="150" x2="163" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+  <line x1="275" y1="150" x2="308" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+  <line x1="420" y1="150" x2="453" y2="150" stroke="#555" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+  <!-- Feedback arrow: epochs -> collect -->
+  <path d="M517 190 L517 250 L75 250 L75 192" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowhead)"/>
+  <text x="296" y="268" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">fresh rollout after KL stop</text>
+
+  <!-- Top label: frozen zone -->
+  <rect x="163" y="80" width="260" height="22" rx="4" fill="none" stroke="#d97706" stroke-width="1" stroke-dasharray="4,2"/>
+  <text x="293" y="95" text-anchor="middle" font-family="monospace" font-size="9" fill="#92400e">old_log_prob frozen across all epochs</text>
+
+  <!-- Stage numbers -->
+  <text x="75" y="103" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">1</text>
+  <text x="220" y="103" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">2</text>
+  <text x="365" y="103" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">3</text>
+  <text x="517" y="103" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">4</text>
+
+  <!-- Title -->
+  <text x="300" y="30" text-anchor="middle" font-family="monospace" font-size="13" fill="#111" font-weight="bold">PPO Data Lifecycle</text>
+  <text x="300" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#555">collect once, freeze evidence, reuse for K epochs, repeat</text>
+</svg>
+<figcaption><strong>Figure 15.5B</strong>: The PPO data lifecycle. Rollout evidence is collected once by the current policy (stage 1), old log probabilities are frozen immediately (stage 2), GAE advantages are computed (stage 3), and minibatch epochs run with KL-based early stopping (stage 4). The dashed arc shows that a KL stop triggers a fresh rollout collection rather than continuing with stale data.</figcaption>
+</figure>
 <p>A typical PPO loss combines four pieces:</p>
 <p>$$L = L_{\mathrm{clip}} - c_{\mathrm{ent}}H(\pi_\theta) + c_v L_{\mathrm{value}},$$</p>
 <p>where $L_{\mathrm{clip}}$ is the actor objective, $H(\pi_\theta)$ encourages exploration, and $L_{\mathrm{value}}$ trains the critic. Implementations may also use value-function clipping and target-KL early stopping.</p>

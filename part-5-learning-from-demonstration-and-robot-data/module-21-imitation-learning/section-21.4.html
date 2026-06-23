@@ -79,6 +79,84 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <h2>Inverse Reinforcement Learning And Reward Ambiguity</h2>
 <p>Consider a concrete motivation: a behavior cloning policy trained on 200 demonstrations of a robot pouring water learns to mimic the operator's wrist angle and grip force. When asked to pour into a smaller cup, it fails because it memorized motor patterns rather than goals. IRL targets exactly this transfer scenario. Instead of copying actions, it asks what cost the expert was minimizing, then re-optimizes that cost under the new geometry. The difference is measurable. Behavior cloning retrained from scratch for the smaller cup required 180 additional demonstrations to reach 80% success. An IRL policy re-optimized against the recovered reward reached 80% success in 12 fine-tuning rollouts, a 15x reduction in data cost (illustrative figures consistent with IRL transfer results as of 2024; exact ratios vary with task and feature set). The tradeoff is real: IRL requires solving a forward RL problem in the inner loop, which is computationally expensive. The inferred reward may also be ambiguous when demonstrations are few or the feature set is incomplete.</p>
 <p>Inverse reinforcement learning asks a different question from behavior cloning. Instead of directly fitting expert actions, it searches for a reward function $r_\phi(s,a)$ under which the expert behavior looks optimal or near-optimal. In maximum entropy IRL, a trajectory receives probability proportional to exponentiated return:</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Maximum Entropy IRL process loop">
+  <style>
+    .irl-box { fill: none; stroke: currentColor; stroke-width: 1.5; rx: 6; }
+    .irl-label { font-family: monospace; font-size: 12px; fill: currentColor; }
+    .irl-sublabel { font-family: monospace; font-size: 10px; fill: currentColor; opacity: 0.75; }
+    .irl-arrow { stroke: currentColor; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .irl-grad { font-family: monospace; font-size: 10px; fill: currentColor; opacity: 0.85; font-style: italic; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="currentColor" opacity="0.7"/>
+    </marker>
+  </defs>
+
+  <!-- Expert Demonstrations box (top-left) -->
+  <rect x="20" y="30" width="140" height="56" rx="6" class="irl-box"/>
+  <text x="90" y="55" text-anchor="middle" class="irl-label">Expert</text>
+  <text x="90" y="72" text-anchor="middle" class="irl-label">Demonstrations</text>
+  <text x="90" y="87" text-anchor="middle" class="irl-sublabel">tau_1 ... tau_N</text>
+
+  <!-- Reward Function box (top-center) -->
+  <rect x="228" y="30" width="144" height="56" rx="6" class="irl-box"/>
+  <text x="300" y="55" text-anchor="middle" class="irl-label">Reward Function</text>
+  <text x="300" y="72" text-anchor="middle" class="irl-label">r_theta(s,a)</text>
+  <text x="300" y="87" text-anchor="middle" class="irl-sublabel">theta^T phi(s,a)</text>
+
+  <!-- Forward RL box (top-right) -->
+  <rect x="440" y="30" width="140" height="56" rx="6" class="irl-box"/>
+  <text x="510" y="55" text-anchor="middle" class="irl-label">Forward RL</text>
+  <text x="510" y="72" text-anchor="middle" class="irl-label">Inner Loop</text>
+  <text x="510" y="87" text-anchor="middle" class="irl-sublabel">pi_theta = argmax E[r]</text>
+
+  <!-- Policy Rollouts box (bottom-right) -->
+  <rect x="440" y="190" width="140" height="56" rx="6" class="irl-box"/>
+  <text x="510" y="215" text-anchor="middle" class="irl-label">Policy Rollouts</text>
+  <text x="510" y="232" text-anchor="middle" class="irl-label">mu_theta</text>
+  <text x="510" y="247" text-anchor="middle" class="irl-sublabel">E_pi[phi(s,a)]</text>
+
+  <!-- Gradient Update box (bottom-center) -->
+  <rect x="228" y="190" width="144" height="56" rx="6" class="irl-box"/>
+  <text x="300" y="212" text-anchor="middle" class="irl-label">Gradient Update</text>
+  <text x="300" y="229" text-anchor="middle" class="irl-label">theta += alpha * grad</text>
+  <text x="300" y="247" text-anchor="middle" class="irl-sublabel">grad = mu_E - mu_theta</text>
+
+  <!-- Feature Expectations box (bottom-left) -->
+  <rect x="20" y="190" width="140" height="56" rx="6" class="irl-box"/>
+  <text x="90" y="212" text-anchor="middle" class="irl-label">Feature</text>
+  <text x="90" y="229" text-anchor="middle" class="irl-label">Expectation mu_E</text>
+  <text x="90" y="247" text-anchor="middle" class="irl-sublabel">(1/N) sum phi(s,a)</text>
+
+  <!-- Top row arrows: Expert -> Reward -> Forward RL -->
+  <line x1="160" y1="58" x2="226" y2="58" class="irl-arrow"/>
+  <line x1="372" y1="58" x2="438" y2="58" class="irl-arrow"/>
+
+  <!-- Right column: Forward RL down to Policy Rollouts -->
+  <line x1="510" y1="86" x2="510" y2="188" class="irl-arrow"/>
+
+  <!-- Bottom row: Policy Rollouts -> Gradient Update -> Feature Expectations -->
+  <line x1="440" y1="218" x2="374" y2="218" class="irl-arrow"/>
+  <line x1="228" y1="218" x2="162" y2="218" class="irl-arrow"/>
+
+  <!-- Left column: Feature Expectations up to Expert (feedback loop close) -->
+  <line x1="90" y1="188" x2="90" y2="88" class="irl-arrow"/>
+
+  <!-- Center vertical: Gradient Update feeds back up to Reward Function -->
+  <line x1="300" y1="188" x2="300" y2="88" class="irl-arrow"/>
+
+  <!-- Convergence label in center -->
+  <text x="300" y="143" text-anchor="middle" class="irl-grad">converged?</text>
+  <text x="300" y="157" text-anchor="middle" class="irl-grad">mu_E = mu_theta</text>
+
+  <!-- Outer loop label -->
+  <text x="54" y="145" text-anchor="middle" class="irl-grad">match</text>
+  <text x="54" y="159" text-anchor="middle" class="irl-grad">features</text>
+</svg>
+<figcaption>Figure 21.4B: The maximum entropy IRL loop. Expert demonstrations yield an empirical feature expectation (mu_E). The current reward parameters drive a forward RL inner loop, producing a policy whose rollout feature expectation (mu_theta) is compared with mu_E. The gradient (mu_E minus mu_theta) updates the reward parameters until the two expectations match, at which point the recovered reward rationalizes the expert behavior.</figcaption>
+</figure>
 <p>$$P_\phi(\tau) \propto \exp\left(\sum_t r_\phi(s_t,a_t)\right).$$</p>
 <div class="callout algorithm">
 <h4>Algorithm: Maximum Entropy Inverse Reinforcement Learning</h4>

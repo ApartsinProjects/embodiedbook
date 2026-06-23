@@ -48,6 +48,78 @@
 <p>A robot arm hovers over a cluttered bin, camera feed live, and must grasp an object it has never seen at this orientation. Pure imitation learning fails the moment the pose drifts outside training data. Pure reinforcement learning wastes hours of sim time wandering randomly before a single reward fires. The combination, seeding RL with a behavior-cloned policy, is the trick that makes warehouse automation and hospital logistics viable right now, as robot deployments outpace the cost of collecting demonstrations. In this capstone you will build that pipeline end to end: clone a grasp policy from 50 demonstrations, fine-tune it with Soft Actor-Critic (SAC), and measure exactly where each approach breaks down.</p>
 </div>
 <p>This section develops the technical contract for vision-based robotic pick-and-place (il + rl) into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8f9fa" rx="8"/>
+
+  <!-- Stage 1: RGB-D Perception -->
+  <rect x="20" y="100" width="110" height="60" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="75" y="126" text-anchor="middle" fill="#1e40af" font-size="11">RGB-D</text>
+  <text x="75" y="142" text-anchor="middle" fill="#1e40af" font-size="11">Perception</text>
+  <text x="75" y="158" text-anchor="middle" fill="#60a5fa" font-size="10">ResNet-18 FPN</text>
+
+  <!-- Arrow 1 -->
+  <line x1="130" y1="130" x2="158" y2="130" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="144" y="122" text-anchor="middle" fill="#6b7280" font-size="9">256-d</text>
+  <text x="144" y="133" text-anchor="middle" fill="#6b7280" font-size="9">embed</text>
+
+  <!-- Stage 2: BC Policy (IL) -->
+  <rect x="160" y="80" width="120" height="100" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="220" y="108" text-anchor="middle" fill="#15803d" font-size="11" font-weight="bold">BC Policy (IL)</text>
+  <text x="220" y="126" text-anchor="middle" fill="#166534" font-size="10">50 demos</text>
+  <text x="220" y="142" text-anchor="middle" fill="#166534" font-size="10">obs -&gt; action</text>
+  <text x="220" y="160" text-anchor="middle" fill="#16a34a" font-size="9">72% success</text>
+  <text x="220" y="174" text-anchor="middle" fill="#dc2626" font-size="9">41% on novel</text>
+
+  <!-- Arrow 2: init -->
+  <line x1="280" y1="130" x2="308" y2="130" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="294" y="122" text-anchor="middle" fill="#6b7280" font-size="9">init</text>
+
+  <!-- Stage 3: SAC Fine-tune (RL) -->
+  <rect x="310" y="80" width="120" height="100" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="370" y="105" text-anchor="middle" fill="#92400e" font-size="11" font-weight="bold">SAC Fine-tune</text>
+  <text x="370" y="121" text-anchor="middle" fill="#92400e" font-size="10">(RL)</text>
+  <text x="370" y="139" text-anchor="middle" fill="#b45309" font-size="10">200k env steps</text>
+  <text x="370" y="155" text-anchor="middle" fill="#b45309" font-size="10">sparse reward</text>
+  <text x="370" y="173" text-anchor="middle" fill="#15803d" font-size="9">68% on novel</text>
+
+  <!-- Arrow 3 -->
+  <line x1="430" y1="130" x2="458" y2="130" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="444" y="122" text-anchor="middle" fill="#6b7280" font-size="9">6-DoF</text>
+  <text x="444" y="133" text-anchor="middle" fill="#6b7280" font-size="9">delta cmd</text>
+
+  <!-- Stage 4: Robot Action + Contact -->
+  <rect x="460" y="100" width="115" height="60" rx="6" fill="#fce7f3" stroke="#db2777" stroke-width="1.5"/>
+  <text x="517" y="126" text-anchor="middle" fill="#9d174d" font-size="11">Gripper</text>
+  <text x="517" y="142" text-anchor="middle" fill="#9d174d" font-size="11">+ Contact</text>
+  <text x="517" y="158" text-anchor="middle" fill="#db2777" font-size="10">force &gt; 5N</text>
+
+  <!-- Feedback loop arrow back -->
+  <path d="M 517 160 Q 517 250 75 250 Q 75 185 75 160" fill="none" stroke="#9ca3af" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
+  <text x="296" y="268" text-anchor="middle" fill="#6b7280" font-size="9">next observation (closed loop)</text>
+
+  <!-- Labels above boxes -->
+  <text x="75" y="90" text-anchor="middle" fill="#3b82f6" font-size="10">PERCEIVE</text>
+  <text x="220" y="70" text-anchor="middle" fill="#16a34a" font-size="10">IMITATE</text>
+  <text x="370" y="70" text-anchor="middle" fill="#d97706" font-size="10">EXPLORE</text>
+  <text x="517" y="90" text-anchor="middle" fill="#db2777" font-size="10">ACT</text>
+
+  <!-- Title -->
+  <text x="300" y="28" text-anchor="middle" fill="#374151" font-size="13" font-weight="bold">IL + RL Pick-and-Place Pipeline</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Figure 59.3B: The four-stage IL+RL pick-and-place pipeline. RGB-D perception produces a 256-dimensional embedding; the BC policy (trained on 50 demonstrations) initializes the SAC fine-tuning stage; SAC outputs a 6-DoF delta command to the gripper; contact force closes the observation loop. Success rate on novel object poses rises from 41% (BC alone) to 68% (after SAC fine-tuning).</figcaption>
+</figure>
 <p>The key question in Vision-based robotic pick-and-place (IL + RL) is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

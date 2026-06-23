@@ -48,6 +48,89 @@
 <p>A delivery robot receives the instruction "go to the kitchen and avoid the wet floor near the sink." Halfway there, a cart blocks the corridor. The original plan is dead. Can the robot recover the intent of the instruction, not just recompute a path, while keeping the sink-avoidance constraint intact? This is the unsolved edge that separates brittle rule-followers from genuinely useful indoor agents. Language models can now parse nuanced spatial instructions; LiDAR planners can reroute in milliseconds. The open challenge is closing the loop between them. In this capstone project you build a system that does exactly that: parse an instruction, execute it, detect failure, and replan without losing the user's original intent.</p>
 </div>
 <p>This section develops the technical contract for language-guided navigation with replanning into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Language-guided navigation replanning pipeline">
+  <style>
+    .box { fill: none; stroke: #4a90d9; stroke-width: 1.8; rx: 6; }
+    .box-trigger { fill: none; stroke: #e07b3a; stroke-width: 1.8; }
+    .box-replan { fill: none; stroke: #5ab25a; stroke-width: 1.8; }
+    .lbl { font-family: monospace; font-size: 11px; fill: #222; text-anchor: middle; }
+    .sublbl { font-family: monospace; font-size: 9px; fill: #555; text-anchor: middle; }
+    .arrow { stroke: #444; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .arrow-back { stroke: #e07b3a; stroke-width: 1.5; fill: none; stroke-dasharray: 5,3; marker-end: url(#arrowhead-orange); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#444"/>
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#e07b3a"/>
+    </marker>
+  </defs>
+
+  <!-- Box 1: LLM Instruction Parser -->
+  <rect x="20" y="110" width="120" height="70" rx="6" class="box"/>
+  <text x="80" y="139" class="lbl">LLM Parser</text>
+  <text x="80" y="155" class="sublbl">instruction -&gt;</text>
+  <text x="80" y="168" class="sublbl">(waypoint, constraint)</text>
+
+  <!-- Arrow 1 -> 2 -->
+  <path d="M 140 145 L 178 145" class="arrow"/>
+
+  <!-- Box 2: Metric Planner (Nav2 / costmap) -->
+  <rect x="178" y="110" width="120" height="70" rx="6" class="box"/>
+  <text x="238" y="139" class="lbl">Metric Planner</text>
+  <text x="238" y="155" class="sublbl">Nav2 / costmap</text>
+  <text x="238" y="168" class="sublbl">path execution</text>
+
+  <!-- Arrow 2 -> 3 -->
+  <path d="M 298 145 L 338 145" class="arrow"/>
+
+  <!-- Box 3: Replan Trigger (sensor / cost ratio) -->
+  <rect x="338" y="110" width="120" height="70" rx="6" class="box-trigger"/>
+  <text x="398" y="134" class="lbl" style="fill:#b85a10;">Replan Trigger</text>
+  <text x="398" y="150" class="sublbl">cost ratio &gt; 1.5x</text>
+  <text x="398" y="165" class="sublbl">LiDAR blockage</text>
+  <text x="398" y="179" class="sublbl">detected</text>
+
+  <!-- Arrow 3 -> 4 -->
+  <path d="M 458 145 L 498 145" class="arrow"/>
+
+  <!-- Box 4: LLM Replanner -->
+  <rect x="498" y="110" width="88" height="70" rx="6" class="box-replan"/>
+  <text x="542" y="134" class="lbl" style="fill:#2a7a2a;">LLM</text>
+  <text x="542" y="150" class="lbl" style="fill:#2a7a2a;">Replanner</text>
+  <text x="542" y="166" class="sublbl">revised</text>
+  <text x="542" y="179" class="sublbl">constraints</text>
+
+  <!-- Feedback arrow: LLM Replanner back to Metric Planner (curved, below) -->
+  <path d="M 542 180 Q 542 240 238 240 Q 178 240 178 180" class="arrow-back"/>
+  <text x="390" y="258" class="sublbl" style="fill:#b85a10;">constraint-preserved replan route</text>
+
+  <!-- Top label: instruction text -->
+  <text x="80" y="98" class="sublbl">"Go to kitchen,</text>
+  <text x="80" y="110" class="sublbl">avoid wet floor"</text>
+
+  <!-- Top annotation for planner -->
+  <text x="238" y="99" class="sublbl">occupancy grid</text>
+  <text x="238" y="110" class="sublbl">+ constraint weights</text>
+
+  <!-- Top annotation for trigger -->
+  <text x="398" y="99" class="sublbl">monitors plan</text>
+  <text x="398" y="110" class="sublbl">feasibility</text>
+
+  <!-- Top annotation for replanner -->
+  <text x="542" y="99" class="sublbl">no direct</text>
+  <text x="542" y="110" class="sublbl">grid access</text>
+
+  <!-- Step labels at bottom -->
+  <text x="80" y="222" class="sublbl">1. parse</text>
+  <text x="238" y="222" class="sublbl">2. execute</text>
+  <text x="398" y="222" class="sublbl">3. detect</text>
+  <text x="542" y="222" class="sublbl">4. replan</text>
+</svg>
+<figcaption>Pipeline for language-guided navigation with replanning: the LLM parser converts a natural-language instruction into (waypoint, constraint) pairs; the metric planner executes them against the occupancy grid; the replan trigger fires when path cost exceeds 1.5x the best alternative; the LLM replanner emits revised symbolic constraints (without direct grid access) that feed back into the metric planner while preserving the original instruction intent.</figcaption>
+</figure>
 <p>The key question in Language-guided navigation with replanning is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>

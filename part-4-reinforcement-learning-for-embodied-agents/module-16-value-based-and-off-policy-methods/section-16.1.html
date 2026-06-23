@@ -52,6 +52,76 @@
 
 <p>Q-learning answers a specific embodied-agent problem: the robot often cannot wait for a full episode to learn whether a push, turn, or grasp was useful. It needs a local training signal after each transition, even when the reward is delayed and the next state is only <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.7.html">partially observed</a>.</p>
 <p>The section develops that signal. We move from the tabular Bellman update, to the deep Q-network version that predicts action values from observations, to the stabilizers that make DQN usable when pixels, proprioception, and contact events keep changing the data distribution. A Q value that cannot survive noisy sensors and shifting replay distributions is not a value; it is a number waiting to mislead the policy at exactly the wrong moment.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
+  <!-- Background -->
+  <rect width="600" height="300" fill="none"/>
+
+  <!-- Box 1: Environment -->
+  <rect x="20" y="110" width="110" height="56" rx="6" fill="#e8f4f8" stroke="#3a7ca5" stroke-width="1.5"/>
+  <text x="75" y="135" text-anchor="middle" fill="#1a3a4a">Environment</text>
+  <text x="75" y="152" text-anchor="middle" fill="#1a3a4a" font-size="11">(s, a, r, s')</text>
+
+  <!-- Arrow 1: Environment -> Replay Buffer -->
+  <line x1="130" y1="138" x2="178" y2="138" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="154" y="130" text-anchor="middle" fill="#555" font-size="11">store</text>
+
+  <!-- Box 2: Replay Buffer -->
+  <rect x="178" y="110" width="120" height="56" rx="6" fill="#fdf3e3" stroke="#d4892a" stroke-width="1.5"/>
+  <text x="238" y="135" text-anchor="middle" fill="#5a3000">Replay</text>
+  <text x="238" y="152" text-anchor="middle" fill="#5a3000">Buffer D</text>
+
+  <!-- Arrow 2: Replay Buffer -> TD Target -->
+  <line x1="298" y1="138" x2="346" y2="138" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="322" y="130" text-anchor="middle" fill="#555" font-size="11">sample</text>
+
+  <!-- Box 3: TD Target (target network) -->
+  <rect x="346" y="110" width="130" height="56" rx="6" fill="#eef6ee" stroke="#3a7a3a" stroke-width="1.5"/>
+  <text x="411" y="132" text-anchor="middle" fill="#1a3a1a">TD Target</text>
+  <text x="411" y="149" text-anchor="middle" fill="#1a3a1a" font-size="11">r + gamma*maxQ_</text>
+
+  <!-- Arrow 3: TD Target -> Online Network -->
+  <line x1="476" y1="138" x2="524" y2="138" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="500" y="130" text-anchor="middle" fill="#555" font-size="11">loss</text>
+
+  <!-- Box 4: Online Q Network -->
+  <rect x="524" y="110" width="58" height="56" rx="6" fill="#f0eaf8" stroke="#6a3ab5" stroke-width="1.5"/>
+  <text x="553" y="135" text-anchor="middle" fill="#2a0a5a">Online</text>
+  <text x="553" y="152" text-anchor="middle" fill="#2a0a5a">Q_theta</text>
+
+  <!-- Arrow 4: Online Network -> Policy (down, then left label) -->
+  <line x1="553" y1="166" x1="553" x2="553" y2="210" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="568" y="195" text-anchor="start" fill="#555" font-size="11">greedy</text>
+
+  <!-- Box 5: Policy / Action -->
+  <rect x="478" y="210" width="110" height="50" rx="6" fill="#f8eaea" stroke="#b53a3a" stroke-width="1.5"/>
+  <text x="533" y="232" text-anchor="middle" fill="#5a0a0a">Policy</text>
+  <text x="533" y="249" text-anchor="middle" fill="#5a0a0a" font-size="11">argmax Q(s,a)</text>
+
+  <!-- Arrow 5: Policy -> Environment (back arrow along bottom) -->
+  <path d="M478,235 Q238,290 130,200 Q100,178 130,160" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+  <text x="260" y="285" text-anchor="middle" fill="#555" font-size="11">act in env</text>
+
+  <!-- Target network sync annotation -->
+  <line x1="553" y1="110" x2="411" y2="110" stroke="#3a7a3a" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+  <text x="482" y="104" text-anchor="middle" fill="#3a7a3a" font-size="11">sync every C steps</text>
+
+  <!-- Arrow defs -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+    </marker>
+    <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3a7a3a"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="300" y="24" text-anchor="middle" fill="#222" font-size="14" font-weight="bold">DQN Training Loop</text>
+  <text x="300" y="42" text-anchor="middle" fill="#555" font-size="11">collect -> store -> sample -> compute target -> update online network -> act</text>
+</svg>
+<figcaption>The DQN training cycle: the agent acts in the environment, stores transitions in the replay buffer, samples a mini-batch to compute TD targets using the frozen target network, updates the online Q network with gradient descent, and derives the next action via argmax. The target network is periodically synced from the online network (dashed green arrow) to prevent the bootstrap target from chasing every online update.</figcaption>
+</figure>
 <div class="callout key-insight">
 <div class="callout-title">A Q Value Is A One-Step Promise</div>
 <p>$Q(s,a)$ estimates the return after taking action $a$ in state $s$ and then behaving well afterward. The promise is useful only if the state encoding contains the facts the action needs: object pose, gripper load, velocity, contact state, and any hidden context that changes the next consequence.</p>

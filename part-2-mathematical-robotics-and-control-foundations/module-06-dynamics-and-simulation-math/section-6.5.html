@@ -57,6 +57,67 @@
 
 <p>Before differentiable simulators existed, engineers had three options for tuning physical parameters or trajectories: hand-derive the gradients (laborious and error-prone for contact-rich systems), run black-box optimization (sample-inefficient, requiring thousands of rollouts per gradient estimate), or iterate manually. The DiffTaichi benchmark (Hu et al., 2019) shows the cost clearly: black-box search needed roughly 50,000 rollouts to find a stiffness distribution that gradient descent found in 200 steps. Without differentiable physics: 50,000 simulator evaluations, roughly 14 hours on a single CPU; with it: 200 gradient steps, under 4 minutes. Differentiable physics removes this bottleneck. The simulator becomes a differentiable function, so a single backward pass updates every parameter that influences the trajectory, exactly as it would update a neural network layer. This matters because a robot's policy, morphology, and world model all interact through physics. <strong>Gradient flow through the simulator</strong> lets all three be co-optimized together. The constraint is that the technique works only where the physics is smooth, and establishing that smoothness takes most of the practical effort. A gradient computed inside the simulator is a promise about physics; a finite-difference check is the proof.</p>
 
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gradient flow through a differentiable simulator: forward rollout produces a loss, backward pass propagates gradients, parameter update closes the loop.">
+  <!-- Background -->
+  <rect width="600" height="300" fill="#f8fafc" rx="8"/>
+
+  <!-- Stage boxes -->
+  <!-- 1: Parameters -->
+  <rect x="20" y="110" width="110" height="60" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+  <text x="75" y="137" text-anchor="middle" font-family="monospace" font-size="12" fill="#1565c0">theta, u</text>
+  <text x="75" y="155" text-anchor="middle" font-family="monospace" font-size="11" fill="#1565c0">Parameters</text>
+
+  <!-- 2: Forward Rollout -->
+  <rect x="170" y="110" width="110" height="60" rx="6" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="225" y="134" text-anchor="middle" font-family="monospace" font-size="11" fill="#2e7d32">Forward</text>
+  <text x="225" y="150" text-anchor="middle" font-family="monospace" font-size="11" fill="#2e7d32">Rollout</text>
+  <text x="225" y="163" text-anchor="middle" font-family="monospace" font-size="10" fill="#2e7d32">x_k+1=f(x_k,u,th)</text>
+
+  <!-- 3: Loss -->
+  <rect x="320" y="110" width="110" height="60" rx="6" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+  <text x="375" y="137" text-anchor="middle" font-family="monospace" font-size="12" fill="#e65100">Loss  L</text>
+  <text x="375" y="155" text-anchor="middle" font-family="monospace" font-size="11" fill="#e65100">L = l(x_T)</text>
+
+  <!-- 4: Backward Pass -->
+  <rect x="470" y="110" width="110" height="60" rx="6" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+  <text x="525" y="134" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a1b9a">Backward</text>
+  <text x="525" y="150" text-anchor="middle" font-family="monospace" font-size="11" fill="#6a1b9a">Pass</text>
+  <text x="525" y="163" text-anchor="middle" font-family="monospace" font-size="10" fill="#6a1b9a">dL/du, dL/dth</text>
+
+  <!-- Forward arrows (top) -->
+  <line x1="130" y1="140" x2="168" y2="140" stroke="#444" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="280" y1="140" x2="318" y2="140" stroke="#444" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="430" y1="140" x2="468" y2="140" stroke="#444" stroke-width="1.8" marker-end="url(#arr)"/>
+
+  <!-- Forward label -->
+  <text x="300" y="100" text-anchor="middle" font-family="monospace" font-size="11" fill="#555">-- forward pass --&gt;</text>
+
+  <!-- Backward gradient arrow (bottom, going right to left) -->
+  <path d="M525 170 L525 230 L75 230 L75 172" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arr-red)"/>
+  <text x="300" y="252" text-anchor="middle" font-family="monospace" font-size="11" fill="#c62828">&lt;-- gradient flow (backward pass) --</text>
+
+  <!-- Arrowhead markers -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#444"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#c62828"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="300" y="32" text-anchor="middle" font-family="monospace" font-size="13" fill="#222" font-weight="bold">Differentiable Simulator: Gradient Flow Loop</text>
+  <text x="300" y="50" text-anchor="middle" font-family="monospace" font-size="11" fill="#555">smooth physics enables one backward pass to update all parameters</text>
+
+  <!-- Contact warning note -->
+  <rect x="160" y="265" width="280" height="22" rx="4" fill="#fce4ec" stroke="#c62828" stroke-width="1"/>
+  <text x="300" y="280" text-anchor="middle" font-family="monospace" font-size="10" fill="#c62828">contact events break smoothness: validate with finite diff</text>
+</svg>
+<figcaption>Gradient flow through a differentiable simulator. The forward pass propagates state through T steps and computes a scalar loss; the backward pass multiplies local Jacobians in reverse to return sensitivities with respect to every parameter and control input in a single pass. Contact events make the dynamics piecewise smooth, requiring finite-difference validation before the gradient is trusted for optimization.</figcaption>
+</figure>
+
 <p>For Differentiable physics: what it buys you, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
 <div class="callout under-the-hood">
 <div class="callout-title">Mechanism</div>

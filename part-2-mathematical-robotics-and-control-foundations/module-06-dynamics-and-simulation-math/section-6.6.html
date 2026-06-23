@@ -43,6 +43,64 @@
 <p>This section assumes familiarity with rigid-body dynamics and the equations of motion developed in sections 6.1 through 6.4. The parallel-simulation ideas introduced here are applied directly in section 17.2, which builds full GPU-accelerated reinforcement learning pipelines on top of the batch rollout pattern shown here, and in section 13.2, which uses the same massive throughput to run domain randomization at scale. For the model-based complement, where minimal-coordinate dynamics replaces the GPU simulator inside a controller, see section 37.3.</p>
 </div>
 <p>Before GPU-parallel simulation, the standard training loop for a <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-45-locomotion-and-mobility/section-45.3.html">locomotion or manipulation policy</a> looked like this: launch one MuJoCo process, step the environment, wait for the next state, send an action, and repeat for millions of steps. On a single CPU core that loop ran at roughly 500 to 2000 steps per second. Training a competitive locomotion policy required hundreds of millions of steps, so wall-clock time measured in days was normal. The bottleneck was not the neural network forward pass; it was experience collection. GPU-parallel simulation attacked that bottleneck directly: instead of one sequential environment, run 4096 environments simultaneously under a single batched kernel. On a single CPU core that same policy needs roughly 48 hours to collect enough experience; on a single GPU with 4096 parallel environments it takes under 30 minutes (as of 2024, on hardware such as an A100 or H100). Throughput jumps by roughly three orders of magnitude, and training time collapses from days to minutes. That shift made it practical to explore curriculum schedules, randomized terrain, and <a href="../../part-3-simulation-tooling-and-the-modern-stack/module-13-domain-randomization-and-synthetic-data/section-13.2.html">domain randomization</a> at a scale that was previously unaffordable.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CPU sequential vs GPU parallel simulation: throughput and training time comparison">
+  <!-- CPU sequential column -->
+  <rect x="30" y="30" width="160" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+  <text x="110" y="48" text-anchor="middle" font-family="monospace" font-size="12" fill="#1565c0">CPU sequential</text>
+  <text x="110" y="66" text-anchor="middle" font-family="monospace" font-size="11" fill="#1565c0">1 env at a time</text>
+
+  <!-- CPU steps arrow down -->
+  <line x1="110" y1="74" x2="110" y2="110" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="30" y="110" width="160" height="44" rx="6" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+  <text x="110" y="128" text-anchor="middle" font-family="monospace" font-size="12" fill="#e65100">~1 000 steps/s</text>
+  <text x="110" y="146" text-anchor="middle" font-family="monospace" font-size="11" fill="#e65100">throughput</text>
+
+  <!-- CPU training time arrow down -->
+  <line x1="110" y1="154" x2="110" y2="190" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="30" y="190" width="160" height="44" rx="6" fill="#fce4ec" stroke="#c62828" stroke-width="1.5"/>
+  <text x="110" y="208" text-anchor="middle" font-family="monospace" font-size="12" fill="#c62828">~48 h training</text>
+  <text x="110" y="226" text-anchor="middle" font-family="monospace" font-size="11" fill="#c62828">wall-clock</text>
+
+  <!-- vs label -->
+  <text x="300" y="158" text-anchor="middle" font-family="monospace" font-size="16" fill="#607d8b">vs</text>
+
+  <!-- GPU parallel column -->
+  <rect x="410" y="30" width="160" height="44" rx="6" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="490" y="48" text-anchor="middle" font-family="monospace" font-size="12" fill="#2e7d32">GPU parallel</text>
+  <text x="490" y="66" text-anchor="middle" font-family="monospace" font-size="11" fill="#2e7d32">4 096 envs at once</text>
+
+  <!-- GPU steps arrow down -->
+  <line x1="490" y1="74" x2="490" y2="110" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="410" y="110" width="160" height="44" rx="6" fill="#fff3e0" stroke="#e65100" stroke-width="1.5"/>
+  <text x="490" y="128" text-anchor="middle" font-family="monospace" font-size="12" fill="#e65100">~4M steps/s</text>
+  <text x="490" y="146" text-anchor="middle" font-family="monospace" font-size="11" fill="#e65100">throughput (x1000)</text>
+
+  <!-- GPU training time arrow down -->
+  <line x1="490" y1="154" x2="490" y2="190" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="410" y="190" width="160" height="44" rx="6" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="490" y="208" text-anchor="middle" font-family="monospace" font-size="12" fill="#2e7d32">~30 min training</text>
+  <text x="490" y="226" text-anchor="middle" font-family="monospace" font-size="11" fill="#2e7d32">wall-clock</text>
+
+  <!-- horizontal arrow linking throughput boxes -->
+  <line x1="300" y1="132" x2="410" y2="132" stroke="#6a1b9a" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <line x1="190" y1="132" x2="280" y2="132" stroke="#6a1b9a" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="300" y="125" text-anchor="middle" font-family="monospace" font-size="10" fill="#6a1b9a">~1000x speedup</text>
+
+  <!-- row labels on left -->
+  <text x="18" y="56" text-anchor="end" font-family="monospace" font-size="10" fill="#607d8b">setup</text>
+  <text x="18" y="136" text-anchor="end" font-family="monospace" font-size="10" fill="#607d8b">rate</text>
+  <text x="18" y="214" text-anchor="end" font-family="monospace" font-size="10" fill="#607d8b">time</text>
+
+  <!-- arrowhead marker -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#555"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>CPU sequential simulation (one environment, ~1 000 steps/s, ~48 h training) vs GPU-parallel simulation (4 096 environments, ~4 M steps/s, ~30 min training). The three-row layout shows how the same three properties change when the computation shifts from sequential to batched-kernel execution.</figcaption>
+</figure>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>A humanoid walking policy trained in 2018 required roughly a week of CPU simulation to collect enough experience. The same policy today trains in under an hour because a single GPU can step 4,096 environments simultaneously, all running the same physics kernel on different data. That three-order-of-magnitude speedup is not an incremental improvement; it is what made curriculum learning, terrain randomization, and large-scale sim-to-real transfer practically accessible. By the end of this section you will understand the batch-rollout contract that makes GPU simulation warp-efficient, when maximal versus minimal coordinates serve you better, and what validity checks must accompany any throughput number to make it meaningful.</p>

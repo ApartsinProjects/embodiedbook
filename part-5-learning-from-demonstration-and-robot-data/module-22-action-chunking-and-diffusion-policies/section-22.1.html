@@ -81,6 +81,85 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <p>A policy that commits to one action at a time is a navigator who takes one step, closes their eyes, then opens them again to find the world has already moved on without them.</p>
 <p>Compounding error matters in embodied AI because physical contact is irreversible on the timescale of a control cycle. A 2 mm positional overshoot during approach does not reset; it becomes the starting state for the next prediction, which inherits the error and may add its own. On a rigid manipulator running at 50 Hz, errors accumulate across dozens of cycles before any single cycle's loss signal is large enough to trigger a corrective reflex. The result is that tasks requiring precise fingertip placement, such as peg insertion or cup grasping, fail not from a single large mistake but from a cascade of small ones that cross the tolerance boundary late in the trajectory.</p>
 <p>The mechanism is a feedback loop between prediction error and state drift. Each predicted action $\hat{a}_t$ deviates slightly from the demonstration action $a_t^*$. Executing $\hat{a}_t$ moves the robot to a state $s_{t+1}$ that was never in the training distribution. The next observation $o_{t+1}$ is therefore out-of-distribution, causing the next prediction to deviate further. Cumulative state error $\Delta_t = \|s_t^\pi - s_t^{\text{demo}}\|$ grows roughly linearly with time when errors are independent, and faster when the task enters a contact-rich phase where small position errors produce large force deviations. A 1 mm joint-space offset at the start of a grasp is imperceptible to a human observer, yet after just 10 control cycles at 50 Hz it can displace the fingertip by 5 mm, which is enough to miss a standard M6 peg hole entirely: the robot has failed a precision task in under 200 ms without ever making a single "large" mistake.</p>
+<figure class="diagram-container">
+<svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" aria-label="Single-step prediction failure: compounding error loop diagram">
+  <style>
+    .axis-label { font-family: monospace; font-size: 12px; fill: var(--text-color, #333); }
+    .node-label { font-family: monospace; font-size: 11px; fill: var(--text-color, #333); }
+    .arrow { stroke: var(--text-color, #444); stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
+    .mode-line { stroke: var(--accent-color, #3b82f6); stroke-width: 2; fill: none; stroke-dasharray: 5 3; }
+    .error-line { stroke: #e05; stroke-width: 2; fill: none; }
+    .demo-dot { fill: var(--accent-color, #3b82f6); }
+    .avg-dot { fill: #e05; }
+    .box { rx: 6; ry: 6; fill: var(--callout-bg, #f0f4ff); stroke: var(--accent-color, #3b82f6); stroke-width: 1.4; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--text-color, #444)"/>
+    </marker>
+  </defs>
+
+  <!-- Left panel: bimodal action distribution -->
+  <text x="145" y="22" text-anchor="middle" font-family="monospace" font-size="13" font-weight="bold" fill="var(--text-color,#333)">Bimodal Demo Actions</text>
+
+  <!-- Gripper target object -->
+  <rect x="120" y="110" width="50" height="30" rx="3" fill="#d4eaff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="145" y="130" text-anchor="middle" font-family="monospace" font-size="11" fill="#3b82f6">object</text>
+
+  <!-- Demo mode 1: approach from left -->
+  <circle cx="70" cy="70" r="7" class="demo-dot"/>
+  <text x="70" y="58" text-anchor="middle" class="node-label">demo A</text>
+  <line x1="76" y1="76" x2="118" y2="108" class="mode-line"/>
+
+  <!-- Demo mode 2: approach from right -->
+  <circle cx="220" cy="70" r="7" class="demo-dot"/>
+  <text x="220" y="58" text-anchor="middle" class="node-label">demo B</text>
+  <line x1="214" y1="76" x2="152" y2="108" class="mode-line"/>
+
+  <!-- Mean prediction: directly above -->
+  <circle cx="145" cy="70" r="7" class="avg-dot"/>
+  <text x="145" y="58" text-anchor="middle" class="node-label" fill="#e05">MSE mean</text>
+  <line x1="145" y1="77" x2="145" y2="107" stroke="#e05" stroke-width="2" stroke-dasharray="4 2"/>
+  <text x="145" y="175" text-anchor="middle" font-family="monospace" font-size="10" fill="#e05">collision path</text>
+
+  <!-- Divider -->
+  <line x1="295" y1="15" x2="295" y2="285" stroke="var(--text-color,#ccc)" stroke-width="1" stroke-dasharray="4 3"/>
+
+  <!-- Right panel: compounding error over time -->
+  <text x="450" y="22" text-anchor="middle" font-family="monospace" font-size="13" font-weight="bold" fill="var(--text-color,#333)">Compounding Error Over Time</text>
+
+  <!-- Axes -->
+  <line x1="330" y1="250" x2="580" y2="250" stroke="var(--text-color,#444)" stroke-width="1.5"/>
+  <line x1="330" y1="250" x2="330" y2="40" stroke="var(--text-color,#444)" stroke-width="1.5"/>
+  <text x="455" y="275" text-anchor="middle" class="axis-label">control steps (50 Hz)</text>
+  <text x="315" y="148" text-anchor="middle" class="axis-label" transform="rotate(-90 315 148)">state error</text>
+
+  <!-- Tolerance threshold line -->
+  <line x1="330" y1="130" x2="580" y2="130" stroke="#f97316" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="583" y="134" font-family="monospace" font-size="10" fill="#f97316">tolerance</text>
+
+  <!-- Demo (ideal) trajectory: flat near zero error -->
+  <polyline points="330,245 380,242 430,241 480,240 530,240 575,239" class="mode-line"/>
+  <text x="390" y="233" font-family="monospace" font-size="10" fill="var(--accent-color,#3b82f6)">chunked policy</text>
+
+  <!-- Single-step error: growing curve -->
+  <polyline points="330,245 355,238 380,225 405,207 430,183 455,155 480,122 505,87 530,62" class="error-line"/>
+  <text x="505" y="80" font-family="monospace" font-size="10" fill="#e05">single-step BC</text>
+
+  <!-- Crosses threshold annotation -->
+  <circle cx="480" cy="122" r="5" fill="#f97316"/>
+  <line x1="480" y1="122" x2="480" y2="250" stroke="#f97316" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="482" y="262" font-family="monospace" font-size="10" fill="#f97316">~10 steps</text>
+
+  <!-- Legend -->
+  <line x1="335" y1="285" x2="355" y2="285" stroke="#3b82f6" stroke-width="2" stroke-dasharray="5 3"/>
+  <text x="358" y="289" font-family="monospace" font-size="10" fill="var(--text-color,#333)">chunked</text>
+  <line x1="410" y1="285" x2="430" y2="285" stroke="#e05" stroke-width="2"/>
+  <text x="433" y="289" font-family="monospace" font-size="10" fill="var(--text-color,#333)">single-step</text>
+</svg>
+<figcaption>Figure 22.1B: (Left) Mode averaging failure: two demonstrators approach from opposite sides; MSE regression predicts the mean, which collides with the object. (Right) Compounding error: single-step behavioral cloning accumulates state error that crosses the task tolerance threshold within 10 control cycles, while a chunked policy remains near zero drift.</figcaption>
+</figure>
+
 <div class="callout key-insight"><p>Think of navigating a canoe down a river by making one paddle stroke at a time and then closing your eyes to consult a map before the next stroke. Each stroke lands slightly off course, and the current carries the boat into water the map never showed. Your next glance at the map describes a river bend that no longer matches where you actually are, so your next stroke is planned from faulty information. The farther you drift from the charted channel, the less the map helps, and each correction must first undo accumulated drift before it can make progress. A robot replanning from a single predicted action at every control cycle is in exactly this position: the world it observes after each step is one its training data never covered, and errors build on errors with no reset available.</p></div>
 <div class="callout algorithm">
 <h4>Algorithm: Single-Step Policy Failure Diagnosis</h4>
