@@ -98,16 +98,23 @@
 <p>The mechanism in Choosing an action representation: a decision guide is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>For Choosing an action representation: a decision guide, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
-<pre><code class="language-python">from pathlib import Path
-
-dataset_root = Path("robot_demos")
-for episode in sorted(dataset_root.glob("episode_*")):
-    print("inspect", episode.name)
-print("next step: convert demonstrations to the LeRobotDataset format")</code></pre>
-<div class="code-output">next step: convert demonstrations to the LeRobotDataset format</div>
-<div class="code-caption"><strong>Code Fragment 22.7</strong>.1 inspects the local demonstration folder and prints the conversion target for this section. The point is to surface the data interface for Choosing an action representation: a decision guide before <a href="../../part-5-learning-from-demonstration-and-robot-data/module-23-teleoperation-and-data-collection/section-23.6.html">LeRobotDataset</a> or robomimic takes over storage, batching, and visualization.</div>
-<p><strong>Expected output:</strong> the printed trace for Choosing an action representation: a decision guide should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>Take a concrete case: an ALOHA bimanual cell inserting a USB-C plug at 20 Hz, where two valid wrist approaches (left tilt and right tilt) appear in the demonstrations. The binding constraints are a 50 ms control step and submillimeter contact tolerance. The snippet below scores each action family against those two numbers so the choice is made on the spec, not on reputation.</p>
+<pre><code class="language-python"># Per-family fit for ALOHA USB-C insertion: 20 Hz (50 ms step), bimodal grasp.
+step_budget_ms = 1000 / 20          # 50 ms control loop on the ALOHA arms
+fwd_ms = 5                          # one score-net forward pass on the deployment GPU
+families = {
+    "one_step":   {"latency_ms": fwd_ms * 1,  "handles_bimodal": False},
+    "act_chunk":  {"latency_ms": fwd_ms * 1,  "handles_bimodal": False},
+    "diffusion":  {"latency_ms": fwd_ms * 10, "handles_bimodal": True},
+    "flow_match": {"latency_ms": fwd_ms * 5,  "handles_bimodal": True},
+    "vq_bet":     {"latency_ms": fwd_ms * 1,  "handles_bimodal": True},  # but quantizes contact
+}
+for name, f in families.items():
+    fits = f["latency_ms"] <= step_budget_ms and f["handles_bimodal"]
+    print(name, f["latency_ms"], "ms", "FITS" if fits else "rejected")</code></pre>
+<div class="code-output">one_step 5 ms rejected<br/>act_chunk 5 ms rejected<br/>diffusion 50 ms rejected<br/>flow_match 25 ms FITS<br/>vq_bet 5 ms FITS</div>
+<div class="code-caption"><strong>Code Fragment 22.7</strong>.1 rejects one-step and ACT chunks because they average the two grasp modes, and rejects diffusion because its 10 denoising passes consume the entire 50 ms step with zero margin for sensing or the ALOHA safety check. Flow matching survives on latency; VQ-BeT survives on latency but its codebook quantization is what the submillimeter USB-C tolerance then rules out, leaving flow matching as the choice.</div>
+<p><strong>Expected output:</strong> only flow matching satisfies both constraints once the precision gate eliminates VQ-BeT. Change the control frequency to 5 Hz (a 200 ms budget, typical of a warehouse pick on a UR5) and diffusion re-enters the feasible set, which is exactly the point: the binding constraint, not the model's expressiveness, decides the family.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The from-scratch fragment should expose the assumption behind representation choice across one-step, chunked, diffusion, flow, and tokenized actions under one evaluation manifest. For serious runs, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, or UMI with the same manifest and evaluator.</p>
