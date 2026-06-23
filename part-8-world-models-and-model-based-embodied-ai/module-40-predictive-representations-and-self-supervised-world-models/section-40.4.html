@@ -150,6 +150,10 @@ print({
     "largest_gain": round(float(np.max(gain)), 2),
 })</code></pre>
 <div class="code-output"><code>{'scratch_final': 0.64, 'pretrained_final': 0.75, 'largest_gain_hour': 4, 'largest_gain': 0.16}</code></div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: JEPA pretraining update on one masked pair</h4>
+<p>Trace one iteration of the JEPA SSL loop with tiny 3-dimensional latents (real numbers, not pseudocode). Suppose the online encoder produces context embedding $z_c = [0.20, 0.50, 0.10]$, and the predictor maps it to $\hat{z}_t = [0.30, 0.40, 0.00]$. The EMA target encoder produces $\bar{z}_t = [0.34, 0.46, 0.05]$, which we stop-gradient. The loss is the squared L2 distance: $(0.30-0.34)^2 + (0.40-0.46)^2 + (0.00-0.05)^2 = 0.0016 + 0.0036 + 0.0025 = 0.0077$. The predictor gradient pushes $\hat{z}_t$ toward the target, so the residual $\hat{z}_t - \bar{z}_t = [-0.04, -0.06, -0.05]$ scales the update. Now apply the EMA refresh with decay $\tau = 0.99$ on a single target weight currently at $\bar{\theta} = 0.700$ while the freshly updated online weight is $\theta = 0.750$: $\bar{\theta} \leftarrow 0.99 \times 0.700 + 0.01 \times 0.750 = 0.693 + 0.0075 = 0.7005$. The target crept just 0.0005 toward the online encoder, which is exactly why the EMA copy stays a slow, stable prediction target rather than collapsing onto the online weights and trivializing the loss to zero.</p>
+</div>
 <div class="code-caption"><strong>Code Fragment 40.4</strong>.1 mirrors the shape of a Franka Panda wrist-camera transfer experiment: pretraining on Open X-Embodiment clips yields the largest per-hour gain at 4 hours of robot data, exactly where physical trial cost (gripper wear, reset labor) is still high enough to make every avoided collision count.</div>
 <p>The largest gain appearing at 4 hours rather than 16 is the physically meaningful signal. At 4 hours the robot has not yet accumulated enough contact diversity to learn object-boundary geometry from scratch, so the pretrained encoder's cross-embodiment feature vocabulary covers a gap the controller cannot fill on its own. If the gain only materializes past 10 hours of logged Franka data, the encoder is likely suppressing the contact-scale detail the gripper needs and a finer spatiotemporal masking ratio during pretraining should be tried first.</p>
 <div class="callout fun-note">
@@ -166,6 +170,10 @@ print({
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Self-supervised Pretraining For Control</div>
 <p>A warehouse-picking team pretrains on thousands of hours of unlabeled wrist-camera and overhead-camera video, then fine-tunes only a small grasp-ranking head on hard-negative robot episodes. The benefit is not abstract representation quality. The benefit is that the controller starts with features that already separate handle geometry, occlusion boundaries, and object persistence, so the robot spends its <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.5.html">scarce interaction budget</a> on contact refinement rather than relearning the scene from scratch.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse manipulation at scale</h4>
+<p>Google DeepMind's RT-X effort pretrains a single transformer encoder across the pooled Open X-Embodiment dataset (22 robot morphologies, roughly 1 million trajectories), then attaches lightweight control heads per deployment. The pretrained cross-embodiment representation lets a new arm reach usable grasp performance from a few hundred on-robot episodes rather than tens of thousands, which is the difference between a deployable pick cell and an uneconomical one.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
@@ -214,6 +222,14 @@ Frozen latents are attractive because they stabilize training and simplify debug
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 40.4.1</div><p>Design a minimal experiment for Self-supervised pretraining for control. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a frozen-encoder probe in Gymnasium's CartPole or LunarLander environment. Train a small JEPA-style encoder on 10,000 random rollout frames using PyTorch, freeze its weights, attach a two-layer MLP policy head, and compare sample efficiency against a policy trained on raw pixels. The key challenge is verifying that the frozen latents actually accelerate learning rather than just shifting the learning curve without changing the asymptote.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement adapter-based transfer for a pick-and-place task in MuJoCo or PyBullet using the LeRobot dataset pipeline. Pretrain a V-JEPA-style encoder on a subset of Open X-Embodiment manipulation clips, then insert LoRA adapters (2-4% of parameters) and fine-tune on a single gripper task using simulated wrist-camera observations. The key challenge is diagnosing whether adapter gradients are actually flowing by comparing adapter weight norms before and after epoch one, and confirming that the adapter recovers contact-scale detail that the video-trained encoder discarded.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Does a frozen self-supervised encoder buy sample efficiency?</h4>
+<p><strong>Goal:</strong> measure empirically whether a frozen pretrained representation accelerates control learning compared with training from raw pixels, and find where the gain peaks along the data-budget axis.</p>
+<p><strong>Tools needed:</strong> Python, PyTorch, and Gymnasium with the pixel-observation <code>CarRacing-v2</code> or <code>LunarLander</code> environment (install with <code>pip install gymnasium[box2d] torch</code>).</p>
+<p><strong>Steps:</strong> (1) Collect about 20,000 frames from random rollouts. (2) Train a small JEPA-style encoder: mask a patch of each frame, encode context and an EMA target, and minimize the latent L2 prediction loss for a few epochs. (3) Freeze the encoder, attach a two-layer MLP policy head, and train the head with behavior cloning or PPO. (4) Repeat with an identical-capacity policy trained directly on raw pixels under the same seed panel.</p>
+<p><strong>What to vary:</strong> the masking ratio (0.15, 0.4, 0.75), the number of pretraining frames (2k, 10k, 20k), and the downstream data budget (measured in environment steps).</p>
+<p><strong>What to observe:</strong> plot success or return against environment steps for both variants. Confirm the frozen-encoder curve rises faster early and note the budget at which the gap is largest. If the gap only appears at the asymptote rather than early, the encoder is not actually purchasing state abstraction, and a finer masking ratio is the first thing to try.</p>
+</div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
 <h3>Primary References And Tools</h3>

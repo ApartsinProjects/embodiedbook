@@ -92,6 +92,16 @@ phase = "rl_finetune" if switch_to_rl else "continue_bc"
 print({"phase": phase, "bc_success": bc_success, "contact_entry_rate": contact_entry_rate})</code></pre>
 <div class="code-output">{'phase': 'rl_finetune', 'bc_success': 0.78, 'contact_entry_rate': 0.86}</div>
 <div class="code-caption"><strong>Code Fragment 43.4</strong>.1 reflects a practical rule of thumb: switch to RL only once the policy reliably reaches meaningful contact states.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Demo-Then-RL Training Switch</h4>
+<p>Trace the four-step algorithm with concrete numbers for a 16-DOF hand reorienting a cube, switching when both contact-entry rate exceeds 0.80 and BC success exceeds 0.70.</p>
+<ul>
+<li><strong>Step 1 (collect demos):</strong> 50 teleoperation traces recorded. Coverage check: 47 of 50 reach stable contact, 12 of 50 show a partial slip recovery. The recovery coverage is thin, so we note it as a risk for later.</li>
+<li><strong>Step 2 (BC pretrain):</strong> after 30 epochs, evaluate on 200 rollouts. Contact-entry rate = 0.86, full-task success = 0.31. Switch test: contact-entry 0.86 &gt; 0.80 (pass) and BC success 0.31 &gt; 0.70 (fail). Verdict: <code>continue_bc</code>. The policy enters contact but cannot finish, exactly the gap RL should close, yet the rule waits because BC success has not crossed the floor. We relax the demo curriculum, add 20 cleaner traces, and reach BC success 0.72.</li>
+<li><strong>Step 3 (RL fine-tune):</strong> now contact-entry 0.84 and BC success 0.72 both pass, so <code>phase = rl_finetune</code>. Run 2,000,000 PPO steps with cube mass sampled from 50 to 200 g and finger friction from 0.6 to 1.4. At step 500k full-task success = 0.48; at 1.2M it is 0.66; at 2.0M it is 0.74, while contact-entry holds at 0.84 (the contact grammar was preserved, not overwritten).</li>
+<li><strong>Step 4 (evaluate):</strong> on 30 held-out cubes with a 3 cm pose offset injected at grasp, success = 0.71 and recovery-after-slip rate = 0.63 (up from 0.18 at the BC checkpoint). The two metrics moving together confirm RL added recovery rather than re-choreographing nominal success.</li>
+</ul>
+</div>
 <div class="callout tip">
 <p>In robomimic, the default logged metric is <code>success_rate</code>, which measures full-task completion and will stay near zero during behavior cloning (BC) pretraining on contact-rich tasks. You must instrument a separate <code>contact_entry_rate</code> probe (for example, a shaped reward or a wrapper that fires when all fingertips cross a force threshold) and log it alongside <code>success_rate</code> before using the switch criterion above. Without that probe, the only visible signal is full-task success, which leads teams to abandon BC pretraining prematurely and switch to RL while the policy is still unable to reach stable contact. Add the contact probe in the environment wrapper before starting any training run, not as an afterthought once the reward curves look flat.</p>
 </div>
@@ -112,6 +122,10 @@ print({"phase": phase, "bc_success": bc_success, "contact_entry_rate": contact_e
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>In the robomimic Can benchmark, a Franka Panda arm trained from 200 proficient teleoperation demonstrations achieves 71% BC success but drops to under 30% when a 3 cm lateral placement error is injected at grasp time. After 1.5 million PPO steps in Isaac Lab with randomized object pose (up to 4 cm XY offset) and gripper stiffness (40 to 120 N/m), success under the same perturbation rises above 68%. The critical observable is that the fingertip force signal (sampled at 1 kHz via the Panda's joint torque sensors) shows contact duration increasing from a median of 80 ms to 220 ms between the BC and RL checkpoints: the policy learned to press into the object before closing rather than closing on air. Without that sensor channel in the observation, the RL reward has no signal distinguishing a genuine pre-grasp contact from a near-miss, and success stays flat past 500k steps.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Rubik's cube solving on a physical Shadow Hand</h4>
+<p>OpenAI's Dactyl is the canonical deployment of this exact recipe: teleoperation demonstrations seeded a Shadow Dexterous Hand policy, then PPO with heavy domain randomization over friction, object mass, and sensor delay hardened it. The deployed policy executed arbitrary Rubik's cube face rotations on real hardware, a manipulation that pure RL exploration had never reached in that 24-DOF action space.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

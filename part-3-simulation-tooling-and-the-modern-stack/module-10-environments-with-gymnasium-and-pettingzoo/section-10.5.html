@@ -170,6 +170,20 @@ env.close()</code></pre>
 <li>Retain at least two failure traces per reported metric; attach seed $s$, wrapper stack, and $\ell$ as provenance metadata.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Render-Log-Diagnose on a CartPole timeout</h4>
+<p>Trace the diagnostic loop with a tiny three-episode example, seed $s=17$, monitoring info keys $K=\{\texttt{TimeLimit.truncated}\}$. After each episode we read the two ending flags and apply step 9 of the algorithm.</p>
+<ul>
+<li><strong>Episode 1:</strong> length $T=412$, ending flags <code>terminated=False, truncated=True</code>. The pole never fell; the agent survived to the 500-step limit window and got cut off. Frame at $t=400$ shows a 14-degree lean. Logged return $G=412$. Step 9 fires: $T$ near $T_{\max}$ and truncated dominates, so candidate label is <code>timeout</code>.</li>
+<li><strong>Episode 2:</strong> length $T=9$, ending flags <code>terminated=True, truncated=False</code>. The pole genuinely fell. Frame at $t=9$ shows a 35-degree lean past the failure threshold. Logged return $G=9$. This is a true terminal state, label <code>none</code> (honest failure, not an artifact).</li>
+<li><strong>Episode 3:</strong> length $T=415$, ending flags <code>terminated=False, truncated=True</code>. Same pattern as episode 1.</li>
+</ul>
+<p>Aggregate: mean length $(412+9+415)/3 = 278.7$, which alone looks like "partly converged." But two of three episodes carry <code>truncated=True</code> with no <code>terminated=True</code>, so the loop labels the run $\ell \leftarrow \texttt{timeout}$. The reward scalar hid this; the per-step ending-flag log exposed it in three episodes.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Autonomous driving simulation at Wayve</h4>
+<p>Wayve's GAIA driving simulator pairs every rendered camera frame with a structured per-step log of vehicle state, predicted trajectory, and intervention flags, exactly the render-log split described here. When a safety driver disengages, engineers replay the saved frame beside the logged perception output to decide whether the model misread the scene or the planner chose badly. That render-versus-log comparison is what separates a perception bug from a control bug before any code is touched.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Gymnasium render modes and wrappers such as episode statistics recording turn common debugging needs into standard calls. The shortcut works best when the saved artifact includes both visual evidence and structured fields, rather than only one or the other.</p>
@@ -267,6 +281,14 @@ env.close()</code></pre>
 <p>Rendering makes behavior visible, logging makes behavior auditable, and debugging needs both views joined by seed and step index.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 10.5.1</div><p>Run a five-step Gymnasium rollout and save a trace with action, reward, <code>terminated</code>, <code>truncated</code>, and one selected <code>info</code> key. Then write the one failure question that trace can answer.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Catch the timeout-survival artifact in CartPole</h4>
+<p><strong>Goal:</strong> empirically reproduce the render-log gap by finding episodes that "succeed" by timeout rather than by balance.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> installed (<code>pip install "gymnasium[classic-control]"</code>); the built-in <code>CartPole-v1</code> environment; optionally the <code>RecordVideo</code> wrapper plus <code>moviepy</code> for saving MP4 clips.</p>
+<p><strong>Steps:</strong> Run 50 episodes of a random or lightly trained policy. For every step, log <code>action</code>, <code>reward</code>, <code>terminated</code>, <code>truncated</code>, and the pole angle (observation index 2) to a CSV. Wrap the environment with <code>RecordVideo</code> so each episode also saves a frame sequence keyed by episode index.</p>
+<p><strong>What to vary:</strong> change the episode time limit by wrapping with <code>gymnasium.wrappers.TimeLimit(env, max_episode_steps=...)</code> across values like 100, 200, and 500; also try a stronger policy if you have one.</p>
+<p><strong>What to observe:</strong> count what fraction of episodes end with <code>truncated=True</code> versus <code>terminated=True</code>. For one high-<code>truncated</code> episode, open the saved video and read the pole angle near the final step. You should see episodes that look "successful" in the length metric while the render frame shows the pole leaning far off vertical, the exact artifact aggregate reward hides.</p>
+</div>
 <div class="callout whats-next"><div class="callout-title">What's Next?</div><p>The next section should inherit the Rendering, logging, and debugging interface contract and change only the next environment-design variable under study.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): CartPole render-log dashboard.</strong> Wrap <code>CartPole-v1</code> with a Gymnasium <code>RecordVideo</code> wrapper and add a step logger that writes action, reward, <code>terminated</code>, <code>truncated</code>, and pole angle to a CSV on every step; the key challenge is aligning video frame indices with log row indices so that any flagged anomaly in the CSV maps to an exact frame in the saved MP4. <strong>Intermediate (1-2 weeks): PyBullet contact-gap detector.</strong> Build a grasping environment in PyBullet that logs per-finger contact normals from the physics engine to the <code>info</code> dictionary each step, then write a diagnostic script that compares those contact fields against <code>rgb_array</code> render frames and raises an alert whenever the rendered scene shows collision but <code>info</code> reports zero contact force; the key challenge is synchronizing the PyBullet contact query with the Gymnasium render call so both reflect the same physics substep. <strong>Advanced (3-4 weeks): LeRobot sim-to-real trace auditor.</strong> Train a manipulation policy in a MuJoCo Gymnasium environment using LeRobot's dataset format, record full episode bundles (video, joint-state log, reward, ending flags) for every evaluation seed, then replay those bundles against real Franka Panda hardware logs from the LeRobot Koch benchmark and compute a per-step render-log gap score that flags which simulation observations diverge most from real sensor readings; the key challenge is defining a comparable observation projection that lets simulation and real logs share the same diagnostic keys despite different sensor frequencies.</p></div>
 <section class="bibliography">

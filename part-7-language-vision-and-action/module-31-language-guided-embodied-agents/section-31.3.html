@@ -133,6 +133,17 @@ print(max(scores, key=scores.get))</code></pre>
 obj_1</div>
 <p>The expected output is a score table where <code>obj_1</code> beats <code>obj_2</code> by a modest relation-driven margin, followed by the winning referent id. That pattern tells the reader the grounding model used the kettle relation rather than only the noun <code>mug</code>; if <code>obj_2</code> won instead, the likely failure is missing relational evidence rather than missing category evidence. The numbers make the stakes concrete: without the relational term, <code>obj_1</code> and <code>obj_2</code> are tied at 1.1 each and the robot has no basis to choose; with it, the gap opens to 1.6 vs 1.2, a 33% margin that is enough to act on. One missing anchor collapses that margin back to zero.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This resolver shows that grounding depends on relations as much as on object category. `obj_1` wins because the relation to the kettle reinforces the unary mug and color evidence, while `obj_2` loses despite matching the category.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Referring Expression Grounding with Relational Disambiguation</h4>
+<p>Trace the algorithm on the expression "the red mug beside the kettle" with three candidates and clarification threshold $\tau = 0.5$. The kettle anchor has detection confidence $p(a \mid o_t) = 0.9$ (above the anchor floor $\alpha = 0.4$, so the relation stays active).</p>
+<p><strong>Step 1 (candidates and detector priors):</strong> $z_1$ red mug, $p(z_1 \mid o_t)=0.9$; $z_2$ blue mug, $p(z_2 \mid o_t)=0.9$; $z_3$ red bowl, $p(z_3 \mid o_t)=0.8$.</p>
+<p><strong>Step 2 (parse):</strong> unary predicates $U = \{$category=mug, color=red$\}$; relational predicate $R = \{($beside, kettle$)\}$.</p>
+<p><strong>Step 3 (unary scores)</strong> with $w_{\text{cat}}=0.7$, $w_{\text{color}}=0.4$: $s_u(z_1)=0.7+0.4=1.1$; $s_u(z_2)=0.7+0.0=0.7$ (blue, not red); $s_u(z_3)=0.0+0.4=0.4$ (bowl, not mug).</p>
+<p><strong>Step 4 (anchor check):</strong> $p(\text{kettle} \mid o_t)=0.9 \ge \alpha=0.4$, so no anchor failure flagged.</p>
+<p><strong>Step 5 (relational scores)</strong> with $w_r=0.6$, kettle confidence $0.9$, where only $z_1$ and $z_2$ are beside the kettle: $s_r(z_1)=0.6 \cdot 0.9 \cdot 1 = 0.54$; $s_r(z_2)=0.54$; $s_r(z_3)=0.0$ (not beside).</p>
+<p><strong>Step 6 (combine</strong>, $s(z_i)=p(z_i \mid o_t)\cdot(s_u+s_r)$): $s(z_1)=0.9 \cdot (1.1+0.54)=1.476$; $s(z_2)=0.9 \cdot (0.7+0.54)=1.116$; $s(z_3)=0.8 \cdot (0.4+0.0)=0.32$.</p>
+<p><strong>Steps 7 to 9 (select and gate):</strong> winner $\hat z = z_1$ at $1.476$, runner-up $\tilde z = z_2$ at $1.116$, margin $\delta = 0.36$. Since $\delta = 0.36 < \tau = 0.5$, the system returns <code>clarify</code> rather than acting. Now drop the kettle (set its confidence to $0.0$): both relation terms vanish, $s(z_1)=0.99$ and $s(z_2)=0.63$, the margin shifts, and step 4 raises an anchor failure that forces clarification regardless. The single relational anchor is what carries the decision, and its loss is observable in the log.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In practice, <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.2.html">Grounding DINO, OWL-ViT, SAM 2, and open-vocabulary VLMs</a> provide the candidate boxes or masks in a few lines. Those tools replace manual proposal generation and feature extraction, but the system still needs explicit relation reasoning and a downstream verifier.</p>
@@ -164,6 +175,10 @@ obj_1</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A service robot hearing 'hand me the notebook under the lamp' must localize both the notebook and the lamp, reason about the support relation, and preserve that relation after viewpoint changes. If the lamp leaves the frame, the system needs either memory or a new view, not blind confidence.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Warehouse Mobile Manipulation</h4>
+<p>Google DeepMind's RT-2 (Robotic Transformer 2) resolves referring expressions like "pick up the bag of chips" by grounding the phrase directly against the wrist-camera frame inside a single vision-language-action model, then emitting end-effector tokens. In demonstrations it generalizes to unseen objects and relational instructions such as "move the apple to the cup" because the same backbone that grounds the noun also predicts the action, removing the brittle detector-to-planner handoff described above.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -217,6 +232,14 @@ obj_1</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Embodied grounding succeeds when words, scene evidence, and uncertainty are represented in the same decision loop.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a Relational Anchor Make or Break Grounding</h4>
+<p><strong>Goal:</strong> measure empirically how much a single relational anchor changes referring-expression accuracy, and observe the silent failure mode when the anchor is removed.</p>
+<p><strong>Tools needed:</strong> Python 3.11+, the Hugging Face <code>transformers</code> Grounding DINO checkpoint (<code>IDEA-Research/grounding-dino-tiny</code>), <code>torch</code>, and 10 to 15 cluttered tabletop photos you shoot on a phone, each containing two or more same-color mugs plus one distinct anchor object (a kettle, a lamp, a book). Label the intended target in each image by hand.</p>
+<p><strong>What to do:</strong> for each image, run two prompts through Grounding DINO: a unary-only prompt ("a red mug") and a relational prompt ("a red mug next to the kettle"). Take the top-scoring box from each and record whether it overlaps your hand-labeled target (IoU > 0.5).</p>
+<p><strong>What to vary:</strong> (1) the <code>box_threshold</code> from 0.25 to 0.55; (2) the anchor presence, by also running the relational prompt on cropped images where you have masked out the anchor object.</p>
+<p><strong>What to observe:</strong> the relational prompt should beat the unary prompt on multi-mug scenes, but only when the anchor is visible. When you mask the anchor, watch the relational prompt collapse back to (or below) unary accuracy while still returning a high-confidence box: that high-confidence wrong answer is the cascaded anchor dependency failure made measurable. Plot accuracy versus <code>box_threshold</code> for all four conditions to see where the anchor's contribution is largest.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 31.3.1</div><p>Design a grounding record for the phrase 'the box under the table near the door.' List the unary and relational scores you would log, and say which ambiguity should trigger an active view change.</p></div>
 <section class="bibliography">

@@ -133,6 +133,13 @@
 <div class="callout-title">Mechanism</div>
 <p>The migration rule is simple: old Gym examples that say <code>obs = env.reset()</code> and <code>obs, reward, done, info = env.step(action)</code> need to be rewritten before they become teaching material. Gymnasium exposes the reason an episode ended in the return signature, so the environment contract carries information that legacy loops often hid in <code>info</code> or lost entirely.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: bootstrapped return under terminated vs truncated</h4>
+<p>Trace the discounted return for a 4-step CartPole rollout with discount $\gamma = 0.9$ and a value head that estimates $\hat{V}(o_4) = 6.0$ for the state the episode left off in. Rewards are $r_1=1, r_2=1, r_3=1, r_4=1$, and the loop unpacks five fields each step.</p>
+<p><strong>Case A, episode is truncated at step 4</strong> (time limit hit, pole still upright). The bootstrap target is the value head, so $G_4 = r_4 + \gamma \hat{V}(o_4) = 1 + 0.9 \times 6.0 = 6.4$. Folding backward: $G_3 = 1 + 0.9 \times 6.4 = 6.76$, then $G_2 = 1 + 0.9 \times 6.76 = 7.084$, then $G_1 = 1 + 0.9 \times 7.084 = 7.376$.</p>
+<p><strong>Case B, episode is terminated at step 4</strong> (pole fell, genuine task boundary). The bootstrap target collapses to zero, so $G_4 = r_4 + \gamma \times 0 = 1.0$. Folding backward: $G_3 = 1 + 0.9 \times 1.0 = 1.9$, then $G_2 = 1 + 0.9 \times 1.9 = 2.71$, then $G_1 = 1 + 0.9 \times 2.71 = 3.439$.</p>
+<p>Same rewards, same discount, same trajectory, yet $G_1$ differs by more than a factor of two (7.376 vs 3.439). A loop that collapses both flags into one <code>done</code> bit applies Case B everywhere and silently underestimates the value of every truncated rollout. That single arithmetic fork is the whole reason the two flags exist.</p>
+</div>
 <h2>Worked Example</h2>
 <p>Code Fragment 10.1.1 below uses the current Gymnasium API on a small control task. The same unpacking pattern carries over to robot simulators, where <code>info</code> should hold diagnostic fields such as contact state, time limit source, or safety margin.</p>
 <pre><code class="language-python"># Inspect the modern Gymnasium reset and step contract.
@@ -193,6 +200,10 @@ env.close()</code></pre>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team porting an old grasping benchmark should keep the old score table only after rerunning the environment with the Gymnasium step contract. The new artifact should report successes, physical failures, time-limit truncations, and safety stops as separate counts.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: massively parallel locomotion training</h4>
+<p>NVIDIA Isaac Lab exposes thousands of simultaneous GPU physics environments through a single vectorized Gymnasium interface, and the legged-locomotion policies trained on it (the ETH Zurich ANYmal line of work) depend on the per-environment <code>truncated</code> flag to bootstrap value across fixed-horizon episode resets. Because the contract keeps termination (the robot fell) separate from truncation (the rollout hit its step budget), the same five-field unpacking that runs on CartPole scales unchanged to quadruped gaits learned in minutes instead of hours.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -262,6 +273,14 @@ print(first_step(22))</code></pre>
 <p>Gymnasium is the standard because its reset and step contract preserves the information a learning algorithm and a debugging report need. Treat old <code>done</code> examples as migration tasks, not copy-paste templates.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 10.1.1</div><p>Take one legacy Gym loop from an older tutorial and rewrite it for Gymnasium. The finished version should unpack five step fields, call <code>reset</code> after either ending flag, and report separate counts for task termination and time-limit truncation.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: measure the cost of collapsing terminated and truncated</h4>
+<p><strong>Goal:</strong> see empirically how merging the two boundary flags into one <code>done</code> bit degrades learning, using only Gymnasium and Stable-Baselines3.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> and <code>stable-baselines3</code> installed (<code>pip install gymnasium stable-baselines3</code>), the built-in <code>CartPole-v1</code> environment, and roughly 15 to 30 minutes on a CPU.</p>
+<p><strong>Procedure:</strong> Train two PPO agents on <code>CartPole-v1</code> with a fixed seed and identical hyperparameters. Agent A uses the standard Gymnasium wrapping (correct <code>terminated</code> / <code>truncated</code> separation, which Stable-Baselines3 handles when you pass the env through its <code>TimeLimit</code>-aware wrapper). Agent B forces a buggy wrapper whose <code>step</code> returns <code>terminated = terminated or truncated</code> and always sets <code>truncated = False</code>, simulating a legacy <code>done</code> collapse.</p>
+<p><strong>What to vary:</strong> the episode horizon (try <code>max_episode_steps</code> of 200, then 500). Longer horizons make truncation more frequent and amplify the bug.</p>
+<p><strong>What to observe:</strong> plot mean episode return against environment steps for both agents. Agent A should reach a higher return in fewer steps, and the gap should widen at the longer horizon, because Agent B zeroes the bootstrap value on every time-limit cutoff. Confirm that the divergence tracks the number of truncated episodes, not the number of terminated ones.</p>
+</div>
 <div class="callout whats-next"><div class="callout-title">What's Next?</div><p>The next section should inherit the Gym is dead; Gymnasium is the standard interface contract and change only the next environment-design variable under study.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a Gymnasium-compliant wrapper around the classic CartPole-v1 environment that logs <code>terminated</code> and <code>truncated</code> counts separately to a CSV file and asserts at the end of each run that their sum equals the episode count. The key challenge is wiring the seed correctly to both the environment and the action space so that replaying the same seed produces a bit-for-bit identical trace. No additional simulator beyond Gymnasium is required.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Create a custom Gymnasium environment backed by PyBullet that simulates a tabletop robot arm reaching a randomized target position, using a MuJoCo-style reward shaping (distance to goal plus contact penalty). The key challenge is correctly implementing the <code>terminated</code> flag on successful grasp and the <code>truncated</code> flag on a 200-step horizon, then verifying that a Stable-Baselines3 PPO agent trained with separated flags converges faster than one that collapses both into a single <code>done</code> signal.</p></div>
 <section class="bibliography">

@@ -192,6 +192,13 @@ alpha=1.0 soft_value=1.828
 hard_max=1.000</div>
 <div class="code-caption"><strong>Code Fragment 1:</strong> <code>soft_value</code> shows how the entropy temperature changes a backup computed from <code>q_values</code>. With <code>alpha=0.2</code>, the value is close to the hard max; with <code>alpha=1.0</code>, the lower-valued alternatives contribute more strongly.</div>
 <p>For a robot, that difference means the policy can keep several near-good actions alive while it learns. The result can be better recovery behavior when the top action becomes unavailable after contact or a perception update.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: soft value at two temperatures</h4>
+<p>Trace the soft value $V(s)=\alpha\log\sum_a\exp(Q(s,a)/\alpha)$ with three Q-values $Q=[1.0,\,0.7,\,0.1]$, first at $\alpha=0.2$, then at $\alpha=1.0$.</p>
+<p><strong>At $\alpha=0.2$:</strong> scale each Q by $1/\alpha=5$, giving exponents $5.0,\,3.5,\,0.5$. Exponentiate: $e^{5.0}=148.41$, $e^{3.5}=33.12$, $e^{0.5}=1.65$. Sum $=183.18$. Then $\log(183.18)=5.211$, and $V=0.2\times5.211=1.041$. Notice the result sits just above the hard max of $1.0$: the best action dominates the sum (148.41 of 183.18, about 81%), so the value is barely lifted by the alternatives.</p>
+<p><strong>At $\alpha=1.0$:</strong> scaling by $1/\alpha=1$ leaves exponents $1.0,\,0.7,\,0.1$. Exponentiate: $e^{1.0}=2.718$, $e^{0.7}=2.014$, $e^{0.1}=1.105$. Sum $=5.837$. Then $\log(5.837)=1.764$, and $V=1.0\times1.764=1.764$. Now the best action contributes only $2.718$ of $5.837$ (about 47%): the two lower actions together carry the majority, so the backup reflects a genuine mixture rather than a single winner.</p>
+<p>The same Q-values produced a backup $0.7$ units higher at the larger temperature, and that gap is exactly the entropy bonus being folded into the value. Raising $\alpha$ from $0.2$ to $1.0$ shifted the best action from carrying 81% of the sum to under half, which is the numerical signature of the policy keeping its options open.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>In practice, SAC implementations in Stable-Baselines3, CleanRL, and Tianshou handle stochastic actor sampling, entropy-temperature updates, twin critics, target networks, and replay. The builder still owns the reward scale, action bounds, and safety metrics that determine whether entropy helps or hurts.</p>
@@ -212,6 +219,10 @@ hard_max=1.000</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For a drawer-opening robot, SAC can preserve alternative pull angles while the agent learns which contact geometry works. The evaluation should report not only success, but also failed grasp force, recovery after slip, entropy over training, and whether stochastic deployment is allowed by the safety envelope.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: dexterous in-hand manipulation</h4>
+<p>OpenAI's Dactyl system, which reoriented a cube in a Shadow Hand, relied on the maximum-entropy intuition: training a policy that keeps action diversity alive let it survive the large sim-to-real gap when transferred to physical tendons with unmodeled friction and latency. The same entropy-as-insurance principle is why Soft Actor-Critic is the default off-policy learner in robotics toolkits like NVIDIA Isaac Lab, where domain-randomized contact rarely matches the deployed hardware exactly.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Fun Note</div>
@@ -293,6 +304,14 @@ print(record.as_row())</code></pre>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 16.4.1</div><p>For a continuous manipulation task, define a SAC evaluation table with reward scale, $\alpha$, target entropy, action clipping rate, deterministic success, stochastic success, and one recovery metric.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Train a SAC agent on the Gymnasium <code>Pendulum-v1</code> environment using Stable-Baselines3 with <code>ent_coef="auto_0.1"</code>, then plot entropy, alpha, and episodic return on the same axis to verify that temperature auto-tuning keeps entropy non-negligible throughout training. The key challenge is confirming that reward normalization keeps the entropy term visible in the loss rather than letting it collapse to near-zero within the first few thousand steps.<br/><br/><strong>Intermediate (1 to 2 weeks):</strong> Implement SAC in MuJoCo's <code>FetchPickAndPlace-v2</code> (or an equivalent PyBullet grasping task), randomize object friction and mass by 30% between episodes, and compare the stochastic versus deterministic deployment success rate across five seeds. The key challenge is diagnosing whether lower stochastic-mode success on precision placement episodes reflects action variance exceeding tolerance, not a failure of the entropy objective itself.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: sweep the entropy temperature on a real SAC run</h4>
+<p><strong>Goal:</strong> see entropy regularization help and hurt, empirically, by sweeping the temperature on one continuous-control task in about 20 to 30 minutes.</p>
+<p><strong>Tools needed:</strong> Python with <code>stable-baselines3</code>, <code>gymnasium</code>, and <code>tensorboard</code> (<code>pip install stable-baselines3[extra] gymnasium</code>). CPU is sufficient for <code>Pendulum-v1</code>.</p>
+<p><strong>Steps:</strong> Train <code>SAC("MlpPolicy", "Pendulum-v1", tensorboard_log="./sac_logs")</code> for 30,000 timesteps under three settings: a fixed low temperature <code>ent_coef=0.01</code>, automatic tuning <code>ent_coef="auto_0.1"</code>, and a fixed high temperature <code>ent_coef=1.0</code>. Keep the seed fixed across runs so only the temperature varies.</p>
+<p><strong>What to vary:</strong> the <code>ent_coef</code> setting (the three values above), then, as a second pass, the reward scale by wrapping the env to multiply rewards by 100 and re-running the <code>"auto"</code> setting.</p>
+<p><strong>What to observe:</strong> in TensorBoard, plot <code>rollout/ep_rew_mean</code>, <code>train/ent_coef</code>, and <code>train/entropy_loss</code> together. You should see the high fixed temperature keep returns flat and noisy (over-exploration), the low fixed temperature plateau early (premature collapse), and the auto setting land between them. In the reward-scaled re-run, watch the auto temperature drive toward zero within the first few thousand steps: that is the reward-scale-mismatch failure mode made visible, and it is the single most common reason maximum-entropy RL silently fails on robots.</p>
+</div>
 <div class="whats-next">
 <h3>What's Next?</h3>
 <p>This section turned maximum-entropy RL into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, Section 16.5 examines how sample efficiency and off-policy failure modes interact with the temperature parameter, building directly on the entropy diagnostics introduced here.</p>

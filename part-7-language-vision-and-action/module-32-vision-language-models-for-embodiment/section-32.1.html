@@ -134,6 +134,14 @@ print({"target": region_names[best], "probabilities": probs.round(3).tolist(), "
 <div class="code-output">
 {'target': 'red_mug', 'probabilities': [0.622, 0.378, 0.0], 'margin': 0.244}
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: cosine scores to a gated action decision</h4>
+<p>Trace the grounding algorithm on three regions scored against the query "the red mug," with temperature $\alpha = 0.10$ and an abstention threshold of 0.30. Raw cosine scores: red_mug 0.84, blue_bowl 0.79, metal_sink 0.31.</p>
+<p><strong>Step 1, logits.</strong> Divide each score by $\alpha$: $0.84/0.10 = 8.4$, $0.79/0.10 = 7.9$, $0.31/0.10 = 3.1$.</p>
+<p><strong>Step 2, softmax.</strong> Subtract the max (8.4) and exponentiate: $e^{0} = 1.000$, $e^{-0.5} = 0.607$, $e^{-5.3} = 0.005$. Sum is 1.612. Normalize: $p = [0.620, 0.377, 0.003]$.</p>
+<p><strong>Step 3, margin.</strong> $\Delta = p_{(1)} - p_{(2)} = 0.620 - 0.377 = 0.243$.</p>
+<p><strong>Step 4, gate.</strong> Because $\Delta = 0.243$ is below the 0.30 threshold, the policy does NOT grasp; it raises a reobservation flag and requests a second view. Now suppose the second view sharpens the scores to red_mug 0.90, blue_bowl 0.55. Recomputing: logits 9.0 and 5.5, softmax over the pair gives roughly $p = [0.971, 0.029]$, so $\Delta = 0.942 > 0.30$ and the controller commits the grasp. The same arithmetic that abstained on ambiguous evidence now authorizes action, which is exactly the behavior an embodied loop needs.</p>
+</div>
 <p>The expected output is a normalized probability vector whose top class is <code>red_mug</code> and whose confidence margin stays explicitly visible. A builder should read this trace as "semantic evidence exists, but the gap is not yet huge," which is why the margin is stored as a control signal for reobservation rather than hidden inside a single winning label.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This snippet converts three cosine similarities into a normalized target distribution over candidate regions. The `temperature` parameter controls whether the robot behaves cautiously or commits early, and the `margin` becomes a simple abstention signal. In a real loop, a small margin means "look again" rather than "grasp now."</div>
 <div class="callout tip">
@@ -191,6 +199,10 @@ print(logits[0].tolist())</code></pre>
 <div class="callout-title">Practical Example</div>
 <p>On a mobile manipulator, a useful image-text model can route the next perception step: "look at the left shelf again because the confidence margin is too small" or "switch to wrist camera because the target is partly occluded." That kind of reobservation policy is often more valuable than a single-shot zero-shot label.</p>
 </div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse mobile manipulation</h4>
+<p>Google DeepMind's RT-2 wires a web-pretrained vision-language backbone directly into a robot's action head, so an open-vocabulary phrase like "pick up the bag that is about to fall off the table" is grounded into manipulation tokens without a hand-built object detector. The system still fuses that semantic ranking with onboard depth and proprioception before committing a grasp, which is precisely the similarity-score-to-actionable-state conversion this section describes.</p>
+</div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>A VLM is like a very articulate witness. It may describe the mug beautifully, but the robot still needs a floor plan, a clock, and a rule for when the witness is no longer current.</p>
@@ -230,6 +242,14 @@ print(logits[0].tolist())</code></pre>
 <p>Embodied perception starts when image-text similarity becomes one audited term inside a belief-and-action loop. Static semantics are the beginning of the pipeline, not the end of the control problem.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 32.1.1</div><p>Take a tabletop task and define the smallest artifact that would let you test whether CLIP-style semantics improves behavior. Include the prompt, candidate regions, confidence margin, depth check, chosen action, and success label.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: turning CLIP scores into a confidence-gated decision</h4>
+<p><strong>Goal.</strong> Empirically feel how temperature and the abstention margin govern when a VLM-driven robot should act versus reobserve.</p>
+<p><strong>Tools needed.</strong> Python with <code>transformers</code>, <code>torch</code>, and <code>pillow</code> (<code>pip install transformers torch pillow</code>), the <code>openai/clip-vit-base-patch32</code> checkpoint, and 5 to 10 tabletop photos (your own phone images of mugs, bowls, and tools work fine).</p>
+<p><strong>Procedure (15 to 30 minutes).</strong> Load CLIP, score each image against 3 to 4 task phrases, and apply the softmax-with-temperature plus margin gate from Code Fragment 1. For each image, print the probability vector, the top-2 margin, and the decision (act if margin exceeds threshold, else reobserve).</p>
+<p><strong>What to vary.</strong> Sweep the temperature over {0.05, 0.10, 0.5, 1.0} and the abstention threshold over {0.1, 0.3, 0.5}. Add a deliberately ambiguous image (two similar mugs) to your set.</p>
+<p><strong>What to observe.</strong> Note how a low temperature collapses the margin so the robot always commits, even on the ambiguous image, while a higher temperature preserves a readable margin that correctly triggers reobservation. Record which (temperature, threshold) pair abstains on the ambiguous scene without over-abstaining on the clear ones; that pair is your calibrated operating point.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): CLIP-powered object picker in PyBullet.</strong> Build a tabletop pick-and-place demo in PyBullet where the robot arm selects the target object by ranking CLIP cosine scores against a plain-language prompt such as "the red mug"; the key challenge is converting the winning softmax probability into a reachability check using the simulated depth buffer before issuing a grasp command. <strong>Intermediate (1 to 2 weeks): confidence-gated reobservation policy in Gymnasium with LeRobot logging.</strong> Wrap a Gymnasium manipulation environment so that a CLIP scoring step runs after every observation and triggers a second camera view whenever the confidence margin falls below a tunable threshold, logging each cycle as a LeRobot dataset episode; the key challenge is wiring the margin signal cleanly into the action-selection loop so that reobservation episodes and direct-grasp episodes share the same schema and can be replayed for offline analysis. <strong>Intermediate (1 to 2 weeks): ROS 2 staleness monitor for a live VLM pipeline.</strong> Subscribe to a ROS 2 image topic, run SigLIP scoring against task queries, and publish a diagnostic message that includes the frame timestamp, top-3 region scores, confidence margin, and a staleness flag that fires when the frame age exceeds one control cycle; the key challenge is synchronizing the VLM inference latency with the ROS 2 control loop rate so the staleness threshold is computed against actual processing delay rather than a fixed constant.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>

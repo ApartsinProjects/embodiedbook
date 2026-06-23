@@ -233,6 +233,39 @@ Postcondition verified: True  state={'path_clear': True, 'arm_tucked': True, 'at
 <div class="callout note"><h4>Project Ideas</h4><p><strong>1. Tabletop skill library in MuJoCo (beginner, weekend).</strong> Build a three-skill library (reach, grasp, place) for a simulated Franka arm in MuJoCo using Gymnasium's <code>FetchPickAndPlace-v3</code> environment (gymnasium-robotics, 2023+), where each skill exposes a precondition lambda, a postcondition verifier, and a retry counter. The key challenge is writing postconditions that check object pose in the same coordinate frame across all three skills so the baton-passing problem from the section does not silently corrupt the sequence.</p><p><strong>2. ROS 2 behavior-tree skill router for a mobile manipulator (intermediate, 1-2 weeks).</strong> Implement the skill library contract from Code Fragment 26.5.1 as a set of ROS 2 lifecycle nodes wired into a BehaviorTree.CPP tree, then deploy it on a simulated TurtleBot3 with a WidowX arm in Gazebo or Isaac Lab, routing navigation and grasp skills via typed Blackboard keys tagged with coordinate frame identifiers. The key challenge is catching frame drift at the skill boundary at startup rather than as a silent runtime failure, by validating that every upstream <code>setOutput</code> key and downstream <code>getInput</code> key share an explicit frame suffix before the mission begins.</p></div>
 
 <div class="callout exercise"><div class="callout-title">Exercise 26.5.1</div><p>Design a method-matched experiment for Skill libraries for embodied agents. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: cost-optimal skill selection under a risk budget</h4>
+<p>Trace through <code>select_skill</code> from Code Fragment 26.5.1 with a tiny example. State: <code>path_clear=True</code>, <code>arm_tucked=True</code>, <code>at_station=False</code>, <code>object_within_reach=True</code>, <code>gripper_loaded=False</code>; risk budget = 0.20.</p>
+<p><strong>Step 1, gather candidates (precondition satisfied AND risk &le; 0.20):</strong></p>
+<ul>
+<li><code>navigate_to_station</code>: precondition needs <code>path_clear</code> (True) and <code>arm_tucked</code> (True) -&gt; pre = 1; risk = 0.05 &le; 0.20 -&gt; KEEP.</li>
+<li><code>grasp_upright_object</code>: precondition needs <code>at_station</code> (False) -&gt; pre = 0 -&gt; DROP (not at station yet).</li>
+<li><code>change_lane</code>: precondition needs <code>path_clear</code> (True) -&gt; pre = 1; but risk = 0.45 &gt; 0.20 -&gt; DROP (over budget).</li>
+</ul>
+<p><strong>Step 2, candidate set = {navigate_to_station}.</strong> Only one feasible skill survives.</p>
+<p><strong>Step 3, argmin over cost:</strong> min over {3.6} -&gt; <code>navigate_to_station</code> (cost = 3.6 s).</p>
+<p><strong>Step 4, execute and verify:</strong> <code>execute</code> sets <code>at_station=True</code>; the postcondition checks <code>at_station</code> -&gt; True. The selector deliberately ignored the cheaper 1.0 s <code>change_lane</code> because its 0.45 risk blows the 0.20 budget: the safety constraint is applied before cost minimization, not after.</p>
+</div>
+
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Boston Dynamics Spot autonomous inspection</h4>
+<p>Boston Dynamics ships Spot with a skill library of named, contract-bearing "Autonomy Actions" (open door, read gauge, climb stairs, dock), each with an explicit precondition check and a recovery branch, sequenced by a mission graph the operator authors in Orbit (formerly Scout). When a gauge-reading action fails its postcondition (the camera cannot resolve the dial), the mission graph reroutes to a re-approach action rather than aborting the whole inspection, exactly the local-recovery-without-global-replan pattern the section describes.</p>
+</div>
+
+<div class="callout fun-note" data-agent="34">
+<h4>The library that predates the robots by 30 years</h4>
+<p>The "skill as a contract with a precondition and an effect" idea did not start in robotics: it is the STRIPS operator from Fikes and Nilsson's 1971 planner built for Shakey, the first mobile robot to reason about its own actions. Shakey's operators carried preconditions and add/delete effect lists, the direct ancestors of today's precondition and postcondition fields. The surprising twist is that modern vision-language-action systems are now circling back to that 1971 structure, querying a frozen VLM to decide whether a natural-language precondition holds, so the field spent five decades learning policies end-to-end only to rediscover that the inspectable contract Shakey shipped with was the reusable unit all along.</p>
+</div>
+
+<div class="callout lab" data-agent="41">
+<h4>Lab: measure the cost of skipping the risk budget</h4>
+<p><strong>Goal.</strong> Empirically show why the risk budget is a hard constraint and not a soft cost penalty, by comparing two selectors over many randomized states.</p>
+<p><strong>Tools.</strong> Python 3 with NumPy only; copy Code Fragment 26.5.1 into a file as your starting point. No robot or GPU needed (about 15 to 20 minutes).</p>
+<p><strong>Procedure.</strong> Write a second selector, <code>select_skill_weighted</code>, that ignores the hard budget and instead minimizes <code>cost + lambda * risk</code> for a tunable <code>lambda</code>. Generate 1000 random states (randomize the boolean flags), and for each state run both the budget selector and the weighted selector, then "execute" the chosen skill stochastically: draw a Bernoulli with probability equal to the skill's <code>risk</code> and count it as an unsafe outcome when it fires.</p>
+<p><strong>What to vary.</strong> Sweep <code>lambda</code> across {0, 2, 5, 10, 20} for the weighted selector, and sweep the budget across {0.10, 0.20, 0.40} for the hard-constraint selector.</p>
+<p><strong>What to observe.</strong> Plot the unsafe-outcome rate against the mean cost for both selectors. You should see the weighted selector trade safety for cost continuously (small <code>lambda</code> picks the cheap 0.45-risk <code>change_lane</code> often), while the hard-budget selector clamps unsafe outcomes below the budget regardless of how cheap the risky skill is. The takeaway: a soft penalty lets a sufficiently large cost gap buy its way past safety, which is exactly what you cannot allow on a physical robot.</p>
+</div>
 <div class="whats-next">
 <h2>What's Next</h2>
 <p>This section grounded skill libraries for embodied agents in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="../../part-6-embodied-perception/index.html">Part VI: Embodied Perception</a>, where the same contract is carried into the next technique or chapter.</p>

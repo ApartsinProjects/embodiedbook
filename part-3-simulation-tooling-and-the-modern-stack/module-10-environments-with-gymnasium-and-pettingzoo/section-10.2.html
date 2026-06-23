@@ -191,6 +191,19 @@ print(sample["image"].shape, sample["joint"].shape, sample["gripper"])</code></p
 <div class="callout-title">Library Shortcut</div>
 <p>Gymnasium spaces replace hand-written shape checks with a standard interface used by wrappers, vector environments, and RL libraries. The shortcut is not fewer lines only; it is a shared contract that other tools already understand.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Validating a Dict observation with contains</h4>
+<p>Trace what <code>observation_space.contains(obs)</code> does element by element for the tabletop space above, given a real step output where one channel is wrong.</p>
+<ol>
+<li>The environment returns <code>obs = {"image": uint8 array shape (64, 64, 3), "joint": float64 array [0.2, -0.4, 0.1, 0.9, -0.3, 0.5, 0.0], "gripper": 1}</code>. Note the joint dtype is <code>float64</code>, not the declared <code>float32</code>.</li>
+<li><code>contains</code> first checks the keys: declared <code>{image, joint, gripper}</code> versus returned <code>{image, joint, gripper}</code>. Match, so it proceeds.</li>
+<li>Check <code>image</code>: shape <code>(64, 64, 3)</code> equals declared, dtype <code>uint8</code> equals declared, every value in <code>[0, 255]</code>. Result for this key: <code>True</code>.</li>
+<li>Check <code>joint</code>: shape <code>(7,)</code> equals declared and all 7 values fall inside <code>[-1.0, 1.0]</code>, but dtype is <code>float64</code> while the Box declared <code>float32</code>. Result for this key: <code>False</code>.</li>
+<li>Check <code>gripper</code>: value <code>1</code> is in <code>{0, 1}</code> for <code>Discrete(2)</code>. Result for this key: <code>True</code>.</li>
+<li><code>contains</code> returns the logical AND across keys: <code>True and False and True = False</code>. The single dtype slip on one key fails the whole observation, and because no exception is raised, the only way you see it is by running this check on the real step output rather than on a sampled value.</li>
+</ol>
+<p>Fix: cast the joint array with <code>.astype("float32")</code> inside the environment before returning, and the same trace ends in <code>True</code>.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Choose <code>Dict</code> for heterogeneous sensor packets instead of flattening too early.</li>
@@ -214,6 +227,18 @@ print(sample["image"].shape, sample["joint"].shape, sample["gripper"])</code></p
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For a <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-42-robotic-manipulation/section-42.2.html">pick-and-place environment</a>, expose the policy observation as a <code>Dict</code>: image crop, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.3.html">proprioception</a>, gripper bit, and target pose. Keep privileged simulator state in <code>info</code> for diagnostics unless the real robot would also have that state at decision time.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: NVIDIA Isaac Lab humanoid control</h4>
+<p>Isaac Lab uses asymmetric actor-critic training where the critic reads a wide observation space including privileged simulator signals (exact contact forces, root pose) while the actor's observation space is restricted to hardware-available proprioception and onboard sensing. This split is enforced entirely through separate Gymnasium-style space declarations, so the policy that ships to a physical humanoid never depends on a signal the robot cannot measure at deployment.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Catch a silent dtype and bounds mismatch yourself</h4>
+<p><strong>Goal:</strong> Experience how a space mismatch passes silently and how <code>contains</code> exposes it.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> installed (<code>pip install gymnasium</code>), about 15 to 30 minutes.</p>
+<p><strong>Steps:</strong> Build a <code>spaces.Dict</code> with an <code>image</code> Box (<code>uint8</code>, shape <code>(64,64,3)</code>, bounds <code>[0,255]</code>) and a <code>joint</code> Box (<code>float32</code>, shape <code>(7,)</code>, bounds <code>[-1,1]</code>). Then write a small function that fabricates a fake observation and pass it to <code>observation_space.contains(obs)</code>.</p>
+<p><strong>What to vary:</strong> (1) Return the joint array as <code>float64</code> instead of <code>float32</code>. (2) Let one joint value drift to <code>1.5</code>, outside the declared bound. (3) Return the image with shape <code>(3,64,64)</code> instead of <code>(64,64,3)</code>. (4) Feed the same out-of-bounds action into a Stable-Baselines3 environment and watch whether it clamps or raises.</p>
+<p><strong>What to observe:</strong> Which mutations make <code>contains</code> return <code>False</code> with no exception, and which silently get clamped downstream. Confirm that the dtype slip alone flips the result to <code>False</code> even when every value is in range, and note that nothing warns you until you run the check on the real output.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>

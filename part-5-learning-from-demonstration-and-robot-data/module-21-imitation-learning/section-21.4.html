@@ -159,6 +159,14 @@ print("next step: convert demonstrations to the LeRobotDataset format")</code></
 <figcaption>Figure 21.4B: The maximum entropy IRL loop. Expert demonstrations yield an empirical feature expectation (mu_E). The current reward parameters drive a forward RL inner loop, producing a policy whose rollout feature expectation (mu_theta) is compared with mu_E. The gradient (mu_E minus mu_theta) updates the reward parameters until the two expectations match, at which point the recovered reward rationalizes the expert behavior.</figcaption>
 </figure>
 <p>$$P_\phi(\tau) \propto \exp\left(\sum_t r_\phi(s_t,a_t)\right).$$</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One MaxEnt IRL gradient step</h4>
+<p>Trace one iteration with a 2-feature reward $\theta = [0.0, 0.0]$, learning rate $\alpha = 0.5$. Features are (task progress, smoothness).</p>
+<p><strong>Step 1, expert feature expectation.</strong> Two expert trajectories give per-trajectory feature sums $\phi^{(1)} = [0.9, 0.8]$ and $\phi^{(2)} = [0.7, 1.0]$. Average: $\hat{\mu}_E = [(0.9+0.7)/2,\ (0.8+1.0)/2] = [0.80, 0.90]$.</p>
+<p><strong>Step 2, forward RL with $\theta = [0,0]$.</strong> Reward is identically zero, so every trajectory is equally likely. The policy is uniform, and rolling it out yields a policy feature expectation $\hat{\mu}_\theta = [0.50, 0.50]$ (the average over the whole reachable set, lower on both features than the expert).</p>
+<p><strong>Step 3, gradient.</strong> $\nabla_\theta \mathcal{L} = \hat{\mu}_E - \hat{\mu}_\theta = [0.80 - 0.50,\ 0.90 - 0.50] = [0.30, 0.40]$.</p>
+<p><strong>Step 4, update.</strong> $\theta \leftarrow [0,0] + 0.5 \cdot [0.30, 0.40] = [0.15, 0.20]$. The reward now prefers both progress and smoothness, with a slightly stronger pull toward smoothness because the expert's smoothness gap was larger. Re-running the forward solve with $\theta = [0.15, 0.20]$ pushes $\hat{\mu}_\theta$ up toward $[0.80, 0.90]$, shrinking the next gradient. Convergence is reached when the two feature expectations match and the gradient hits zero.</p>
+</div>
 <div class="callout algorithm">
 <h4>Algorithm: Maximum Entropy Inverse Reinforcement Learning</h4>
 <p><strong>Input:</strong> Expert demonstration trajectories $\mathcal{D} = \{\tau^{(1)}, \ldots, \tau^{(N)}\}$; feature map $\phi(s,a) \in \mathbb{R}^k$; learning rate $\alpha$; reward parameter vector $\theta \in \mathbb{R}^k$</p>
@@ -205,6 +213,10 @@ for name, phi in features.items():
 <div class="code-output">expert smooth-score 0.84 progress-score 0.89<br/>shortcut smooth-score 0.52 progress-score 0.92</div>
 <div class="code-caption"><strong>Code Fragment 3:</strong> The expert wins under the smoothness-heavy reward, but the shortcut wins under the progress-heavy reward. IRL needs counterfactual evaluation because a single successful demonstration cannot identify the intended reward by itself.</div>
 </section>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Autonomous driving route preferences</h4>
+<p>Waymo and Uber ATG (now Aurora) both used maximum-entropy IRL to learn driving cost functions from human traces: rather than hand-tuning weights for lane-keeping, smoothness, and headway, the planner recovers them from logged expert drives. Uber's CoverNet and IRL-based motion planners infer the reward that ranks a candidate trajectory set, so the car prefers human-like paths it never saw during training. The same counterfactual check from this section applies: a recovered cost is only trusted after it scores deliberately reckless candidate trajectories below the demonstrated ones.</p>
+</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
@@ -307,6 +319,14 @@ for name, phi in features.items():
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 21.4.1</div><p>Design a method-matched experiment for Inverse reinforcement learning. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): GridWorld MaxEnt IRL with Gymnasium.</strong> Build a small 5x5 grid environment in Gymnasium, record 20 hand-crafted expert trajectories that avoid a penalty cell, and run maximum entropy IRL using the <a href="https://github.com/HumanCompatibleAI/imitation" rel="noopener" target="_blank">imitation</a> library to recover the reward weights. The key challenge is verifying that the recovered reward assigns lower returns to shortcut paths that skip the penalty region, which requires implementing the counterfactual ranking check from Code Fragment 3.</p><p><strong>Intermediate (1 to 2 weeks): GAIL on a MuJoCo manipulation task with transfer test.</strong> Collect 50 demonstrations of <code>FetchPush-v2</code> in MuJoCo using a scripted oracle, train a GAIL policy with the imitation library, then re-evaluate the discriminator reward on a variant environment where the cube mass is doubled. The key challenge is separating reward features that transfer (object position relative to goal) from those that do not (joint torque profiles tied to the original mass), which requires logging discriminator scores on both the source and transfer rollouts and comparing them against behavior cloning as a baseline.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Recover a GridWorld reward and break it with a counterfactual</h4>
+<p><strong>Goal.</strong> Run maximum-entropy IRL on a small grid, then test whether the recovered reward survives a trajectory the expert never demonstrated.</p>
+<p><strong>Tools needed.</strong> Python with <code>numpy</code> and <code>gymnasium</code>; optionally the <a href="https://github.com/HumanCompatibleAI/imitation" rel="noopener" target="_blank">imitation</a> library for a higher-level API. Budget 15 to 30 minutes.</p>
+<p><strong>Setup.</strong> Build a 5x5 grid with one goal cell (+1 feature) and one lava cell to avoid. Generate roughly 20 expert trajectories from start to goal that route around the lava. Use two features per state: distance-to-goal and lava-proximity. Run the MaxEnt update from the algorithm above until $\hat{\mu}_E$ and $\hat{\mu}_\theta$ agree.</p>
+<p><strong>What to vary.</strong> (1) The number of expert demonstrations, from 3 up to 50. (2) Whether the lava feature is included in the feature map at all. (3) The learning rate $\alpha$.</p>
+<p><strong>What to observe.</strong> Plot the recovered weight on the lava feature as demonstration count grows: with too few demos the weight is near zero (ambiguous). Then construct a shortcut trajectory that cuts through the lava cell and score it under the recovered reward. With the lava feature dropped, the shortcut scores higher than the expert path, exactly the reward-ambiguity failure this section warns about. Confirm that adding the lava feature plus enough demonstrations makes the recovered reward rank the shortcut below the expert.</p>
+</div>
 <div class="whats-next">
 <h2>What's Next</h2>
 <p>This section grounded inverse reinforcement learning in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="section-21.5.html">Section 21.5</a>, where the same contract is carried into the next technique or chapter.</p>

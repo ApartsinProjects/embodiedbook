@@ -109,6 +109,18 @@
 <li>If task goal is reached according to $V$ or $t \geq T_{\max}$, return $\mathcal{E}$; otherwise set $t \leftarrow t + 1$ and go to step 3.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Language-Grounded Policy Execution</h4>
+<p>Trace the algorithm above with a tiny scene. Instruction: "pick the red mug on the bottom shelf, not the blue one." Parsing yields slots: verb = pick, reference $r$ = mug, relation $\rho$ = bottom shelf, constraint $c$ = exclude blue. The scene graph holds three entities. Set $\lambda = 0.30$ for the constraint bonus.</p>
+<ul>
+<li><strong>Step 3 (score candidates).</strong> For each entity, $\text{score}(e) = \text{sim}(e, x) + \lambda \cdot \mathbf{1}[e \text{ satisfies } c]$. red_mug (bottom shelf): $0.95 + 0.30 = 1.25$. blue_mug (top shelf, violates "not the blue one"): $0.71 + 0 = 0.71$. red_bowl (bottom shelf): $0.42 + 0.30 = 0.72$.</li>
+<li><strong>Step 4 (verifier filter).</strong> $V$ removes blue_mug because it violates constraint $c$. Excluded set logged to $\mathcal{E}$ = {blue_mug}. Surviving candidates: {red_mug: 1.25, red_bowl: 0.72}.</li>
+<li><strong>Step 5 (select).</strong> $e^* = \arg\max = $ red_mug at 1.25. The set is non-empty, so no clarification is emitted.</li>
+<li><strong>Step 6-7 (act, update).</strong> Execute pick(red_mug); observe $o_{t+1}$; update $h_{t+1}$.</li>
+<li><strong>Step 8-9 (re-ground, post-verify).</strong> Re-running grounding confirms red_mug still maps to a visible region after the grasp. Post-action $V$ records constraint_preserved = True in $\mathcal{E}$.</li>
+</ul>
+<p>Notice the wrong answer (blue_mug had a higher raw similarity than red_bowl) is eliminated by the constraint filter, not by the language score alone. That is the whole point: 1.25 beats 0.72, but only after the typed constraint did its work.</p>
+</div>
 <h2>Worked Example</h2>
 <p>Code Fragment 1 builds the smallest possible trace showing how language can reduce task ambiguity. The example scores candidate objects against a text query and a task constraint, then exposes the grounded target that the controller will receive.</p>
 <pre><code class="language-python"># Ground a short instruction into an executable object choice.
@@ -159,6 +171,10 @@ print(choice)</code></pre>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>In warehouse picking, an operator may say, 'take the damaged carton but leave the sealed one.' The useful representation is not the sentence itself, but the resolved pair of object identities, the exclusion mask, and the audit trail showing why the forbidden object was rejected.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse and home robotics</h4>
+<p>Google DeepMind's RT-2 (and the open OpenVLA model that followed) puts this section's idea into production: a single vision-language-action network takes a natural-language instruction plus the live camera frame and emits robot joint commands directly, with language collapsing the goal space before the arm moves. In deployed picking and tidying demos, the same model handles novel phrasings like "pick the object that is different" by grounding the contrast against the scene rather than against a fixed label set, exactly the narrowing-before-motion behavior described here.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -237,6 +253,14 @@ print(decision.as_row())</code></pre>
 <div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Three execution-time failures recur in practice and are easy to conflate. First, referent drift: the grounding module resolves "the mug" at timestep 0, but by timestep 12 an arm motion has occluded the target and the cached object id no longer maps to a visible region. Second, out-of-vocabulary grounding: a user says "the scratched one" and the detector, trained on category labels, silently falls back to the highest-confidence detection regardless of surface damage. Third, constraint silencing: a spatial qualifier such as "not the one on the left" is parsed but then dropped when the scorer normalizes across candidates, so the excluded object wins if it scores highest on the category match alone. All three produce the same observable symptom, a wrong pick, but each requires a different fix: re-grounding after motion, an attribute-aware detector, or constraint-gated scoring respectively.</p></div>
 
 <div class="callout warning"><p>A common assumption is that connecting a large language model to a robot "solves" task understanding, because LLMs can parse complex instructions and generate plausible plans in text. This is wrong in the embodied AI context: language understanding produces text, not executable actions, and a plan that is syntactically correct can still fail if object references are never resolved to physical entities, if reachability is never checked, or if control feedback is never integrated. The correct mental model is that language narrows the search space over goals and recovery strategies, but grounding, state estimation, and feedback control remain separate required components. A robot that understands an instruction perfectly but lacks a working grounding module or controller will fail just as completely as one that never heard the instruction.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring how much language narrows the search</h4>
+<p><strong>Goal.</strong> Quantify the decision value of a language instruction by measuring how many candidate objects survive grounding with and without the typed constraint, then confirm the surviving target is the intended one.</p>
+<p><strong>Tools needed.</strong> Python with PyBullet (tabletop scene), the <code>transformers</code> Grounding DINO pipeline or OpenCLIP for text-image similarity, and NumPy. About 15 to 30 minutes.</p>
+<p><strong>Procedure.</strong> Spawn a tabletop scene with five to eight objects that share attributes (two red mugs, one blue mug, two bowls, a plate). Render one RGB frame. For the instruction "pick the red mug on the bottom shelf, not the blue one", score every detected object with text-image similarity, then run two pipelines: (a) similarity only, ranked top to bottom; (b) similarity plus a constraint filter that drops any object failing the spatial or exclusion slot before ranking.</p>
+<p><strong>What to vary.</strong> The number of distractors (3, 5, 8), the similarity threshold, and whether the constraint is applied before scoring or after. Also try a near-miss distractor (a red mug on the top shelf) to stress the spatial slot.</p>
+<p><strong>What to observe.</strong> Record the size of the candidate set after each pipeline and whether the top-ranked object is the intended referent. You should see the constraint-filtered pipeline collapse the set to one or two candidates while similarity-only leaves the wrong object competitive. When you apply the constraint after scoring instead of before, watch a high-similarity excluded object win, reproducing the constraint-silencing failure mode from this section.</p>
+</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Language helps embodied agents by shaping the latent task they solve, not by exempting them from grounding, control, or verification.</p>

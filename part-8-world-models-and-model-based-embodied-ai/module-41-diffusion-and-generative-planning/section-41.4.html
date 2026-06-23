@@ -171,6 +171,16 @@ for w in [0.0, 1.0, 4.0]:
 w=1.0: endpoint=[1.084, 0.012] dist_to_goal=0.085 feasible=True
 w=4.0: endpoint=[2.083, 0.012] dist_to_goal=1.083 feasible=False</code></div>
 <div class="code-caption"><strong>Code Fragment 41.4</strong>.1 runs guided trajectory denoising at three guidance weights and reports goal distance and feasibility for each.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: guided denoising of one endpoint at w=1</h4>
+<p>Trace the guided update on the trajectory endpoint alone, starting at $\tau=[0.30,\,0.05]$ with goal $c=[1.0,\,0.0]$, on-manifold prior endpoint $[0.60,\,0.0]$, step $\eta=0.2$, and weight $w=1$. The guided noise is $\tilde\epsilon = (1{+}w)(\tau - c) - w(\tau - \text{prior})$.</p>
+<ul>
+<li><strong>Step 1.</strong> $\epsilon_{\text{cond}} = \tau - c = [0.30-1.0,\,0.05-0.0] = [-0.70,\,0.05]$. $\epsilon_{\text{uncond}} = \tau - \text{prior} = [0.30-0.60,\,0.05-0.0] = [-0.30,\,0.05]$. Guided: $\tilde\epsilon = 2[-0.70,\,0.05] - 1[-0.30,\,0.05] = [-1.10,\,0.05]$. Update: $\tau \leftarrow [0.30,\,0.05] - 0.2[-1.10,\,0.05] = [0.52,\,0.04]$.</li>
+<li><strong>Step 2.</strong> $\epsilon_{\text{cond}} = [-0.48,\,0.04]$, $\epsilon_{\text{uncond}} = [-0.08,\,0.04]$. $\tilde\epsilon = 2[-0.48,\,0.04] - [-0.08,\,0.04] = [-0.88,\,0.04]$. Update: $\tau \leftarrow [0.52,\,0.04] - 0.2[-0.88,\,0.04] = [0.696,\,0.032]$.</li>
+<li><strong>Step 3.</strong> $\epsilon_{\text{cond}} = [-0.304,\,0.032]$, $\epsilon_{\text{uncond}} = [0.096,\,0.032]$. $\tilde\epsilon = [-0.704,\,0.032]$. Update: $\tau \leftarrow [0.836,\,0.026]$.</li>
+</ul>
+<p>The endpoint marches $0.30 \to 0.52 \to 0.70 \to 0.84$ toward the goal at $x=1.0$, and stays inside the feasible radius of $1.15$ the whole way. The $(1{+}w)$ conditional pull dominates the $w$ unconditional pull, so larger $w$ would lengthen each stride; raise $w$ to $4$ and the same arithmetic overshoots past $1.15$, which is exactly the infeasible $w{=}4$ row in the code output above.</p>
+</div>
 <p>The three rows are the whole story of guidance. At $w=0$ the plan stays comfortably feasible but stops short of the goal; at $w=1$ it reaches the goal and is still feasible; at $w=4$ it overshoots far past the feasible reach radius. This is why Diffuser pairs guidance with a feasibility check: turning $w$ up makes plans more goal-directed right up to the point where they leave the manifold of trajectories the robot can actually execute. Decision Diffuser swaps the goal condition for a return-to-go target, but the same dial and the same risk apply.</p>
 <div class="callout tip">
 <p>When tuning the guidance weight <code>w</code> in Diffuser or Diffusion Policy, calibrate it against the planning horizon <code>H</code> jointly, not in isolation. A weight that keeps plans feasible at <code>H=5</code> will routinely push them off the data manifold at <code>H=20</code>, because guidance errors compound across steps. A reliable heuristic is to sweep <code>w</code> at your largest intended horizon first, lock that value, then verify it is not too conservative at shorter horizons. Logging the ratio of feasibility-check rejections to total samples (rather than just final task success) gives an early signal that <code>w</code> has drifted into the infeasible regime before downstream policy performance degrades.</p>
@@ -197,6 +207,10 @@ w=4.0: endpoint=[2.083, 0.012] dist_to_goal=1.083 feasible=False</code></div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example: Generating Scenes And Synthetic Experience</div>
 <p>A home-robot team has very few real examples of dropped utensils sliding under furniture. They generate physically plausible scenes and replay trajectories around those failures, then use the synthetic set only to train a retrieval head and recovery policy proposal model. The synthetic data is valuable because it covers a rare corner of the task, not because it replaces the real distribution.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse manipulation at scale</h4>
+<p>NVIDIA's Isaac GR00T pipeline uses video and scene diffusion to fabricate large volumes of synthetic manipulation episodes that augment a comparatively small set of real teleoperation demonstrations before training humanoid and arm policies. The generated scenes target rare grasp and clutter configurations that real collection rarely captures, and each batch is replayed through the Isaac Sim physics engine as a feasibility filter so off-manifold proposals never reach the policy.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -251,6 +265,12 @@ The most reliable pattern is to use generation as a data proposal engine and kee
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
 <p>Generating Scenes And Synthetic Experience is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+</div>
+<div class="callout lab" data-agent="41"><h4>Lab: feeling the guidance-weight cliff</h4>
+<p><strong>Goal.</strong> Empirically locate the narrow band where guidance is strong enough to reach a goal but not so strong that it pushes endpoints off the feasible manifold, and watch how that band shrinks as the planning horizon grows.</p>
+<p><strong>Tools needed.</strong> Python with NumPy and Matplotlib (15 minutes of setup), starting from Code Fragment 41.4.1 in this section. No GPU or robot required; an optional extension uses <code>gymnasium-robotics</code> FetchReach plus PyBullet for a real joint-limit check.</p>
+<p><strong>What to vary.</strong> Sweep the guidance weight <code>w</code> across <code>[0, 0.5, 1, 2, 3, 4, 6]</code>, and for each value repeat across horizons <code>H in [5, 10, 20]</code> and across 20 random start seeds. Keep step size, goal, and feasible radius fixed.</p>
+<p><strong>What to observe.</strong> For each <code>(w, H)</code> cell, record the mean distance-to-goal and the fraction of seeds whose endpoint stays inside the feasible radius. Plot feasibility fraction versus <code>w</code> as one curve per horizon. You should see the feasible band (high feasibility and low goal distance together) narrow and shift leftward as <code>H</code> rises, because guidance errors compound across steps. The takeaway: the best <code>w</code> for <code>H=5</code> is reckless at <code>H=20</code>, so guidance must always be tuned at the longest intended horizon.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 41.4.1</div><p>Design a minimal experiment for Generating scenes and synthetic experience. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <section class="bibliography">

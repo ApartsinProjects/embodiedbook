@@ -88,6 +88,18 @@
 <div class="callout-title">Mechanism</div>
 <p>A practical shield checks permissions, geometry, resource bounds, and human-approval rules. The LLM proposes. The shield decides whether that proposal is admissible now, admissible only after modification, or inadmissible without escalation.</p>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: the $\sigma$-Shield on one proposal</h4>
+<p>Trace the filter with a tiny example. Set the risk threshold $\alpha = 0.7$, the geometric collision cutoff $\theta_{\text{geo}} = 0.05$, and a hard rule <code>human_clear_required_above_0.5</code>. The LLM proposes <code>u = {action: "move_to", shelf: 7, speed: 1.2}</code> and the state estimate is <code>s = {human_clear: false, zone_id: "cell-3", collision_prob: 0.02}</code>.</p>
+<ol>
+<li><strong>Schema validation:</strong> all required fields (<code>action</code>, <code>speed</code>, <code>human_clear</code>, <code>zone_id</code>) are present and correctly typed. Pass.</li>
+<li><strong>Permission check:</strong> the agent holds the <code>navigation</code> permission for <code>cell-3</code>. Pass.</li>
+<li><strong>Risk estimation:</strong> the risk model returns $r = 0.81$. Log $r = 0.81$.</li>
+<li><strong>Geometric feasibility:</strong> <code>collision_prob = 0.02</code>, which is below $\theta_{\text{geo}} = 0.05$. Pass.</li>
+<li><strong>Policy constraint scan:</strong> the rule fires because <code>speed = 1.2 &gt; 0.5</code> while <code>human_clear = false</code>. Return $d_t = \text{block}$, rule fired = <code>human_clear_required_above_0.5</code>.</li>
+</ol>
+<p>Risk routing never runs: even though $r = 0.81 &gt; \alpha$ would have produced <code>escalate</code>, the hard policy rule short-circuits to <code>block</code> first. The evidence row is $(u_t, s_t, r{=}0.81, d_t{=}\text{block}, \text{rule}{=}\texttt{human\_clear\_required\_above\_0.5})$. Notice the low collision score (0.02) would have fooled a geometry-only shield: the block came from policy, not physics.</p>
+</div>
 <div class="callout algorithm">
 <h4>Algorithm: LLM Proposal Safety Filtering ($\sigma$-Shield)</h4>
 <p><strong>Input:</strong> LLM action proposal $u_t \in \mathcal{U}$, typed proposal schema $\Pi$, state estimate $\hat{s}_t$, policy constraints $\mathcal{C} = \{c_1, \ldots, c_k\}$, risk threshold $\alpha \in [0,1]$</p>
@@ -145,6 +157,10 @@ print({"proposal": proposal["action"], "decision": decision})</code></pre>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A domestic robot may be allowed to pick up towels autonomously but not knives, boiling containers, or medicine bottles without confirmation. The safety interface should encode those classes directly, not hope the language model remembers them every time.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: warehouse autonomy at Amazon Robotics</h4>
+<p>Amazon's fulfillment-center robots run a hardware safety controller that enforces speed and exclusion-zone limits independently of whatever higher-level planner requests motion, so a stale or mistaken plan cannot drive a unit at full speed near a person. This is exactly the layered-defense pattern of this section: the planning layer proposes, but a separate controller enforces geometric and proximity constraints against live sensor data. The same split now appears in LLM-driven pilots, where natural-language task assignment sits above a fixed, non-bypassable motion-safety layer.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -214,6 +230,14 @@ print({"decision": record["decision"], "rule": record["rule_fired"]})</code></pr
 <p>Safe embodied LLM systems rely on enforceable interface contracts, not on prompt wording alone. Building a full <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.6.html">deployment approval and safety case</a> requires evidence that each layer held under the tested conditions.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 33.8.1</div><p>Design a safety shield for a mobile manipulator that handles fragile objects and restricted areas. Specify one automatic block rule, one rewrite rule, and one escalation rule.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Build a typed $\sigma$-shield over CartPole</h4>
+<p><strong>Goal.</strong> Measure empirically how much more an enforceable typed schema blocks unsafe proposals than a prompt-only rule, reproducing the 40% vs over-95% gap discussed in the Theory section.</p>
+<p><strong>Tools needed.</strong> Python 3.11+, <code>gymnasium</code> (<code>pip install gymnasium</code>), and <code>pydantic</code> v2. No GPU and no LLM API key required: simulate the "model" with a function that returns proposals, some of which deliberately violate a safety rule (for example, requesting <code>force</code> outside the allowed range or omitting a required <code>human_clear</code> field).</p>
+<p><strong>Steps.</strong> (1) Define a Pydantic action schema with <code>model_config = ConfigDict(extra="forbid")</code> and a <code>required</code> set including <code>action</code> and <code>human_clear</code>. (2) Write a shield that validates each proposal against the schema and a hard rule, returning <code>pass</code>, <code>block</code>, or <code>escalate</code>; only <code>pass</code> proposals reach <code>env.step()</code>. (3) Generate 1000 proposals, of which a fixed fraction are unsafe. (4) Run the same 1000 through a "prompt-only" baseline that just appends a safety sentence to the proposal text and never validates structurally.</p>
+<p><strong>What to vary.</strong> The fraction of malformed-vs-well-formed unsafe proposals, the <code>extra="forbid"</code> flag (on vs off), and the risk threshold $\alpha$.</p>
+<p><strong>What to observe.</strong> The unsafe-pass-through rate for each arm. The typed shield should block essentially all schema-violating proposals unconditionally, while the prompt-only arm lets most through. Turning off <code>extra="forbid"</code> should visibly raise the typed shield's pass-through, showing how a single permissive default reopens the hole.</p>
+</div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Primary Sources and Tools</div>

@@ -158,6 +158,12 @@ for update, reward in enumerate(replay_rewards, start=1):
 4 online=0.517 target=0.548</div>
 <p>The expected output should be read as a lagged-target trace. The target value stays frozen through updates 1 and 2, synchronizes at update 3, and then remains fixed again while the online critic continues to move, which is the stabilizing behavior target networks are designed to create.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The variables <code>online_q</code> and <code>target_q</code> expose the separation between learning and target construction. The third update copies the online estimate into the target estimate, which changes the bootstrap value used by later replay samples.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: hard target sync vs no target network</h4>
+<p>Trace one Q-update with $\gamma = 0.90$ and $\alpha = 0.20$, comparing a frozen target against the naive moving target. Start with $Q = 0.50$ for both, replay the reward $r = 1.0$ from a transition into state $o'$ where the next-state max value is currently 0.50.</p>
+<p><strong>With a frozen target ($\theta^-$ fixed):</strong> the TD target is $1.0 + 0.90 \times 0.50 = 1.45$. The online update gives $Q \leftarrow 0.50 + 0.20 \times (1.45 - 0.50) = 0.69$. Replay the same transition again next step: the target is STILL $1.0 + 0.90 \times 0.50 = 1.45$ (the frozen copy did not change), so $Q \leftarrow 0.69 + 0.20 \times (1.45 - 0.69) = 0.842$. The target sits still at 1.45 while $Q$ climbs toward it: 0.69, 0.842, 0.964, and so on, converging smoothly.</p>
+<p><strong>Without a target network (target uses the live $Q$):</strong> step 1 target is again $1.45$, so $Q \leftarrow 0.69$. But step 2 now recomputes the target from the updated value: $1.0 + 0.90 \times 0.69 = 1.621$, so $Q \leftarrow 0.69 + 0.20 \times (1.621 - 0.69) = 0.876$. Step 3 target is $1.0 + 0.90 \times 0.876 = 1.788$. The target chases $Q$ upward every step (1.45, 1.621, 1.788, ...) instead of holding still, the runaway feedback loop the target network exists to break.</p>
+</div>
 <p>The point is not that update 3 is special, it is that the synchronization schedule is an experimental condition. In an embodied run, a target update that is too frequent can chase noise, while a target update that is too slow can train against stale dynamics after a curriculum or domain shift.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -178,6 +184,10 @@ for update, reward in enumerate(replay_rewards, start=1):
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>For a warehouse robot, replay should preserve rare transitions such as wheel slip, blocked aisles, and near-collision recovery. If uniform replay almost never samples those events, the value function can look stable during average episodes and still fail under the exact conditions that matter operationally.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: dexterous in-hand manipulation</h4>
+<p>OpenAI's Dactyl system, which trained a Shadow Hand to reorient a cube, ran a distributed off-policy setup where hundreds of simulated workers fed transitions into a shared replay buffer while a separate optimizer pulled mini-batches and synced target networks. Decoupling collection from learning through the buffer let the system reuse each simulated grasp across many gradient steps, which was essential because the policy then had to transfer to a single, slow physical hand. The target network kept the value estimate from diverging under the massive domain-randomization spread the buffer contained.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -261,6 +271,13 @@ print(record.as_row())</code></pre>
 </div>
 <p>A value function trained on correlated, recent frames without a frozen target is not stable learning; it is a feedback loop waiting to diverge.</p>
 <div class="callout exercise"><div class="callout-title">Exercise 16.2.1</div><p>Design a replay audit for a robot navigation task. Specify buffer capacity, sampling rule, target update rule, transition metadata, and one replay imbalance that could make evaluation look better than deployment.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Ablating replay and target networks on CartPole</h4>
+<p><strong>Goal:</strong> measure how much each stabilizer contributes by turning them on and off, so you can see divergence rather than just read about it.</p>
+<p><strong>Tools needed:</strong> Python with Gymnasium (<code>CartPole-v1</code>), PyTorch, and CleanRL's single-file <code>dqn.py</code> as a starting point. No GPU required; each run finishes in a few minutes on CPU.</p>
+<p><strong>What to vary:</strong> run four configurations. (1) Full DQN with replay plus target network. (2) Replay buffer but target network synced every step (set the target sync interval to 1). (3) No replay: set buffer size to the batch size so each batch is the most recent correlated frames. (4) Neither stabilizer. Then, on the full config, sweep the target sync interval over {1, 100, 500, 2000} and the buffer capacity over {1k, 10k, 100k}.</p>
+<p><strong>What to observe:</strong> log episodic return and the mean absolute Q-value every 1000 steps. Watch for Q-values that grow without bound in configs 2, 3, and 4, the divergence signature, while config 1 stays bounded and the return climbs to 500. In the sweep, note that a sync interval of 1 reproduces config 2's instability and that a tiny buffer reintroduces correlation collapse. You should be able to attribute each failure curve to the specific clock that broke.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a DQN agent for CartPole in Gymnasium with a configurable replay buffer and target network, then run three conditions (no replay, replay only, replay plus target network) and plot the learning curves side by side. The key challenge is instrumenting buffer age and target sync step so each condition is visually comparable, not just anecdotally different.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Train a SAC agent in MuJoCo's Hopper environment using Stable-Baselines3, then corrupt the replay buffer mid-training by injecting 20% stale transitions from an earlier checkpoint and measure the drop in success rate compared to a clean buffer run. The key challenge is writing a replay wrapper that tags each transition with its collection step and condition label so you can audit whether the corruption actually changed the sampled distribution the critic saw.</p><p><strong>Stretch (2 to 3 weeks):</strong> Use LeRobot with a simulated robot arm (or a physical low-cost arm if available) to collect a dataset of pick-and-place demonstrations, initialize a replay buffer from that offline data, and then fine-tune online with DDPG while tracking how quickly the offline transitions age out and whether prioritized replay (via Tianshou's PER buffer) retains useful contact events longer than uniform sampling. The key challenge is defining a condition label per transition (grasp success, slip, near-miss) and showing that PER improves coverage of rare contact events rather than just lowering average TD error.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

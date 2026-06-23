@@ -127,6 +127,15 @@ print(max(combined, key=combined.get))</code></pre>
 pick_sponge</div>
 <p>The expected output is a ranking where the chosen skill is not merely the most semantically plausible sentence completion, but the action with the highest joint semantic and affordance score. Here `pick_sponge` wins because it is both relevant and executable in the present scene, while `wipe_spill` is semantically tempting but prematurely chosen.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This score composition shows why `wipe_spill` loses even though it has the strongest semantic score. The current world state makes it a poor next action, so the product favors `pick_sponge`, which is both relevant and executable.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: the language-times-affordance product rule</h4>
+<p>Trace the selector for the instruction "clean up the spill" with three candidates. Start from raw scores, then normalize and multiply, watching the winner change at each stage.</p>
+<p><strong>Step 1, raw scores.</strong> The frozen LLM returns semantic probabilities and the value functions return affordances: <code>wipe_spill</code> has $p_\text{LLM}=0.80$, $V=0.18$; <code>pick_sponge</code> has $p_\text{LLM}=0.55$, $V=0.92$; <code>turn_on_sink</code> has $p_\text{LLM}=0.30$, $V=0.95$. By language alone the winner is <code>wipe_spill</code> (0.80), which is physically premature.</p>
+<p><strong>Step 2, normalize the language term.</strong> With temperature $\tau=1$ the probabilities renormalize over the three candidates: $0.80/1.65=0.485$, $0.55/1.65=0.333$, $0.30/1.65=0.182$.</p>
+<p><strong>Step 3, normalize the affordance term.</strong> Min-max over $\{0.18, 0.92, 0.95\}$ gives $V_\min=0.18$, $V_\max=0.95$, so <code>wipe_spill</code> becomes $(0.18-0.18)/0.77=0.00$, <code>pick_sponge</code> becomes $(0.92-0.18)/0.77=0.961$, <code>turn_on_sink</code> becomes $(0.95-0.18)/0.77=1.00$.</p>
+<p><strong>Step 4, multiply.</strong> The joint scores are <code>wipe_spill</code> $=0.485\times0.00=0.000$, <code>pick_sponge</code> $=0.333\times0.961=0.320$, <code>turn_on_sink</code> $=0.182\times1.00=0.182$.</p>
+<p><strong>Step 5, select.</strong> $\arg\max$ picks <code>pick_sponge</code> at 0.320. The language favorite (<code>wipe_spill</code>) collapsed to zero because the floor of the affordance range zeroed it out, and the most-affordable skill (<code>turn_on_sink</code>) lost on relevance. The product rule chose the action that is both wanted and possible, exactly the negotiation the section describes.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The same idea can be implemented with a few lines using an LLM API plus an affordance model wrapped behind a typed tool interface. Those libraries remove prompt and schema boilerplate, but they do not remove the need to calibrate the affordance score and the candidate skill set.</p>
@@ -150,6 +159,10 @@ pick_sponge</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>In kitchen cleanup, 'wipe the spill' sounds like the right next step, but the robot may first need to pick the sponge or move a blocking bowl. Affordance grounding keeps the planner from issuing impossible or premature skills.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: kitchen mobile manipulation at Google</h4>
+<p>SayCan was deployed on Everyday Robots' mobile manipulators in a real office kitchen, where a single robot interpreted free-form requests like "I spilled my drink, can you help?" and chained skills such as finding a sponge, picking it up, and bringing it over. The language model proposed the helpful next step while the learned affordance values, trained on roughly 68,000 real robot episodes across 551 skills, pruned anything the arm could not actually execute from its current pose.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -208,6 +221,14 @@ pick_sponge</div>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 33.2.1</div><p>Construct a three-skill example where the top semantic choice is not executable and the top affordance choice is semantically irrelevant. Show how the product rule resolves the conflict and when it might still fail.</p></div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Tabletop SayCan scorer in Gymnasium (beginner, one weekend):</strong> Build a discrete grid-world environment in Gymnasium where objects are scattered on a table and a small skill library (pick, push, move) has hand-coded affordance values that depend on agent proximity; wire an LLM API to score each skill by language probability and multiply the two scores to select actions, then log which term changed the winner. The key challenge is calibrating the affordance values so neither term dominates by scale.</p><p><strong>SayCan planner on a PyBullet robot arm (intermediate, one to two weeks):</strong> Implement the full SayCan loop on a simulated UR5 or Franka in PyBullet: train per-skill success-value functions with behavioral cloning on ten demonstrations each, call an LLM API to score a library of five to eight parameterized skills given a natural-language instruction, and run the product-rule selector in a closed loop until task completion or a step budget is exhausted. The key challenge is keeping the per-skill value functions calibrated across object poses and scene configurations that differ from the training distribution.</p><p><strong>ROS2 skill dispatcher with affordance gating (intermediate, one to two weeks):</strong> Using ROS2 actions and a LeRobot-pretrained manipulation policy as the execution backend, build a skill dispatcher node that receives a natural-language goal, queries an LLM for a ranked candidate list, queries a small MLP affordance model trained on wrist-camera observations for each candidate, and publishes only the top-scoring skill as a ROS2 action goal. The key challenge is reducing end-to-end latency so affordance inference does not stall the planning loop.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: watch the affordance term flip the language winner</h4>
+<p><strong>Goal.</strong> Build a minimal SayCan scorer and measure how often the affordance term overrides the top language choice, so you feel the product rule empirically rather than reading it.</p>
+<p><strong>Tools needed.</strong> Python with NumPy only (no GPU). Optionally an LLM API key if you want real language scores; otherwise use hand-set probabilities. Budget 15 to 30 minutes.</p>
+<p><strong>Setup.</strong> Define a library of six tabletop skills (pick_sponge, wipe_spill, turn_on_sink, move_bowl, open_drawer, place_cup). For each skill, draw a language probability from a fixed prompt (or assign by hand) and an affordance value $V_k(s_t)\in[0,1]$ from a synthetic scene generator that places a random blocking object on the table. Apply temperature scaling to the language term and min-max normalization to the affordance term, then select $\arg\max$ of the product.</p>
+<p><strong>What to vary.</strong> (1) The temperature $\tau$ from 0.5 to 4.0; (2) whether a blocking object zeros out the relevant skill's affordance; (3) the spread of the affordance values (all near 1.0 versus widely separated).</p>
+<p><strong>What to observe.</strong> Log the language-only winner and the product winner for 500 random scenes and report the override rate (fraction where they differ). You should see the override rate climb as affordance spread grows, and collapse toward zero when all affordances cluster near 1.0, the exact calibration failure the Tip callout warns about. Plot override rate against $\tau$ to see how an over-sharp language term suppresses the affordance signal.</p>
+</div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Primary Sources and Tools</div>

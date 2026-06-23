@@ -159,6 +159,17 @@ t=2: reward=+2.0, G_t=+1.100
 t=3: reward=-1.0, G_t=-1.000</div>
 <p>The expected output should be read from bottom to top as a backward return construction. The key interpretation is that the early negative reward at <code>t=0</code> still receives a positive return because later placement success outweighs it after discounting, while the terminal penalty remains fully visible at <code>t=3</code>.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> The loop computes $G_t$ for a four-step episode by carrying `running_return` backward through the reward list. Notice that the final safety penalty reduces earlier returns, but the discount factor prevents it from overwhelming the immediate contact and placement evidence.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Backward Return Accumulation</h4>
+<p>Trace the recursion $G \leftarrow r_{t+1} + \gamma G$ for the rewards $[-0.2, 0.4, 2.0, -1.0]$ with $\gamma=0.9$, starting from $G=0$ and moving backward:</p>
+<ul>
+<li>Step $t=3$: $G = -1.0 + 0.9 \times 0 = -1.000$. So $G_3 = -1.000$ (final step, nothing ahead to discount).</li>
+<li>Step $t=2$: $G = 2.0 + 0.9 \times (-1.000) = 2.0 - 0.9 = 1.100$. So $G_2 = 1.100$ (the placement reward is dented but not erased by the future penalty).</li>
+<li>Step $t=1$: $G = 0.4 + 0.9 \times 1.100 = 0.4 + 0.990 = 1.390$. So $G_1 = 1.390$.</li>
+<li>Step $t=0$: $G = -0.2 + 0.9 \times 1.390 = -0.2 + 1.251 = 1.051$. So $G_0 = 1.051$ (positive, even though its own reward was negative, because later success flows back).</li>
+</ul>
+<p>Cross-check against the closed form: $G_0 = -0.2 + 0.9(0.4) + 0.81(2.0) + 0.729(-1.0) = -0.2 + 0.36 + 1.62 - 0.729 = 1.051$. The backward loop and the explicit weighted sum agree exactly.</p>
+</div>
 <p>The first action has a negative immediate reward but a positive return because it helped set up later success. This is the central difference between reinforcement learning and one-step supervision: the learning target for an action is not only what happened immediately after it, but what the episode eventually made possible. A policy that sees only immediate rewards is not learning from experience; it is reacting to the nearest echo.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -182,6 +193,10 @@ t=3: reward=-1.0, G_t=-1.000</div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A robotics team training a drawer-opening policy should log the full sequence: image observation, gripper pose, action command, contact event, reward, and termination reason. A final success rate alone cannot tell whether the policy learned smooth opening, lucky initial contact, or an unsafe yank followed by recovery.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: Quadruped Locomotion (ANYmal)</h4>
+<p>ETH Zurich's ANYmal locomotion controllers, trained in Isaac Gym and deployed to hardware (Rudin et al., 2022), tune $\gamma$ jointly with the 50 Hz control rate so that a fall penalty arriving up to two seconds later still propagates discounted credit back to the gait actions that destabilized the robot. The discounted return computed over thousands of parallel simulated episodes is exactly the training target that lets the policy learn recovery steps that pay off only several timesteps after they are taken.</p>
 </div>
 <div class="callout key-insight"><p>Think of the discount factor like the timer on a pressure cooker. A short timer means only what happens in the first few minutes shapes how the dish turns out; you react to the immediate sizzle and ignore the slow braise still coming. A long timer means even flavors that develop an hour from now are part of what you are cooking toward. Choosing gamma is choosing how far ahead the recipe extends: set it too short and the policy ignores a collision coming three seconds later, set it too long and every stir of the spoon is blamed equally for the final taste, making it impossible to tell which step actually mattered.</p></div>
 <div class="callout fun-note">
@@ -239,6 +254,13 @@ t=3: reward=-1.0, G_t=-1.000</div>
 <p>The return is the bridge from experience to learning target. If it is miscomputed, every later value estimate and policy update inherits the error.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 14.1.1</div><p>Take a five-step robot episode with rewards of your choice, choose $\gamma=0.95$, and compute every $G_t$. Then change one terminal penalty and explain which earlier actions receive different targets.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch the Discount Horizon Change Behavior</h4>
+<p><strong>Goal:</strong> See empirically how the discount factor reshapes return targets and learned behavior on a delayed-reward task in 15 to 30 minutes.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium</code>, and <code>stable-baselines3</code> (<code>pip install gymnasium stable-baselines3</code>). Use the <code>MountainCar-v0</code> environment, whose only meaningful reward arrives at the very end, making it a clean stress test for discounting.</p>
+<p><strong>What to vary:</strong> Train a PPO agent three times, changing only the discount factor: <code>gamma=0.90</code>, <code>gamma=0.99</code>, and <code>gamma=0.999</code>, keeping all other hyperparameters and the random seed fixed. Also write a 10-line script that takes a hand-made reward list and computes $G_0$ under each gamma using the backward loop from this section.</p>
+<p><strong>What to observe:</strong> Plot episode return versus training steps for each gamma. The short-horizon run (0.90) should barely improve because the terminal reward is discounted into near-invisibility before it reaches the early throttle actions, while 0.99 and 0.999 should solve the task. Confirm your offline $G_0$ values track the same pattern: the terminal reward's contribution to the first action shrinks by orders of magnitude as gamma drops. This connects the abstract effective horizon $1/(1-\gamma)$ to a behavior you can watch on screen.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a Gymnasium CartPole wrapper that logs every $(o_t, a_t, r_{t+1})$ tuple to CSV and computes discounted returns offline using the backward accumulation algorithm from this section. The key challenge is correctly separating <code>terminated</code> from <code>truncated</code> episode endings so the bootstrap target is zero only on true termination, not on time-limit cutoffs.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Train a PyBullet or MuJoCo Ant or HalfCheetah agent using a manually tuned discount schedule: start with a short-horizon gamma near 0.9 for the first 200k steps, then anneal to 0.99 as the policy stabilizes, logging return variance and episode length at each phase. The key challenge is verifying that the annealed targets do not destabilize the value function by comparing learning curves with and without the schedule.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

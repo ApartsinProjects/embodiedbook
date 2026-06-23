@@ -162,6 +162,14 @@
 <li>After training, evaluate $\phi^*$ on a held-out initial-condition panel with perturbed actuator delays and workspace-edge starts. Report reward, blocked-action count, interventions, resets, and hardware health as one co-computed artifact.</li>
 </ol>
 </div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Constrained Residual Update With Rollback</h4>
+<p>Trace one mini-batch of the algorithm on an A1-style residual pushing policy. Baseline frozen-policy intervention rate $r_0 = 0.05$ (1 stop per 20 rollouts), intervention budget $B = 0.10$, baseline blocked fraction $f_{\text{block},0} = 0.04$, learning rate $\alpha = 0.01$.</p>
+<p><strong>Step 3 (propose):</strong> at one timestep the frozen base outputs $\pi_\theta(o_t) = 0.16$ m/s forward speed; the residual adds $\pi_\phi(o_t) = +0.03$, giving a composite $a_t = 0.19$ m/s.</p>
+<p><strong>Step 4 (gate):</strong> speed limit is $0.20$ m/s, so $g_{\text{speed}} = 0.19 - 0.20 = -0.01 \leq 0$: passes. Force is $14$ N against a $15$ N limit, delay $38$ ms against $45$ ms: all gates pass, so $a_t$ executes. A later timestep proposes $0.22$ m/s ($g_{\text{speed}} = +0.02 > 0$): blocked and logged, never executed.</p>
+<p><strong>Step 6-7 (update):</strong> over $N = 32$ accepted transitions the gradient estimate is $\hat{\nabla}_\phi J = +0.8$, so $\phi \leftarrow \phi + 0.01 \times 0.8 = \phi_0 + 0.008$. Only $\phi$ moves; $\theta$ is untouched.</p>
+<p><strong>Step 8 (safety check):</strong> after the update the measured intervention rate is $r = 0.06$ ($< B = 0.10$, ok) and blocked fraction is $f_{\text{block}} = 0.05$ ($< 2 f_{\text{block},0} = 0.08$, ok), and held-out reward rose from $0.71$ to $0.74$. All criteria hold, so the update is kept. Had $r$ jumped to $0.12$, the rule $r > B$ would fire and immediately restore $\phi \leftarrow \phi_0$, discarding the $+0.008$ change before the next batch.</p>
+</div>
 <h2>Worked Example</h2>
 <p>Code Fragment 20.4.1 implements a simple action gate for a residual pushing policy. The proposed residual is allowed only if speed, force, actuator delay, and workspace checks stay within the approved envelope.</p>
 <pre><code class="language-python"># Gate a residual action before it reaches the real robot.
@@ -207,6 +215,10 @@ print(f"passes_safety_gate={passes_gate}")</code></pre>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
 <p>A manipulation team may fine-tune only a residual wrist motion while freezing perception and impedance control. The report should show the reward curve, the number of blocked actions, maximum force, recovery count, motor temperature range, and every human stop event.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: ANYmal industrial inspection</h4>
+<p>ANYbotics deploys ANYmal quadrupeds for autonomous inspection in offshore energy plants and chemical refineries, where a fall onto live equipment is unacceptable. Their pipeline trains locomotion in simulation, then performs constrained on-site adaptation behind hard joint-torque and foot-clearance limits enforced by the low-level controller, so the learned policy can adjust to grating, oil-slick steps, and stairs without the operator ever ceding the emergency-stop and safety envelope. This is the frozen-base, gated-residual pattern running on a commercial robot that walks unattended through hazardous facilities.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
@@ -262,6 +274,14 @@ print(f"passes_safety_gate={passes_gate}")</code></pre>
 <p>Hardware fine-tuning is useful when it improves the deployable policy inside an audited safety envelope, not when it increases reward by spending hidden risk.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 20.4.1</div><p>Design a hardware fine-tuning gate for one robot task. Specify the frozen checkpoint, trainable subset, force limit, speed limit, delay limit, stop rule, rollback rule, and safety denominator to report with reward.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a safety gate keep a noisy policy recoverable</h4>
+<p><strong>Goal:</strong> see empirically how an action gate plus a rollback rule decouples reward from risk, and how widening a threshold trades one for the other.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium</code>, and <code>stable-baselines3</code> (<code>pip install gymnasium stable-baselines3</code>). Use the <code>Pendulum-v1</code> environment as a stand-in for hardware.</p>
+<p><strong>Steps:</strong> Train a SAC policy for a short budget (about 20k steps) to get a competent but imperfect base. Treat that as the frozen base. Then run a constrained fine-tuning loop that, at each step, computes the proposed torque, rejects any action whose absolute value exceeds a gate limit <code>tau_max</code> (start at $2.0$ Nm, well inside the $\pm 2.0$ action range), logs the blocked-action fraction, and reverts the policy to the previous checkpoint whenever the running episode return drops below the frozen baseline.</p>
+<p><strong>What to vary:</strong> sweep <code>tau_max</code> over $\{1.0, 1.5, 2.0\}$ and the rollback threshold over two values; optionally inject observation noise to mimic sensor latency.</p>
+<p><strong>What to observe:</strong> plot mean return, blocked-action fraction, and rollback count against <code>tau_max</code>. You should see that the tightest gate blocks the most actions but never lets return collapse, while the loosest gate occasionally earns higher reward yet triggers more rollbacks: the same risk-versus-reward denominator the section insists you report alongside any improvement claim.</p>
+</div>
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Safety-gated pendulum fine-tuner.</strong> Train a policy in Gymnasium's CartPole or Pendulum environment, then write a constrained update loop that blocks any proposed action exceeding a speed or torque threshold and logs the blocked-action fraction after every mini-batch; the key challenge is verifying that the gate statistics degrade correctly when you deliberately widen the threshold past a safe value. <strong>Intermediate (1-2 weeks): RMA-style adapter for a quadruped in Isaac Lab.</strong> Freeze a base locomotion policy trained in Isaac Lab under domain randomization, attach a small 3-layer MLP (Multi-Layer Perceptron) adapter that reads 50 ms of proprioceptive history, and fine-tune only the adapter on a different terrain mesh; the key challenge is implementing the rollback checkpoint so that a rising intervention rate or blocked-action fraction restores the pre-update adapter weights automatically. <strong>Intermediate (1-2 weeks): Hardware-safe residual wrist policy with LeRobot and ROS 2.</strong> Replay a manipulation demonstration dataset from LeRobot to initialize a residual wrist-motion policy, wrap it in a ROS 2 controller node that enforces force and joint-speed limits as hard gates, and run 50 real or PyBullet hardware-equivalent rollouts while logging every blocked action and human stop event alongside the reward curve; the key challenge is ensuring the software gate and the ROS 2 controller agree on the same threshold values so no conflicting limit check can be silently bypassed.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>

@@ -137,6 +137,20 @@ print({"bottleneck": bottleneck, "audit_pass": min(metrics.values()) &gt;= 0.7})
 <div class="code-output"><p><code>{'bottleneck': 'usable_horizon', 'audit_pass': False}</code></p></div>
 <p><strong>Expected behavior:</strong> The audit fails because the usable horizon is too short even though the short-term clip looks coherent and somewhat controllable. That is exactly the point of the panel: a planner or evaluator needs a long-enough trustworthy future, not merely an attractive first second.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This conservative audit surfaces the weakest link in the generated world. Here the bottleneck is usable horizon, which means the team should spend effort on long-rollout stability before celebrating visual or short-step control quality.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: scoring a 5-step controllability probe</h4>
+<p>Trace the controllability score with a tiny example. Run the action script (turn left, forward, forward, turn right, stop) from one held-out start state and compare the world-model output against the ground-truth simulator at each step. The acceptance tolerance is "the agent heading and position match within bounds", scored as a per-step pass (1) or fail (0):</p>
+<p>Step 1 (turn left): model heading 28 degrees vs reference 30 degrees, within 5-degree tolerance, pass = 1.<br/>
+Step 2 (forward): model moved 1.9 m vs reference 2.0 m, within 0.3 m tolerance, pass = 1.<br/>
+Step 3 (forward): model moved 1.4 m vs reference 2.0 m, outside tolerance (model started ignoring the action), pass = 0.<br/>
+Step 4 (turn right): model heading barely changed, reference rotated 30 degrees, pass = 0.<br/>
+Step 5 (stop): model drifted forward instead of halting, pass = 0.<br/>
+Controllability = (1 + 1 + 0 + 0 + 0) / 5 = <strong>0.40</strong>. The clip stays photorealistic the whole way, but the action signal dies at step 3: this is action-blind hallucination caught numerically rather than by eye.</p>
+</div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: autonomous-vehicle world models</h4>
+<p>Wayve's GAIA-2 driving world model is evaluated not on frame realism alone but on whether action-conditioned rollouts (steering and throttle commands) produce the trajectory a planner expects, exactly the controllability axis described here. The team reports usable horizon separately because a generated future that stays decision-valid for only two seconds cannot support lane-change planning, regardless of how sharp the rendered road looks.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>The audit logic is tiny, but it becomes powerful when paired with maintained generation backends and reproducible evaluation scripts. The right shortcut is not a automatic simulator-score library. It is a stable harness that replays the same seed states and action scripts against every new model version and stores the traces next to the summary table.</p>
@@ -176,6 +190,13 @@ print({"bottleneck": bottleneck, "audit_pass": min(metrics.values()) &gt;= 0.7})
 <p>This is also why <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-52-evaluating-embodied-systems/section-52.5.html">reproducibility</a> matters so much here. A world model can fail on one initial state and look excellent on another. Without saved seed panels and trace artifacts, evaluation quickly collapses back into storytelling. The right artifact makes the failure replayable.</p>
 
 <div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Controllability probe harness in Gymnasium.</strong> Build a script that runs a fixed action sequence (turn left, move forward, stop) inside a Gymnasium CartPole or LunarLander environment, records the expected state at each step, then replays the same sequence through a pretrained video world model and computes per-step controllability score. The key challenge is aligning the action space encoding between the Gymnasium environment and the model's conditioning interface so that the same action token means the same physical change in both systems.</p><p><strong>Intermediate (1-2 weeks): Usable-horizon benchmark for a MuJoCo manipulation task.</strong> Using MuJoCo (via dm_control or Gymnasium's MuJoCo bindings), generate 50 rollouts of a Franka reach task from fixed seed states, then feed the same initial frames and action sequences into a video world model (such as a fine-tuned GAIA-1 or a small video diffusion model) and log the first time step at which the generated object position diverges from ground truth by more than a threshold. The key challenge is defining a task-grounded divergence threshold that reflects when a planner would actually make a wrong decision, rather than a perceptual distance that looks bad but would not affect the plan.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: measure the usable horizon of a video predictor</h4>
+<p><strong>Goal:</strong> empirically find the time step at which a learned predictor's generated future stops being decision-valid, and watch the three axes diverge.</p>
+<p><strong>Tools:</strong> Python with <code>gymnasium</code> (CartPole or LunarLander), <code>numpy</code>, and a small pretrained or quickly trained next-frame/next-state predictor (even a 2-layer MLP world model fit on a few thousand transitions is enough to see the effect).</p>
+<p><strong>Procedure (15-30 min):</strong> (1) Freeze 20 initial states with <code>np.random.default_rng(42)</code> and save them as <code>.npy</code>. (2) From each state, roll out a fixed action script in the real environment to get ground truth. (3) Feed the same initial state and action script to your predictor autoregressively and log, at each step, the absolute error between predicted and true state. (4) Define usable horizon as the first step where mean error exceeds a task-grounded threshold (for CartPole, pole angle off by more than 0.1 rad).</p>
+<p><strong>What to vary:</strong> rollout length, the error threshold, and whether actions are repeated vs. branching (alternate left/right). <strong>What to observe:</strong> consistency (smooth predictions) can stay high while controllability collapses under branching actions, and usable horizon shrinks sharply once you switch from repeated to branching action scripts. Plot per-step error to see the bottleneck axis directly.</p>
+</div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
 <p>If you had to reject a generative world model version today, which axis would you inspect first for your application, and what single broken trace would convince a teammate that the rejection was justified?</p>

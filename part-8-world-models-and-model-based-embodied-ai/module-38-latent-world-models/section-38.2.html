@@ -127,6 +127,15 @@ print(
 <div class="code-output"><p><code>{'posterior_mean': [0.509, -0.086, 0.293], 'total_correction': 0.08}</code></p></div>
 <p><strong>Expected behavior:</strong> The posterior should stay close to the prior when dynamics are already accurate, but it should still move enough to absorb new evidence. If the correction is always near zero, the encoder is being ignored. If it is always huge, the recurrent dynamics are not carrying useful memory.</p>
 <div class="code-caption"><strong>Code Fragment 1:</strong> This fragment acts like a one-step posterior update in an RSSM. The total correction is the quantity to watch: it measures how much fresh evidence changed the model's predicted latent state.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: RSSM predict-correct cycle</h4>
+<p>Trace one full update with a 1-D latent so the numbers stay readable. Start with memory $h_0 = 0.20$, last latent $z_0 = 0.50$, last action $a_0 = 1.0$.</p>
+<p><strong>Step 1, recurrent memory.</strong> Let $f$ be a simple weighted sum followed by a clip: $h_1 = 0.5 h_0 + 0.3 z_0 + 0.2 a_0 = 0.5(0.20) + 0.3(0.50) + 0.2(1.0) = 0.10 + 0.15 + 0.20 = 0.45$.</p>
+<p><strong>Step 2, prior.</strong> The prior predicts the latent from memory alone: $\mu_{\text{prior}} = \tanh(h_1) = \tanh(0.45) \approx 0.422$. The dynamics expected $z_1 \approx 0.42$ before seeing any frame.</p>
+<p><strong>Step 3, observation.</strong> The encoder turns the real frame into an estimate $\mu_{\text{obs}} = 0.70$. The mug moved farther than the prior guessed.</p>
+<p><strong>Step 4, posterior.</strong> Fuse prior and observation with gain $0.35$: $\mu_{\text{post}} = 0.422 + 0.35(0.70 - 0.422) = 0.422 + 0.35(0.278) = 0.422 + 0.097 = 0.519$.</p>
+<p><strong>Step 5, drift signal.</strong> The correction magnitude is $|0.519 - 0.422| = 0.097$, a moderate, healthy update: the encoder was heard but the memory was not overruled. Feed $z_1 = 0.519$ back into Step 1 and the cycle repeats. A correction near $0$ every step means the encoder is ignored; a correction near $0.28$ (the full gap) every step means memory is carrying nothing.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>A handwritten correction step is useful for intuition, but production code usually drops to about 6 lines by using <code>torch.nn.GRUCell</code> (Gated Recurrent Unit) for the deterministic memory and <code>torch.distributions</code> heads for the prior and posterior. In practice, teams often pair these with TensorDict, TorchRL, PyTorch logging, Weights &amp; Biases dashboards, and TensorBoard traces, while the official DreamerV3 code handles recurrent unrolling, batch masking, and latent sampling details that are noisy to reproduce by hand.</p>
@@ -180,6 +189,14 @@ print(
 <p>An RSSM is best understood as a learned filter plus learned dynamics model: it predicts, then corrects, and both steps are necessary for control under partial observability.</p>
 </div>
 <div class="callout exercise"><div class="callout-title">Exercise 38.2.1</div><p>Design an RSSM logging panel for a robot camera stream. Which prior and posterior statistics would you save every step, and which threshold would trigger a manual replay review?</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch the posterior correction spike under occlusion</h4>
+<p><strong>Goal:</strong> See empirically that the posterior correction magnitude rises when observations are degraded, the single signal this whole section argues you should monitor.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> (CartPole-v1) and <code>torch</code>. No GPU required; this runs on a laptop CPU in under 30 minutes.</p>
+<p><strong>Build (about 10 minutes):</strong> Encode each observation with a two-layer MLP, carry a deterministic state with a single <code>torch.nn.GRUCell</code>, and add two small linear heads that output the prior mean (from the GRU state only) and the posterior mean (from the GRU state plus the encoded observation). Train for a few thousand steps with a reconstruction loss plus a KL term using <code>free_bits = 1.0</code>.</p>
+<p><strong>What to vary:</strong> After training, replay episodes while randomly zeroing out the observation vector with probability $p$, sweeping $p$ across $0.0, 0.2, 0.5, 0.8$.</p>
+<p><strong>What to observe:</strong> Log the per-step posterior correction $\lvert \mu_{\text{post}} - \mu_{\text{prior}} \rvert$ and plot its mean against $p$. You should see correction stay low at $p = 0$ (the prior already predicts well) and rise as more frames vanish, then, counterintuitively, fall again near $p = 0.8$ because the encoder has almost no evidence to inject and the posterior collapses back onto the prior. That non-monotonic curve is the fingerprint of a recurrent core doing its job.</p>
+</div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
 <h3>Primary References And Tools</h3>

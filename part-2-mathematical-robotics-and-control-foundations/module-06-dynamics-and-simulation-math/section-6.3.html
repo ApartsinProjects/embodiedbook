@@ -218,6 +218,22 @@ for e, mu in [(0.0, 2.0), (0.8, 0.5), (0.8, 0.05)]:
 </code></pre>
 </div>
 <p>The output shows the three regimes a contact-rich simulator must get right: with $e=0$ the normal velocity is killed and high friction makes the contact stick; with $e=0.8$ the mass bounces, $v_n^{+}=0.8\,|v_n^{-}|$; and with low $\mu$ the tangential impulse saturates on the cone and the mass slides instead of sticking. The set-valued switch between stick and slide is precisely the active-set decision that makes contact-rich simulation non-smooth and <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.4.html">timestep sensitive</a>.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: impulse resolution of the third case ($e=0.8$, $\mu=0.05$)</h4>
+<p>Trace <code>resolve_contact</code> by hand for the sliding regime, using $m=0.5$, $v_{in}=(3.0,\,-2.0)$, normal $n=(0,1)$, $e=0.8$, $\mu=0.05$.</p>
+<ol>
+<li>Tangent direction: $t=(-n_1, n_0)=(-1, 0)$.</li>
+<li>Normal component: $v_n = v_{in}\cdot n = (3.0)(0)+(-2.0)(1) = -2.0$. Negative, so the mass is approaching and a contact impulse is needed.</li>
+<li>Tangential component: $v_t = v_{in}\cdot t = (3.0)(-1)+(-2.0)(0) = -3.0$.</li>
+<li>Normal impulse: $J_n = -(1+e)\,v_n\,m = -(1.8)(-2.0)(0.5) = 1.8$.</li>
+<li>Sticking tangential impulse: $J_{t,\text{stick}} = -v_t\,m = -(-3.0)(0.5) = 1.5$.</li>
+<li>Friction-cone limit: $J_{t,\max} = \mu J_n = (0.05)(1.8) = 0.09$. Since $|1.5| > 0.09$, the stick impulse violates the cone, so the contact slides.</li>
+<li>Clamped tangential impulse: $J_t = -\operatorname{sign}(v_t)\,J_{t,\max} = -(-1)(0.09) = +0.09$.</li>
+<li>Total impulse: $J = J_n n + J_t t = (1.8)(0,1) + (0.09)(-1,0) = (-0.09,\,1.8)$.</li>
+<li>Post-impact velocity: $v_{out} = v_{in} + J/m = (3.0,-2.0) + (-0.18,\,3.6) = (2.82,\,1.6)$.</li>
+</ol>
+<p>Check: $v_{out}\cdot n = +1.6 = 0.8\cdot|{-2.0}|$, so restitution is satisfied, and the large residual tangential speed ($2.82$) confirms the mass kept sliding because friction was far too weak to arrest it.</p>
+</div>
 <div class="callout tip">
 <p>When MuJoCo contact simulations produce stick/slide chatter (the mode alternates every timestep with no change in applied force), the fastest fix is to tighten the <code>solimp</code> impedance parameters rather than reducing the timestep. Set <code>solimp="0.99 0.999 0.001"</code> on the relevant geom or contact pair to increase constraint stiffness while keeping the timestep at 2 ms. Reducing the timestep alone amplifies numerical noise at the contact boundary and often makes chatter worse; adjusting <code>solimp</code> addresses the root cause, which is the solver treating the constraint as too compliant to resolve the stick/slide decision cleanly.</p>
 </div>
@@ -242,6 +258,10 @@ for e, mu in [(0.0, 2.0), (0.8, 0.5), (0.8, 0.05)]:
 <div class="callout-title">Practical Example</div>
 <p>The Open X-Embodiment dataset contains teleoperated manipulation trajectories from 22 robot embodiments, including Franka Panda, WidowX, and Google Robot. Contact events in those demonstrations are implicit: the operator felt resistance through haptic feedback, but the logged state contains only joint positions and end-effector pose. When using these demonstrations to train policies in MuJoCo or Isaac Lab, the contact model in simulation must be calibrated so that the simulated fingertip force at grasp initiation matches the force range seen in the real hardware logs (typically 1-5 N for a light grasp). A mismatch of more than a factor of two in contact stiffness produces policies that either drop objects immediately or crush them, even when the motion trajectory looks correct.</p>
 </div>
+<div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
+<h4>Real-World Application: in-hand reorientation on the Shadow Hand</h4>
+<p>OpenAI's Dactyl system trained a policy to reorient a cube in a five-fingered Shadow Dexterous Hand entirely in simulation, where dozens of fingertip contacts switch between stick and slide every step. The team could not trust a single high-fidelity contact model, so they randomized friction, contact stiffness, and object mass across thousands of parallel MuJoCo environments, and the resulting policy transferred to the physical hand without any real-world fine-tuning. This is the combinatorial-contact problem of this section solved not by a perfect solver but by making the policy robust to which contact mode the real hand actually lands in.</p>
+</div>
 <div class="callout fun-note">
 <div class="callout-title">Memory Hook</div>
 <p>Contact quality has one diagnostic number: mean penetration depth over a held grasp. Under 1 mm the simulator is physically plausible. Over 5 mm the policy is flying through objects. Everything between is a negotiation between solver speed and physical realism that every sim-to-real transfer will eventually expose.</p>
@@ -252,6 +272,14 @@ for e, mu in [(0.0, 2.0), (0.8, 0.5), (0.8, 0.05)]:
 <p><strong>Learned contact and deformable-object simulators (2024-2026).</strong> Neural simulators trained on real tactile and force data now replace analytic LCP solvers for deformable and cloth-like objects. CMU's DiffCloth and Stanford's work on learned contact dynamics (Li et al., "Dynamics-Aware Imitation Learning," ICRA 2024) demonstrate that a graph-network contact model trained on real trajectory data can outperform MuJoCo's rigid approximation for soft objects like cables and garments, enabling policies that transfer directly to hardware.</p>
 <p><strong>Contact-aware foundation models for manipulation (2025-2026).</strong> Large-scale robot learning projects (Physical Intelligence's pi0, Berkeley's RoboVLMs) are beginning to condition manipulation policies on estimated contact state (force/torque sensor readings, tactile images) rather than treating contact as a latent nuisance variable. Early results suggest that explicit contact conditioning reduces catastrophic failures by 30-50 % on in-hand reorientation tasks.</p>
 <p><strong>Open problem for PhD students.</strong> All current differentiable contact simulators (MJX, Drake hydroelastic, Warp) produce gradients that are numerically correct only in smooth contact regimes; they diverge or vanish at mode switches (stick to slide, contact to separation). An open problem is designing a contact solver whose gradients are informative and bounded across all contact modes, enabling gradient-based policy search on tasks with frequent mode transitions such as in-hand re-grasping and contact-rich locomotion on uneven terrain.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: watch a bouncing ball lose energy as you sweep restitution and timestep</h4>
+<p><strong>Goal.</strong> Feel, empirically, that contact behavior is set by solver parameters and restitution, not by integrator effort alone, and see where a too-coarse timestep lets a falling ball tunnel through the floor.</p>
+<p><strong>Tools needed.</strong> Python with the <code>mujoco</code> bindings (<code>pip install mujoco</code>); about 20 lines of script and Matplotlib for plotting. No GPU required.</p>
+<p><strong>Setup.</strong> Write a minimal MJCF with a single free-joint sphere (radius 0.05 m) starting 1 m above a static floor plane. Run 3 s of simulation and log the sphere height and total mechanical energy every step.</p>
+<p><strong>What to vary.</strong> (1) The coefficient of restitution by editing the geom <code>solref</code>/<code>solimp</code> and the contact <code>condim</code>, trying values that emulate $e\approx 0.2$, $0.6$, and $0.9$. (2) The timestep over <code>0.0005</code>, <code>0.002</code>, and <code>0.02</code> s. (3) The initial drop height (0.5 m and 2 m).</p>
+<p><strong>What to observe.</strong> Plot height versus time for each setting. Confirm bounce-peak height drops by roughly $e^2$ per bounce (energy scales as the square of the restitution). At the 0.02 s timestep with the 2 m drop, watch the ball pass partway through the floor or gain energy between bounces, the tunneling and energy-injection failure modes named in the Practical Recipe. Note that shrinking the timestep cures tunneling but does not change the steady-state bounce height, which is governed by restitution.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
