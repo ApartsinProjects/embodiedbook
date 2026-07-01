@@ -64,8 +64,8 @@
 <p>Rather than render pixels, <a href="../../part-6-embodied-perception/module-28-3d-perception-and-neural-scene-representations/section-28.4.html">occupancy flow</a> predicts a future occupancy grid plus a flow field describing how occupied cells move. It is cheaper, directly consumable by planning (the planner wants to know what space will be blocked), and avoids hallucinating photorealistic but dynamically wrong frames.</p>
 <p>This matters in embodied AI because a physical vehicle has hard kinematic limits: it cannot teleport, stop instantly, or pass through another object. A pixel-level video generator can satisfy perceptual metrics while violating these constraints silently, producing frames where a car appears to slow but the implied closing speed remains dangerous. Occupancy flow encodes exactly the quantities the actuator layer needs: which cells are blocked and how fast they are moving, giving the planner a collision check that is grounded in real physical geometry rather than appearance.</p>
 <h4 data-agent="30">How the network is trained and queried</h4>
-<p data-agent="29">Mechanically, the network predicts two tensors over a fixed bird's-eye-view grid at each future timestep: a binary (or probabilistic) occupancy map and a 2-D velocity vector per occupied cell. To train the flow vectors, the model warps the current occupancy forward with the predicted velocities and minimizes a Chamfer or cross-entropy loss against the ground-truth future occupancy. At inference the planner does two things. It convolves the ego vehicle's footprint against the predicted occupied cells to compute collision probability, and it integrates the flow vectors to project cell positions further ahead without running additional network passes.</p>
-<div class="callout paper-spotlight">
+<p data-agent="29">Mechanically, the network predicts two tensors over a fixed bird's-eye-view grid at each future timestep: a binary (or probabilistic) occupancy map and a 2-D velocity vector per occupied cell. To train the flow vectors, the model warps the current occupancy forward with the predicted velocities and minimizes a Chamfer or cross-entropy loss (where the <span data-agent="21">Chamfer loss is the average distance from each predicted occupied point to its nearest ground-truth occupied point, and vice versa, penalizing both missed and spurious occupied cells</span>) against the ground-truth future occupancy. At inference the planner does two things. It convolves the ego vehicle's footprint against the predicted occupied cells to compute collision probability, and it integrates the flow vectors to project cell positions further ahead without running additional network passes.</p>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Paper Spotlight: UniSim</div>
 <p><strong>"UniSim: Learning Interactive Real-World Simulators" (Yang et al., ICLR 2024).</strong> UniSim learns a single action-conditioned generative simulator from heterogeneous real-world data (robot trajectories, human activity, navigation), so that issuing an action produces a plausible next visual observation. For driving, the promise is to train and evaluate policies inside a learned simulator that captures real-world appearance and dynamics, reducing reliance on hand-built simulators and risky on-road testing. The paper's central evidence is that policies and perception models trained purely in the learned simulator transfer to real settings, which is the property a driving world model must have to be more than a video generator.</p>
 </div>
@@ -77,6 +77,7 @@
 <div class="callout-title">Mechanism</div>
 <p>For closed-loop planning the loop is: encode current observation, propose candidate action sequences, unroll the world model for each to get imagined futures, score each future with a reward or cost (collision, progress, comfort), and execute the first action of the best sequence (<a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.5.html">model predictive control (MPC)</a> in latent space). For data augmentation the loop is offline: sample diverse conditions (weather, agents, rare events), generate synthetic sensor data plus labels, and add it to the training set for downstream perception and planning.</p>
 </div>
+<p data-agent="09">Figure 48.5B below traces this closed-loop planning cycle as a five-stage diagram, from observing the current state through imagining candidate futures to executing the chosen action.</p>
 <figure class="diagram-container">
 <svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
 <defs>
@@ -113,7 +114,7 @@
 <path d="M545,176 Q545,285 75,285 Q40,285 40,176" fill="none" stroke="#888" stroke-width="1.3" stroke-dasharray="5,4" marker-end="url(#ah485)"></path>
 <text x="300" y="282" text-anchor="middle" font-size="10" fill="#777">act in world, advance t</text>
 </svg>
-<figcaption>Imagined MPC: the planner encodes the current observation, proposes K candidate actions, unrolls the learned world model H steps for each, scores the imagined futures against a cost and a hard safety floor, executes only the first action of the best sequence, then re-observes and repeats.</figcaption>
+<figcaption data-agent="39"><strong>Figure 48.5B</strong>: Imagined MPC: the planner encodes the current observation, proposes K candidate actions, unrolls the learned world model H steps for each, scores the imagined futures against a cost and a hard safety floor, executes only the first action of the best sequence, then re-observes and repeats.</figcaption>
 </figure>
 <div class="callout algorithm">
 <h4>Algorithm: Closed-Loop World-Model Planning (Imagined MPC)</h4>
@@ -173,6 +174,7 @@ for a in candidates:
 
 print("chosen action (m/s^2):", best_a)
 </code></pre>
+<div class="code-caption" data-agent="08">Selecting the safest ego acceleration by rolling out a toy gap-prediction world model over five candidate accelerations and rejecting any whose imagined minimum gap breaches the 3 m safety floor.</div>
 <p><strong>Expected output:</strong> aggressive positive accelerations let the imagined gap fall below the 3 m floor and are rejected; a mild deceleration wins because it preserves the safety margin at the least control cost. Swapping in a real GAIA-1- or UniSim-style model replaces <code>world_model_rollout</code> with a learned rollout while keeping this select-by-imagined-margin structure.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -195,7 +197,7 @@ print("chosen action (m/s^2):", best_a)
 <li>For augmentation, oversample rare events and verify downstream metrics improve on a real held-out set.</li>
 </ol>
 <div class="callout warning">
-<p>A common assumption is that a world model producing photorealistic driving video is suitable for closed-loop planning. That assumption is wrong. A physical vehicle must act on physically consistent predictions, not visually plausible ones. A video generator can render a car that appears to slow down while the implied closing speed in the generated frames violates real kinematics. The planner then judges a collision course as safe. Perceptual fidelity metrics such as FID and SSIM measure appearance, not dynamical correctness. The only criterion that matters for planning is closed-loop validity: maneuvers the model judges safe in imagination must also be safe on the road.</p>
+<p>A common assumption is that a world model producing photorealistic driving video is suitable for closed-loop planning. That assumption is wrong. A physical vehicle must act on physically consistent predictions, not visually plausible ones. A video generator can render a car that appears to slow down while the implied closing speed in the generated frames violates real kinematics. The planner then judges a collision course as safe. Perceptual fidelity metrics such as FID and SSIM (<span data-agent="21">FID, the Frechet Inception Distance, and SSIM, the Structural Similarity Index, both score how visually realistic a generated frame looks compared to a real one</span>) measure appearance, not dynamical correctness. The only criterion that matters for planning is closed-loop validity: maneuvers the model judges safe in imagination must also be safe on the road.</p>
 </div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>

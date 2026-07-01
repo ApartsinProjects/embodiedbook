@@ -46,7 +46,7 @@
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
 <p>A robot policy trained on a single simulated arm learns painfully slowly. Run 32 copies of that arm in parallel, stack their observations into one batch tensor, and a single GPU forward pass consumes all 32 transitions at once (Figure 10.4A). Training that took hours now takes minutes. This is the practical power behind every competitive locomotion and manipulation result in the current literature.</p>
-<p>Vectorized environments make that parallelism safe and auditable. Wrappers let you reshape observations, clip rewards, or inject time signals without touching the base simulator. Together they define the exact contract your policy signs. Here you will build a wrapper stack, spin up a vectorized rollout, and learn the autoreset pitfall that silently corrupts value targets if you are not watching for it.</p>
+<p>Vectorized environments make that parallelism safe and auditable. Wrappers let you reshape observations, clip rewards, or inject time signals without touching the base simulator. Together they define the exact contract your policy signs. Here you will build a wrapper stack, spin up a vectorized rollout, and learn the autoreset pitfall, where a terminated sub-environment is silently reset before you can read its final state, that silently corrupts value targets if you are not watching for it.<span data-agent="21"></span></p>
 </div>
 
 <h2>What This Section Builds</h2>
@@ -173,7 +173,7 @@
 <p data-agent="29">Figure 10.4B makes this two-part structure concrete. On the left, a wrapper stack sends actions down to the base simulator and passes observations back up through each transform. On the right, the same wrapped environment repeats N times behind a single batched vector API. The mechanism is direct. Every Gymnasium wrapper subclasses <code>gym.Wrapper</code> and overrides only the methods it transforms. When your code calls <code>wrapped.step(action)</code>, Python calls the outermost wrapper's <code>step</code>. That wrapper applies its action transform, then delegates to the next wrapper's <code>step</code>, and so on until the innermost call reaches the base simulator. The returned observation travels back up through each wrapper's <code>observation</code> method and accumulates transformations in reverse. Gymnasium updates the spaces at construction time, so the policy always sees the final, post-wrapper space.</p>
 <p>A wrapper that ships the wrong unit scaling to a physical joint does not produce a suboptimal policy; it produces a policy that was never trained for the hardware it will run on.</p>
 <div class="callout warning"><p>A common assumption is that wrapper order does not matter because each wrapper is "just a transformation" and the final result is the same regardless of sequence. In embodied AI this assumption causes silent, catastrophic errors: applying an action-clipping wrapper before an action-rescaling wrapper clips in the original unit range and then rescales, whereas applying rescaling first clips after scaling, sending entirely different torque magnitudes to the simulated or physical joint. The correct mental model is that wrappers form an ordered pipeline, not a commutative set; the policy sees the composition applied from outermost to innermost on inputs and innermost to outermost on outputs, so swapping any two wrappers changes the effective contract and can train a policy that commands forces a real actuator cannot safely produce.</p></div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>Think of wrappers as a visible pipeline around the simulator and vectorization as a batch dimension around that pipeline. The audit question is always the same: which contract did the policy actually see?</p>
 </div>
@@ -198,7 +198,7 @@ wrapped.close()</code></pre>
 <div class="code-output">(5,)
 (5,) 1.0 False False</div>
 <p data-agent="17">The output shows the observation shape growing from four entries to five, and the second line confirms the wrapped environment still returns a legal step tuple. The policy now receives time information as part of its observation.</p>
-<div class="code-caption"><strong>Code Fragment 10.4</strong>.1 shows that <code>TimeAwareObservation</code> changes the observation contract from four values to five. A result table that omits this wrapper would be incomplete because the policy received extra time information.</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 10.4</strong>.1 shows that <code>TimeAwareObservation</code> changes the observation contract from four values to five. A result table that omits this wrapper would be incomplete because the policy received extra time information.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>Gymnasium wrappers replace custom preprocessing glue with named, inspectable transformations. The shortcut is safe only when the wrapper order is saved, because reward clipping before logging and reward clipping after logging produce different evidence.</p>
@@ -291,7 +291,7 @@ envs.close()</code></pre>
 [1.0, 1.0, 1.0]
 [False, False, False] [False, False, False]</div>
 <p>The expected output should be read row-wise across three sub-environments: a batched observation tensor of shape <code>(3, 4)</code>, three sampled actions, three rewards, and one termination and truncation flag per environment. Nothing is aggregated yet, which is exactly the right interpretation for vectorized evidence.</p>
-<div class="code-caption"><strong>Code Fragment 10.4</strong>.2 uses <code>gym.make_vec</code> to step three environments together. The observation shape <code>(3, 4)</code> shows the batch dimension, and the reward and ending arrays keep one value per sub-environment.</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 10.4</strong>.2 uses <code>gym.make_vec</code> to step three environments together. The observation shape <code>(3, 4)</code> shows the batch dimension, and the reward and ending arrays keep one value per sub-environment.</div>
 
 
 <div class="callout algorithm">
@@ -313,7 +313,7 @@ envs.close()</code></pre>
 </ol>
 </div>
 
-<p>When a vectorized run fails, the wrapper stack is the first suspect, not the policy. A concrete instance: an Isaac Lab ANYmal locomotion policy that trained cleanly in 4,096 parallel environments but collapsed on the physical ANYmal-C usually fails because an action-rescaling wrapper mapped the policy output to a joint-torque range the real Series-Elastic Actuators cannot deliver, not because <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.1.html" data-agent="13">Proximal Policy Optimization</a> underfit. Isolate the cause before blaming the algorithm: pin one sub-environment, replay its logged action stream through the wrapper chain, and compare the post-wrapper torque command against the actuator's rated peak (ANYmal-C joints saturate near 80 Nm). If the wrapper emits commands above that ceiling, the bug is the contract, not the gradient. This single-environment replay turns a disappointing batched rollout into a reusable diagnostic asset.</p>
+<p>When a vectorized run fails, the wrapper stack is the first suspect, not the policy. A concrete instance: an Isaac Lab ANYmal locomotion policy that trained cleanly in 4,096 parallel environments but collapsed on the physical ANYmal-C usually fails because an action-rescaling wrapper mapped the policy output to a joint-torque range the real Series-Elastic Actuators, the spring-coupled motor units that let the robot's joints absorb impact instead of transmitting it directly<span data-agent="21"></span>, cannot deliver, not because <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.1.html" data-agent="13">Proximal Policy Optimization</a> underfit. Isolate the cause before blaming the algorithm: pin one sub-environment, replay its logged action stream through the wrapper chain, and compare the post-wrapper torque command against the actuator's rated peak (ANYmal-C joints saturate near 80 Nm). If the wrapper emits commands above that ceiling, the bug is the contract, not the gradient. This single-environment replay turns a disappointing batched rollout into a reusable diagnostic asset.</p>
 
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>

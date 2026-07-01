@@ -41,8 +41,9 @@
 
 <p data-agent="22">A single fluent sentence, "clear the aisle fast," can put a human in a hospital if nothing between the language model and the motors ever pauses to ask whether the words are safe to obey; the figure above is that missing pause drawn as an engineering envelope. The LLM should never be the final authority on actuation; typed interfaces, guards, monitors, and human escalation define what commands can reach the robot.</p>
 <div class="callout pathway">
-<p>This section assumes familiarity with the state-estimation pipeline introduced in section 2.2 and the layered control architecture from section 7.1, because the safety filter $\sigma$ operates over estimated state and hands rejected proposals back to the controller. The typed-interface patterns developed here recur in <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.4.html" data-agent="13">section 54.4</a> (action shielding under conformal risk bounds) and the full deployment safety case in section 54.6, where every layer discussed here must be evidenced under realistic operating conditions.</p>
+<p>This section assumes familiarity with the state-estimation pipeline introduced in section 2.2 and the layered control architecture from section 7.1, because the safety filter $\sigma$ operates over estimated state and hands rejected proposals back to the controller. The typed-interface patterns developed here recur in <a href="../../part-11-evaluation-safety-robustness-and-deployment/module-54-safety-in-embodied-ai/section-54.4.html" data-agent="13">section 54.4</a> (action shielding under conformal risk bounds, where conformal risk control is a statistical method that turns a target error rate into a provable bound on how often the shield may pass an unsafe action) and the full deployment safety case in section 54.6, where every layer discussed here must be evidenced under realistic operating conditions.</p><p data-agent="21">Two hardware names appear below for concreteness: the Franka Panda is a widely used 7-degree-of-freedom research robot arm, and the Robotiq 2F-85 is a two-finger parallel gripper commonly mounted on it.</p>
 </div>
+<p data-agent="09">The closed loop below (<a href="#fig-33-8">Figure 33.8</a>) names the four stations a proposal passes through: the instruction enters, the planner turns it into an action object, the tool API exposes that object for verification, and the verifier's evidence feeds back into the next decision.</p>
 <figure class="diagram" id="fig-33-8">
 <svg aria-labelledby="fig-33-8-title fig-33-8-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
 <title id="fig-33-8-title">Closed-loop interface for Safe LLM-agent interfaces</title>
@@ -60,7 +61,7 @@
 </g>
 <text fill="#475569" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" x="386" y="164">Observe, decide, act, measure, then feed failure evidence back into the next decision.</text>
 </svg>
-<figcaption><strong>Figure 33.8: A closed-loop map for Safe LLM-agent interfaces. The diagram forces the reader to name the input, model boundary, action interface, and evidence record before trusting the system.</strong></figcaption>
+<figcaption data-agent="39"><strong>Figure 33.8:</strong> A closed loop of four stages, instruction, planner, tool API, and verifier, with the verifier's evidence looping back to the instruction stage. The diagram forces the reader to name the input, model boundary, action interface, and evidence record before trusting the system.</figcaption>
 </figure>
 <section class="agent-checklist-synthesis" id="agent-checklist-33-8">
 <h2>Build And Evaluation Checklist</h2>
@@ -84,7 +85,7 @@
 <h2>Theory</h2>
 <p>Let the LLM propose action object $u_t$, and let a safety filter $\sigma$ map that proposal and <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/section-2.2.html">state estimate</a> to an allowed action: $$a_t = \sigma(u_t, \hat s_t), \qquad \sigma : \mathcal U \times \mathcal S \to \mathcal A \cup \{\text{block}, \text{escalate}\}.$$ The filter may pass, modify, block, or escalate the action depending on geometric, task, or policy constraints.</p>
 <p><span data-agent="29">This formulation matters because it places safety at the interface boundary, where the planner is still symbolic and the controller still has time to refuse. Once an unsafe instruction becomes continuous motion, the system has fewer and more expensive options. Ablation studies in agent-safety benchmarks (as of 2024) show the gap directly. Enforcing safety purely through prompt instructions cuts unsafe command pass-through by roughly 40%. Adding a two-field typed schema guard, such as requiring <code>human_clear: bool</code> and <code>zone_id: str</code>, cuts it by over 95%, because the schema check fires unconditionally regardless of what the model was told.</span></p>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>A practical shield checks permissions, geometry, resource bounds, and human-approval rules. The LLM proposes. The shield decides whether that proposal is admissible now, admissible only after modification, or inadmissible without escalation.</p>
 </div>
@@ -129,7 +130,7 @@ decision = "escalate" if approval_required else "execute"
 print({"proposal": proposal["action"], "decision": decision})</code></pre>
 <div class="code-output">{'proposal': 'pick(glass)', 'decision': 'escalate'}</div>
 <p>The expected output is a semantically plausible proposal that the safety interface refuses to execute directly. The important detail is the presence of `decision='escalate'`, because safe embodied interfaces must treat blocking and human review as first-class outcomes rather than as logging side effects.</p>
-<div class="code-caption"><strong>Code Fragment 1:</strong> This shield keeps a semantically plausible proposal from crossing directly into execution. The key fact is that the interface can return `escalate`, which means the planning stack must treat safety review as a legitimate next action rather than as an exception.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> This shield keeps a semantically plausible proposal from crossing directly into execution. The key fact is that the interface can return `escalate`, which means the planning stack must treat safety review as a legitimate next action rather than as an exception.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
 <p>BehaviorTree.CPP 4.x running inside a ROS 2 Humble safety node can evaluate a typed proposal schema and return a block decision in under 1 ms on a Jetson Orin, which is well within the 10 ms cycle time of a Franka Panda's real-time controller loop. MoveIt 2's <code>PlanningSceneMonitor</code> keeps the collision world in a shared memory segment that both the behavior tree and the $\sigma$ filter can read without a network round-trip. OpenAI function-calling or LangChain tool schemas supply the typed proposal contract on the LLM side. What these libraries do not supply is the physical threshold itself: the $\theta_{\text{geo}}$ collision-probability cutoff, the force limit below which a Robotiq 2F-85 gripper may close without confirmation, or the human-proximity radius that triggers <code>escalate</code> instead of <code>block</code>. Those numbers must come from the robot's safety datasheet and the site-specific risk assessment, not from a default config file.</p>
@@ -221,7 +222,7 @@ print({"decision": record["decision"], "rule": record["rule_fired"]})</code></pr
 </ol>
 
 <p>The expected output is a safety record that preserves the blocked action, the active rule, and the state evidence that triggered it. If future tuning reduced unnecessary escalations, this same record structure would show whether the gain came from better perception, better risk estimation, or a weaker shield.</p>
-<div class="code-caption"><strong>Code Fragment 2:</strong> This safety record preserves the blocked proposal, the governing rule, and the state evidence that activated it. That makes it possible to improve the planner without weakening the shield and to improve the shield without losing traceability.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 2:</strong> This safety record preserves the blocked proposal, the governing rule, and the state evidence that activated it. That makes it possible to improve the planner without weakening the shield and to improve the shield without losing traceability.</div>
 
 
 <p>If safe interfaces fail, check whether the proposal schema hid a crucial field, whether the wrong state variable drove the shield, or whether escalation policies were too weak for the task class. Safety bugs usually live at these boundaries, not in generic model capability.</p>

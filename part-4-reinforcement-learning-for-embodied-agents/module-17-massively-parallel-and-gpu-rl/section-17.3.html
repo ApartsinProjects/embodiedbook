@@ -36,7 +36,7 @@
 <blockquote class="epigraph"><p>"Isaac Lab sets the stage, randomizes the props, and rings the bell. What the agent does next is the trainer's problem."</p><cite>A Careful Control Loop</cite></blockquote>
 <figure class="illustration">
 <img alt="Technical illustration with one Isaac Lab robot task feeding three labeled training desks for SKRL, rl_games, and RSL-RL, illustrating wrappers that convert the same environment into runner-specific interfaces." loading="lazy" src="images/chapter-17-illustration-03.png"/>
-<figcaption><strong>Figure 17.3A</strong>: Isaac Lab is most useful when the task definition stays stable while wrappers adapt observations, actions, and buffers to the learner you choose.</figcaption>
+<figcaption data-agent="39"><strong>Figure 17.3A</strong>: Isaac Lab is most useful when the task definition stays stable while wrappers adapt observations, actions, and buffers to the learner you choose.</figcaption>
 </figure>
 
 <div class="callout pathway">
@@ -48,11 +48,11 @@
 <p>A single Anymal locomotion policy, trained overnight on 4096 parallel GPU environments, now ships on real legged robots because one team finally locked the boundary between what the simulator owns and what the optimizer touches. That boundary is what makes Isaac Lab with SKRL, rl_games, and RSL-RL so consequential right now: GPU-scale simulation is cheap, but reproducible transfer to hardware is still where most efforts fail. You will build the wrapper contract that keeps task logic in Isaac Lab and rollout logic in the runner, then verify that swapping runners leaves the science unchanged so your comparison numbers actually mean something.</p>
 </div>
 
-<p data-agent="22">Two teams train the identical Anymal-D rough-terrain policy, swap nothing but the training runner, and report fall rates that differ by a factor of three: the culprit is never the algorithm but the wrapper that quietly repacked the observations. Whether that policy walks on real hardware depends on the PhysX contact model, the <a data-agent="13" href="../module-15-policy-gradient-methods-and-ppo/section-15.3.html">Proximal Policy Optimization (PPO)</a> rollout semantics, the velocity-tracking reward terms, and the terrain-reset distribution all being versioned in one training artifact. Change the runner without pinning those, and the 256-seed holdout fall rate moves for reasons no one can later reconstruct.</p>
+<p data-agent="22">Two teams train the identical Anymal-D rough-terrain policy, swap nothing but the training runner, and report fall rates that differ by a factor of three: the culprit is never the algorithm but the wrapper that quietly repacked the observations. Whether that policy walks on real hardware depends on the PhysX contact model (NVIDIA's GPU-accelerated rigid-body physics engine, which computes how the simulated robot's feet collide with terrain), the <a data-agent="13" href="../module-15-policy-gradient-methods-and-ppo/section-15.3.html">Proximal Policy Optimization (PPO)</a> rollout semantics, the velocity-tracking reward terms, and the terrain-reset distribution all being versioned in one training artifact. Change the runner without pinning those, and the 256-seed holdout fall rate moves for reasons no one can later reconstruct.</p>
 
-<p>This section develops the contract between an Isaac Lab environment and a training runner. The contract is concrete: observation groups, action clipping, reward terms, reset buffers, device, runner config, and evaluation script. As Figure 17.3A shows, one fixed Isaac Lab task feeds several runner-specific training setups, and the wrapper is what adapts the same environment to each learner you choose.</p>
+<p>This section develops the contract between an Isaac Lab environment and a training runner. The contract is concrete: observation groups, action clipping, reward terms, reset buffers, device, runner config, and evaluation script. As Figure 17.3A shows, one Isaac Lab task feeds several runner-specific training desks, and as Figure 17.3B details next, the wrapper is what adapts the same environment to each learner you choose.</p>
 <p>The key question is practical: if you switch from RSL-RL to rl_games or SKRL, which parts of the experiment are allowed to change, and which parts must remain identical for the comparison to mean anything?</p>
-<figure class="diagram-container">
+<figure class="diagram-container" data-agent="09">
 <svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
   <!-- Isaac Lab Task box -->
   <rect x="20" y="110" width="140" height="80" rx="6" fill="none" stroke="#4a7fa5" stroke-width="2"/>
@@ -104,7 +104,7 @@
     </marker>
   </defs>
 </svg>
-<figcaption><strong>Figure 17.3B</strong>: The Isaac Lab task config (rewards, resets, observation groups) stays fixed while a typed wrapper adapts tensor layout and observation key names for each runner. Swapping runners means replacing the wrapper, not the task.</figcaption>
+<figcaption data-agent="39"><strong>Figure 17.3B</strong>: The Isaac Lab task config (rewards, resets, observation groups) stays fixed while a typed wrapper adapts tensor layout and observation key names for each runner. Swapping runners means replacing the wrapper, not the task.</figcaption>
 </figure>
 <div class="callout key-insight">
 <div class="callout-title">The Wrapper Is Part Of The Experiment</div>
@@ -122,12 +122,12 @@
 <h3>Asymmetric Actor-Critic in Practice</h3>
 <p><span data-agent="29">Consider a concrete Anymal-D locomotion policy trained with RSL-RL on Isaac Lab's rough-terrain task using 4096 parallel environments. The critic receives 187-dimensional input including 52 terrain-height scan points; the actor receives 48-dimensional proprioception plus command velocity. After 1500 PPO iterations (roughly 20 minutes on a single A100, as Rudin et al. (2022) report), the critic estimates value accurately because it can "see" upcoming steps. The actor learns to navigate rough terrain from that informative value signal alone. Running the same PPO update loop on a single simulated environment reaches equivalent policy quality in roughly 10 days of wall-clock time. The <a data-agent="13" href="../module-17-massively-parallel-and-gpu-rl/section-17.2.html">massively parallel rollout recipe</a> running 4096 GPU environments compresses that to 20 minutes, an approximately 700x speedup (on 2022 hardware) that is entirely invisible to the algorithm and entirely owned by the wrapper layer.</span></p>
 <p>At deployment on the real Anymal, the actor input remains 48-dimensional and the policy transfers without modification. The failure case is when a wrapper silently concatenates terrain heights into the actor tensor: the policy trains to use them, and the 52 terrain dimensions are simply absent on the real robot.</p>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is: create the Isaac Lab task, wrap it for the runner, map observation groups into the runner's expected input format, collect rollouts, update the policy, then evaluate the exported checkpoint through the same task contract. The dangerous step is silent conversion, especially when a wrapper changes clipping, device movement, or the meaning of <code>obs</code> and <code>states</code>.</p>
 </div>
 <div class="callout tip">
-<p>When Isaac Lab slices an observation group from a larger buffer (for example, separating proprioception from terrain heights), the resulting tensor is often a non-contiguous CUDA view. Both RSL-RL and rl_games require contiguous tensors before they copy data into their rollout storage; passing a non-contiguous view produces silently wrong values or a <code>RuntimeError</code> deep inside the runner rather than at the wrapper boundary. Call <code>.contiguous()</code> on every observation and action tensor in your wrapper's <code>step()</code> and <code>reset()</code> methods before returning them to the runner. SKRL's built-in Isaac Lab wrapper already does this; if you write a custom wrapper, it must too.</p>
+<p>When Isaac Lab slices an observation group from a larger buffer (for example, separating proprioception from terrain heights), the resulting tensor is often a non-contiguous CUDA view (a tensor that references a subset of another tensor's underlying GPU memory without owning a fresh, ordered copy of it). Both RSL-RL and rl_games require contiguous tensors before they copy data into their rollout storage; passing a non-contiguous view produces silently wrong values or a <code>RuntimeError</code> deep inside the runner rather than at the wrapper boundary. Call <code>.contiguous()</code> on every observation and action tensor in your wrapper's <code>step()</code> and <code>reset()</code> methods before returning them to the runner. SKRL's built-in Isaac Lab wrapper already does this; if you write a custom wrapper, it must too.</p>
 </div>
 <div class="callout algorithm">
 <h4>Algorithm: Asymmetric Actor-Critic PPO with Isaac Lab Runner Wrapper</h4>
@@ -140,8 +140,8 @@
 <li>Collect rollout of $T$ steps: for each step $t$, sample action $a_t \sim \pi_\theta(o_\pi^t)$, advance $\mathcal{T}$, record reward $r_t$ and done flags $d_t$, store $(o_\pi^t,\, o_V^t,\, a_t,\, r_t,\, d_t)$ in runner rollout buffer.</li>
 <li>Compute returns and advantages using <a data-agent="13" href="../module-15-policy-gradient-methods-and-ppo/section-15.3.html">GAE</a> with discount $\gamma$ and trace decay $\lambda$: $\hat{A}_t = \sum_{k=0}^{T-t} (\gamma\lambda)^k \delta_{t+k}$, where $\delta_t = r_t + \gamma V_\phi(o_V^{t+1}) - V_\phi(o_V^t)$.</li>
 <li>For each PPO epoch, sample mini-batches from the rollout buffer and update actor parameters $\theta$ and critic parameters $\phi$ jointly: $\mathcal{L}_\pi = -\mathbb{E}\!\left[\min\!\left(\rho_t \hat{A}_t,\; \text{clip}(\rho_t, 1{-}\epsilon, 1{+}\epsilon)\hat{A}_t\right)\right]$, where $\rho_t = \pi_\theta(a_t \mid o_\pi^t) / \pi_{\theta_\text{old}}(a_t \mid o_\pi^t)$; update with learning rate $\alpha$: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}_\pi$.</li>
-<li>Update value function $\phi$ with clipped MSE loss against computed returns; log critic loss and explained variance per iteration.</li>
-<li>After each rollout-update cycle, log $\nabla_\theta \mathcal{L}_\pi$ norm, KL divergence from $\pi_{\theta_\text{old}}$, and mean episode return. Stop early if KL exceeds the target threshold.</li>
+<li>Update value function $\phi$ with clipped MSE (mean squared error) loss against computed returns; log critic loss and explained variance (the fraction of return variance the critic's value predictions account for, 1.0 being perfect) per iteration.</li>
+<li>After each rollout-update cycle, log $\nabla_\theta \mathcal{L}_\pi$ norm, KL divergence (Kullback-Leibler divergence, a measure of how far the updated policy has drifted from the previous one) from $\pi_{\theta_\text{old}}$, and mean episode return. Stop early if KL exceeds the target threshold.</li>
 <li>At checkpoint intervals, save $(\theta, \phi, \bar{o}_\pi, \sigma_{o_\pi})$ (actor weights and running normalization statistics) together with the runner config and wrapper name.</li>
 <li>Evaluate by loading the actor $\pi_\theta$ with only $\mathcal{O}_\pi$ inputs (no privileged state) on a held-out seed panel; record success rate, fall rate, and command-tracking error as the result row.</li>
 <li>To compare runners, repeat steps 2 through 10 with a different $R$, keeping $\mathcal{T}$, reward terms, $\mathcal{O}_\pi$, $\mathcal{O}_V$, normalization, and evaluation seeds identical; compare result rows produced by the same play script.</li>
@@ -152,7 +152,7 @@
 <p>Code Fragment 17.3.1 makes the runner choice explicit. It is a small manifest, but it captures the fields that are often hidden in launcher commands and YAML files.</p>
 <pre><code class="language-python"># Compare Isaac Lab runner wrappers by the contract they must preserve.
 # The task stays fixed while storage, observation packing, and logging vary.
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 @dataclass
 class RunnerContract:
@@ -175,7 +175,7 @@ for contract in contracts:
 <div class="code-output">RSL-RL: actor=obs, critic=privileged_obs
 rl_games: actor=obs, critic=states
 SKRL: actor=states, critic=state_values</div>
-<div class="code-caption"><strong>Code Fragment 17.3</strong>.1 shows why runner wrappers must be documented, not treated as interchangeable. The actor and critic keys differ across conventions, which matters when privileged simulator state is allowed for value learning but not for deployment.</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 17.3</strong>.1 shows why runner wrappers must be documented, not treated as interchangeable. The actor and critic keys differ across conventions, which matters when privileged simulator state is allowed for value learning but not for deployment.</div>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: routing one observation step through the wrapper</h4>
 <p>Trace one simulator step for a tiny 2-environment Anymal task. The task config defines two groups: <code>proprio</code> (3 values per env) and <code>terrain</code> (2 values per env, critic-only). Suppose the simulator returns, for the 2 environments, <code>proprio = [[0.10, -0.20, 0.05], [0.30, 0.00, -0.10]]</code> and <code>terrain = [[0.40, 0.45], [0.10, 0.12]]</code>.</p>
@@ -287,12 +287,12 @@ manifest = IsaacLabRunManifest(
 )
 print(manifest.as_row())</code></pre>
 <div class="code-output">{'task': 'Isaac-Velocity-Rough-Anymal-D-v0', 'runner': 'rsl_rl', 'wrapper': 'RslRlVecEnvWrapper', 'actor_obs': ('proprioception', 'commands', 'history'), 'critic_obs': ('terrain_heights', 'contact_flags', 'base_velocity'), 'eval_panel': 'rough_terrain_holdout_256'}</div>
-<div class="code-caption"><strong>Code Fragment 17.3</strong>.2 records the wrapper contract that makes an Isaac Lab run reproducible. The actor and critic observation tuples expose whether privileged simulator information is confined to training-time value estimation.</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 17.3</strong>.2 records the wrapper contract that makes an Isaac Lab run reproducible. The actor and critic observation tuples expose whether privileged simulator information is confined to training-time value estimation.</div>
 
 
 <p>When an Isaac Lab run fails, inspect the wrapper contract before changing rewards. Common faults include critic-only state leaking into actor inputs, train-time randomization missing from evaluation, action clipping differing across runners, and normalization files not loaded during play.</p>
 
-<div class="callout production-pattern">
+<div class="callout practical-example" data-agent="25">
 <div class="callout-title">Evaluation Recipe</div>
 <p>For Isaac Lab runner comparisons, compare only construct-matched metrics that are co-computed in one pass on one configuration: same task config, same reward terms, same randomization panel, same evaluation seeds, same checkpoint selection rule, and the same success definition. Save runner config, wrapper name, observation groups, normalization state, logs, videos, and metrics as one artifact.</p>
 </div>
