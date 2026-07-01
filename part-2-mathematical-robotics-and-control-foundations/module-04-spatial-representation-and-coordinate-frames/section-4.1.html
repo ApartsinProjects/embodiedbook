@@ -134,7 +134,7 @@
 <p data-agent="14">If action is the test, then the notation below is the apparatus that lets a coordinate survive the journey from camera to controller intact.</p>
 <p>Write a point expressed in frame $A$ as $p^A$. Write a transform that maps coordinates from frame $B$ into frame $A$ as $T_{AB}$. Then the same physical target can be represented as $p^{camera}$ for perception, $p^{base}$ for reaching, and $p^{world}$ for navigation. The values differ because the basis differs; the target itself is the same:</p>
 <p>$$p^A = T_{AB}\, p^B, \qquad p^B = T_{BA}\, p^A = (T_{AB})^{-1} p^A.$$</p>
-<p>The transform is built from a rotation $R_{AB} \in SO(3)$ and a translation $t_{AB} \in \mathbb{R}^3$, the origin of frame $B$ expressed in frame $A$. Together they form a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.4.html" data-agent="13">rigid transform in SE(3)</a>. Acting on a point this reads $p^A = R_{AB}\,p^B + t_{AB}$, so two frames give two coordinate triples for one physical target.</p>
+<p>The transform is built from a rotation $R_{AB} \in SO(3)$, where $SO(3)$ is the group of 3x3 rotation matrices (orthogonal, determinant one) that reorient axes without stretching, and a translation $t_{AB} \in \mathbb{R}^3$, the origin of frame $B$ expressed in frame $A$. Together they form a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.4.html" data-agent="13">rigid transform in SE(3)</a>, where $SE(3)$ is the group of rigid-body motions combining one rotation and one translation. Acting on a point this reads $p^A = R_{AB}\,p^B + t_{AB}$, so two frames give two coordinate triples for one physical target.</p>
 <p>This matters because a physical robot cannot move a joint until the controller receives a target in the frame it expects. <span data-agent="29">Perception runs in the camera frame; the joint controller runs in the base frame. A missing or wrong transform sends the robot to the wrong location in space, and no control gain recovers from that. Consider a 2023 sim-to-real benchmark. Policies trained without an explicit frame contract needed roughly 80,000 rollouts to converge on a bin-picking task. Adding the frame label and fixing the calibration let the same policy architecture converge in under 600 rollouts, because the network stopped spending capacity to undo a consistent geometric offset.</span></p>
 <h4 data-agent="30">Rotation then translation</h4>
 <p data-agent="17">$R_{AB}$ rotates the axes of $B$ onto those of $A$, re-expressing direction without stretching distances. $t_{AB}$ then shifts the origin, placing $B$'s zero point in $A$. Applied in sequence, the pair converts a physical point between any two rigidly attached frames.</p>
@@ -149,17 +149,17 @@
 <li>Label the source frame: confirm the producer has tagged $q$ with a frame identifier $B$ (e.g., <code>camera_optical</code>). Reject unlabeled arrays immediately.</li>
 <li>Check timestamp freshness: compare the timestamp $\tau_q$ of $q$ to the current time $\tau_{now}$. If $|\tau_{now} - \tau_q| &gt; \Delta_{\max}$ for the control loop period $\Delta_{\max}$, mark the quantity stale and request a new observation.</li>
 <li>Verify units and scale: confirm $q$ is expressed in meters (or radians for angles $\theta$, $\alpha$) and that no implicit unit conversion is assumed across the boundary.</li>
-<li>Retrieve the transform: look up $T_{AB}$ from the transform graph (e.g., tf2 buffer or a calibration file), confirm parent frame $A$ and child frame $B$ match the labels in steps 2 and the consumer's expected input frame.</li>
-<li>Apply the transform: compute $q^A = T_{AB}\, q^B$ using homogeneous coordinates. For a rotation-only direction vector, apply only $R_{AB}$ and omit the translation $t_{AB}$.</li>
+<li>Retrieve the transform: look up $T_{AB}$ from the transform graph (e.g., a tf2 buffer, where tf2 is the ROS 2 library that stores time-stamped frame relationships, or a calibration file), confirm parent frame $A$ and child frame $B$ match the labels in steps 2 and the consumer's expected input frame.</li>
+<li>Apply the transform: compute $q^A = T_{AB}\, q^B$ using homogeneous coordinates, where a 3D point is written as a 4-vector with a trailing 1 so that rotation and translation combine into a single 4x4 matrix multiply. For a rotation-only direction vector, apply only $R_{AB}$ and omit the translation $t_{AB}$.</li>
 <li>Verify the round trip: compute $\hat{q}^B = T_{BA}\, q^A = (T_{AB})^{-1} q^A$ and check the residual $\|q^B - \hat{q}^B\|_2 &lt; \varepsilon$ (e.g., $\varepsilon = 10^{-9}$ m). A non-zero residual signals a numerical or convention error.</li>
 <li>Check covariance consistency: if $q$ carries a covariance $\Sigma^B$, propagate it as $\Sigma^A = R_{AB}\,\Sigma^B\,R_{AB}^\top$ and confirm the maximum eigenvalue stays within the sensor specification.</li>
 <li>Log the full record: write frame_id, timestamp $\tau_q$, units, transform source, and round-trip residual to the diagnostic log before passing $q^A$ downstream.</li>
 <li>Pass or reject: if all checks pass, deliver the labeled $q^A$ to the consumer. If any check fails, raise a typed error (stale, wrong-frame, numerical, or unit mismatch) and do not execute the action.</li>
 </ol>
 </div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>A spatial interface should carry five fields: value, frame_id, timestamp, units, and validity. For probabilistic estimates, add covariance or another uncertainty description. For actuator commands, add limits and the controller frame.</p>
+<p>A spatial interface should carry five fields: value, frame_id, timestamp, units, and validity. For probabilistic estimates, add covariance (a matrix that encodes how uncertain each coordinate is and how those uncertainties correlate) or another uncertainty description. For actuator commands, add limits and the controller frame.</p>
 </div>
 <h2>Worked Example</h2>
 <p data-agent="14">Those five interface fields stay abstract until you watch a single point move through them, so the following example makes the contract concrete with running code.</p>
@@ -186,10 +186,10 @@ print("round-trip residual:  ", round(np.linalg.norm(p_camera - p_camera_again),
 <div class="code-output">point in camera frame: [0.25, -0.1, 0.8]
 point in base frame:   [0.45, 0.35, 1.35]
 round-trip residual:   0.0</div>
-<div class="code-caption"><strong>Code Fragment 4.1</strong>.1 represents one physical target in two frames using an explicit homogeneous transform, then verifies the inverse transform recovers the original camera-frame coordinates.</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.1.1</strong> represents one physical target in the camera and base frames using an explicit 4x4 homogeneous transform, then verifies that the inverse transform recovers the original camera-frame coordinates to a zero residual.</div>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: camera-to-base transform of one point</h4>
-<p>Trace the transform from Code Fragment 4.1 with concrete numbers. The camera detects a point at $p^{camera} = (0.25,\, -0.10,\, 0.80)$ meters. The transform rotates the axes (this camera mount sends the camera +x onto base +y, and camera +y onto base -x) and then shifts the origin by $t_{base,cam} = (0.35,\, 0.10,\, 0.55)$.</p>
+<p>Trace the transform from Code Fragment 4.1.1 with concrete numbers. The camera detects a point at $p^{camera} = (0.25,\, -0.10,\, 0.80)$ meters. The transform rotates the axes (this camera mount sends the camera +x onto base +y, and camera +y onto base -x) and then shifts the origin by $t_{base,cam} = (0.35,\, 0.10,\, 0.55)$.</p>
 <p><strong>Step 1, rotate.</strong> Apply $R_{base,cam}$. Row 1 (base x) reads camera component $-y = -(-0.10) = 0.10$. Row 2 (base y) reads camera $x = 0.25$. Row 3 (base z) reads camera $z = 0.80$. After rotation: $(0.10,\, 0.25,\, 0.80)$.</p>
 <p><strong>Step 2, translate.</strong> Add $t_{base,cam}$: $(0.10 + 0.35,\; 0.25 + 0.10,\; 0.80 + 0.55) = (0.45,\, 0.35,\, 1.35)$ meters. That is $p^{base}$.</p>
 <p><strong>Step 3, round trip.</strong> Apply the inverse. Subtract the translation: $(0.45-0.35,\, 0.35-0.10,\, 1.35-0.55) = (0.10,\, 0.25,\, 0.80)$. Undo the rotation (transpose): camera $x$ = base $y$ = $0.25$, camera $y$ = base $-x$ = $-0.10$, camera $z$ = base $z$ = $0.80$, recovering $(0.25,\, -0.10,\, 0.80)$. Residual $\|p^{camera} - \hat{p}^{camera}\|_2 = 0$, exactly matching the printed output. Swap the rotate and translate order and you get $(0.45,\, 0.35,\, 1.35)$ shifted incorrectly to $(0.10 \cdot 0 \ldots)$: a 0.37 m error that no control gain can repair.</p>
@@ -219,7 +219,7 @@ round-trip residual:   0.0</div>
 </div>
 <div class="callout practical-example" style="border-left-color:#2a9d8f" data-agent="33">
 <h4>Real-World Application: surgical robotics</h4>
-<p>The Intuitive Surgical da Vinci system maintains an explicit chain of frames linking each endoscopic camera, every instrument tip, and the patient-side cart, so a surgeon's hand motion at the console maps to instrument motion that stays visually intuitive even as the camera is repositioned mid-procedure. The remote-center-of-motion constraint and the camera-to-tool transform are recomputed continuously, which is why the tooltip tracks the surgeon's intent rather than drifting when the viewpoint changes. A stale or mislabeled frame here would move an instrument inside a patient, so the frame contract is a hard safety requirement, not a convenience.</p>
+<p>The Intuitive Surgical da Vinci system maintains an explicit chain of frames linking each endoscopic camera, every instrument tip, and the patient-side cart, so a surgeon's hand motion at the console maps to instrument motion that stays visually intuitive even as the camera is repositioned mid-procedure. The remote-center-of-motion constraint, which forces every instrument to pivot about a fixed point at the incision so the body wall is not torn, and the camera-to-tool transform are recomputed continuously, which is why the tooltip tracks the surgeon's intent rather than drifting when the viewpoint changes. A stale or mislabeled frame here would move an instrument inside a patient, so the frame contract is a hard safety requirement, not a convenience.</p>
 </div>
 <div class="callout fun-note">
 <div class="callout-title">Mental Model</div>
@@ -231,7 +231,7 @@ round-trip residual:   0.0</div>
 <p><strong>Spatial grounding in 3D foundation models.</strong> Models such as SpatialVLM (Google DeepMind, 2024) and 3D-VisTA (2024) attach metric spatial predicates ("the cup is 0.3 m to the left of the bowl") to visual tokens, forcing the model to reason about absolute distances in a specified reference frame rather than relative image-space relations. The remaining open problem is temporal consistency: a model that correctly grounds frame-relative distances at time $t$ often loses that grounding after a camera motion because it has no explicit transform chain linking the current frame to the previous one.</p>
 <p><strong>Implicit neural scene representations with explicit frame contracts.</strong> Neural Radiance Field (NeRF) and Gaussian Splatting variants (e.g., GaussianGrasping, 2024, from ETH Zurich) represent object geometry in a canonical object frame and render observations in the camera frame via an explicit viewpoint transform. This forces the frame contract to be part of the model architecture, making calibration errors directly observable as rendering residuals rather than silent action biases. Open problem for a PhD student: how to propagate calibration uncertainty through a differentiable rendering pipeline so that the downstream grasp planner receives a spatially-coherent uncertainty estimate rather than a point pose.</p>
 </div>
-<div class="callout cross-ref">
+<div class="callout pathway" data-agent="25">
 <div class="callout-title">Cross Reference</div>
 <p>This section sets up <a href="section-4.4.html">Section 4.4</a> on SE(3), <a href="../module-05-kinematics-and-robot-motion/index.html">Chapter 5</a> on kinematics, and <a href="../module-08-sensors-perception-hardware-and-state-estimation/index.html">Chapter 8</a> on state estimation.</p>
 </div>
@@ -243,7 +243,7 @@ round-trip residual:   0.0</div>
 <h2>Production Pattern</h2>
 <p>Why space is the substrate of embodiment sits inside the Part II robotics contract: geometry defines where things are, <a href="../../part-2-mathematical-robotics-and-control-foundations/module-05-kinematics-and-robot-motion/section-5.1.html">kinematics defines what motion is possible</a>, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p data-agent="15">Anchor every spatial claim in the action it enables: reach, avoid, grasp, localize, or explain a failure. Anchored this way, the frame contract carries an intuitive role, a formal interface, a runnable check, and a reproducible failure mode.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For Why space is the substrate of embodiment, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Why space is the substrate of embodiment, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -266,7 +266,7 @@ round-trip residual:   0.0</div>
 <li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
 <li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For Why space is the substrate of embodiment, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Why space is the substrate of embodiment, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 
 
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Why space is the substrate of embodiment and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
