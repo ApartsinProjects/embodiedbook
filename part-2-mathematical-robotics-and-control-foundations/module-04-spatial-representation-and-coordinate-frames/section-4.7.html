@@ -151,7 +151,7 @@
 <p>Many frame bugs are convention mismatches against a published standard. ROS REP 103 fixes the axis conventions so that independently written nodes agree without negotiation:</p>
 <ul>
 <li><strong>Body and sensor frames:</strong> $x$ forward, $y$ left, $z$ up (a right-handed frame attached to the robot).</li>
-<li><strong>World and map frames:</strong> ENU, that is $x$ east, $y$ north, $z$ up.</li>
+<li><strong>World and map frames:</strong> ENU, meaning East-North-Up, that is $x$ east, $y$ north, $z$ up.</li>
 <li><strong>Units:</strong> meters, radians, and seconds throughout.</li>
 </ul>
 <p>A common mistake is to feed a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.6.html">camera optical frame</a> (OpenCV convention: $x$ right, $y$ down, $z$ forward) directly into a body-frame consumer that expects $x$ forward, $y$ left, $z$ up. The fix is an explicit transform between the two conventions; this pattern is called <strong>the silent-axis swap failure</strong>, and it is never caught by a silent reinterpretation of the same array. Code Fragment 4.7.2 shows the rotation that maps an optical-frame vector into a REP 103 body frame.</p>
@@ -175,12 +175,12 @@ print("forward in body frame:", v_body.round(3).tolist())
 print("valid rotation? det =", round(float(np.linalg.det(R_body_optical)), 6))</code></pre>
 <div class="code-output">forward in body frame: [1.0, 0.0, 0.0]
 valid rotation? det = 1.0</div>
-<div class="code-caption"><strong>Code Fragment 4.7</strong>.2 maps the camera optical-frame forward axis to the REP 103 body-frame forward axis ($x$ forward). The determinant check confirms the convention swap is a proper rotation, not an accidental reflection.</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.7</strong>.2 maps the camera optical-frame forward axis to the REP 103 body-frame forward axis ($x$ forward). The determinant check confirms the convention swap is a proper rotation, not an accidental reflection.</div>
 <p data-agent="29">Consider a specific case. A depth camera mounted 0.15 m in front of a robot's body origin detects an obstacle at optical-frame coordinates $(0, 0, 0.8)$ (straight ahead, 80 cm away). Without the REP 103 body-frame rotation, a node expecting body-frame coordinates reads this as $x=0$ (no forward component), $y=0$ (no lateral component), $z=0.8$ (upward, not forward). The planner concludes there is no obstacle ahead and drives forward. Applying the rotation from Code Fragment 4.7.2 maps the point to body-frame $(0.8, 0, 0)$ and places the obstacle directly in the robot's path. nav2 deployments (as of 2024) reported the same reinterpretation error when camera extrinsics were loaded without the optical-to-body rotation, and the resulting collisions were first blamed on perception.</p>
 <div class="callout tip">
 <p>Rather than hardcoding the optical-to-body rotation matrix in every node, declare it once with ROS 2 <code>static_transform_publisher</code> using the equivalent Euler angles: <code>ros2 run tf2_ros static_transform_publisher 0 0 0 -1.5708 0 -1.5708 body camera_optical</code>. The four angle arguments are yaw, pitch, roll in radians; this exact sequence produces the same rotation as Code Fragment 4.7.2 and publishes it into the tf2 tree so that any node calling <code>lookup_transform("body", "camera_optical", ...)</code> receives the correct pose automatically. Verify the result by running <code>ros2 run tf2_tools view_frames</code> and checking that the camera optical frame appears as a child of the body frame with the expected RPY values.</p>
 </div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>Frame debugging works by shrinking the episode. Replace the learned detector with one known point, replace the controller with one logged target, and replace the transform tree with the exact edges used in the failing timestep. The smaller case tells you whether the geometry is trustworthy before the model is blamed.</p>
 </div>
@@ -212,7 +212,7 @@ print("determinant:", round(determinant, 6))
 print("round-trip residual:", round(residual, 12))</code></pre>
 <div class="code-output">determinant: 1.0
 round-trip residual: 0.0</div>
-<div class="code-caption"><strong>Code Fragment 4.7</strong>.1 validates the <code>rotation</code> matrix with a determinant check and validates the full <code>transform</code> with a round-trip residual. These two numbers catch many frame bugs before the robot stack is involved.</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.7</strong>.1 validates the <code>rotation</code> matrix with a determinant check and validates the full <code>transform</code> with a round-trip residual. These two numbers catch many frame bugs before the robot stack is involved.</div>
 <p><strong>Expected output:</strong> a determinant near 1 and a near-zero residual mean the transform is at least internally consistent. They do not prove that the transform is the right one for the robot, but they eliminate several common convention mistakes.</p>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: Eight-Step Checklist On A Reflected Frame</h4>
@@ -227,7 +227,7 @@ round-trip residual: 0.0</div>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Freeze the transform tree at the failing timestep: extract the exact tf2 snapshot with <code>ros2 topic echo /tf --once</code> or the equivalent <code>tf2_tools echo</code> call, then replay it offline so the failure is reproducible without running the full robot stack.</li>
-<li>Probe one known physical point before touching any learned component. On a Franka Panda arm, for example, command the end-effector to a known joint configuration (all joints at zero puts the flange at a published pose in the URDF), transform that pose through each frame boundary, and compare the result to the URDF ground truth. A consistent offset of 0.001 m or more is a unit or extrinsic error; a rotation-only discrepancy points to a convention mismatch.</li>
+<li>Probe one known physical point before touching any learned component. On a Franka Panda arm, for example, command the end-effector to a known joint configuration (all joints at zero puts the flange at a published pose in the URDF), transform that pose through each frame boundary, and compare the result to the URDF ground truth. A consistent offset of 0.001 m or more is a unit or extrinsic error, where an extrinsic is the fixed pose of a sensor relative to the robot body; a rotation-only discrepancy points to a convention mismatch.</li>
 <li>Check the optical-to-body rotation explicitly whenever a depth camera or stereo rig is in the chain. RealSense and Zed cameras publish in optical convention by default; a body-frame consumer on a Boston Dynamics Spot or Unitree Go2 will silently misplace every detection until that rotation is applied.</li>
 <li>Verify transform timestamps against the tf2 buffer window (default 10 s in ROS 2). Manipulation tasks where the robot pauses for grasp confirmation or re-grasps an object often exceed this window; log <code>transform_age = rospy.Time.now() - stamp</code> alongside every lookup and alert if it exceeds 200 ms for a high-speed controller or 2 s for a quasi-static arm.</li>
 <li>After each fix, re-run the Code Fragment 4.7.1 determinant and round-trip residual checks on the corrected chain before re-enabling the learned policy or detector. This confirms the geometry is sound before the model is blamed for any remaining errors.</li>
@@ -271,7 +271,7 @@ round-trip residual: 0.0</div>
 <h2>Production Pattern</h2>
 <p>Common frame mistakes and how to debug them sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p>Debug frame errors by replaying one known point through the full chain, then checking signs, units, and timestamps. The idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For Common frame mistakes and how to debug them, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Common frame mistakes and how to debug them, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -294,7 +294,7 @@ round-trip residual: 0.0</div>
 <li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
 <li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For Common frame mistakes and how to debug them, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Common frame mistakes and how to debug them, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 
 
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Common frame mistakes and how to debug them and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>

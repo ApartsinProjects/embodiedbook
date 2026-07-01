@@ -153,7 +153,7 @@
 <div class="callout tip">
 <p>When composing many SE(3) transforms in a loop (trajectory replay, batch calibration, or multi-step IK), the 3x3 rotation block drifts away from SO(3) silently because NumPy matrix multiply never checks orthogonality. After every chain of more than roughly ten multiplications, re-project the rotation block with <code>scipy.spatial.transform.Rotation.from_matrix(T[:3, :3]).as_matrix()</code> and write it back into the 4x4 matrix. A quick sanity check is <code>np.allclose(R.T @ R, np.eye(3), atol=1e-6)</code>; if it fails, re-projection is overdue and any inverse computed from that matrix will compound the error rather than cancel it.</p>
 </div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>SE(3) is not just a storage format for pose. It is a group: transforms compose, have an identity, and have inverses. Those properties let a robot validate frame chains with identity checks such as $T_{AB}T_{BA}=I$ before a <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/section-7.7.html">learned policy or controller</a> sees the result.</p>
 </div>
@@ -164,7 +164,7 @@
 <p><strong>Output:</strong> The point $\bar{p}_{\text{out}}$ expressed in the base frame, and a scalar round-trip error $\epsilon$ confirming transform validity.</p>
 <ol>
 <li>Assemble each transform $T_i$ as a $4 \times 4$ matrix: place $R_i$ in the top-left $3 \times 3$ block and $t_i$ in the top-right $3 \times 1$ column; set the bottom row to $[0\ 0\ 0\ 1]$.</li>
-<li>Verify each $R_i$ satisfies $R_i^\top R_i = I_3$ to tolerance $\alpha = 10^{-6}$; if $\|R_i^\top R_i - I_3\|_F > \alpha$, re-project via SVD before proceeding.</li>
+<li>Verify each $R_i$ satisfies $R_i^\top R_i = I_3$ to tolerance $\alpha = 10^{-6}$; if $\|R_i^\top R_i - I_3\|_F > \alpha$, re-project via <span data-agent="21">SVD (singular value decomposition, which factors a matrix into rotation-scale-rotation parts and lets you snap a near-orthogonal block back onto SO(3))</span> before proceeding.</li>
 <li>Compose the chain left to right following the frame path: $T_{\text{chain}} = T_1 \cdot T_2 \cdots T_n$. Matrix order encodes the path through the frame graph; reversing any pair produces a physically incorrect result.</li>
 <li>Append a homogeneous coordinate to the input point: $\bar{p} = [p_x,\ p_y,\ p_z,\ 1]^\top$.</li>
 <li>Apply the composed transform: $\bar{p}_{\text{out}} = T_{\text{chain}}\ \bar{p}$.</li>
@@ -211,15 +211,15 @@ print("base point:", point_base[:3].round(3).tolist())
 print("round trip:", round_trip[:3].round(3).tolist())</code></pre>
 <div class="code-output">base point: [0.8, 0.1, 1.45]
 round trip: [0.3, 0.1, 0.2]</div>
-<div class="code-caption"><strong>Code Fragment 4.4</strong>.1 composes <code>base_from_wrist</code> and <code>wrist_from_camera</code>, then applies the resulting <code>base_from_camera</code> transform to one detected point. The round-trip check confirms that the inverse returns the point to the original camera coordinates.</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.4.1</strong> composes <code>base_from_wrist</code> and <code>wrist_from_camera</code> via <code>make_transform</code>, then applies the resulting <code>base_from_camera</code> to <code>point_camera</code>. The <code>np.linalg.inv</code> round-trip confirms the inverse returns the point to the original camera coordinates.</div>
 <p data-agent="17"><strong>Expected output:</strong> the two translations shift the base-frame point, and the round trip returns it to the original camera measurement. A failing round trip means <a href="../../part-2-mathematical-robotics-and-control-foundations/module-04-spatial-representation-and-coordinate-frames/section-4.7.html">transform order, units, or frame labels</a> are wrong; fix those before touching perception or control code.</p>
 <div class="callout practical-example">
   <div class="callout-title">🏗️ Application Example</div>
   <h4>When a Stale tf2 Lookup Caused a Pick-and-Place Robot to Miss Every Grasp</h4>
   <p><strong>Who:</strong> Robotics software engineer at a mid-size warehouse automation startup deploying a 6-DOF (six degrees of freedom) arm on a mobile base.</p>
-  <p><strong>Situation:</strong> The team was building a pick-and-place pipeline: a wrist-mounted RGB-D camera detected objects, and the arm controller consumed base-frame coordinates to plan grasps.</p>
+  <p><strong>Situation:</strong> The team was building a pick-and-place pipeline: <span data-agent="21">a wrist-mounted RGB-D camera (a sensor that captures a color image plus a per-pixel depth value)</span> detected objects, and the arm controller consumed base-frame coordinates to plan grasps.</p>
   <p><strong>Problem:</strong> Grasp success dropped from 91% in static tests to 54% during mobile-base movement, yet the SE(3) composition code passed all offline unit tests.</p>
-  <p><strong>Dilemma:</strong> Two theories competed. Option A: the camera extrinsic calibration had drifted and needed a full recalibration session (costly, 4-hour downtime). Option B: the tf2 lookup was retrieving the transform at current wall time rather than at the sensor timestamp, introducing up to 80 ms of stale pose while the base moved at 0.3 m/s. Recalibrating first would have masked the real bug.</p>
+  <p><strong>Dilemma:</strong> Two theories competed. Option A: the <span data-agent="21">camera extrinsic calibration (the measured SE(3) pose of the camera relative to the frame it is mounted on)</span> had drifted and needed a full recalibration session (costly, 4-hour downtime). Option B: the <span data-agent="21">tf2 (the ROS transform library, which maintains a time-buffered tree of frames and answers transform lookups between any two)</span> lookup was retrieving the transform at current wall time rather than at the sensor timestamp, introducing up to 80 ms of stale pose while the base moved at 0.3 m/s. Recalibrating first would have masked the real bug.</p>
   <p><strong>Decision:</strong> The engineer added a round-trip identity check ($T_{BC} \cdot T_{CB} = I$) after every tf2 lookup and logged the lookup timestamp delta alongside it. The delta exposed the staleness immediately, so Option B was investigated first.</p>
   <p><strong>How:</strong> Using ROS 2 tf2 in Python, the team changed <code>lookup_transform(target, source, rclpy.time.Time())</code> to <code>lookup_transform(target, source, sensor_msg.header.stamp)</code> with a 50 ms timeout. NumPy was used to verify the round-trip: <code>np.allclose(T @ np.linalg.inv(T), np.eye(4), atol=1e-6)</code>.</p>
   <p><strong>Result:</strong> Grasp success recovered to 93% within one shift, with zero recalibration downtime. The timestamp delta at failure had been averaging 65 ms.</p>

@@ -61,7 +61,7 @@
 <p data-agent="29">Before reading on, guess a number. A 2023 benchmark of sim-to-real transfer for wheeled mobile robots asked what fraction of trajectory-tracking failures trace back to one cause: planners that silently ignore the non-holonomic velocity constraint and command lateral velocities the hardware cannot produce. The answer is roughly 40 percent. Respecting the Pfaffian form derived below would have prevented every one of those failures.</p>
 
 <p>For Holonomic vs. non-holonomic motion, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
-<p>A holonomic constraint removes reachable configurations. It can be written as $g(q)=0$, such as a gripper fingertip constrained to remain on a rail. A non-holonomic constraint removes instantaneous velocities without reducing the same number of configurations; this is called <strong>a velocity-level restriction on reachability</strong>, and it is usually written as $A(q)\dot q=0$ and must be handled during motion planning. The diagram below contrasts the two cases side by side: every velocity arrow is admissible for the holonomic platform, while the non-holonomic platform has its lateral arrows crossed out.</p>
+<p>A holonomic constraint removes reachable configurations. It can be written as $g(q)=0$, such as a gripper fingertip constrained to remain on a rail. A non-holonomic constraint removes instantaneous velocities without reducing the same number of configurations; this is called <strong>a velocity-level restriction on reachability</strong>, and it is usually written as $A(q)\dot q=0$, <span data-agent="21">where this linear-in-velocity form $A(q)\dot q=0$ is called the Pfaffian form and $A(q)$ is the constraint matrix whose rows list the forbidden velocity directions</span>, and must be handled during motion planning. <span data-agent="09">Figure 5.2B contrasts the two cases side by side: every velocity arrow is admissible for the holonomic platform, while the non-holonomic platform has its lateral arrows crossed out.</span></p>
 <figure class="diagram-container">
 <svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Holonomic vs non-holonomic constraint comparison diagram">
   <!-- Background panels -->
@@ -119,7 +119,7 @@
     </marker>
   </defs>
 </svg>
-<figcaption>Holonomic platforms (left) permit instantaneous velocity in any direction; non-holonomic platforms (right) forbid lateral velocity at each instant while still allowing rotation and forward motion, enforcing the Pfaffian constraint A(q) q-dot = 0.</figcaption>
+<figcaption data-agent="39"><strong>Figure 5.2B</strong>: Holonomic platforms (left) permit instantaneous velocity in any direction; non-holonomic platforms (right) forbid lateral velocity at each instant while still allowing rotation and forward motion, enforcing the Pfaffian constraint A(q) q-dot = 0.</figcaption>
 </figure>
 <p>The Pfaffian form matters in embodied AI because a robot's wheels enforce it physically: rubber on pavement cannot slide sideways without wheel spin or tire damage. Ignoring it means a planner commands motions the actuators cannot produce, causing the real robot to slip, overshoot, or stall in narrow spaces where recovery is costly.</p>
 <h4 data-agent="30">Reading the constraint matrix</h4>
@@ -128,7 +128,7 @@
 <div class="callout tip">
 <p>When configuring OMPL (Open Motion Planning Library) for a non-holonomic base, set the state space to <code>ompl::base::SE2StateSpace</code> and supply a <code>StatePropagator</code> that enforces the unicycle or Ackermann equations; the default geometric planners (RRT, PRM, BIT*) have no propagator slot and will silently sample lateral velocities the real robot cannot produce. Switch to a kinodynamic planner such as SST or KPIECE1 via <code>SimpleSetup::setPlanner</code>, then verify by printing <code>planner->getSpecs().canReportIntermediateStates</code>: if it returns false, the planner is still geometric and the constraint is being ignored.</p>
 </div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism in Holonomic vs. non-holonomic motion is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
@@ -167,6 +167,7 @@ print("max instantaneous side-slip:", f"{max_slip:.2e}")  # ~0: constraint holds
 print("final pose (x, y, theta)   :", np.round(state, 3))
 # Net y-displacement is reached WITHOUT ever commanding lateral velocity.
 </code></pre>
+<div class="code-caption" data-agent="40">Rolls out a unicycle base under a forward-turn-forward-turn command sequence; the <code>slip()</code> function returns the Pfaffian residual $-\sin\theta\,\dot x+\cos\theta\,\dot y$ and <code>max_slip</code> confirms it never exceeds floating-point zero, while the final pose shows a net lateral shift reached with no lateral velocity ever commanded.</div>
 <p>A planner that treats "cannot slip sideways" as a position bound would reject the goal; the rollout shows the goal is reachable through a legal velocity sequence, which is exactly why a velocity-level constraint must live inside the local planner, not in the configuration test.</p>
 <div class="callout practical-example" data-agent="26"><h4>Step-Through: unicycle Pfaffian residual check</h4><p>Trace the rollout above by hand for the first command segment, forward at $v=1.0$ m/s, $\omega=0$, starting from $q=(0,0,0)$ with $dt=0.01$ s. Body velocities: $\dot x = v\cos\theta = 1.0\cdot\cos 0 = 1.0$, $\dot y = v\sin\theta = 1.0\cdot\sin 0 = 0.0$. Pfaffian residual: $-\sin\theta\,\dot x + \cos\theta\,\dot y = -\sin 0 \cdot 1.0 + \cos 0 \cdot 0.0 = 0 + 0 = 0$. After one step, $q = (0 + 1.0\cdot0.01,\; 0 + 0.0\cdot0.01,\; 0) = (0.01, 0, 0)$. Now jump to the third command (forward again, but after the $+90^\circ$ rotation, so $\theta \approx \pi/2$): $\dot x = \cos(\pi/2) \approx 0$, $\dot y = \sin(\pi/2) \approx 1.0$, and the residual is $-\sin(\pi/2)\cdot 0 + \cos(\pi/2)\cdot 1.0 = -1\cdot 0 + 0\cdot 1.0 = 0$. The robot is now moving along world-$y$, the very direction it could not slide toward at the start, yet the residual stays $0$ at every instant. After all four segments the printed result is max side-slip $\approx 10^{-16}$ (floating-point zero) and a final pose near $(1.0, 1.0, 0)$: lateral displacement achieved with zero lateral velocity ever commanded.</p></div>
 <div class="callout key-insight">
@@ -213,7 +214,7 @@ print("final pose (x, y, theta)   :", np.round(state, 3))
 <h2>Production Pattern</h2>
 <p>Holonomic vs. non-holonomic motion sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
 <p data-agent="17">State non-holonomic constraints as forbidden instantaneous velocities, not as vague limits on motion. That framing gives the idea an intuitive picture, a formal interface, a runnable check, and a reproducible failure mode, so both theorist and practitioner work from the same object.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>For Holonomic vs. non-holonomic motion, kinematics maps joint or body motion into task-space motion without explaining forces. Preserve joint limits, frame conventions, velocity units, and singularity margins in the artifact.</p></div>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Holonomic vs. non-holonomic motion, kinematics maps joint or body motion into task-space motion without explaining forces. Preserve joint limits, frame conventions, velocity units, and singularity margins in the artifact.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -235,7 +236,7 @@ print("final pose (x, y, theta)   :", np.round(state, 3))
 <li>Log residual error, joint-limit distance, manipulability, and solver iteration count in one artifact.</li>
 <li>Treat singularities and infeasible targets as design signals, not as solver annoyances.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Evidence Gate</div><p>For Holonomic vs. non-holonomic motion, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Holonomic vs. non-holonomic motion, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
 <div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Holonomic vs. non-holonomic motion and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
 <p>Kinematic failures often arrive as a plausible pose with an impossible motion. Inspect whether the constraint is configuration-level or velocity-level before blaming the planner. For this section, first reproduce one tiny motion primitive by hand, then rerun it through Robotics Toolbox for Python, Drake, ROS 2 navigation tools, or a custom NumPy integration. If the two disagree, inspect conventions and timing before changing the model.</p>
 <section class="technical-core-expansion">
@@ -267,7 +268,7 @@ print("final pose (x, y, theta)   :", np.round(state, 3))
 </svg>
 <figcaption><strong>Figure 5.2.T</strong>: The technical core for Holonomic vs. non-holonomic motion connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
 </figure>
-<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$g(q)=0\quad\text{for holonomic constraints},\qquad A(q)\dot q=0\quad\text{for non-holonomic velocity constraints}$</p><p>For a differential-drive base with state $(x,y,\theta)$, the no-side-slip constraint can be written $-\sin\theta\,\dot x+\cos\theta\,\dot y=0$. It forbids lateral velocity in the robot frame while still allowing sideways displacement through a sequence of legal motions.</p></div>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>$g(q)=0\quad\text{for holonomic constraints},\qquad A(q)\dot q=0\quad\text{for non-holonomic velocity constraints}$</p><p>For a differential-drive base with state $(x,y,\theta)$, the no-side-slip constraint can be written $-\sin\theta\,\dot x+\cos\theta\,\dot y=0$. It forbids lateral velocity in the robot frame while still allowing sideways displacement through a sequence of legal motions.</p></div>
 <div class="callout algorithm"><div class="callout-title">Constraint classification recipe</div><ol>
 <li>Write the proposed restriction as either a condition on $q$ or a condition on $\dot q$.</li>
 <li>Check whether the velocity condition can be integrated into a configuration equation $g(q)=0$.</li>
