@@ -154,9 +154,9 @@
 <p>A critic that merely predicts reward is a scoreboard; a critic that predicts expected return from each state is a conscience, because it lets the actor know not just what happened but whether it deserved to happen.</p>
 <div class="callout key-insight"><p>Think of GAE like tasting a dish after each ingredient is added. When you take a bite and discover it is too salty, you do not only blame the last pinch of salt: you mentally trace back through each earlier addition, blaming the step two pinches ago more than the step ten pinches ago because it is closer to the problem. The exponential weight $(\gamma\lambda)^l$ is exactly that fading blame: a surprise at step $t+l$ reaches earlier step $t$ with strength $(\gamma\lambda)^l$, strong for nearby steps and nearly gone for distant ones, so the most recent causes bear the most responsibility.</p></div>
 <h2>Theory</h2>
-<p>The parameter $\lambda$ controls a bias-variance tradeoff. When $\lambda=0$, the advantage uses one-step TD evidence, which is low variance but depends heavily on critic accuracy. When $\lambda$ is near 1, the estimate resembles Monte Carlo return, which uses longer evidence but becomes noisier. PPO commonly uses values near 0.95 because that often balances delayed reward evidence with manageable variance. <span data-agent="29">The practical difference is large. In a standard MuJoCo hopper benchmark, REINFORCE typically needs roughly 50,000 episodes to reach a stable gait. Actor-critic GAE ($\lambda=0.95$) reaches the same policy quality in around 300 episodes, because the critic absorbs most of the episode-level noise before it reaches the gradient. Exact figures vary by environment and reward shaping, but the two-orders-of-magnitude gap is representative.</span></p>
+<p>The parameter $\lambda$ controls a bias-variance tradeoff. When $\lambda=0$, the advantage uses one-step TD evidence, which is low variance but depends heavily on critic accuracy. When $\lambda$ is near 1, the estimate resembles <span data-agent="21">Monte Carlo return, the sum of actual rewards observed for the rest of the episode with no bootstrapping from the critic,</span> which uses longer evidence but becomes noisier. PPO commonly uses values near 0.95 because that often balances delayed reward evidence with manageable variance. <span data-agent="29">The practical difference is large. In a standard MuJoCo hopper benchmark, REINFORCE typically needs roughly 50,000 episodes to reach a stable gait. Actor-critic GAE ($\lambda=0.95$) reaches the same policy quality in around 300 episodes, because the critic absorbs most of the episode-level noise before it reaches the gradient. Exact figures vary by environment and reward shaping, but the two-orders-of-magnitude gap is representative.</span></p>
 <p data-agent="17">For embodied control, this tradeoff plays out in time. A one-step residual misses the stumble a foot placement caused three frames later; a long-horizon return blames that same placement for an unrelated collision after a perception glitch. GAE hands the builder one knob: how far credit travels backward through the rollout.</p>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>The critic supplies a baseline, the TD residual measures local surprise, and GAE smooths those surprises backward through time. The actor then uses the resulting advantage to weight the same log-probability update introduced in REINFORCE.</p>
 </div>
@@ -179,7 +179,7 @@ for t in reversed(range(len(rewards))):
 
 print("advantages:", advantages)</code></pre>
 <div class="code-output">advantages: [0.746, 0.691, 0.316, -0.3]</div>
-<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>delta</code> term measures one-step surprise against the critic's <code>values</code>. The backward <code>gae</code> recursion makes the positive reward at step 2 influence earlier actions without assigning the full episode return to every step.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> Backward GAE recursion over the four-step rollout <code>rewards = [0.0, 0.2, 1.0, -0.1]</code>, showing the step-2 reward of 1.0 propagate positive credit into steps 0 and 1 while step 3's negative residual stays isolated.</div>
 <p>This trace gives the mental model. Step 3 has a negative advantage because the outcome was worse than the critic expected. Earlier steps remain positive because the later reward still supplies evidence that those actions helped set up a useful state.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -190,7 +190,7 @@ print("advantages:", advantages)</code></pre>
 <li>Train the actor and critic on the same rollout batch so advantages match the behavior policy.</li>
 <li>Bootstrap from $V(s_{t+1})$ when a rollout segment ends by truncation, but not when the episode truly terminates.</li>
 <li>Normalize advantages per batch to prevent reward-scale changes from dominating the policy loss.</li>
-<li>Track explained variance or value error so a broken critic does not silently corrupt the actor update.</li>
+<li>Track <span data-agent="21">explained variance, the fraction of the variance in the return targets $G_t$ that the critic's predictions $V_\phi(s_t)$ account for, where a value near 1 means the critic tracks returns well and a value near 0 means it predicts no better than the batch mean,</span> or value error so a broken critic does not silently corrupt the actor update.</li>
 <li>Audit GAE under perturbations, because delayed physical failures change how far credit should travel backward.</li>
 </ol>
 <div class="callout warning">
@@ -260,12 +260,12 @@ std_advantage = variance ** 0.5
 normalized = [(x - mean_advantage) / (std_advantage + 1e-8) for x in advantages]
 print([round(x, 3) for x in normalized])</code></pre>
 <div class="code-output">[0.918, 0.786, -0.113, -1.59]</div>
-<div class="code-caption"><strong>Code Fragment 2:</strong> The <code>normalized</code> advantages keep the positive and negative ordering from GAE while centering the batch around zero. PPO uses this stabilized scale for the actor loss, but raw <code>advantages</code> should still be logged for debugging.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 2:</strong> Rescaling the four GAE outputs from Code Fragment 1 to zero mean and unit variance using batch <code>mean_advantage</code> and <code>std_advantage</code>, so PPO sees a stable loss scale across batches.</div>
 
 
 <p data-agent="14">Normalization keeps the loss scale stable when everything works, but it also hides trouble when the critic underneath is sick, so debugging starts one level down. When actor-critic training fails, check critic health first. A value loss that falls while episode behavior worsens can mean the critic learned the wrong shortcut, such as predicting timeout length rather than task progress. A value loss that never falls can turn every advantage estimate into high-variance noise.</p>
 
-<div class="callout production-pattern">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Evaluation Recipe</div>
 <p>For actor-critic and GAE, compare only construct-matched metrics co-computed in one pass on one configuration: same rollout horizon, same bootstrap convention, same $\gamma$, same $\lambda$, same value target, and same perturbation suite. Save raw advantages, normalized advantages, value predictions, returns, truncation flags, and failure labels in one artifact.</p>
 </div>

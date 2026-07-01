@@ -88,9 +88,9 @@
 <h4 data-agent="30">Why the affordance value carries physical constraints</h4>
 <p data-agent="29">The value function $V_k(s_t)$ matters for embodied AI because robots face hard physical constraints that a text-trained language model cannot observe. Joint limits, reach envelopes, friction coefficients, and object occlusion all determine whether a skill is physically executable in a given configuration. A wrong choice carries real consequences: dropped objects, collision, or wasted time that the physical world will not roll back. A scalar learned on real interaction data keeps those constraints implicit yet grounds them in actual robot experience rather than language statistics.</p>
 <p data-agent="29">Mechanically, each $V_k$ is a per-skill success-value function trained with <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-14-reinforcement-learning-refresher/section-14.1.html" data-agent="13">reinforcement learning (RL)</a> or <a href="../../part-5-learning-from-demonstration-and-robot-data/module-21-imitation-learning/section-21.2.html" data-agent="13">behavioral cloning</a> on robot episodes. Given the current sensor observation $s_t$, it estimates the probability of completing skill $k$ from that state. Training on real or simulated executions lets it capture preconditions such as object reachability, grasp clearance, and surface stability, and it does so without any explicit symbolic encoding of those constraints. The data asymmetry sharpens the point. The original SayCan system needed roughly 68,000 robot episodes across 551 skills to build the affordance library, while the language model required zero additional robot interaction and contributed its entire semantic prior from pre-training on text alone.</p>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>A good mental model is product-of-experts planning. The LLM narrows the skill search to task-consistent options, and the affordance model removes options that are impossible or low value in the current world state.</p>
+<p data-agent="21">A good mental model is <strong>product-of-experts</strong> planning, where each expert model scores candidates on a different criterion and the final decision multiplies their scores together so an option only wins when every expert finds it acceptable. The LLM narrows the skill search to task-consistent options, and the affordance model removes options that are impossible or low value in the current world state.</p>
 </div>
 <div class="callout algorithm">
 <h4>Algorithm: SayCan Affordance-Grounded Skill Selection</h4>
@@ -99,7 +99,7 @@
 <ol>
 <li>Encode the instruction and history: form the prompt $c_t = (x, h_t)$ and pass it through the frozen LLM $\pi_\theta$ to obtain a distribution over skill tokens.</li>
 <li>Generate the candidate set: sample or enumerate the top-$m$ skills $\mathcal{K}' \subseteq \mathcal{K}$ ranked by $p_\theta(k \mid c_t)$ to avoid scoring the entire library.</li>
-<li>Score language plausibility: for each $k \in \mathcal{K}'$ compute $p_\text{LLM}(k) = p_\theta(k \mid c_t)$ and apply temperature scaling $\hat{p}(k) = p_\text{LLM}(k)^{1/\tau}$, then renormalize over $\mathcal{K}'$.</li>
+<li data-agent="21">Score language plausibility: for each $k \in \mathcal{K}'$ compute $p_\text{LLM}(k) = p_\theta(k \mid c_t)$ and apply temperature scaling, where the exponent $1/\tau$ sharpens the distribution toward the top candidate when $\tau<1$ and flattens it toward uniform when $\tau>1$: $\hat{p}(k) = p_\text{LLM}(k)^{1/\tau}$, then renormalize over $\mathcal{K}'$.</li>
 <li>Estimate affordance: query each value function $V_k(s_t) \in [0, 1]$ using the current scene observation; apply min-max normalization $\hat{V}_k = (V_k(s_t) - V_{\min}) / (V_{\max} - V_{\min})$ over $\mathcal{K}'$.</li>
 <li>Compute the joint score: $\text{score}(k) = \hat{p}(k) \cdot \hat{V}_k$ for all $k \in \mathcal{K}'$.</li>
 <li>Select the action: $k^* = \arg\max_{k \in \mathcal{K}'} \text{score}(k)$.</li>
@@ -128,7 +128,7 @@ print(max(combined, key=combined.get))</code></pre>
 <div class="code-output">{'pick_sponge': 0.506, 'turn_on_sink': 0.285, 'wipe_spill': 0.144}
 pick_sponge</div>
 <p>The expected output is a ranking where the chosen skill is not merely the most semantically plausible sentence completion, but the action with the highest joint semantic and affordance score. Here `pick_sponge` wins because it is both relevant and executable in the present scene, while `wipe_spill` is semantically tempting but prematurely chosen.</p>
-<div class="code-caption"><strong>Code Fragment 1:</strong> This score composition shows why `wipe_spill` loses even though it has the strongest semantic score. The current world state makes it a poor next action, so the product favors `pick_sponge`, which is both relevant and executable.</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 1:</strong> This score composition shows why `wipe_spill` loses even though it has the strongest semantic score. The current world state makes it a poor next action, so the product favors `pick_sponge`, which is both relevant and executable.</div>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: the language-times-affordance product rule</h4>
 <p>Trace the selector for the instruction "clean up the spill" with three candidates. Start from raw scores, then normalize and multiply, watching the winner change at each stage.</p>
@@ -156,7 +156,7 @@ pick_sponge</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
 <p>SayCan can fail if the candidate skill set is too narrow, the value functions are poorly calibrated, or the semantic model overprefers narratively obvious steps that are not optimal for the current embodiment.</p>
-<p>In practice the most common failure is affordance miscalibration. A value model trained on a narrow set of scenes can return high scores for skills that are physically possible in training but inapplicable to the current configuration. For example, a value function trained on an uncluttered countertop may assign $V_	ext{pick\_sponge}(s_t) = 0.90$ even when a bowl blocks the sponge. The model never learned that obstacle. The LLM sees a high combined score, selects the skill, and the robot fails. The symptom looks like a planning error, but the root cause is a distributional gap in the affordance model. A second, subtler failure appears at <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-51-open-world-and-lifelong-embodiment/section-51.3.html">long horizons</a>. The product rule is myopic: it scores each skill only against the current state. In a multi-step cleanup task, the optimal first action may be to move a bowl. That step has a low immediate semantic score, but it unlocks the sponge for step two. SayCan has no lookahead and can get stuck in a locally attractive but globally suboptimal sequence.</p>
+<p>In practice the most common failure is affordance miscalibration. A value model trained on a narrow set of scenes can return high scores for skills that are physically possible in training but inapplicable to the current configuration. For example, a value function trained on an uncluttered countertop may assign $V_\text{pick\_sponge}(s_t) = 0.90$ even when a bowl blocks the sponge. The model never learned that obstacle. The LLM sees a high combined score, selects the skill, and the robot fails. The symptom looks like a planning error, but the root cause is a distributional gap in the affordance model. A second, subtler failure appears at <a href="../../part-10-multi-agent-and-human-centered-embodiment/module-51-open-world-and-lifelong-embodiment/section-51.3.html">long horizons</a>. The product rule is myopic: it scores each skill only against the current state. In a multi-step cleanup task, the optimal first action may be to move a bowl. That step has a low immediate semantic score, but it unlocks the sponge for step two. SayCan has no lookahead and can get stuck in a locally attractive but globally suboptimal sequence.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
@@ -201,7 +201,7 @@ pick_sponge</div>
 </table>
 </div>
 
-<p data-agent="14">Whichever combination of these tools you assemble, the planner is only debuggable if it records why it chose what it chose, which is what the next fragment captures. Code Fragment 2 stores the separate scores as an audit artifact rather than only the winning skill. This is the minimum needed to understand whether the semantic prior or the affordance estimator caused a bad decision.</p>
+<p data-agent="14">Whichever combination of these tools you assemble, the planner is only debuggable if it records why it chose what it chose, which is what the next fragment captures. Code Fragment 2 stores the separate scores as an audit artifact rather than only the winning skill. This is the minimum needed to understand whether the semantic prior or the affordance estimator caused a bad decision. The steps below map directly onto the code that follows:</p>
 <ol>
 <li>Log the candidate skills and both scores for each decision point.</li>
 <li>Keep the value-estimation state snapshot or seed so scores can be reproduced.</li>
@@ -209,9 +209,31 @@ pick_sponge</div>
 <li>Measure how often the affordance term changes the top language choice.</li>
 <li>Benchmark with the same skill library and same execution stack when comparing alternatives.</li>
 </ol>
+<pre><code class="language-python"># Build one audit record per decision point instead of logging only the winner.
+# Keeping both raw scores lets a failure be traced to language or affordance.
+def audit_record(candidates, p_llm, affordance):
+    scored = {
+        name: round(p_llm[name] * affordance[name], 3) for name in candidates
+    }
+    ranked = sorted(scored, key=scored.get, reverse=True)
+    chosen, runner_up = ranked[0], ranked[1]
+    return {
+        "chosen": chosen,
+        "chosen_score": scored[chosen],
+        "runner_up": runner_up,
+        "runner_up_score": scored[runner_up],
+        "p_llm": p_llm[chosen],
+        "affordance": affordance[chosen],
+    }
+
+candidates = ["pick_sponge", "turn_on_sink", "wipe_spill"]
+p_llm = {"pick_sponge": 0.55, "turn_on_sink": 0.30, "wipe_spill": 0.80}
+affordance = {"pick_sponge": 0.92, "turn_on_sink": 0.95, "wipe_spill": 0.18}
+print(audit_record(candidates, p_llm, affordance))</code></pre>
+<div class="code-output">{'chosen': 'pick_sponge', 'chosen_score': 0.506, 'runner_up': 'turn_on_sink', 'runner_up_score': 0.285, 'p_llm': 0.55, 'affordance': 0.92}</div>
 
 <p>The expected output is an audit tuple that preserves both factors of the SayCan product. If a future run selected the wrong skill with a high semantic score but a weak affordance score, the repair target would be calibration or candidate generation rather than the planner prompt alone.</p>
-<div class="code-caption"><strong>Code Fragment 2:</strong> This audit record keeps the two terms of the SayCan product separate, which is essential for failure analysis. If the planner chose poorly, this trace tells you whether the semantic prior, the affordance model, or their calibration was at fault.</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 2:</strong> This audit-record function stores the runner-up skill alongside the winner so a bad decision can be traced to the language prior, the affordance estimate, or their calibration.</div>
 
 
 <p>If the chosen skill is poor, first check candidate generation, then affordance calibration, then library coverage. SayCan errors often come from what is missing from the candidate set, not only from how the final score is computed.</p>

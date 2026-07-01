@@ -88,7 +88,7 @@ $$</p>
 </div>
 <h4 data-agent="30">Why It Bites on Hardware</h4>
 <p data-agent="17">Support mismatch matters in embodied AI because a robot cannot take back a bad action once executed. Train a policy heavily on low-support trajectories and it encodes patterns that never arose in real physics: torques past joint limits, footholds on surfaces that do not exist, grasp angles through solid geometry. On real hardware these become mechanical faults, dropped objects, and falls, not a silent eval penalty.</p>
-<p data-agent="29">The mismatch arises because the diffusion model learns $p_g$ from its offline training data, then extrapolates during rollout to states it has not seen. Each denoising step samples from a learned score function. That function is accurate near the training distribution and increasingly inaccurate away from it. The planner has no physics oracle, so it cannot tell an extrapolated state from a valid one. The generated trajectory drifts steadily away from $p_r$ while still appearing plausible.</p>
+<p data-agent="29">The mismatch arises because the diffusion model learns $p_g$ from its offline training data, then extrapolates during rollout to states it has not seen. Each denoising step samples from a learned score function, where the score function is the gradient of the log-probability of the data that tells the sampler which direction reduces noise. That function is accurate near the training distribution and increasingly inaccurate away from it. The planner has no physics oracle, so it cannot tell an extrapolated state from a valid one. The generated trajectory drifts steadily away from $p_r$ while still appearing plausible.</p>
 <figure class="diagram-container">
 <svg viewBox="0 0 600 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram of compounding rollout drift between the real trajectory and the generated trajectory over rollout steps.">
 <!-- axes -->
@@ -117,14 +117,14 @@ $$</p>
 </svg>
 <figcaption>Figure 41.5B: Compounding rollout drift. Both trajectories begin at the same state, but per-step score-function errors push the generated trajectory away from the real-deployment distribution super-linearly, while the real trajectory stays low. The widening vertical gap is the support mismatch that a horizon cap and support audit are meant to contain.</figcaption>
 </figure>
-<p data-agent="29">Yang et al. (2025) provide concrete evidence. They trained diffusion planners with unchecked synthetic rollouts and measured a 12 to 18 percentage-point drop in task success on <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-45-locomotion-and-mobility/section-45.3.html">locomotion benchmarks</a>. Planners that applied a feasibility filter before adding synthetic episodes avoided this drop. Without the filter, matching that policy quality took roughly 40,000 additional real rollouts. With the filter, 800 sufficed. That 50x reduction in real-hardware data collection came entirely from catching fabricated trajectories before they entered training. DiffuserLite (Huang et al., 2024) shows a related result: shortening the plan horizon from 32 to 8 steps cut end-state position error by roughly 60% on the D4RL HalfCheetah task. Shorter horizons limit how far support mismatch can compound.</p>
-<div class="callout under-the-hood">
+<p data-agent="29">Yang et al. (2025) provide concrete evidence. They trained diffusion planners with unchecked synthetic rollouts and measured a 12 to 18 percentage-point drop in task success on <a href="../../part-9-manipulation-locomotion-and-embodied-skills/module-45-locomotion-and-mobility/section-45.3.html">locomotion benchmarks</a>. Planners that applied a feasibility filter before adding synthetic episodes avoided this drop. Without the filter, matching that policy quality took roughly 40,000 additional real rollouts. With the filter, 800 sufficed. That 50x reduction in real-hardware data collection came entirely from catching fabricated trajectories before they entered training. DiffuserLite (Huang et al., 2024) shows a related result: shortening the plan horizon from 32 to 8 steps cut end-state position error by roughly 60% on the D4RL HalfCheetah task, where D4RL is a standard offline-RL benchmark suite that supplies fixed logged datasets for reproducible comparison. Shorter horizons limit how far support mismatch can compound.</p>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>For Risks of generated experience, log observation, encoding, prediction, scoring rule, selected action, monitor state, timing assumption, and failure label as separate fields.</p>
 </div>
 <h2>Worked Example</h2>
 <p>The probe below performs a toy support audit. It marks generated plans that would receive high training weight even though their estimated real support is low.</p>
-<pre><code class="language-python"># Refine noisy action trajectories toward a goal-conditioned plan.
+<pre><code class="language-python"># Flag generated trajectories that carry high training weight but low real-world support.
 import numpy as np
 
 real_support = np.array([0.82, 0.63, 0.11, 0.07], dtype=np.float32)
@@ -137,7 +137,7 @@ print({
     "should_reweight": low_support_mass &gt; 0.3,
 })</code></pre>
 <div class="code-output"><code>{'low_support_mass': 0.45, 'should_reweight': True}</code></div>
-<div class="code-caption"><strong>Code Fragment 41.5</strong>.1 implements diffusion_planner_probe for Risks of generated experience and prints the diagnostic quantity the controller or evaluator should inspect.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 41.5.1</strong>: four toy generated trajectories with real-support scores <code>[0.82, 0.63, 0.11, 0.07]</code> are thresholded at <code>epsilon = 0.15</code>, summing the training weight on the two low-support entries to trigger the <code>should_reweight</code> flag.</div>
 <p>The expected output should raise the reweight flag. The interpretation is simple: too much of the training objective is being spent on trajectories with weak real support, so the synthetic mix is no longer trustworthy as-is.</p>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: Synthetic Rollout Support Audit</h4>
@@ -182,7 +182,7 @@ print({
 <p><strong>3. Language-conditioned diffusion planning with grounded trust scores.</strong> Large vision-language models are now used to score the semantic plausibility of generated trajectories before they enter the training mix, complementing physics-based support audits with task-level coherence checks. UniSim (Yang et al., 2024, Google DeepMind) trains a universal simulator that tags each generated clip with a language-grounded plausibility score, allowing downstream policies to weight synthetic episodes by both physical realism and goal alignment simultaneously.</p>
 <p><strong>Open problem for a PhD student:</strong> All three directions above produce separate trust signals (speed, physics validity, semantic coherence) that are currently fused by hand-tuned thresholds or simple multiplication. A principled calibration framework that jointly estimates and combines these signals under distribution shift, without requiring real-hardware rollouts for recalibration after each domain change, remains unsolved. Formulating this as a conformal prediction problem over the joint support of the physics verifier and the language scorer would be a tractable and publishable entry point.</p>
 </div>
-<div class="callout cross-ref">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Cross-Reference Thread</div>
 <p>For Risks of generated experience, connect diffusion-policy tooling, MPC baselines, and safety constraints by recording the planner input, sampled plan, feasibility check, and executed action.</p>
 </div>

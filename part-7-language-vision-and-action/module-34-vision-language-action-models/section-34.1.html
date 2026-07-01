@@ -35,7 +35,7 @@
 <main class="content" id="main-content">
 <blockquote class="epigraph"><p>"A VLA policy is a contract between language grounding, image tokens, robot state, and action decoding."</p>
 <cite>A Grounded AI Agent</cite></blockquote>
-<figure class="illustration">
+<figure class="illustration" data-agent="39">
 <img alt="Technical illustration for Section 34.1: From VLMs to VLAs: the core idea." loading="lazy" src="images/chapter-34-illustration-01.png"/>
 <figcaption>Figure 34.1A: The VLA architecture: a vision encoder and language encoder feed joint embeddings into a cross-modal transformer, whose output tokens are projected by an action head into a continuous end-effector trajectory.</figcaption>
 </figure>
@@ -44,7 +44,7 @@
 <p>This section assumes familiarity with vision-language model architecture from <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.1.html" data-agent="13">section 32.1</a> and with action chunking from <a href="../../part-5-learning-from-demonstration-and-robot-data/module-22-action-chunking-and-diffusion-policies/section-22.2.html" data-agent="13">section 22.2</a>. If you already understand how a transformer encodes image and text tokens jointly, you can skim the first subsection and start at "The Interface Contract." The VLA policy formulation introduced here is extended in section 34.2 (training objectives and data) and section 34.3 (inference-time control loops), and the action-head design recurs in Part 5 alongside diffusion and flow-matching policies.</p>
 </div>
 <div class="callout warning"><div class="callout-title">Do Not Confuse Semantics With Control</div><p>A VLA can name an object and still fail the motion. Always evaluate grounding, action accuracy, latency, and recovery as separate properties.</p></div>
-<div class="callout big-picture"><div class="callout-title">Big Picture</div><p>A robot arm hovers over a cluttered table. You say "hand me the blue mug." The model identifies the mug, localises the handle, plans a grasp, and moves the arm, all from a single forward pass through a transformer trained on internet video and robot demonstrations. That is not science fiction: it is what production VLAs do as of 2024-2025, and it is why the field shifted so sharply after 2022. Vision-language models already cracked open-ended understanding; adding an action head turns that understanding into physical behaviour. In this section you will see exactly where that boundary sits, what the action head commits to, and why every semantic claim the model makes must survive the much harsher test of real-world control.</p></div>
+<div class="callout big-picture"><div class="callout-title">Big Picture</div><p>A robot arm hovers over a cluttered table. You say "hand me the blue mug." The model identifies the mug, localises the handle, plans a grasp, and moves the arm, all from a single forward pass through a transformer trained on internet video and robot demonstrations. That is not science fiction: it is what production VLAs do as of 2024-2025, and it is why the field shifted so sharply after 2022. Vision-language models already cracked open-ended understanding; adding an action head turns that understanding into physical behaviour. Figure 34.1A sketches that architecture end to end: vision and language encoders feed a cross-modal transformer whose output the action head projects into a continuous end-effector trajectory. In this section you will see exactly where that boundary sits, what the action head commits to, and why every semantic claim the model makes must survive the much harsher test of real-world control.</p></div>
 
 <h2>Why VLMs Are Not Enough</h2>
 <p data-agent="22">Ask a state-of-the-art <a href="../../part-7-language-vision-and-action/module-32-vision-language-models-for-embodiment/section-32.6.html">vision-language model</a> to describe a cup on a table and it will do so flawlessly; ask it to actually pick the cup up and it will emit words while the arm never moves. That gap is the whole subject of this section: embodiment adds a requirement no captioner faces, namely that the answer must change the world. If the instruction is "put the cup on the coaster," the system must decide where the cup is, where the coaster is, which <a href="../../part-6-embodied-perception/module-27-visual-perception-for-action/section-27.5.html">grasp is feasible</a>, how the arm should move, when the gripper should close, and how to recover if the cup slips. This is <strong>the gap between knowing and doing</strong>, and bridging it requires an action head. A model that can describe a grasp without executing one is a spectator, not an agent.</p>
@@ -63,8 +63,8 @@
 <li>Tokenize the language instruction $q$ through the text encoder to obtain token embeddings $z^l \in \mathbb{R}^{N_l \times d}$.</li>
 <li>Concatenate all tokens into a joint sequence: $z = [z^l; z_1^v; \ldots; z_t^v; z^r]$, where $z^r$ is a linear projection of $r_t$.</li>
 <li>Pass $z$ through the cross-modal transformer to produce contextualized representations; retain the final hidden state $h \in \mathbb{R}^d$.</li>
-<li>Determine the action head type: if discrete-token mode, project $h$ onto per-dimension bin logits and decode by argmax to get $a_{t:t+H}$; if continuous mode, proceed to step 6.</li>
-<li>Sample initial noise $\epsilon \sim \mathcal{N}(0, I)$ and run the denoising network $D_\phi$ for $K$ steps, conditioned on $h$, to produce a smooth trajectory: $a_{t:t+H} = D_\phi^{(K)}(\epsilon \mid h)$.</li>
+<li>Determine the action head type: if discrete-token mode, project $h$ onto per-dimension bin logits and decode by <span data-agent="21">argmax, the operation that returns the index of the highest-scoring logit rather than a weighted blend of all of them,</span> to get $a_{t:t+H}$; if continuous mode, proceed to step 6.</li>
+<li>Sample initial noise $\epsilon \sim \mathcal{N}(0, I)$ and run the <span data-agent="21">denoising network $D_\phi$, a learned model that starts from random noise and iteratively refines it toward a valid sample, the same mechanism used by image diffusion models,</span> for $K$ steps, conditioned on $h$, to produce a smooth trajectory: $a_{t:t+H} = D_\phi^{(K)}(\epsilon \mid h)$.</li>
 <li>Apply action normalization: $\hat{a} = \mu_a + \sigma_a \cdot a_{t:t+H}$ using dataset statistics $(\mu_a, \sigma_a)$ to recover physical units.</li>
 <li>Check $\hat{a}$ against workspace limits and joint-angle bounds; clamp any out-of-range dimension and record a violation flag.</li>
 <li>Send $\hat{a}$ to the low-level controller, which executes commands at the servo rate (typically 100 to 500 Hz) while the policy runs at its own inference rate.</li>
@@ -88,10 +88,10 @@
 <p data-agent="14">Once you accept that the action head is a new output contract rather than a cosmetic swap, the next question is what exactly that contract has to specify, and the cleanest way to see it is by analogy.</p>
 <div class="callout key-insight"><p>Think of a sous-chef reading a recipe card (the language instruction), glancing at the ingredients on the counter (the visual observation), and then writing the next five knife strokes on a notepad before lifting the blade (the action chunk). The head chef executing those strokes works at a completely different speed than the recipe-reading step. The notepad is the interface contract: it decouples the slow, thoughtful planning cycle from the fast, precise execution cycle so neither side has to wait on the other. Remove the notepad and the chef either freezes mid-cut waiting for the next instruction, or rushes the reading and misses a critical detail.</p></div>
 <p>The most useful way to read any VLA paper is to ask four interface questions. What observations enter the model? What robot state is exposed? What action space exits the model? What controller consumes those actions? This contract is the bridge back to <a href="../../part-1-foundations-of-embodied-ai/module-02-the-agent-environment-interface/index.html">Chapter 2</a> on action representations and <a href="../../part-2-mathematical-robotics-and-control-foundations/module-07-control-for-ai-practitioners/index.html">Chapter 7</a> on controllers versus policies.</p>
-<p>Code Fragment 1 makes the VLA interface concrete with typed containers. It does not run a neural policy, it shows the contract that every neural policy must satisfy.</p>
+<p>Code Fragment 1 makes the VLA interface concrete with typed containers. It does not run a neural policy, it shows the contract that every neural policy must satisfy. A <span data-agent="21">dataclass, a Python construct that defines a lightweight typed record with auto-generated field access and no custom behavior beyond storage, keeps the observation and action fields explicit rather than buried in an untyped dictionary</span>.</p>
 <pre><code class="language-python"># Minimal VLA interface: image features, instruction text, and robot state enter together.
 # The policy returns an action chunk, not a single ungrounded language answer.
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import numpy as np
 
 @dataclass
@@ -121,16 +121,16 @@ print(obs.instruction)
 print(chunk.delta_xyz.shape)</code></pre>
 <div class="code-output"><pre>pick up the red block
 (2, 3)</pre></div>
-<div class="code-caption"><strong>Code Fragment 1:</strong> The <code>VLAObservation</code> and <code>ActionChunk</code> classes show the contract between perception, language, proprioception, and control. Notice that the action is a short sequence, which gives the controller enough temporal context to move smoothly.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> The <code>VLAObservation</code> and <code>ActionChunk</code> dataclasses define the minimal typed contract this section argues every VLA must satisfy: one image embedding, one instruction string, one joint-state vector in, a two-step <code>delta_xyz</code> action chunk with matching gripper commands out.</div>
 <div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The hand-built interface above is about 25 lines. With LeRobot or OpenVLA tooling, the same contract is mostly declared through dataset features and policy configuration in a few lines, while the library handles image transforms, action normalization, batching, checkpoint loading, and device placement. Keep the manual version for debugging because it names every boundary that can fail.</p><pre><code class="language-python"># LeRobot shortcut: inspect the observation and action schema before training.
 # The dataset object exposes cameras, robot state, language task, and action chunks.
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 dataset = LeRobotDataset("lerobot/aloha_static_coffee")
 print(dataset.features.keys())
-print(dataset.meta.info.get("fps"))</code></pre><div class="code-caption"><strong>Code Fragment 2:</strong> The <code>LeRobotDataset</code> shortcut replaces custom schema plumbing with a maintained dataset interface. It handles metadata, episode indexing, media decoding, and action field conventions internally.</div></div>
+print(dataset.meta.info.get("fps"))</code></pre><div class="code-caption" data-agent="08"><strong>Code Fragment 2:</strong> Loading <code>lerobot/aloha_static_coffee</code> and printing its feature keys and recorded frame rate shows how the LeRobot dataset object exposes the same camera, robot-state, and action schema that Code Fragment 1 defined by hand, without writing custom loader code.</div></div>
 <p>Figure 34.1 should be read as the minimal VLA interface: instruction, visual observation, proprioception, action representation, and rollout evidence must all be named before behavior is interpreted.</p>
-<figure class="diagram" id="fig-34-1">
+<figure class="diagram" id="fig-34-1" data-agent="09">
 <svg aria-labelledby="fig-34-1-title fig-34-1-desc" role="img" viewbox="0 0 760 210" xmlns="http://www.w3.org/2000/svg">
 <title id="fig-34-1-title">Closed-loop interface for From VLMs to VLAs: the core idea</title>
 <desc id="fig-34-1-desc">A four-stage loop: Vision feeds the VLA Core, which feeds the Action Head, which feeds the Controller, whose execution outcome loops back to Vision.</desc>

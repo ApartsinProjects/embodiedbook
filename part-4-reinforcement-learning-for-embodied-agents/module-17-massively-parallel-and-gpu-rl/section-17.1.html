@@ -152,7 +152,7 @@
 <li>Initialize contiguous device tensors for observations $\mathbf{o} \in \mathbb{R}^{N \times d}$, actions $\mathbf{a}$, rewards $\mathbf{r}$, dones $\mathbf{d}$, log-probabilities $\log \pi_\theta(\mathbf{a}|\mathbf{o})$, and value estimates $V_\phi(\mathbf{o})$; verify <code>.is_contiguous()</code> before the loop.</li>
 <li>For each step $t = 1, \dots, T$: infer $\mathbf{a}_t \sim \pi_\theta(\cdot|\mathbf{o}_t)$ for all $N$ environments in a single batched forward pass, then step the simulator to obtain $(\mathbf{o}_{t+1}, \mathbf{r}_t, \mathbf{d}_t)$ without leaving device memory.</li>
 <li>Write $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{d}_t, V_\phi(\mathbf{o}_t), \log \pi_\theta(\mathbf{a}_t|\mathbf{o}_t))$ into contiguous buffer slots at index $t$; do not copy to CPU during collection.</li>
-<li>After $T$ steps, compute advantages $\hat{A}_t$ via <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.3.html" data-agent="13">generalized advantage estimation</a>: $\hat{A}_t = \sum_{k=0}^{T-t-1} (\gamma \lambda)^k \delta_{t+k}$, where $\delta_t = r_t + \gamma V_\phi(\mathbf{o}_{t+1}) - V_\phi(\mathbf{o}_t)$.</li>
+<li>After $T$ steps, compute advantages $\hat{A}_t$ via <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-15-policy-gradient-methods-and-ppo/section-15.3.html" data-agent="13">generalized advantage estimation</a> <span data-agent="21">(GAE), where GAE is a weighted sum of temporal-difference errors that smooths the trade-off between low-bias, high-variance Monte Carlo returns and high-bias, low-variance one-step estimates</span>: $\hat{A}_t = \sum_{k=0}^{T-t-1} (\gamma \lambda)^k \delta_{t+k}$, where $\delta_t = r_t + \gamma V_\phi(\mathbf{o}_{t+1}) - V_\phi(\mathbf{o}_t)$.</li>
 <li>Shuffle the $TN$ transitions and partition into minibatches; for each minibatch compute the clipped surrogate loss $L^{\text{CLIP}}(\theta) = \mathbb{E}\!\left[\min\!\left(r_t(\theta)\hat{A}_t,\; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$, where $r_t(\theta) = \pi_\theta(\mathbf{a}_t|\mathbf{o}_t) / \pi_{\theta_{\text{old}}}(\mathbf{a}_t|\mathbf{o}_t)$.</li>
 <li>Update $\theta \leftarrow \theta - \alpha \nabla_\theta L^{\text{CLIP}}(\theta)$ and $\phi \leftarrow \phi - \alpha \nabla_\phi L^{V}(\phi)$; repeat for the configured number of PPO epochs over the same buffer.</li>
 <li>Check per-environment return variance across the $N$ environments: if variance is low while aggregate reward is high, flag the batch as correlated and inspect seed assignments before accepting the gradient update.</li>
@@ -164,7 +164,7 @@
 <h4>Step-Through: Effective sample count under correlation</h4>
 <p>Trace how correlation shrinks a batch with concrete numbers. Take $N = 4$ environments and $T = 2$ steps, so the nominal sample count is $TN = 8$. Suppose the per-environment advantage estimates for one update are: env A = [0.90, 0.88], env B = [0.91, 0.89], env C = [0.90, 0.92], env D = [0.89, 0.90]. The mean advantage is 0.899 and the variance across these 8 numbers is about 0.00013, very low, because every environment saw the same flat-terrain scenario. The effective sample size, estimated as $N_{\text{eff}} = (\sum w_i)^2 / \sum w_i^2$ when the 4 environments are nearly identical, collapses toward 1: the gradient behaves as if it averaged ONE scenario, not four. Now diversify: env A (flat) = [0.90, 0.88], env B (slope) = [0.20, 0.35], env C (push) = [-0.40, 0.10], env D (payload) = [0.55, 0.30]. The mean is now 0.329 and the variance jumps to about 0.16, more than 1,000 times larger. The 8 samples now carry genuinely independent information, so $N_{\text{eff}}$ stays near 4. Same tensor shape, same 8 transitions, but the second batch teaches the policy four lessons while the first teaches it one lesson four times.</p>
 </div>
-<div class="callout under-the-hood">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
 <p>The mechanism is a repeated tensor operation: infer actions for all environments, step all environments, write observations, rewards, dones, values, and log probabilities into contiguous buffers, then update from shuffled slices of that buffer. GPU RL wins when simulation, policy inference, and storage stay resident on device and avoid per-environment Python loops. The physics underpinning this residency is covered in <a href="../../part-2-mathematical-robotics-and-control-foundations/module-06-dynamics-and-simulation-math/section-6.6.html">Section 6.6</a>.</p>
 </div>
@@ -195,7 +195,7 @@ samples per update: 98,304
 training seed families: 128
 envs sharing each seed family: 32
 held-out evaluation envs: 256</div>
-<div class="code-caption"><strong>Code Fragment 17.1</strong>.1 makes the hidden rollout dimensions explicit. The important line is not only the 98,304 samples per update, but also the 128 seed families and 256 held-out evaluation environments that keep the batch from becoming a synchronized echo.</div>
+<div class="code-caption" data-agent="08" data-agent-40="40"><strong>Code Fragment 17.1</strong>.1 prints the rollout accounting for 4,096 environments: tensor shape, samples per update, seed-family count, and held-out evaluation env count.</div>
 <p><strong>Expected output:</strong> the trace should report rollout shape, samples per update, seed diversity, and evaluation separation. A benchmark that reports only steps per second is missing the evidence needed to judge learning quality.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
@@ -284,12 +284,12 @@ ledger = RolloutLedger(
 )
 print(ledger.as_row())</code></pre>
 <div class="code-output">{'envs': 4096, 'horizon': 24, 'train_seed_families': 128, 'eval_seed_families': 16, 'device': 'cuda:0', 'artifact': 'runs/walk_4096x24_eval16.jsonl'}</div>
-<div class="code-caption"><strong>Code Fragment 17.1</strong>.2 records the fields needed to reproduce a vectorized rollout claim. The separate train and evaluation seed families make it possible to audit whether a reported gain came from training throughput or evaluation leakage.</div>
+<div class="code-caption" data-agent="08" data-agent-40="40"><strong>Code Fragment 17.1</strong>.2 defines the <code>RolloutLedger</code> dataclass and prints its serialized record, separating training seed families from evaluation seed families so a reported gain can be audited for evaluation leakage.</div>
 
 
 <p data-agent="17">When a massively parallel run fails, first ask whether the policy failed or the batch lied. Check for synchronized resets, stale normalization statistics, identical command curricula, action clipping, and evaluation seeds reused from training. Then rerun a smaller batch you can inspect episode by episode, grouped by seed family.</p>
 
-<div class="callout production-pattern">
+<div class="callout note" data-agent="25">
 <div class="callout-title">Evaluation Recipe</div>
 <p>For parallel rollout claims, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same held-out seed set, same perturbation suite, and the same success definition. Save steps per second, GPU memory, reward, success rate, fall rate, and reset reasons as one artifact so speed and learning quality are backed by the same run.</p>
 </div>
