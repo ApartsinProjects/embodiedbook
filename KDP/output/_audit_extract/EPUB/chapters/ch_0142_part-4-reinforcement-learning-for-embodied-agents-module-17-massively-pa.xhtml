@@ -1,0 +1,246 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 17.5: Teacher-student and privileged-information distillation</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 17.5: Teacher-student and privileged-information distillation</h1>
+
+<blockquote class="epigraph"><p>"The teacher knew where the ball was. The student learned to catch it anyway."</p><cite>A Patient Distillation Engineer</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration with a teacher robot reading hidden simulator state while a student robot sees only onboard sensors, illustrating privileged-information distillation for deployment-safe policies." loading="lazy" src="../img/c5e93ac753_chapter-17-illustration-05.jpg" />
+<figcaption><strong>Figure 17.5A</strong>: Privileged-information distillation lets the teacher use simulator secrets during training while the student learns the policy it can actually execute at deployment.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with asymmetric actor-critic training from section 17.4, where the critic sees privileged state while the actor sees only deployable observations. The distillation pattern introduced here recurs in section 20.3 (domain randomization and RMA), where a privileged adaptation module is similarly distilled into a deployable history encoder, and in section 21.3 (DAgger), which formalizes the interactive relabeling strategy mentioned at the end of this section.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A legged robot trained in simulation knows the exact terrain height under each foot because the simulator hands it over for free. Deploy that robot on concrete and the free data vanishes instantly. Privileged-information distillation is how <span data-agent="28">many state-of-the-art</span> locomotion systems close this gap: a teacher policy trains with simulator secrets, then transfers its judgment to a student that survives on onboard sensors alone. With massively parallel GPU simulators now producing millions of steps per second, teams can afford to run this two-stage pipeline at scale, and the resulting policies transfer to hardware without sim-to-real collapse. You will build the distillation contract, audit the observation split, and evaluate the student under deployment-legal conditions.</p>
+</div>
+<p data-agent="22">Imagine handing a student pilot a map that shows every hidden crosswind in the room. The pilot aces the test. Then you take the map away the instant they touch real controls. That is the bargain privileged-information distillation strikes. Get it wrong, and the policy that looked flawless in simulation falls over on its first step on concrete. <span data-agent="29">For this to hold up, the training artifact must version four things together: simulator fidelity, <a data-agent="13" href="ch_0141_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Proximal Policy Optimization (PPO)</a> rollout semantics, reward terms, and the reset distribution.</span></p>
+<p>This section develops the distillation contract for fast simulator-trained policies. The teacher is trained or evaluated with privileged state such as terrain heights, contact impulses, object poses, or exact base velocity; the student learns to imitate useful teacher actions from deployable signals such as proprioception, commands, history, and exteroception. <span data-agent="01">"Teacher-student" names the two roles in this pattern, and "privileged-information distillation" names what passes between them: the teacher's privileged-state advantage is distilled into action targets the student can learn from its own deployable observations. The rest of this section builds, audits, and evaluates exactly that contract.</span> Figure 17.5A captures the core asymmetry: the teacher reads simulator secrets that simply do not exist on real hardware, so the student must learn the same policy from what the robot can actually sense.</p>
+<p>The key question is practical: which information is legal at deployment, and how do we prove that the student evaluation uses only that legal interface? Figure 17.5B traces the full pipeline that answers this question, from privileged teacher inputs through the valid-step mask to the exported student, and shows where the teacher-to-deployment path is deliberately blocked.</p>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_2dd9b37358449fae.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 17.5B</strong>: Distillation pipeline. The teacher receives privileged simulator state and produces action targets; the student learns to match those targets using only deployable observations. The red blocked arrow marks the path that never exists at deployment: the privileged teacher cannot run on hardware, so only the student is exported. A valid-step mask filters out teacher actions from falls or resets before they become imitation targets.</figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Privilege Is A Training Tool, Not A Deployment Input</div>
+<p>The teacher may see the simulator's answer key, but the student must pass the exam without it. The audit question is whether privileged information shaped the target action without leaking into the deployed observation tensor.</p>
+</div>
+<h2>Theory</h2>
+<p data-agent="15">A distillation objective that reduces to a single mean-squared term is <img src="../math/m_4b01d440b10d75e3.jpg" alt="math" style="height:2.456em;vertical-align:0.000em;" class="mathi" /> where $\pi_t$ is the privileged teacher, $\pi_s$ is the student, $o_i^{\text{priv}}$ includes simulator-only information, and $o_i^{\text{deploy}}$ contains only signals available on the robot.</p>
+<p>The formula is easy to write and easy to misuse. The batch must cover the same command, terrain, contact, and disturbance distribution used for evaluation, and the loss should be reported alongside closed-loop student performance, not as a standalone success metric. To see why this matters at scale: in representative locomotion benchmarks (as of 2024), a student trained without any privileged teacher on rough terrain may need 50 million simulator steps to reach 60% success on a held-out panel; a student distilled from a teacher that observed exact terrain heights reaches the same threshold in under 5 million steps, a roughly 10x compression bought entirely by the quality of the supervision signal.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the distillation loss is a simple mean-squared match between student and teacher actions, but it is only trustworthy when the training batch matches the evaluation distribution, when the loss is always reported alongside closed-loop success rather than alone, and when the resulting supervision quality (not just added compute) is what drives the sample-efficiency gain. The algorithm below turns those three requirements into concrete steps.</p></div>
+<div class="callout algorithm">
+<h4>Algorithm: Privileged-Information Policy Distillation</h4>
+<p><strong>Input:</strong> privileged teacher policy $\pi_t(a \mid o^{\text{priv}})$ with parameters $\theta_t$; deployable student policy $\pi_s(a \mid o^{\text{deploy}})$ with parameters $\theta_s$; rollout buffer $\mathcal{D} = \{(o_i^{\text{priv}}, o_i^{\text{deploy}}, v_i)\}$ where $v_i \in \{0,1\}$ is the valid-step mask; learning rate $\alpha$; distillation epochs $K$</p>
+<p><strong>Output:</strong> student parameters $\theta_s^*$ whose policy $\pi_s$ acts from deployable observations only</p>
+<ol>
+<li>Freeze observation schema: partition all fields into teacher-only $O^{\text{priv}}$, student $O^{\text{deploy}}$, and critic-only $O^{\text{critic}}$ sets before any data collection.</li>
+<li>Train or load teacher: obtain $\theta_t$ by running PPO with the full privileged observation $o^{\text{priv}} = O^{\text{deploy}} \cup O^{\text{priv}}$ until the teacher reward converges.</li>
+<li>Collect teacher rollouts: execute $\pi_t$ in the simulator; record $(o_i^{\text{priv}}, o_i^{\text{deploy}}, a_i^t)$ for each step $i$ and set $v_i = 0$ for falls, resets, and saturated actions.</li>
+<li>Compute teacher action targets: $\hat{a}_i = \pi_t(o_i^{\text{priv}})$ for all $i$ with $v_i = 1$; discard steps where $v_i = 0$.</li>
+<li>Initialize student parameters $\theta_s$ (random or from a warm-start checkpoint).</li>
+<li>For each distillation epoch $k = 1, \ldots, K$: compute the masked imitation loss <img src="../math/m_6e98dbcc16529215.jpg" alt="math" style="height:3.133em;vertical-align:0.000em;" class="mathi" /></li>
+<li>Update student: $\theta_s \leftarrow \theta_s - \alpha \, \nabla_{\theta_s} \mathcal{L}_{\text{distill}}$.</li>
+<li><span data-agent="03">Optionally close the distribution-shift gap the static dataset in step 3 cannot cover, by applying</span> <a data-agent="13" href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">DAgger-style (Dataset Aggregation)</a> relabeling: roll out $\pi_s$ in the simulator to generate new states $o_i^{\text{deploy}}$, query $\pi_t$ for labels $\hat{a}_i$, append to $\mathcal{D}$, and repeat from step 6.</li>
+<li>Audit the student checkpoint: verify that $o^{\text{priv}}$ fields are absent from the actor input tensor by printing active observation terms and diffing against $O^{\text{deploy}}$.</li>
+<li>Evaluate student closed-loop on held-out seeds with privileged actor inputs disabled; report success rate, fall rate, and imitation loss together as one artifact.</li>
+</ol>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism is two-stage: first train or select a teacher that uses privileged simulator state to produce strong actions, then train a student to match those actions from deployable observations. The final evaluation runs the student only, with privileged tensors removed from the actor path.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="14">The 10x supervision speedup the theory promises only materializes if the imitation targets are clean, which is exactly what the valid-step mask guarantees, so the smallest worked example worth building is the masked loss itself.</p>
+<p>Code Fragment 17.5.1 computes a tiny distillation loss. The mask keeps failed or invalid teacher steps from becoming imitation targets, which matters when the teacher is still imperfect.</p>
+<pre><code class="language-python"><span class="c1"># Compute a masked action-distillation loss for teacher-student RL.</span>
+<span class="c1"># The student matches teacher actions only on valid rollout steps.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">teacher_actions</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+<span class="p">[</span><span class="mf">0.20</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">0.35</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.08</span><span class="p">,</span> <span class="mf">0.02</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">1.50</span><span class="p">,</span> <span class="mf">0.90</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.20</span><span class="p">],</span>
+<span class="p">])</span>
+<span class="n">student_actions</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+<span class="p">[</span><span class="mf">0.18</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.12</span><span class="p">,</span> <span class="mf">0.04</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">0.30</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.01</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.02</span><span class="p">],</span>
+<span class="p">])</span>
+<span class="n">valid_teacher_step</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">])</span>
+<span class="n">squared_error</span> <span class="o">=</span> <span class="p">((</span><span class="n">student_actions</span> <span class="o">-</span> <span class="n">teacher_actions</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">masked_loss</span> <span class="o">=</span> <span class="p">(</span><span class="n">squared_error</span> <span class="o">*</span> <span class="n">valid_teacher_step</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="o">/</span> <span class="n">valid_teacher_step</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"per-step error: </span><span class="si">{</span><span class="n">squared_error</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"masked distillation loss: </span><span class="si">{</span><span class="n">masked_loss</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output">per-step error: [0.0003 0.001  1.8705]
+masked distillation loss: 0.0007</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 17.5</strong>.1 demonstrates masked teacher-student action matching. The third teacher action is excluded because it represents an invalid rollout step, preventing a bad privileged teacher moment from training the deployable student.</div>
+<p><strong>Expected output:</strong> the trace should show both per-step error and the masked loss. A distillation run that reports only average imitation loss can hide whether failed teacher states were included as targets.</p>
+<p data-agent="29">The valid-step mask matters in embodied AI because a real robot has no undo. Suppose the student imitates a teacher action taken during a fall or a joint-limit violation. It then trains toward a behavior that ends in hardware damage or an unrecoverable configuration. Including unmasked fall steps can double the closed-loop episodes the student needs to reach deployment-level stability. <span data-agent="28">In representative rough-terrain training runs, roughly 8% of rollout steps are typically</span> fall or reset events, and each one injects a target that points directly away from balance. Filtering those steps is not optional hygiene. It is the difference between a student that recovers from perturbations and one that has learned, implicitly, that falling forward is acceptable.</p>
+<p>Mechanically, the mask sets a per-step weight to zero for any rollout step tagged as a fall, timeout, or saturated-action event. The distillation loss is then a weighted average over surviving steps only, so the gradient update never sees the bad teacher moment. The denominator uses the sum of valid weights rather than total steps, keeping the loss scale stable as the fraction of masked steps varies across terrain difficulties.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Masked distillation update</h4>
+<p>Trace one gradient step through the masked distillation loss with three rollout steps. Teacher targets are step 1 = 0.40, step 2 = 0.10, step 3 = 1.30 (a fall). Current student outputs are step 1 = 0.30, step 2 = 0.05, step 3 = -0.20. The valid-step mask is v = (1, 1, 0).</p>
+<p>Per-step squared error: step 1 = (0.30 - 0.40)^2 = 0.01; step 2 = (0.05 - 0.10)^2 = 0.0025; step 3 = (-0.20 - 1.30)^2 = 2.25. Without the mask, the mean would be (0.01 + 0.0025 + 2.25) / 3 = 0.7542, dominated entirely by the fall. With the mask the numerator is v.error = 1(0.01) + 1(0.0025) + 0(2.25) = 0.0125 and the denominator is sum(v) = 2, so the masked loss is 0.0125 / 2 = 0.00625. The single fall step would have inflated the loss roughly 120x; masking it out means the gradient pushes the student toward 0.40 and 0.10 only, and never toward the -0.20-vs-1.30 catastrophe that step 3 represents.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>In Isaac Lab or MJX-style workflows, privileged observations are usually already present for asymmetric critics and diagnostics. The shortcut is to reuse those tensors for teacher training while maintaining a strict exported-student interface that contains only deployable observations.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>List privileged fields and deployable fields before training the teacher.</li>
+<li>Train or select a teacher whose advantage comes from privileged state, not from evaluation leakage.</li>
+<li>Collect teacher actions on a diverse rollout panel and mark invalid teacher steps.</li>
+<li>Train the student from deployable observations using action matching, feature matching, or DAgger-style relabeling when needed.</li>
+<li>Evaluate only the student on held-out seeds with privileged actor inputs disabled.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake is to leave a privileged field in the student observation wrapper during evaluation. The run may look excellent, but the exported policy cannot reproduce it on hardware.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>Distillation can fail even when the leakage audit is clean. If the teacher collected rollouts only on flat or easy terrain, the student's imitation targets never cover stumbling, recovery, or edge contacts. A student trained on this narrow distribution imitates smoothly in-distribution but collapses on the terrain that matters most. The fix is to collect teacher data across the full reset and command distribution, including adversarial perturbations, so the student sees recovery actions as explicit targets rather than gaps in supervision.</p>
+</div>
+<div class="callout warning">
+<p>A low offline imitation loss does not prove the student policy is deployment-ready. This is wrong in embodied AI because small action errors compound over a closed-loop horizon: each slightly-wrong action moves the robot into a state the teacher never visited, so the next imitation target is extrapolated outside the training distribution. A student can score near-zero offline loss while collapsing on the first perturbation it faces on hardware. The correct mental model is that offline imitation loss measures fit to the teacher trajectory distribution, not robustness to the robot's own error-driven state distribution; closed-loop success on a held-out perturbation panel is the only credible deployment check.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A terrain-walking teacher may observe the exact height map under every foot, while the student receives proprioception, command history, and a noisy local height scan. The evaluation artifact should include a schema diff proving that exact terrain state was removed from the student's actor input.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: ANYmal quadruped locomotion</h4>
+<p>ETH Zurich's ANYmal robot uses exactly this teacher-student pattern: a privileged teacher trains in simulation with direct access to terrain geometry and friction coefficients, then a student is distilled to act from a noisy proprioceptive history and a temporal convolutional belief encoder<span data-agent="04"> (a small network that compresses a short window of past sensor readings into an estimate of terrain and contact state, standing in for the terrain height the teacher had for free)</span>, the same adaptation pattern formalized under <a data-agent="13" href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">domain randomization and rapid motor adaptation (RMA)</a>. The deployed student, which never sees ground-truth terrain, has been reported to traverse alpine hiking trails and rubble zero-shot<span data-agent="04"> (deployed directly on the new terrain with no additional training or fine-tuning)</span><span data-agent="28">, in published field trials</span>, a result that the privileged teacher itself could never have produced on hardware because its inputs do not exist there.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Privileged distillation is a tutoring session where the teacher can read the answer key, but the final exam confiscates it.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Distillation into foundation locomotion policies (2024-2025).</strong> Rather than distilling a single privileged teacher into a single student, recent work distills across many task teachers into one generalist student. Zhuang et al. (Berkeley Humanoid, 2024) trained a privileged teacher on a full-size humanoid with ground-truth contact wrenches and then distilled the policy into a proprioception-only student that zero-shot transfers to hardware, demonstrating that the distillation bottleneck is now data diversity rather than model capacity. Labs at ETH Zurich and CMU are scaling the same pattern to whole-body manipulation on legged platforms.</p>
+<p><strong>Differentiable and world-model-assisted distillation (2024-2026).</strong> When the simulator is differentiable (MJX, Isaac Lab with analytic gradients, or a learned world model), gradients can flow through the teacher rollout directly into the student, bypassing the action-matching loss entirely. Howell et al. (MJPC + MJX, 2024) showed that analytic gradient distillation converges in roughly one-tenth the steps of behavioral cloning for contact-rich tasks. This direction is active at Google DeepMind and NVIDIA Research as simulators become faster and more differentiable.</p>
+<p><strong>Privilege decomposition and adaptive history encoding (2025).</strong> Cheng et al. (Extreme Parkour, 2024, extended follow-on work 2025) showed that splitting privileged signals by their temporal bandwidth (fast contact impulses vs. slowly varying payload) and routing each through a matching encoder improves transfer on unstructured outdoor terrain. The open problem: can an online meta-learning loop at deployment time identify which privilege channel the current terrain demands most, and re-weight the student history encoder accordingly, without any privileged signal being present on hardware?</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you list teacher inputs, student inputs, critic-only inputs, invalid-step masks, distillation loss, and the evaluation wrapper that removes privileged actor fields? If not, the distillation result is not deployment-safe.</p>
+</div>
+<p>A student that imitates a teacher's actions without ever facing the teacher's hardest moments is not a trained policy; it is a transcript of good weather.</p>
+<p>The idea in this section becomes useful when privilege is treated as a controlled variable. A teacher may use more information, but every extra field must be named, justified, and blocked from the exported actor. Otherwise distillation becomes information leakage with a nicer name.</p>
+<h4 data-agent="30">Three claims to evaluate separately</h4>
+<p>The disciplined approach is to evaluate three claims separately. The teacher claim says privileged state improves expert behavior. The imitation claim says the student matches useful teacher actions on valid states. The deployment claim says the student still succeeds when privileged actor inputs are removed.</p>
+<p data-agent="17">The imitation claim can pass while the deployment claim fails, and knowing why saves wasted iterations. A student with low offline action-matching loss still fails closed-loop because small errors compound: each slightly wrong action shifts the robot into a state the teacher never visited, so the next target lies outside the training distribution. DAgger-style interactive relabeling breaks this loop by generating new states from the student's own rollouts, having the teacher label them, and turning recovery actions into explicit targets. Bootstrap with offline distillation; close the gap with interactive relabeling.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Privileged teacher</td><td>Policy or expert with simulator-only state</td><td>Use it to generate strong targets, but log every field the teacher sees.</td></tr><tr><td>Deployable student</td><td>Policy with onboard observations only</td><td>Use it as the only policy in final evaluation and export.</td></tr><tr><td><a data-agent="13" href="ch_0141_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Asymmetric critic</a><span data-agent="04"> (a critic network that sees privileged state even though the actor it trains does not)</span></td><td>Training-time value function with extra state</td><td>Use it to stabilize learning while keeping the actor interface deployment-safe.</td></tr><tr><td>Invalid-step mask</td><td>Filter for teacher falls, resets, or unsafe actions</td><td>Use it so the student does not imitate bad teacher moments.</td></tr><tr><td>Schema diff</td><td>Audit of teacher, student, and critic fields</td><td>Use it to prove that privileged information did not leak into the student actor.</td></tr>
+</tbody>
+</table>
+</div>
+<p data-agent="14">Each of those tools earns its place only if the schema diff in the last row can actually run, and that audit is only possible when the field partitions are written down explicitly, so a robust implementation starts with an observation schema manifest. The manifest makes leakage visible by listing teacher-only, student, and critic-only fields separately.</p>
+<ol>
+<li>Freeze the deployable observation schema before collecting teacher data.</li>
+<li>Store teacher-only fields and critic-only fields as explicit lists.</li>
+<li>Save the mask rule for excluding failed teacher steps.</li>
+<li>Report imitation loss and closed-loop student metrics from the same held-out panel.</li>
+<li>Export a student checkpoint with a wrapper that rejects privileged actor inputs.</li>
+</ol>
+<pre><code class="language-python"><span class="c1"># Record the observation schema for privileged-information distillation.</span>
+<span class="c1"># The exported actor must accept only fields listed under student_obs.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">DistillationSchema</span><span class="p">:</span>
+<span class="n">teacher_only</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">student_obs</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">critic_only</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+<span class="n">mask_rule</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">eval_wrapper</span><span class="p">:</span> <span class="nb">str</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">schema</span> <span class="o">=</span> <span class="n">DistillationSchema</span><span class="p">(</span>
+<span class="n">teacher_only</span><span class="o">=</span><span class="p">(</span><span class="s2">"exact_terrain_heights"</span><span class="p">,</span> <span class="s2">"contact_impulses"</span><span class="p">),</span>
+<span class="n">student_obs</span><span class="o">=</span><span class="p">(</span><span class="s2">"joint_pos"</span><span class="p">,</span> <span class="s2">"joint_vel"</span><span class="p">,</span> <span class="s2">"command"</span><span class="p">,</span> <span class="s2">"history"</span><span class="p">),</span>
+<span class="n">critic_only</span><span class="o">=</span><span class="p">(</span><span class="s2">"base_velocity"</span><span class="p">,),</span>
+<span class="n">mask_rule</span><span class="o">=</span><span class="s2">"exclude falls, timeouts, and saturated actions"</span><span class="p">,</span>
+<span class="n">eval_wrapper</span><span class="o">=</span><span class="s2">"student_actor_only"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">schema</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre>
+<div class="code-output">{'teacher_only': ('exact_terrain_heights', 'contact_impulses'), 'student_obs': ('joint_pos', 'joint_vel', 'command', 'history'), 'critic_only': ('base_velocity',), 'mask_rule': 'exclude falls, timeouts, and saturated actions', 'eval_wrapper': 'student_actor_only'}</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 17.5</strong>.2 records the schema that prevents privileged-information leakage. The <code>student_obs</code> tuple is the deployed actor contract, while <code>teacher_only</code> and <code>critic_only</code> fields are allowed only during training.</div>
+<div class="callout tip">
+<p>In Isaac Lab, observation groups are defined in <code>ObservationsCfg</code> as separate inner classes (e.g., <code>PolicyCfg</code> and <code>CriticCfg</code>). The common gotcha is that the exported actor config must explicitly set <code>policy: PolicyCfg</code> and nothing else; if you copy a training config directly to the deployment wrapper without stripping the <code>CriticCfg</code> reference, Isaac Lab silently concatenates both groups into the actor tensor, injecting privileged fields that were never meant to reach hardware. Verify before export by printing <code>env.observation_manager.active_terms["policy"]</code> and confirming no <code>teacher_only</code> field names appear in the list.</p>
+</div>
+<p>When a distilled student fails, decide whether the issue is teacher quality, state coverage, observation insufficiency, or leakage removal. A student that imitates well offline but fails closed-loop usually needs recovery-state data, history, or an interactive relabeling loop, not another blind epoch over the same expert states. This divergence between offline imitation loss and live success is called <strong>the deployment credibility gap</strong>, and closing it is <span data-agent="28">typically the central engineering challenge</span> in distillation pipelines of this kind.</p>
+<div class="callout key-insight"><p>Think of a navigation student who memorized every turn on a practiced route and can recite them flawlessly at home. The moment a detour sign appears, each slightly wrong choice leads to an unfamiliar street, and the next memorized turn no longer matches the actual junction. Small errors compound into complete lostness because the memorized sequence was fit to the original path, not to recovery from deviation. Low offline imitation loss is like a perfect recitation at the kitchen table; closed-loop success on a held-out perturbation panel is like actually driving the route under construction.</p></div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Evaluation Recipe</div>
+<p>For privileged-information distillation, compare only construct-matched metrics that are co-computed in one pass on one configuration: same held-out seed panel, same deployable student wrapper, same command distribution, same perturbation suite, and the same success definition. Save teacher reward, imitation loss, student success, fall rate, schema diff, and leakage checks as one artifact.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Privileged-information distillation is useful when simulator secrets improve training targets and then disappear from the deployed actor. The student result is credible only when the evaluation wrapper proves that disappearance.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 17.5.1</div><p>Design a privileged teacher for rough-terrain locomotion. List teacher-only fields, student observations, critic-only fields, mask rules, distillation loss, and the evaluation check that proves the student actor does not receive privileged state.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Leakage audit for a CartPole distillation pair.</strong> Train a teacher policy in Gymnasium's CartPole-v1 that receives the full state (position, velocity, pole angle, pole velocity), then distill it into a student that receives only the two visual-proxy observations (position and pole angle). Use a simple behavioral-cloning loop in PyTorch and add an assertion that checks the student's <code>obs</code> tensor at rollout time never receives the velocity fields. The key challenge is building the leakage check so that it catches accidental concatenation early, before the student appears to train well on a contaminated input.</p><p><strong>Intermediate (1 to 2 weeks): Privileged terrain teacher for quadruped locomotion in Isaac Lab.</strong> Define a rough-terrain Gymnasium-compatible task in Isaac Lab with two observation groups: a <code>PolicyCfg</code> that uses only IMU, joint encoders, and command signals (deployable), and a <code>CriticCfg</code> that additionally exposes ground-truth foot contact forces and sub-surface height samples. Train a PPO teacher with the asymmetric critic, then distill into a student using DAgger-style interactive relabeling on recovery states sampled from mid-episode perturbations. The key challenge is closing the deployment credibility gap: the student must match teacher success rate on a held-out perturbation panel run under the deployable-only observation wrapper, not just achieve low offline imitation loss.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Distill a privileged teacher in CartPole and measure the leakage penalty</h4>
+<p><strong>Goal:</strong> see firsthand how a deployable student degrades when privileged inputs are removed, and how distillation recovers performance compared with leakage.</p>
+<p><strong>Tools needed:</strong> Python with Gymnasium (<code>CartPole-v1</code>), PyTorch, and a small MLP policy. No GPU required; the whole loop runs on CPU in minutes.</p>
+<p><strong>Steps:</strong> (1) Train a teacher with PPO or DQN on the full 4-dimensional observation (cart position, cart velocity, pole angle, pole angular velocity) until it reaches near-500 reward. (2) Define the student observation as the two "deployable" fields only (cart position and pole angle), simulating sensors that cannot measure velocity. (3) Collect 20k teacher steps and behaviorally clone the student on the 2-dimensional inputs.</p>
+<p><strong>What to vary:</strong> (a) the student observation set, including a "cheating" variant that secretly keeps all 4 fields; (b) the rollout collection policy, comparing pure offline cloning against one DAgger relabeling round using the student's own rollouts.</p>
+<p><strong>What to observe:</strong> closed-loop reward of the deployable 2-field student versus the cheating 4-field student versus the teacher. You should see the cheating variant nearly match the teacher while the honest 2-field offline student collapses on its first few perturbations, and one DAgger round noticeably narrowing the deployment credibility gap. Add an assertion that prints the active observation indices to prove the deployable student never receives the velocity fields.</p>
+</div>
+<div class="whats-next">
+<h3>What's Next?</h3>
+<p>This section turned privileged-information distillation into a deployment-safe schema: teacher-only fields, student fields, critic-only fields, valid-step masks, and leakage-free evaluation. Next, continue with <a href="ch_0143_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.6</a>, where the same discipline is applied to throughput, wall-clock, GPU memory, and cost.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
+<p class="bib-annotation">Rudin et al. are relevant because fast locomotion training often combines asymmetric critics, privileged state, and deployable actors. Use the paper to connect distillation and privilege to a real locomotion workload.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2108.10470">Makoviychuk, V. et al. (2021). Isaac Gym: High Performance GPU-Based Physics Simulation For Robot Learning. arXiv.</a></p>
+<p class="bib-annotation">Isaac Gym matters for this section because privileged simulator state is easiest to collect when thousands of environments already expose internal physics variables. That access is powerful only if the student interface stays deployment-safe.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2106.13281">Freeman, C. D. et al. (2021). Brax: A Differentiable Physics Engine for Large Scale Rigid Body Simulation. arXiv.</a></p>
+<p class="bib-annotation">Brax is relevant when teacher data and student data are generated inside a batched JAX workflow. Its array-based design makes observation schemas and masks explicit, which helps prevent leakage.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://isaac-sim.github.io/IsaacLab/">NVIDIA Isaac Lab documentation.</a></p>
+<p class="bib-annotation">Isaac Lab is useful for defining separate observation groups for actors, critics, and diagnostics. That makes it a natural setting for privileged teachers and deployable students when the wrapper contract is audited.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/mjx.html">Google DeepMind MuJoCo MJX documentation.</a></p>
+<p class="bib-annotation">MJX provides another route to simulator state that can support privileged teachers. The section's warning still applies: any exact simulator field used by a teacher must be removed from the exported actor path.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://github.com/leggedrobotics/rsl_rl">RSL-RL repository.</a></p>
+<p class="bib-annotation">RSL-RL is useful for inspecting how locomotion codebases represent actor observations and critic observations. That distinction is exactly what privileged-information distillation must preserve.</p>
+<span class="bib-meta">Tool</span>
+</div>
+</section>
+
+
+
+
+</body>
+</html>

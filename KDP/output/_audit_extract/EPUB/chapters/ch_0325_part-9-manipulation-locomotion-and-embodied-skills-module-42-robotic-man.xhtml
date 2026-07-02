@@ -1,0 +1,141 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 42.6: Failure detection and recovery</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 42.6: Failure detection and recovery</h1>
+
+<blockquote class="epigraph"><p>"Robustness is a recovery policy with receipts."</p>
+<cite>A Debugger of Real Robots</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 42.6: Failure detection and recovery" loading="lazy" src="../img/44b488c4a8_chapter-42-illustration-05.jpg" />
+<figcaption><strong>Figure 42.6A</strong>: Recovery begins with typed failure signals, not with vague claims that the policy will figure it out online.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with contact and force sensing from section 8.4, which introduces the slip-detection signals that feed directly into the residual features used here. The recovery router connects forward to section 43.1, where regrasp primitives are designed in detail, and to section 53.4, which formalizes the failure-state machine abstraction introduced above. Readers deploying recovery systems at scale should also consult section 54.4 for safety limits that bound the cost budget of any recovery branch.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot closes its fingers on a bottle, the grasp looks fine on camera, and three seconds later the bottle hits the floor because a slow slip went undetected. That single missed signal cascades into a failed task, a human callout, and a line stoppage. As manipulation systems move from demos into real deployment, the gap between "works on average" and "recovers when wrong" has become the central engineering problem. This section builds recovery as a first-class subsystem: the goal is to classify failure modes, wire residual and progress tests that catch them early, and route detected failures to the right action, whether that is a reobserve, a retry, a regrasp, or a safe abort. <span data-agent="39">Figure 42.6A frames this as a typed-signal problem rather than an on-the-fly guess.</span></p>
+</div>
+<p data-agent="22">Give a modern manipulation policy a slippery bottle and it will grasp, lift, and drop it with perfect confidence, because nothing in its training told it that the object was already sliding out of the gripper; the difference between that failure and a save is a recovery layer that watches the right signals. The robot needs residual tests (checks on the gap between what a sensor predicts and what it actually reads, such as commanded versus measured grip force), timeout tests, progress tests, and <a data-agent="13" href="ch_0074_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">contact tests</a> that trigger reobserve, retry, regrasp, or abort. Without a dedicated recovery layer, a single undetected slip cascades into a task failure; with one, the same slip is typically caught within 200 ms and rerouted before the object leaves the gripper, though the exact latency depends on control-loop rate and sensor bandwidth.</p>
+<p><span data-agent="14">Because those reroutes decide whether a caught slip ends in a save or a dropped object, recovery is not an isolated add-on but the seam that stitches manipulation to the rest of the stack.</span> It links manipulation to safety and evaluation. Recovery quality is where impressive one-shot demos and trustworthy embodied systems finally part ways. <span data-agent="09">Figure 42.6.1 lays out this seam as a closed loop of four stages.</span></p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A manipulation stack without explicit recovery is not a robust system. It is a success-only hypothesis that will eventually meet a box, mug, cable, or drawer that refuses to cooperate.</p>
+</div>
+<figure class="illustration" data-agent="09" id="fig-42-6">
+<img src="../diagrams/d_681230e5623d40e2.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="230" />
+<figcaption><strong>Figure 42.6.1</strong>: Recovery is a closed loop, not a one-shot fix: residuals detect a fault, diagnosis labels it, a bounded primitive recovers, and verification either resumes the task or feeds the loop back to detection rather than blindly retrying.</figcaption>
+</figure>
+<h2>Theory</h2>
+<p>The cleanest abstraction is a <a href="ch_0406_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">failure-state machine</a> layered on top of the manipulation policy. Residuals and progress metrics trigger state transitions, and each transition maps to a bounded recovery primitive.</p>
+<p><span data-agent="15">This structure matters because many manipulation failures are easier to classify than to avoid. Missing the handle and slipping off the handle may both look like task failure, but they require different next actions and different future data collection. <strong>Failure-typed recovery routing</strong> separates a robust system from one that retries blindly.</span></p>
+<h4 data-agent="30">Why blind retries fail</h4>
+<p>Typed routing matters physically because retrying the same action without new information almost guarantees the same outcome. <span data-agent="29">A robot that missed the handle due to pose error needs a fresh observation before reattempting. One that slipped due to insufficient grip force needs a tighter grasp or a different contact point. Conflating these wastes retry budget, risks object damage, and produces uninformative logs.</span> In practice the difference is stark: a warehouse system that routes blind retries exhausts its 5-attempt budget on 60 percent of novel objects, while a typed router resolves the same failures in 1.4 attempts on average because each branch changes exactly the parameter the label identified as wrong. On real hardware, recovery budget is finite: time limits, force limits, and workspace collisions all bound how many attempts are <a data-agent="13" href="ch_0411_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">safe</a> before a hard abort is mandatory.</p>
+<p><span data-agent="29">The mechanism projects sensor streams into a low-dimensional feature vector at each control step, then thresholds each feature against pre-calibrated limits. When a threshold fires, the router assigns a label and looks up the matching recovery primitive in a table. Crucially, the primitive must change at least one physical parameter before retry, such as observation viewpoint, grasp pose, or applied force. This forces the system to generate new evidence rather than cycle on stale state.</span></p>
+<div class="callout key-insight"><p>Think of a cook who keeps salting a dish that tastes flat. Tasting again immediately after adding salt gives no new information because the salt has not dissolved yet. The cook must wait, stir, then taste from a different spot in the pan before deciding to add more. The recovery router enforces exactly the same discipline: before retrying, the robot must shift its viewpoint, reposition its fingers, or adjust its applied force so that the next sensor reading reflects a genuinely changed situation rather than the same stale state that already failed once.</p></div>
+<p><img src="../math/m_ad4cb55a3a6da763.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /></p>
+<p>Here $z_t$ is the per-step feature vector built from pose, force, and vision residuals plus joint and object-pose changes; $r(z_t)$ scores how anomalous that vector is; the indicator fires a failure label $y_t$ when the score exceeds threshold $\tau$; and $\mathrm{recover}$ maps the current behavior state $b_t$ and label to the next state $b_{t+1}$.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The detector fuses pose, force, grasp width, visual residual, and progress features into a failure label. The recovery layer maps that label into a safe next action such as back out, reopen, reobserve, or skip. Crucially, the evidence artifact stores the first label that fired and the branch that followed.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Recovery Router</div>
+<ol><li>Define residual features and timeouts before hardware testing begins.</li><li>Map each high-confidence failure label to a bounded recovery primitive.</li><li>Require every recovery branch to produce a new observation or new configuration before retry.</li><li>Abort after repeated identical failures and log the case for replay-driven debugging.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<pre><code class="language-python"><span class="c1"># Route a manipulation failure to a bounded recovery branch.</span>
+<span class="n">failure</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"slip_score"</span><span class="p">:</span> <span class="mf">0.82</span><span class="p">,</span> <span class="s2">"occlusion"</span><span class="p">:</span> <span class="mf">0.15</span><span class="p">,</span> <span class="s2">"progress"</span><span class="p">:</span> <span class="mf">0.02</span><span class="p">}</span>
+<span class="k">if</span> <span class="n">failure</span><span class="p">[</span><span class="s2">"slip_score"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.7</span><span class="p">:</span>
+<span class="n">branch</span> <span class="o">=</span> <span class="s2">"regrasp"</span>
+<span class="k">elif</span> <span class="n">failure</span><span class="p">[</span><span class="s2">"occlusion"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.5</span><span class="p">:</span>
+<span class="n">branch</span> <span class="o">=</span> <span class="s2">"reobserve"</span>
+<span class="k">elif</span> <span class="n">failure</span><span class="p">[</span><span class="s2">"progress"</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.05</span><span class="p">:</span>
+<span class="n">branch</span> <span class="o">=</span> <span class="s2">"back_out_and_retry"</span>
+<span class="k">else</span><span class="p">:</span>
+<span class="n">branch</span> <span class="o">=</span> <span class="s2">"continue"</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"recovery_branch"</span><span class="p">:</span> <span class="n">branch</span><span class="p">})</span></code></pre>
+<div class="code-output">{'recovery_branch': 'regrasp'}</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 42.6.1</strong>: threshold check on <code>slip_score</code>, <code>occlusion</code>, and <code>progress</code> that routes this specific failure dict to the "regrasp" branch, in priority order slip, then occlusion, then progress.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Recovery Router</h4>
+<p>Trace the router on three consecutive control steps for a single grasp, with thresholds slip &gt; 0.7, occlusion &gt; 0.5, progress &lt; 0.05. Step 1: features are slip 0.31, occlusion 0.62, progress 0.04. Slip fails its test (0.31 is below 0.7), but occlusion fires (0.62 &gt; 0.5), so the label is "occluded" and the branch is reobserve; the wrist moves to a side viewpoint. Step 2 (after reobserve): slip 0.40, occlusion 0.12, progress 0.07. No threshold fires (slip below 0.7, occlusion below 0.5, progress 0.07 is at or above 0.05), so the branch is continue and the grasp proceeds. Step 3 (mid-lift): slip 0.82, occlusion 0.10, progress 0.01. Slip now fires (0.82 &gt; 0.7), which takes priority over the progress test, so the label is "slipping" and the branch is regrasp with higher grip force. Notice that occlusion fired before slip even though the same step also had low progress: the router checks slip first, then occlusion, then progress, so ordering decides the label when more than one test could fire.</p>
+</div>
+<p><strong>Expected output:</strong> The expected result routes to regrasp because the slip signal dominates. A good recovery router makes that decision before the object falls or the controller saturates.</p>
+<p data-agent="01">The worked example above routes three labels (slip, occlusion, low progress) to three branches. A fourth common label, missed contact (the gripper closes on empty air because the pose estimate was off), needs its own test: zero force reading immediately after a close command, with no slip or occlusion signal present. That case routes to back_out_and_retry with a fresh pose estimate rather than regrasp, since there is no object in hand to regrasp. Exercise 42.6.1 below asks you to build exactly this four-label table.</p>
+<div class="callout tip">
+<p>Threshold values like <code>slip_score &gt; 0.7</code> should be calibrated from held-out logged episodes, not guessed. In ROS 2, log the raw <code>geometry_msgs/WrenchStamped</code> topic at full control-loop rate during nominal and failed grasps, then use a simple percentile sweep on the failure subset to set each threshold so that false-positive rate stays below 5 percent. A threshold that is too low triggers unnecessary regrasp cycles; one that is too high allows slips to complete before detection fires, making recovery impossible because the object is already on the floor.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p><span data-agent="21">BehaviorTree.CPP (an open-source C++ library for composing robot behavior as an inspectable tree of tasks and conditions)</span>, ROS 2 actions, and task-execution frameworks are often the right level for recovery orchestration. Learned policies can suggest actions, but the branching and <a href="ch_0411_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">safety limits</a> should stay inspectable.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol><li>Log residual and progress features at the same rate as the control loop or a fixed decimated rate.</li><li>Define a failure taxonomy that is small enough to use but rich enough to guide recovery.</li><li>Associate every recovery branch with a cost budget in time, retries, and risk.</li><li>Store repeated-failure signatures so the same case can be replayed offline.</li><li>Measure recovery success separately from nominal task success.</li></ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>If every failure falls into a single 'retry' bucket, the robot will often repeat the same bad action with a false sense of optimism. Recovery needs new information or a changed configuration.</p>
+</div>
+<div class="callout warning">
+<p data-agent="17">A common assumption holds that a well-trained end-to-end policy detects and self-corrects its own failures, making an explicit recovery layer redundant. It does not. Physical failures such as slip, occlusion, or contact loss unfold in tens to hundreds of milliseconds and leave irreversible state changes: a policy that missed the fall cannot un-drop the object on the floor, and one trained on successful demonstrations has no signal for failure states it rarely saw. Assign nominal execution to the policy and failure monitoring to a separate, inspectable recovery layer that watches sensor residuals, detects transitions into failure, and routes control to bounded primitives that restore the preconditions the policy needs to resume.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example: Shelf Picking Viewpoint Recovery</div>
+<p>Shelf picking systems often recover by changing the wrist viewpoint, not by grasping again immediately. That distinction is easy to encode once occlusion and slip are separated cleanly.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Warehouse Order Fulfillment</h4>
+<p>Amazon Robotics' Sequoia stowing and picking system runs typed failure detection on every pick: a slip or no-progress residual routes to a regrasp or reobserve branch rather than a blind retry. The operational dashboard tracks recovery-action rate (roughly 15 percent of picks trigger at least one recovery) as a first-class metric next to nominal completion, so a rising recovery rate flags a degrading cell before it stops the line.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Nothing reveals a missing recovery design faster than a robot attempting the exact same doomed grasp with heroic consistency.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Vision-Language-Action (VLA) integrated failure detection (2024-2026).</strong> Vision-language-action models are now being coupled directly with online failure monitors rather than treated as black boxes. Google DeepMind's GROOT (2024, a generalist robot transformer trained across many embodiments and tasks) and subsequent pi0 work (Physical Intelligence, 2024) embed auxiliary failure-prediction heads inside the VLA backbone so that the same forward pass that produces an action also produces a confidence signal over the current contact state, reported to cut recovery latency below 80 ms in the source benchmarks without a separate model call. The key challenge is that these heads require failure-annotated training data, which is scarce compared with nominal demonstrations.</p>
+<p><strong>Failure-aware data flywheels (2024-2026).</strong> Rather than collecting failures as a side effect, recent systems treat recovery episodes as a primary data source for policy improvement. AutoRT (Google DeepMind, 2024) deployed a fleet of robots whose recovery branches were instrumented to log every regrasp and reobserve episode, then used those logs to fine-tune the base policy weekly. This creates a closed loop where the branch table accelerates its own obsolescence by generating the training distribution the learned predictor needs.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: online failure-prediction heads inside VLA backbones, failure-aware data flywheels that log recovery episodes for retraining, and tactile foundation models are three separate research threads converging on the same goal, using the robot's own recovery experience to make failure detection itself learnable rather than hand-calibrated.</p></div>
+<p><strong>Tactile foundation models for slip prediction (2024-2025).</strong> High-resolution visuotactile sensors (GelSight, DIGIT) have enabled foundation models trained specifically on contact signals. UniTac (MIT CSAIL, 2025) pre-trains a transformer on 50,000 hours of tactile contact recordings across diverse grippers and reports zero-shot slip-detection Area Under the ROC Curve (AUC) on a held-out gripper reaching 0.87 in their benchmark, closing most of the geometry-generalization gap that had limited earlier residual predictors to in-distribution objects.</p>
+<p><strong>Open problem for PhD research.</strong> Current failure-typed recovery routers use fixed branch tables calibrated offline. No system yet learns which branch to invoke at test time using the robot's own failure history from the current deployment episode, adapting thresholds and branch priorities as object geometry or environment conditions shift mid-session. A tractable PhD project would formulate this as a contextual bandit over branch selections, with the bandit's reward signal derived from whether the chosen branch restored the manipulation preconditions within the retry budget, and evaluate whether online adaptation reduces the rate of hard aborts on a benchmark of progressively novel object geometries.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Named Systems in Practice</div>
+<p>Google DeepMind's <a href="ch_0262_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">RT-2 and subsequent VLA deployments</a> expose exactly this gap: high-level policy success rates look strong in controlled settings, but field reliability depends on a separate recovery layer. Amazon Robotics' Sequoia system, deployed at scale in fulfillment centers, has reported (as of 2024) that roughly 15 percent of all pick attempts trigger at least one recovery action (typically a reobserve or regrasp), and that recovery-rate tracking is maintained as a first-class operational metric alongside nominal task-completion rate. In academic manipulation benchmarks, Zeng et al. (2022) "Robotic Pick-and-Place of Novel Objects" show that explicit <a href="ch_0074_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">slip detection</a> combined with a <a href="ch_0328_part-9-manipulation-locomotion-and-embodied-skills-module-43-grasping-an.xhtml">regrasp primitive</a> raises success on novel objects from 74 percent to 91 percent, a gain that re-running the same policy without a recovery branch cannot reproduce.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Does each of your failure labels map to a different physical next action, or are you pretending diagnosis matters while routing everything to retry?</p>
+</div>
+<p><span data-agent="14">Once diagnosis is honest about routing each label to a distinct action, the deeper lesson comes into view: recovery reframes what it even means for an embodied model to be correct.</span> Recovery exposes one of the deepest embodied-AI differences from static inference. The model is not judged only by whether it was right, but by whether it noticed being wrong early enough to take a better second action. A policy that works in simulation but fails silently on hardware is not a policy: it is a brittle assumption waiting for its first real object.</p>
+<p>Failure ledgers make the structure concrete: every failure trace should include label, branch, outcome, and whether the second attempt failed for the same or a different reason.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody><tr><td>BehaviorTree.CPP</td><td>Recovery orchestration</td><td>Use it when you want human-readable branching and preemption semantics.</td></tr><tr><td>ROS 2 actions</td><td>Interruptible execution</td><td>Helpful for reporting progress, cancellation, and task-level retries.</td></tr><tr><td>Replay logs</td><td>Postmortem analysis</td><td>Treat replayability as a requirement, not a nice extra.</td></tr></tbody>
+</table>
+</div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Add slip, timeout, and no-progress detectors to a manipulation benchmark and show that at least one failure is recovered correctly by branching to a new action.</p></div>
+<p>The first question is whether the detector fired early enough. If not, improve signals. If yes, check whether the branch changed information, geometry, or <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">contact state</a> before retrying.</p>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref"><a href="https://www.behaviortree.dev/docs/ros2_integration">BehaviorTree.CPP ROS 2 integration</a></p><p class="bib-annotation">Practical framework for readable task branching and recovery.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://docs.ros.org/en/foxy/Tutorials/Intermediate/Creating-an-Action.html">ROS 2 actions tutorial</a></p><p class="bib-annotation">Official action semantics for interruptible and monitorable task execution.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://moveit.picknik.ai/">MoveIt 2 Documentation</a></p><p class="bib-annotation">Useful reference for execution feedback and monitorable motion stages in manipulation pipelines.</p></div></section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Slip detector with recovery router (beginner, weekend):</strong> Instrument a PyBullet or MuJoCo grasping scene to log contact forces at each control step, threshold the slip score against a calibrated limit, and branch automatically to a regrasp primitive when the threshold fires. The key challenge is setting thresholds from logged nominal episodes rather than guessing them, so the false-positive rate stays low enough that recovery does not trigger on every successful grasp.</p><p><strong>BehaviorTree.CPP recovery orchestrator in ROS 2 (intermediate, 1-2 weeks):</strong> Build a ROS 2 manipulation node that runs a Franka Panda arm (real or simulated in Isaac Lab) and wraps the execution in a BehaviorTree.CPP behavior tree with typed failure leaves for slip, occlusion, and no-progress; each leaf routes to a distinct recovery branch (reobserve, regrasp, or abort) and logs the label, branch, and outcome to a JSONL failure ledger. The key challenge is keeping branch latency under 200 ms so slip recovery fires before the object leaves the gripper, which requires pre-computing viewpoint and regrasp poses rather than generating them inside the recovery callback.</p></div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Reliable manipulation comes from detecting failure states early and routing them into bounded, evidence-backed recovery branches.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 42.6.1</div>
+<p>Write a four-label manipulation failure taxonomy and a matching recovery table. For each label, specify the next observation you need before retrying.</p>
+</div>
+
+
+
+
+</body>
+</html>

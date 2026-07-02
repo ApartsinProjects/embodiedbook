@@ -1,0 +1,270 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 17.4: MJX/Brax-training and JAX RL</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 17.4: MJX/Brax-training and JAX RL</h1>
+
+<blockquote class="epigraph"><p>"When physics and gradients compile together, the boundary between simulation and learning disappears into a single kernel."</p><cite>A JIT-Compiled Robot Physicist</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration with a compiler assembling many robot simulations into one accelerator-shaped batch, illustrating JAX vectorization, static shapes, and device-resident MJX or Brax rollouts." loading="lazy" src="../img/aa704e038e_chapter-17-illustration-04.jpg" />
+<figcaption><strong>Figure 17.4A</strong>: MJX and Brax reward the builder who thinks in batched arrays first: fixed shapes, explicit random keys, and rollout buffers sized before the first compile.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the <a data-agent="13" href="ch_0138_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">parallel-environment abstraction</a> introduced in section 17.1 and the <a data-agent="13" href="ch_0139_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Proximal Policy Optimization (PPO)</a> rollout recipe from section 17.2. If you are coming from the <a data-agent="13" href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Isaac Lab path</a> covered in section 17.3, note that the JAX compilation contract here differs from the SKRL and rl_games interfaces. The ideas developed in this section are extended in <a data-agent="13" href="ch_0142_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">section 17.5</a>, which applies the same compiled rollout loop to teacher-student distillation, and in section 17.6, which turns the throughput and cost levers visible here into concrete engineering decisions.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>Eight thousand simulated robots are sprinting, falling, and recovering simultaneously on a single GPU, and the entire loop (physics, inference, advantage, update) never leaves the device. That is not a thought experiment; it is a standard MJX or Brax training run today. The breakthrough that makes it possible is JAX's ability to compile physics and learning into one stateless kernel. For embodied AI, this collapses overnight experiments into under an hour, which fundamentally changes which hypotheses are worth testing. By the end of this section you will build a fully compiled rollout loop, understand every shape constraint JAX imposes, and be able to launch reproducible locomotion experiments on a single accelerator.</p>
+</div>
+<p>When ETH Zurich's RSL group trained an ANYmal quadruped to walk in minutes (Rudin et al., 2022), the result was reproducible only because the MJCF contact model, the PPO clip ratio, the foot-clearance and joint-torque reward terms, and the terrain-and-pose reset distribution were all pinned in one training artifact. Change the friction coefficient on a Brax flat-ground reset, or let the velocity-tracking reward drift, and the same compiled rollout produces a policy that walks in sim but face-plants on the real ANYmal-C. MJX and Brax make these four pieces (simulator fidelity, PPO rollout semantics, reward terms, reset distribution) part of a single versioned, device-resident kernel rather than four separately-tuned scripts.</p>
+<p><span data-agent="15">The JAX-native training contract for MJX and Brax rests on one mindset shift.</span> JAX is a Python library for high-performance numerical computing that compiles array operations to GPU or TPU kernels and provides automatic differentiation; here it lets physics and learning share one compiled program. As Figure 17.4A illustrates, the shift is to think in batched arrays first: fixed shapes, explicit random keys, and rollout buffers sized before the first compile. <span data-agent="15">The moving parts are vectorized environments, <code>jit</code> boundaries, <code>vmap</code> or batched stepping, <code>lax.scan</code> rollout collection, and explicit pseudo-random number generator (PRNG) key splitting.</span> <span data-agent="04">Concretely: <code>jit</code> is the JAX decorator that traces a Python function once and compiles it to a fused GPU or TPU kernel; <code>vmap</code> takes a function written for one environment and automatically maps it over a batch dimension without a Python loop; and <code>lax.scan</code> is the compiled equivalent of a for-loop, carrying state across steps while writing each step's output into a pre-allocated buffer.</span> Figure 17.4B lays out how these pieces connect inside a single compiled kernel, from PRNG splitting through the scan-based rollout to the PPO update that feeds back into the next iteration.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a reproducible MJX/Brax run pins simulator fidelity, PPO semantics, and reward/reset terms into one artifact, and JAX makes this practical by compiling <code>jit</code>, <code>vmap</code>, and <code>lax.scan</code> together into a single kernel driven by explicit PRNG keys. The diagram below shows exactly how those three primitives fit together.</p></div>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_01dbbd1e1cedd674.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 17.4B</strong>: The JAX single-kernel training loop. Top row: PRNG keys are split per environment, vmap resets N environments in parallel, lax.scan collects T steps into a fixed-shape rollout buffer, all inside one jit boundary. Bottom row: each scan step runs the policy, steps all environments via vmap, and applies a done mask to rewards; once the full horizon is collected, the buffer feeds a single PPO update whose new parameters cycle back into the next rollout.</figcaption>
+</figure>
+<p>The key question is practical: can the rollout loop be compiled once, run many times with fixed tensor shapes, and still produce independent training and evaluation episodes?</p>
+<div class="callout key-insight">
+<div class="callout-title">Compile Once, Vary By Data</div>
+<p>JAX rewards programs whose control flow and tensor shapes stay stable. Vary terrain, commands, and seeds through arrays, not through Python branches that force recompilation.</p>
+</div>
+<div class="callout tip">
+<p>Use <code>jax.lax.scan</code> rather than a Python for-loop to collect rollout timesteps. A Python loop over horizon steps forces JAX to unroll the entire loop at trace time, inflating compile time and binary size for long horizons. With <code>lax.scan</code>, the carry (simulator state, PRNG key, policy params) and the output slice (observation, action, reward, done) must have fully static shapes before the first <code>jit</code> call; fix these shapes in the manifest before training starts. As a diagnostic, wrap your scan body with <code>jax.make_jaxpr</code> on a single step first to confirm no Python-side shape changes leak through.</p>
+</div>
+<p><span data-agent="29">This approach buys throughput and reproducibility. A conventional Python RL loop that calls a C++ simulator wastes a large fraction of its wall-clock time on Python overhead, host-device data copies, and sequential environment stepping. With 8,192 environments on a GPU, each Python call becomes a bottleneck. MJX and Brax remove that bottleneck: they express physics and RL as JAX array transformations that compile into a single device kernel. No Python loop runs in the hot path, no host-to-device copy happens per step, and the rollout stays entirely on the accelerator until the update finishes.</span> To make that concrete: <span data-agent="28">in practice, teams report</span> a locomotion curriculum that takes on the order of 14 hours with a sequential Python-MuJoCo loop finishing in under 45 minutes with a compiled MJX rollout on the same GPU, <span data-agent="28">roughly</span> a 20x wall-clock reduction from one architectural decision<span data-agent="28">; the exact ratio depends on horizon length, environment count, and how much of the original loop's time was Python overhead versus physics computation itself</span>. Put another way, a hyperparameter search that would have required 50,000 sequential episodes to cover the same wall-clock budget can fit in roughly 300 compiled rollouts under favorable conditions, because each rollout steps all 8,192 environments in parallel inside a single device kernel. <span data-agent="28">Gains of this magnitude are typical for throughput-bound locomotion workloads rather than guaranteed for every task; this generally changes what research is feasible to iterate on.</span></p>
+<h2>Theory</h2>
+<p>MJX provides MuJoCo-style physics through JAX arrays, while Brax provides a JAX-native physics and RL stack designed for massively parallel simulation. In both cases, the important unit is not an object-oriented environment instance; it is a batched simulator state transformed by pure functions.</p>
+<p data-agent="17">A typical rollout uses the <strong>single-kernel training loop</strong>: a compiled function mapping policy parameters, simulator state, and random keys to new state and experience tensors. Before training begins, the builder must pin down three things: which dimensions are static, which arrays are <span data-agent="04">donated (marked so JAX can overwrite their device memory in place instead of allocating a fresh buffer)</span> or reused, and how many bytes the rollout buffer consumes.</p>
+<div class="callout key-insight" data-agent="30"><p>The choice between MJX and Brax reduces to one trade: MuJoCo fidelity versus setup speed. The rest of this contract is identical for both.</p></div>
+<p><span data-agent="29">Choose MJX when your task requires MuJoCo's contact model, articulated body semantics, or existing MJCF assets. MJX preserves those modeling concepts while making the step function JAX-compatible. Choose Brax when you prototype from scratch and want the full RL environment API (reset, step, reward, done) in a single JAX-native package with less setup friction. MJX costs you coverage: the JAX backend does not support every MuJoCo feature. Brax costs you fidelity: its simplified contact model may not match hardware behavior when precise contact forces matter. Teams building locomotion policies often start with Brax for fast iteration, then switch to MJX when they need higher-fidelity contact dynamics for sim-to-real transfer.</span> A policy that runs perfectly in simulation but collapses on hardware is not a trained policy; it is a well-compiled guess.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism is functional batching: split a PRNG key into per-environment keys, step a batch of simulator states, write observations and rewards into a fixed-shape buffer, and use compiled array operations for the update. Debugging starts by printing shapes, dtypes, memory footprint, and key counts.</p>
+</div>
+<h2>Worked Example</h2>
+<p>Code Fragment 17.4.1 estimates the rollout buffer before writing a JAX training loop. This is the first sanity check for whether a planned MJX or Brax experiment fits on the accelerator.</p>
+<pre><code class="language-python"><span class="c1"># Estimate device memory for a JAX-native rollout buffer.</span>
+<span class="c1"># Static shapes should be chosen before jit compilation and training launch.</span>
+<span class="n">num_envs</span> <span class="o">=</span> <span class="mi">8192</span>
+<span class="n">horizon</span> <span class="o">=</span> <span class="mi">32</span>
+<span class="n">obs_dim</span> <span class="o">=</span> <span class="mi">64</span>
+<span class="n">act_dim</span> <span class="o">=</span> <span class="mi">12</span>
+<span class="n">float_bytes</span> <span class="o">=</span> <span class="mi">4</span>
+<span class="n">buffers</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"observations"</span><span class="p">:</span> <span class="n">horizon</span> <span class="o">*</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">obs_dim</span> <span class="o">*</span> <span class="n">float_bytes</span><span class="p">,</span>
+<span class="s2">"actions"</span><span class="p">:</span> <span class="n">horizon</span> <span class="o">*</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">act_dim</span> <span class="o">*</span> <span class="n">float_bytes</span><span class="p">,</span>
+<span class="s2">"rewards"</span><span class="p">:</span> <span class="n">horizon</span> <span class="o">*</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">float_bytes</span><span class="p">,</span>
+<span class="s2">"dones"</span><span class="p">:</span> <span class="n">horizon</span> <span class="o">*</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">float_bytes</span><span class="p">,</span>
+<span class="s2">"values"</span><span class="p">:</span> <span class="n">horizon</span> <span class="o">*</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">float_bytes</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="n">total_mb</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">buffers</span><span class="o">.</span><span class="n">values</span><span class="p">())</span> <span class="o">/</span> <span class="mi">1_000_000</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">size</span> <span class="ow">in</span> <span class="n">buffers</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">size</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">1_000_000</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> MB"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"rollout buffer total: </span><span class="si">{</span><span class="n">total_mb</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> MB"</span><span class="p">)</span></code></pre>
+<div class="code-output">observations: 67.1 MB
+actions: 12.6 MB
+rewards: 1.0 MB
+dones: 1.0 MB
+values: 1.0 MB
+rollout buffer total: 82.8 MB</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 17.4</strong>.1 sizes a fixed-shape rollout buffer for an 8,192-environment JAX run by summing observation, action, reward, done, and value tensor byte counts. The observation tensor dominates memory, so adding history, pixels, or privileged critic state should be treated as a memory decision before compilation.</div>
+<p><strong>Expected output:</strong> the trace should expose which tensor dominates memory. A JAX run that recompiles or spills buffers because shapes were guessed late will lose the throughput advantage this section is trying to teach.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Brax and MJX already provide the simulator side of the accelerator-native shortcut. The builder's job is to keep the surrounding RL code compatible with that shortcut: no per-environment Python loops, no shape changes inside the hot path, and no hidden transfer from device to host during rollout collection.</p>
+</div>
+<p>Before reading on, guess: if a sequential Python-MuJoCo loop requires 14 hours to train a quadruped locomotion policy, how much of that time is JAX compilation overhead versus actual physics steps on the GPU?</p>
+<p data-agent="01">The memory estimate above sizes the buffer; the following skeleton is the compiled rollout itself, the piece this section's title promises and that the Algorithm box below formalizes. It shows the actual wiring of <code>vmap</code>, <code>lax.scan</code>, and <code>jit</code> around a policy and an MJX or Brax environment, so the shapes and calls named earlier have one concrete home before the abstract algorithm.</p>
+<pre><code class="language-python"><span class="c1"># Minimal compiled rollout skeleton (illustrative, not a runnable full trainer).</span>
+<span class="c1"># vmap parallelizes reset/step across environments; lax.scan collects the horizon;</span>
+<span class="c1"># jit fuses both into one device-resident kernel.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">jax</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">jax</span><span class="w"> </span><span class="kn">import</span> <span class="n">lax</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">rollout</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">env</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">num_envs</span><span class="p">,</span> <span class="n">horizon</span><span class="p">):</span>
+<span class="n">reset_keys</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">num_envs</span><span class="p">)</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">vmap</span><span class="p">(</span><span class="n">env</span><span class="o">.</span><span class="n">reset</span><span class="p">)(</span><span class="n">reset_keys</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">scan_step</span><span class="p">(</span><span class="n">carry</span><span class="p">,</span> <span class="n">_</span><span class="p">):</span>
+<span class="n">state</span><span class="p">,</span> <span class="n">step_key</span> <span class="o">=</span> <span class="n">carry</span>
+<span class="n">step_key</span><span class="p">,</span> <span class="n">action_key</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">step_key</span><span class="p">)</span>
+<span class="n">actions</span> <span class="o">=</span> <span class="n">policy_apply</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">obs</span><span class="p">,</span> <span class="n">action_key</span><span class="p">)</span> <span class="c1"># vmapped internally</span>
+<span class="n">next_state</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">vmap</span><span class="p">(</span><span class="n">env</span><span class="o">.</span><span class="n">step</span><span class="p">)(</span><span class="n">state</span><span class="p">,</span> <span class="n">actions</span><span class="p">)</span>
+<span class="n">done_mask</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">-</span> <span class="n">next_state</span><span class="o">.</span><span class="n">done</span>
+<span class="n">reward_masked</span> <span class="o">=</span> <span class="n">next_state</span><span class="o">.</span><span class="n">reward</span> <span class="o">*</span> <span class="n">done_mask</span>
+<span class="k">return</span> <span class="p">(</span><span class="n">next_state</span><span class="p">,</span> <span class="n">step_key</span><span class="p">),</span> <span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">obs</span><span class="p">,</span> <span class="n">actions</span><span class="p">,</span> <span class="n">reward_masked</span><span class="p">,</span> <span class="n">next_state</span><span class="o">.</span><span class="n">done</span><span class="p">)</span>
+<span class="p">(</span><span class="n">final_state</span><span class="p">,</span> <span class="n">_</span><span class="p">),</span> <span class="n">trajectory</span> <span class="o">=</span> <span class="n">lax</span><span class="o">.</span><span class="n">scan</span><span class="p">(</span>
+<span class="n">scan_step</span><span class="p">,</span> <span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">key</span><span class="p">),</span> <span class="n">xs</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">length</span><span class="o">=</span><span class="n">horizon</span>
+<span class="p">)</span>
+<span class="k">return</span> <span class="n">trajectory</span> <span class="c1"># (obs, actions, rewards, dones), each shape (horizon, num_envs, ...)</span>
+<span class="n">compiled_rollout</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">jit</span><span class="p">(</span><span class="n">rollout</span><span class="p">,</span> <span class="n">static_argnums</span><span class="o">=</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span></code></pre>
+<div class="code-caption" data-agent="01"><strong>Code Fragment 17.4.1a</strong> wires <code>vmap</code>, <code>lax.scan</code>, and <code>jit</code> around a generic MJX or Brax environment. <code>policy_apply</code> stands in for whatever network library produces actions from observations; the point is that reset, step, and the done mask all stay inside array operations, with no Python-level branching per environment or per step.</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Choose static shapes for environment count, horizon, observation groups, action dimension, and privileged critic state.</li>
+<li>Split PRNG keys per environment and per rollout step so randomization does not synchronize.</li>
+<li>Put reset logic into compiled array operations where possible.</li>
+<li>Profile compile time separately from steady-state training throughput.</li>
+<li>Evaluate on a separate key stream and a separate task panel, then save both key roots.</li>
+</ol>
+<div class="callout algorithm">
+<h4>Algorithm: JAX-Native Compiled Rollout with MJX/Brax</h4>
+<p><strong>Input:</strong> policy parameters $\theta$, simulator model $\mathcal{M}$, batch size $N$, horizon $T$, learning rate $\alpha$, PRNG root key $k_{\text{train}}$</p>
+<p><strong>Output:</strong> updated parameters $\theta'$, rollout buffer $(s_{1:T}, a_{1:T}, r_{1:T}, d_{1:T})$, per-step throughput estimate</p>
+<ol>
+<li>Fix static shapes: observation dim $d_o$, action dim $d_a$, batch $(T, N)$. Allocate device-resident rollout buffer of size $T \times N \times (d_o + d_a + 2)$ before compilation.</li>
+<li>Split $k_{\text{train}}$ into $N$ per-environment keys $\{k_i\}_{i=1}^{N}$ and a separate evaluation root $k_{\text{eval}}$ so training and evaluation randomness never share a key stream.</li>
+<li>Initialize batched simulator state $s_0 = \text{vmap}(\mathcal{M}.\text{reset})(k_{1:N})$ using <code>jax.vmap</code> over the $N$ environment keys.</li>
+<li>Compile the rollout body as a <code>lax.scan</code> step: carry $= (s_t, \theta, k_t)$; emit $(s_{t+1}, a_t, r_t, d_t)$ where $a_t \sim \pi_\theta(s_t)$ and $s_{t+1} = \text{vmap}(\mathcal{M}.\text{step})(s_t, a_t)$. <span data-agent="03">(Every environment steps forward regardless of $d_t$; the done flag is only applied as a mask afterward, a design choice the warning box later in this section explains in full.)</span></li>
+<li>Execute <code>jax.jit(lax.scan)(rollout\_body, init\_carry, xs=None, length=T)</code> to collect the full horizon in one device-resident kernel; record compile time separately from step 6 onward.</li>
+<li>Compute advantages $\hat{A}_t = \sum_{l=0}^{T-t} (\gamma \lambda)^l (r_{t+l} + \gamma V_\theta(s_{t+l+1}) - V_\theta(s_{t+l}))$ over the buffer using vectorized array operations, no Python loop.</li>
+<li>Compute the clipped surrogate loss $L^{\text{CLIP}}(\theta) = \mathbb{E}_t[\min(r_t(\theta)\hat{A}_t,\, \text{clip}(r_t(\theta), 1-\varepsilon, 1+\varepsilon)\hat{A}_t)]$ and the value loss $L^V$.</li>
+<li>Update parameters: $\theta' \leftarrow \theta - \alpha \nabla_\theta (L^{\text{CLIP}} + c_1 L^V - c_2 H[\pi_\theta])$, <span data-agent="04">where $H[\pi_\theta]$ is the policy's entropy (a measure of how spread out its action distribution is, used here as a bonus that discourages premature convergence to a single action) and $c_1$, $c_2$ are scalar weights that trade off value-loss accuracy against this exploration bonus</span>, via <code>jax.grad</code> and an <span data-agent="21">Optax (a JAX-native gradient-processing and optimization library) optimizer</span> step.</li>
+<li>Verify no recompilation occurred: assert that shape and dtype of carry and output slices are identical to those seen at trace time before logging any throughput number.</li>
+<li>Evaluate on a held-out episode batch using $k_{\text{eval}}$ and save compile time, steady-state steps per second, rollout buffer bytes, $\theta'$ checkpoint, and both PRNG roots as one artifact.</li>
+</ol>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake is to benchmark after the first call and include compilation time in one result but not another. Another common mistake is to change batch shape during curriculum updates, causing silent recompilation and confusing wall-clock comparisons.</p>
+</div>
+<div class="callout warning">
+<p>A natural assumption is that a compiled JAX rollout handles episode termination the same way a Python-driven MuJoCo loop does. In a Python loop, a done flag triggers an immediate reset and the next step begins a fresh episode. That assumption is wrong in JAX. <code>lax.scan</code> requires fully static control flow and fixed tensor shapes, so there is no conditional early exit. Done flags travel as a boolean mask inside the fixed-shape buffer. The environment performs an array-conditional reset at every step, regardless of whether the episode actually ended. Every environment in the batch always steps forward. Termination is a masking operation applied to rewards and observations after the fact, not a branch that stops and restarts the simulation kernel.</p>
+</div>
+<div class="callout key-insight"><p>Think of a relay-race scoreboard that records every lap whether or not a runner has finished. The scoreboard does not stop the clock when someone crosses the finish line; it simply marks that runner's remaining laps with a zero and keeps ticking for everyone else. At the end of the race, the scoring committee zeroes out any laps run after a runner already finished. A JAX rollout works the same way: every environment steps forward on every tick regardless of whether its episode ended, and the done flag is applied as a mask when advantages are computed, not as a branch that halts and restarts the simulation.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A team building an MJX quadruped task should freeze the model topology, observation shape, and horizon during a benchmark. Terrain difficulty can change through arrays and masks, while the compiled rollout shape remains constant.</p>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: done-masked reward inside lax.scan</h4>
+<p>Trace one scan step for a tiny batch of N=3 environments, horizon T=4, currently at step t=2. The raw per-environment rewards emitted by <code>vmap(env.step)</code> are <code>r = [1.0, 0.5, 2.0]</code>. Environment 1 (index 1) terminated at the previous step, so the carried done mask is <code>d_prev = [0, 1, 0]</code>. The masking rule keeps reward only while the episode is live, so the survival multiplier is <code>(1 - d_prev) = [1, 0, 1]</code>. Element-wise: <code>r_masked = r * (1 - d_prev) = [1.0*1, 0.5*0, 2.0*1] = [1.0, 0.0, 2.0]</code>. Environment 1 contributes 0.0 even though the kernel still stepped its physics. The new done flags from this step are <code>d_now = [0, 1, 1]</code> (environment 2 just finished), and the carried mask becomes <code>d_carry = d_prev OR d_now = [0, 1, 1]</code>, so at t=3 the multiplier will be <code>[1, 0, 0]</code>. Note that all three environments stepped forward on every tick; only the scoreboard changed. The buffer slice written at t=2 is therefore <code>rewards[2] = [1.0, 0.0, 2.0]</code> with no Python branch anywhere in the loop.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: legged locomotion at Google DeepMind</h4>
+<p>Google DeepMind's MuJoCo Playground (2025) ships MJX training recipes that take a Unitree Go1 or Berkeley Humanoid policy from random initialization to a deployable gait in minutes on a single GPU, using exactly the compiled <code>lax.scan</code> rollout and fixed-shape buffer pattern in this section. The same JAX kernels that train in sim are exported and run zero-shot on the physical robots, which is only reproducible because shapes, reward terms, and PRNG roots are pinned in one artifact. This collapses the sim-to-real iteration loop from overnight runs to coffee-break experiments.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>JAX is happiest when the experiment arrives wearing the same tensor shape every day. Surprise it with a new shape mid-run, and the compiler gets a vote.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Differentiable simulation through contact for policy gradients.</strong> The JAX/MJX stack opens a path to computing analytic gradients through physics, not just through the policy. Google DeepMind's work on MJX-based gradient-informed locomotion (2024) and the broader "differentiable simulation for RL" program at CMU and Berkeley are pushing contact-gradient estimators that reduce sample complexity by an order of magnitude relative to pure PPO on the same hardware budget. The open challenge is gradient instability through rigid contact: small perturbations in foot placement produce large, discontinuous force jumps that explode gradients, and current fixes (soft contacts, randomized smoothing) trade physical fidelity for gradient smoothness.</p>
+<p><strong>Hardware-accelerated multi-task curriculum at scale.</strong> PKU-MARL's GPU-resident multi-agent training framework (2024) and Google DeepMind's robotics scaling experiments demonstrate that compiling curriculum transitions (terrain difficulty, command velocity range, perturbation magnitude) as JAX array schedules rather than Python callbacks sustains near-linear throughput scaling from 8 K to 128 K simulated agents on TPU pods. The gap is curriculum design: current schedules are hand-tuned per morphology, and learning the curriculum jointly with the policy inside a single compiled program remains an open problem.</p>
+<p><strong>End-to-end vision-to-action training in compiled rollouts.</strong> Stanford IRIS and ETH Zurich's RSL group (2025) have begun integrating convolutional or transformer vision encoders directly into MJX/Brax rollouts compiled with <code>lax.scan</code>, keeping rendered depth or egocentric RGB frames device-resident throughout. Per-step render cost and buffer memory (a 64x64 RGB stream for 8,192 environments consumes roughly 3.2 GB per 32-step horizon before policy weights or optimizer state) currently limit vision-based training to smaller batch sizes or shorter horizons than proprioceptive baselines.</p>
+<p><strong>Open problem for PhD research:</strong> All three directions above assume the rollout shape is fixed at compile time. A principled method for dynamically varying the number of active environments (for example, dropping early-terminated episodes to free memory and refilling with fresh resets) without triggering JAX recompilation does not yet exist. Solving this would allow adaptive batch sizing inside a single training run, improving hardware utilization when episode length is highly variable across a curriculum.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the static rollout shape, memory footprint, PRNG key schedule, compile boundary, and held-out evaluation key stream? If not, the MJX or Brax run is not yet reproducible.</p>
+</div>
+<p>The idea in this section becomes useful when accelerator constraints are treated as part of the algorithm. A JAX RL loop is fast because it exposes the whole rollout as a regular computation graph. That same regularity means dynamic episode bookkeeping, variable-size observations, and host-side logging must be designed carefully.</p>
+<p>The graduate-level habit is to report compile time, steady-state steps per second, memory footprint, shape choices, and key schedule separately. Otherwise a result may confuse a better algorithm with a better compilation path.</p>
+<p data-agent="14">Knowing which quantities to report separately is only half the discipline; the table below names the specific tools that produce each of them, so you can map every reporting field to the library call responsible for it.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>MJX</td><td>MuJoCo-style models through JAX arrays</td><td>Use it when you want MuJoCo modeling concepts with accelerator-friendly batched stepping.</td></tr><tr><td>Brax</td><td>JAX-native batched physics and RL environments</td><td>Use it when fast parallel simulation and functional training loops are the main goal.</td></tr><tr><td><code>jax.jit</code></td><td>Compile rollout and update functions</td><td>Use it around stable hot paths, and keep shape-changing logic outside benchmarks.</td></tr><tr><td><code>jax.vmap</code> or batched state</td><td>Apply one step function across many environments</td><td>Use it to express environment parallelism as array structure rather than Python loops.</td></tr><tr><td><code>jax.random.split</code></td><td>Independent randomness for environments and evaluation</td><td>Use it to record train and evaluation key streams without accidental reuse. In embodied AI this matters because a real robot cannot re-run the same terrain sequence; if your sim evaluation accidentally replays training terrains, reported success rates overestimate what the robot will encounter on deployment. Mechanically, <code>jax.random.split(key, n)</code> deterministically derives n statistically independent child keys from one parent, so you can give each of 8,192 simulated environments its own key without correlation, while keeping a separate root for held-out evaluation that never overlaps the training stream.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Once those tools are chosen, the next step is to pin down how they will be configured for a given run, and that record is what a manifest captures. <span data-agent="14">A robust implementation starts with a JAX run manifest.</span> It records the shapes that must stay static, the keys that drive randomness, and the metrics that separate compilation overhead from steady-state throughput.</p>
+<ol>
+<li>Freeze batch, horizon, observation, action, and privileged-state shapes before the first benchmark.</li>
+<li>Record root PRNG keys for training, curriculum randomization, and evaluation separately.</li>
+<li>Measure first-call compile time and post-compile steady-state throughput as different fields.</li>
+<li>Save memory estimates for rollout buffers and optimizer state.</li>
+<li>Compare algorithms only when they share the same static shapes and held-out key stream.</li>
+</ol>
+<pre><code class="language-python"><span class="c1"># Record the JAX-specific fields that make an MJX or Brax run auditable.</span>
+<span class="c1"># Static shapes and separate PRNG roots prevent hidden recompilation and leakage.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">JaxRlManifest</span><span class="p">:</span>
+<span class="n">simulator</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">batch_shape</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+<span class="n">obs_dim</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">action_dim</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">train_key_root</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">eval_key_root</span><span class="p">:</span> <span class="nb">int</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">manifest</span> <span class="o">=</span> <span class="n">JaxRlManifest</span><span class="p">(</span>
+<span class="n">simulator</span><span class="o">=</span><span class="s2">"MJX"</span><span class="p">,</span>
+<span class="n">batch_shape</span><span class="o">=</span><span class="p">(</span><span class="mi">32</span><span class="p">,</span> <span class="mi">8192</span><span class="p">),</span>
+<span class="n">obs_dim</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>
+<span class="n">action_dim</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span>
+<span class="n">train_key_root</span><span class="o">=</span><span class="mi">1704001</span><span class="p">,</span>
+<span class="n">eval_key_root</span><span class="o">=</span><span class="mi">1704999</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">manifest</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre>
+<div class="code-output">{'simulator': 'MJX', 'batch_shape': (32, 8192), 'obs_dim': 64, 'action_dim': 12, 'train_key_root': 1704001, 'eval_key_root': 1704999}</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 17.4</strong>.2 defines the <code>JaxRlManifest</code> dataclass and prints the recorded fields for an MJX run with 8,192 environments. The batch shape fixes the rollout compilation contract, while separate key roots prevent evaluation from reusing training randomness.</div>
+<p>When a JAX-native run fails, separate numerical, compilation, and RL causes. Check NaNs, dtype choices, action clipping, reset masks, key reuse, recompilation counts, and host-device transfers before blaming the policy architecture.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Evaluation Recipe</div>
+<p>For MJX and Brax experiments, compare only construct-matched metrics that are co-computed in one pass on one configuration: same batch shape, same simulator model, same policy checkpoint, same PRNG key panel, same perturbation suite, and the same success definition. Save compile time, steady-state steps per second, memory footprint, return, success, and failure labels as one artifact.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>MJX and Brax make GPU RL effective when the experiment is expressed as stable batched array transformations. Static shapes, explicit PRNG keys, and device-resident buffers are part of the scientific method, not just implementation details.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 17.4.1</div><p>Design an MJX or Brax benchmark with 8,192 environments. Specify horizon, observation dimension, action dimension, rollout memory, train key root, evaluation key root, and how you would report compile time separately from steady-state throughput.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measure the compile-versus-steady-state split in a Brax PPO run</h4>
+<p><strong>Goal:</strong> empirically separate JAX compilation overhead from steady-state throughput, and watch silent recompilation happen when you break the static-shape contract.</p>
+<p><strong>Tools needed:</strong> a machine with one GPU, <code>pip install brax jax[cuda12]</code>, and Python 3.11+. Use the built-in Brax <code>ant</code> or <code>halfcheetah</code> environment and the bundled <code>brax.training.agents.ppo</code> trainer.</p>
+<p><strong>Steps:</strong> (1) Wrap the training call in a timer and run for a small number of timesteps with <code>num_envs=4096</code>, recording wall-clock from process start to first completed update versus the time per update after the first. (2) Set the environment variable <code>JAX_LOG_COMPILES=1</code> so every <span data-agent="21">XLA (Accelerated Linear Algebra, the compiler JAX uses to turn array operations into GPU or TPU kernels)</span> compilation prints to the console.</p>
+<p><strong>What to vary:</strong> change <code>num_envs</code> from 4096 to 2048 to 8192 between runs, and separately change the unroll length (horizon) mid-script.</p>
+<p><strong>What to observe:</strong> the first update should be far slower than the rest (that gap is compile time). Every time you change <code>num_envs</code> or horizon you should see a fresh "Compiling ..." line, confirming that shape changes trigger recompilation. Plot steps-per-second against <code>num_envs</code> and confirm throughput scales sub-linearly once the GPU saturates. You now have a direct measurement of why this section insists on freezing shapes before benchmarking.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Train a Brax hopper to balance using PPO with a compiled <code>lax.scan</code> rollout loop. Write the <code>JaxRlManifest</code> dataclass from this section, run 1,000 update steps on a single GPU, and log compile time separately from steady-state throughput. The key challenge is keeping tensor shapes static across the full training run so JAX does not silently recompile when you change the horizon or batch size mid-experiment.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Build an MJX quadruped locomotion curriculum where terrain difficulty increases through domain-randomized friction arrays rather than Python branches, using a <span data-agent="21">Gymnasium (the standard reset/step/reward/done environment interface used across most RL libraries)</span>-compatible wrapper around the MJX step function so you can swap in PyBullet or a Brax equivalent for ablation. The key challenge is designing the done-flag masking so episode resets remain a compiled array operation at every step, never a Python conditional that forces recompilation and destroys the throughput advantage of the device-resident rollout.</p></div>
+<div class="whats-next">
+<h3>What's Next?</h3>
+<p>This section turned MJX and Brax training into a JAX-native contract: fixed shapes, explicit random keys, memory budgeting, compile boundaries, and held-out evaluation. Next, continue with <a href="ch_0142_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.5</a>, where privileged-information teachers use these fast simulators to train deployable students.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
+<p class="bib-annotation">Rudin et al. provide the locomotion workload that many JAX-native efforts try to accelerate or reproduce. Use it as a behavioral target, not as evidence that any new simulator setup transfers automatically.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2108.10470">Makoviychuk, V. et al. (2021). Isaac Gym: High Performance GPU-Based Physics Simulation For Robot Learning. arXiv.</a></p>
+<p class="bib-annotation">Isaac Gym is useful here as the GPU-resident predecessor to newer accelerator-native workflows. It frames why MJX and Brax also care about keeping simulation and learning close to the device.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2106.13281">Freeman, C. D. et al. (2021). Brax: A Differentiable Physics Engine for Large Scale Rigid Body Simulation. arXiv.</a></p>
+<p class="bib-annotation">Brax is central to this section because it treats physics and RL as JAX-friendly batched computation. Use it to study functional environment stepping, vectorization, and accelerator-scale rollout design.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://isaac-sim.github.io/IsaacLab/">NVIDIA Isaac Lab documentation.</a></p>
+<p class="bib-annotation">Isaac Lab offers a useful contrast to MJX and Brax. It emphasizes task and runner integration around Isaac Sim, while this section emphasizes compiled JAX loops and static rollout shapes.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/mjx.html">Google DeepMind MuJoCo MJX documentation.</a></p>
+<p class="bib-annotation">MJX is the primary source for MuJoCo-style physics inside JAX. It is the reference to consult for API boundaries, supported model features, and how batched data differs from classic MuJoCo usage.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://github.com/leggedrobotics/rsl_rl">RSL-RL repository.</a></p>
+<p class="bib-annotation">RSL-RL is included as a non-JAX point of comparison for PPO storage and locomotion conventions. It helps readers distinguish algorithm settings from simulator execution model.</p>
+<span class="bib-meta">Tool</span>
+</div>
+</section>
+
+
+
+
+</body>
+</html>

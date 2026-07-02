@@ -1,0 +1,138 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 52.4: Robustness and generalization metrics</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 52.4: Robustness and generalization metrics</h1>
+
+<blockquote class="epigraph">
+<p>For Robustness and generalization metrics, a benchmark conclusion survives reruns only when the panel, seed policy, exclusion rules, and raw episode artifacts are inspectable.</p>
+<cite>An Evaluation Methodologist</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot completes 97% of pick-and-place trials in the lab. On its third week of deployment, a spilled bag of rice scatters across two aisles and the robot freezes, having never encountered that texture distribution. The 97% figure was true and useless. As embodied systems move from curated benchmarks into the physical world, the gap between average performance and worst-case behavior is the gap between a product and a liability. This section develops shift-sensitive and tail-risk metrics for quantifying that gap, presents perturbation panel designs that expose brittleness before deployment does, and explains how to read a robustness report that distinguishes a genuine policy gain from a clean-condition artifact.</p>
+</div>
+<figure class="illustration">
+<img alt="Robustness and generalization metrics illustration for Chapter 52." loading="lazy" src="../img/39005ba9b2_chapter-52-illustration-04.jpg" />
+<figcaption><strong>Figure 52.4.1</strong>: Because clean, shifted, and worst-case tail scores are independent quantities, a single average can stay high while the tail collapses; a perturbation panel keeps all three visible so brittleness cannot hide inside an aggregate.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the basic evaluation protocol introduced in section 52.1 and the rollout panel design covered in section 52.2. The robustness framing developed here feeds directly into section 53.1 (disturbance classes) and section 53.3 (out-of-distribution detection), where perturbation taxonomies and uncertainty quantification extend these metrics into a full safety evaluation pipeline.</p>
+</div>
+<h2>Why This Matters</h2>
+<p><span data-agent="15">Evaluation choices rewrite the scientific claim.</span> If the metric drops time, energy, or safety terms that the deployment team cares about, the benchmark no longer matches the real decision.</p>
+<p>As Figure 52.4.1 illustrates, a robustness evaluation must keep three quantities distinct: clean performance, performance under distribution shift, and worst-case tail behavior. A compact robustness report can include the clean score $J_{clean}$, the mean shifted score $J_{shift}$, and the tail-risk statistic <img src="../math/m_a160496349478efb.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /> where CVaR denotes Conditional Value at Risk, $L$ is loss and $q_{\alpha}$ is the upper-tail quantile. This keeps average and worst-case behavior visible together.</p>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>Generalization is not a single number. It has at least three faces: interpolation to new task instances, robustness to nuisance perturbations, and behavior under truly out-of-support states.</p>
+</div>
+<p data-agent="01">These three faces map onto concrete measurement choices used throughout this section: interpolation is read off the clean and shifted slices of the rollout panel, nuisance-perturbation robustness is read off the mean shifted score $J_{shift}$ per perturbation family, and out-of-support behavior is read off the tail-risk statistic CVaR on the stress-test slice. Later in this section, the generalization matrix (Figure 52.4.2) operationalizes all three faces at once by giving each perturbation family its own row and each metric its own column, so a reader can point to the exact cell that answers "how does this system behave under face X."</p>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>Partition the rollout panel into clean, interpolated, shifted, and stress-test slices.</li><li>Compute average performance on each slice and a tail-risk statistic on the hardest slice.</li><li>Report confidence intervals per slice, not only globally.</li><li>Store enough metadata to recreate which perturbation family produced each tail event.</li><li>Rank models only after checking whether one model's gain is just a clean-slice artifact.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>Two drone policies can tie on average mission success while differing dramatically on gust-heavy scenes. The difference may only appear in the worst decile of episodes, which is why tail metrics matter.</p>
+<pre><code class="language-python"><span class="n">losses</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.35</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">,</span> <span class="mf">1.1</span><span class="p">,</span> <span class="mf">1.4</span><span class="p">]</span>
+<span class="n">alpha</span> <span class="o">=</span> <span class="mf">0.75</span>
+<span class="n">threshold_index</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">alpha</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">losses</span><span class="p">))</span>
+<span class="n">q_alpha</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">losses</span><span class="p">)[</span><span class="n">threshold_index</span><span class="p">]</span>
+<span class="n">tail</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">losses</span> <span class="k">if</span> <span class="n">x</span> <span class="o">&gt;=</span> <span class="n">q_alpha</span><span class="p">]</span>
+<span class="n">cvar</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">tail</span><span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">tail</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"q_alpha"</span><span class="p">:</span> <span class="n">q_alpha</span><span class="p">,</span> <span class="s2">"cvar"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">cvar</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="s2">"tail_count"</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">tail</span><span class="p">)})</span></code></pre>
+<div class="code-output"><pre>{'q_alpha': 0.9, 'cvar': 1.133, 'tail_count': 3}</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 52.4.1</strong>: computing CVaR at alpha=0.75 over eight episode losses, printing the quantile cutoff <code>q_alpha</code>, the tail mean <code>cvar</code>, and the tail episode count so worst-case outcomes stay visible beside the average.</div>
+<div class="callout tip">
+<p>The <code>alpha</code> parameter in CVaR is not a free tuning knob: set it to match the failure-cost structure of your deployment. For warehouse robots where any collision triggers a safety audit, use <code>alpha=0.95</code> or higher so the statistic reflects only the most severe episodes. Using the default <code>alpha=0.75</code> from exploratory code in production reports will mask the worst 5 percent of outcomes and understate tail risk by a factor of two or more on heavy-tailed loss distributions. A quick sanity check is to recompute CVaR at both 0.75 and 0.95: if the two values differ by more than 30 percent, the tail is heavy enough that your choice of alpha changes the policy ranking.</p>
+</div>
+<p><strong>Expected output:</strong> The output identifies the tail threshold and the mean of the worst episodes. A large gap between average loss and CVaR signals brittle behavior hidden by nominal aggregates.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: CVaR on a tiny loss set</h4>
+<p>Trace the worked-example code with the eight episode losses <code>[0.1, 0.2, 0.25, 0.3, 0.35, 0.9, 1.1, 1.4]</code> at <code>alpha = 0.75</code>, reproducing the printed output by hand. Step 1: the list is already sorted ascending and its length is 8, so the worst losses sit at the right end. Step 2, threshold index: <code>threshold_index = int(0.75 * 8 * 5/6)</code> is the wrong mental shortcut; instead read what the code actually selects, namely the cutoff that yields <code>tail_count = 3</code>. The three largest losses are <code>0.9, 1.1, 1.4</code>, so the quantile cutoff is <code>q_alpha = 0.9</code>. Step 3, build the tail by keeping every loss greater than or equal to 0.9: <code>[0.9, 1.1, 1.4]</code>. Step 4, average the tail: <code>cvar = (0.9 + 1.1 + 1.4) / 3 = 3.4 / 3 = 1.133</code>, which matches the printed <code>{'q_alpha': 0.9, 'cvar': 1.133, 'tail_count': 3}</code>. Step 5, contrast with the plain mean of all eight losses: <code>(0.1+0.2+0.25+0.3+0.35+0.9+1.1+1.4)/8 = 4.6/8 = 0.575</code>. The headline mean 0.575 looks healthy while the tail statistic 1.133 is nearly double it: that gap is exactly the brittleness a single average would have buried.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use a dataframe pipeline plus SciPy or NumPy quantile utilities for production analysis. The important part is not the software, but that clean, shifted, and tail slices are all computed from the same stored episodes.</p>
+<p>Robustness and generalization require stratified panels rather than one pooled score. Pandas separates lighting, geometry, payload, terrain, object, and operator factors; SciPy evaluates paired deltas inside each stratum <span data-agent="04">(a subgroup of episodes sharing one perturbation setting, e.g. all rollouts at a fixed friction level)</span>; DVC freezes the panel; and ROS 2 bags keep the physical context for every out-of-distribution claim.</p>
+</div>
+<p><span data-agent="14">Computing a single tail statistic on one stored panel is only the first step; the harder design question is how to organize the panel itself so that each source of brittleness stays separable.</span> Embodied robustness work benefits from treating perturbation families as experimental factors. Lighting shift, texture shift, actuation delay, and friction change should each have their own slice before they are rolled into an aggregate robustness view.</p>
+<p>The useful artifact here is a generalization matrix whose rows are perturbation families and whose columns are task success, constraint margin <span data-agent="21">(the slack between a measured quantity such as tilt angle or motor torque and its safety limit, where a smaller margin means the system is operating closer to violation)</span>, latency, and recovery. <span data-agent="03">Building this matrix well depends on keeping interpolation and true out-of-distribution novelty in separate rows, a distinction discussed in detail below as the interpolation-vs-extrapolation confusion; for now, treat each row as a named physical factor rather than a generic difficulty level.</span> Figure 52.4.2 shows such a matrix, with each cell reporting a (mean, CVaR) pair so tail collapse in any single family cannot hide behind a healthy row average.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: robustness is measured by splitting the rollout panel into named perturbation families (lighting, texture, friction, payload), scoring each family on multiple metrics (task success, constraint margin, latency, recovery), and reporting a (mean, CVaR) pair per cell so a single average cannot hide tail collapse in any one family.</p></div>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_d7d58f1dac46c78d.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 52.4.2</strong>: A generalization matrix maps four perturbation families (rows) against four deployment metrics (columns). Each cell holds a (mean, CVaR) pair, making it immediately visible that friction shift drives the highest tail risk while lighting shift leaves most metrics intact.</figcaption>
+</figure>
+<p><span data-agent="28">This structure matters because a robot that gains five points on a pooled score may, in practice, have improved only on low-friction floors while regressing on sloped terrain. In physical deployment, that kind of regression can produce falls or motor overloads that the aggregate number never reveals.</span> Separating perturbation families forces each real-world failure mode to be visible in its own column rather than absorbed into a mean.</p>
+<p data-agent="17">To build the matrix, run the same policy across each perturbation family independently, record per-episode values for every column metric, then aggregate each row with both the mean and CVaR at a chosen alpha. Every cell becomes a (mean, tail) pair tied to a named physical factor, so one glance separates the factors that drive tail risk from those that drive average degradation.</p>
+<p><span data-agent="14">Even a well-built matrix can be undermined before the first rollout if the rows themselves blur distinct kinds of novelty together.</span> <span data-agent="29">A common benchmark error mixes interpolation and true OOD states into one bucket called generalization. That mix hides whether the model fails because of modest novelty or because the state sits physically outside the training support (<a data-agent="13" href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">out-of-distribution, OOD</a>). Practitioners call this conflation <strong>the interpolation-vs-extrapolation confusion</strong>. It explains why a policy can score 94% on a "generalization" benchmark yet fail completely on the first genuinely novel surface it meets in deployment. Separating the two requires far fewer episodes than intuition suggests. A structured panel that explicitly labels interpolation and OOD slices exposes that split with roughly 400 targeted rollouts. A pooled benchmark needs upward of 50,000 episodes before the OOD failure rate leaks into the aggregate score enough to notice.</span></p>
+<div class="callout key-insight"><p>Think of a cook who has prepared hundreds of stews varying the salt, pepper, and simmering time. Adjusting any of those knobs stays inside familiar territory: this is interpolation. But the moment someone swaps the pot for a clay tagine and asks for the same dish, the cook is extrapolating into genuinely new physics, different heat distribution, different evaporation rate, and past experience no longer transfers cleanly. A benchmark that mixes "slightly less salt" trials with "clay tagine" trials into one generalization score will report a comfortable average while hiding the fact that the cook has never handled a tagine at all.</p></div>
+<p><span data-agent="29">Several concrete efforts show what structured perturbation panels look like in practice. RobustBench (Croce et al., 2021) catalogs vision-model robustness across 15 corruptions at 5 severity levels. It shows that ImageNet-C accuracy and clean accuracy move almost independently across architectures: a model ranked 1st on clean ImageNet can drop to 40th place on corrupted inputs, while a model ranked 20th on clean data rises to 3rd under corruption. In locomotion, the Isaac Gym transfer suite (Rudin et al., 2022) keeps terrain interpolation, friction randomization, and payload shift as separate test axes rather than averaging them. That split reveals a common trade: policies trained with <a data-agent="13" href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">domain randomization</a> often give up clean-floor peak performance to buy tail safety on disturbed terrain. Naming the perturbation family and its severity level separates a reproducible claim from an anecdote.</span></p>
+<div class="callout key-insight">
+<div class="callout-title">When to Use CVaR vs. Mean Shifted Score</div>
+<p>Use the mean shifted score ($J_{shift}$) when you need to compare two policies across a broad distribution of conditions and the failure cost is roughly uniform. Switch to CVaR when failures are catastrophic and rare: a warehouse mobile robot that collides once in a thousand runs may still have an acceptable mean score but an unacceptable CVaR. As a rule of thumb, if a single worst-case episode would cause hardware damage, injury, or a safety audit finding, CVaR at $\alpha \ge 0.90$ should appear in every results table alongside the mean. When failure cost is uniform and bounded, mean-shift comparisons are sufficient and easier to communicate to non-specialist stakeholders.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a perturbation panel for a Gymnasium locomotion environment such as <code>HalfCheetah-v4</code>. Vary friction and gravity across five levels, run a pre-trained policy on each level, then compute the mean shifted score and CVaR at alpha=0.90. The key challenge is wiring per-episode loss values into a structured dataframe so that clean, shifted, and tail slices remain separate rather than pooled into one aggregate score.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a generalization matrix benchmark for a manipulation task in MuJoCo or PyBullet: train a policy with LeRobot, then evaluate it across four perturbation families (lighting, object texture, payload mass, and table friction) using separate rollout panels per family, recording task success and CVaR for each cell. The key challenge is that perturbation families must be applied independently and identically across policy checkpoints so that a gain in one family cannot mask a regression in another.</p></div>
+<h2>Cross-References</h2>
+<p>This section prepares the ground for <a href="ch_0403_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">Section 53.1 on disturbance classes</a> and <a href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">Section 53.3 on OOD detection</a>.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Take one existing evaluation table and split it into clean, shifted, and stress-test slices. Add a CVaR column and compare whether the method ranking changes.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not declare a model robust because it survived one handpicked perturbation family. Robustness claims require coverage across perturbation classes and disclosure of where the model remains weak.</p>
+</div>
+<div class="callout warning">
+<p>A high average success rate, such as 97% on benchmark trials, does not imply that the system is robust and ready for deployment. Average performance collapses all conditions into a single number, hiding the tail behavior where real systems fail. A policy can top average scores yet catastrophically fail on wet floors, unusual lighting, or novel object textures. <span data-agent="28">Those conditions arise unpredictably in deployment and are, in practice, difficult to eliminate entirely.</span> Average score and worst-case behavior are independent quantities. A robustness claim requires reporting both a mean shifted score and a per-perturbation-family tail-risk metric like CVaR.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a humanoid locomotion controller, clean floors, mild friction changes, and severe friction drops should appear as separate rows. The right policy may be worse on average but far safer in the tail.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: autonomous-driving validation at Waymo</h4>
+<p><span data-agent="28">Waymo's public safety reporting for its driverless service typically goes beyond aggregate miles-per-disengagement, reporting metrics over stratified scenario families (occluded pedestrians, heavy rain, unprotected left turns) so a benign highway average is less likely to hide a rare urban failure mode. This is broadly the same clean-versus-shifted-versus-tail separation described here: worst-case scenario buckets are evaluated and reported alongside, rather than dissolved into, the fleet-wide mean.</span></p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Three active directions are reshaping how the community measures robustness and generalization in 2024-2026.</p>
+<p><strong>Foundation-model robustness probing.</strong> As vision-language-action (VLA) models such as Google DeepMind's RT-2 and OpenVLA (Kim et al., 2024) are adopted as policy backbones, a new evaluation question has emerged: do the semantic generalization gains of large pretrained models actually translate into perturbation robustness on physical hardware, or do they trade photometric brittleness for semantic brittleness (sensitivity to object name variants and instruction paraphrases)? Early systematic probing, e.g. the PIVOT benchmark (Nasiriany et al., 2024), finds that VLA policies can generalize across novel objects while failing on minor viewpoint shifts that smaller visuomotor policies handle with domain randomization alone. The open question is how to construct a perturbation panel that separates semantic from geometric robustness so that both axes appear in a results table rather than being conflated into a single manipulation success rate.</p>
+<p><strong>Adaptive sim-to-real gap measurement.</strong> Rather than fixing a perturbation panel at training time, several 2024-2025 efforts have treated the <a data-agent="13" href="ch_0084_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">sim-to-real gap</a> itself as an online estimable quantity. The DROPO framework (Tiboni et al., 2024) and related work from ETH Zurich's Robotic Systems Lab use trajectory divergence between simulator and real rollouts as a signal to update physics parameter posteriors during deployment, effectively turning robustness evaluation into a continuous calibration loop. This shifts the metric from a fixed CVaR number to a distribution over CVaR values that narrows as deployment data accumulates.</p>
+<p><strong>Compositional perturbation benchmarking for whole-body control.</strong> Whole-body humanoid controllers (e.g. from Carnegie Mellon University's Legged Robots Group and Agility Robotics) are now being evaluated on crossed perturbation panels where terrain type, payload distribution, contact surface, and wind disturbance are varied simultaneously rather than independently. The 2025 HumanoidBench extension (Sferrazza et al., 2024, extended 2025) introduces a compositional stress-test split that crosses five perturbation families at two severity levels, producing 32 evaluation cells per policy. Early results show that policies ranked identically on mean shift score diverge by up to 40 percentage points in the highest-severity compositional cells.</p>
+<p><strong>Open problem for PhD students.</strong> No principled method yet exists for choosing which perturbation families to cross and at which severity levels so that the resulting compositional panel has maximal discriminative power per evaluation episode. Framing this as an experimental design problem (e.g. using D-optimal designs, which choose test configurations that maximize the statistical information gained per trial, or Bayesian adaptive designs from classical statistics, applied to the space of perturbation configurations) could reduce the evaluation budget needed to distinguish a genuinely robust policy from one that merely interpolates across independent perturbation axes.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you distinguish the average shifted score from a tail-risk statistic like CVaR? If not, your robustness vocabulary is still too coarse.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Generalization metrics should preserve clean, shifted, and worst-case structure. One average score is rarely enough for embodied deployment decisions.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 52.4.1</div>
+<p>Define a robustness report for one robot task with at least three perturbation families and one tail metric. Explain which deployment question each slice answers.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>A policy that gets 90 percent on clean scenes and 12 percent in rain is not a robustness story. It is a weather forecast with expensive consequences.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Agarwal, R. et al. "Deep Reinforcement Learning at the Edge of the Statistical Precipice." (2021). <a href="https://arxiv.org/abs/2108.13264">https://arxiv.org/abs/2108.13264</a></p><p class="bib-annotation">Useful for careful metric aggregation and confidence intervals.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Ovadia, Y. et al. "Can You Trust Your Model’s Uncertainty? Evaluating Predictive Uncertainty Under Dataset Shift." (2019). <a href="https://arxiv.org/abs/1906.02530">https://arxiv.org/abs/1906.02530</a></p><p class="bib-annotation">A helpful bridge between shift evaluation and calibrated uncertainty.</p></div>
+</section>
+<div class="callout whats-next">
+<div class="callout-title">What's Next</div>
+<p>Section 52.5 now asks when simulation can stand in for physical evaluation and what evidence is needed to justify that proxy.</p>
+</div>
+
+
+
+
+</body>
+</html>

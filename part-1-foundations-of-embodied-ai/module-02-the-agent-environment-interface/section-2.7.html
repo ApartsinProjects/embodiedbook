@@ -85,26 +85,26 @@
 <p>A belief state earns its place when it changes what the robot does under uncertainty. If two histories produce the same camera frame but different slip risk, the belief should help the policy choose whether to grasp, slow down, or reobserve.</p>
 </div>
 <h2>Theory</h2>
-<p>A POMDP is often written as $(\mathcal{S}, \mathcal{A}, P, R, \Omega, O, \gamma)$. The new pieces are $\Omega$, the observation space, and $O(o|s,a)$, the probability of receiving observation $o$ after action $a$ when the world is in state $s$. Instead of acting on an unobserved state, the agent acts on a belief $b_t(s)$, a probability distribution over states.</p>
-<p><span data-agent="14">Of these new pieces, the observation model is where the abstraction meets the hardware.</span> <span data-agent="29">The observation model $O(o|s,a)$ matters in embodied AI because physical sensors are never perfect: a lidar returns clipped readings near glass, a force sensor saturates at contact edges, and a camera loses depth at low contrast. Without a calibrated $O$, the belief update weights every state consistent with a reading equally. The robot then acts as if it is more certain than the sensor warrants. Overconfident beliefs cause premature grasps, missed obstacles, and recovery failures that resist post-hoc diagnosis.</span></p>
-<p>In practice, $O$ is built by holding the robot in a known state $s$ and recording the distribution of sensor outputs across many trials. Each entry $O(o|s,a)$ captures how likely the sensor returns reading $o$ given that ground truth. A sparse or misspecified $O$ makes unlikely states persist in the belief even after contradicting observations arrive, so calibration quality directly sets the floor on how quickly uncertainty can be resolved.</p>
+<p>A POMDP is often written as \((\mathcal{S}, \mathcal{A}, P, R, \Omega, O, \gamma)\). The new pieces are \(\Omega\), the observation space, and \(O(o|s,a)\), the probability of receiving observation \(o\) after action \(a\) when the world is in state \(s\). Instead of acting on an unobserved state, the agent acts on a belief \(b_t(s)\), a probability distribution over states.</p>
+<p><span data-agent="14">Of these new pieces, the observation model is where the abstraction meets the hardware.</span> <span data-agent="29">The observation model \(O(o|s,a)\) matters in embodied AI because physical sensors are never perfect: a lidar returns clipped readings near glass, a force sensor saturates at contact edges, and a camera loses depth at low contrast. Without a calibrated \(O\), the belief update weights every state consistent with a reading equally. The robot then acts as if it is more certain than the sensor warrants. Overconfident beliefs cause premature grasps, missed obstacles, and recovery failures that resist post-hoc diagnosis.</span></p>
+<p>In practice, \(O\) is built by holding the robot in a known state \(s\) and recording the distribution of sensor outputs across many trials. Each entry \(O(o|s,a)\) captures how likely the sensor returns reading \(o\) given that ground truth. A sparse or misspecified \(O\) makes unlikely states persist in the belief even after contradicting observations arrive, so calibration quality directly sets the floor on how quickly uncertainty can be resolved.</p>
 <div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a POMDP adds an observation space and observation model on top of the familiar MDP tuple, the agent tracks a belief (a probability distribution over hidden states) instead of the true state, and that belief must be built from a calibrated observation model or the agent will act more confident than its sensors justify. The next subsection turns this into the concrete update rule.</p></div>
 <p></p>
 <p>Before reading on, guess: how many full sensor cycles does a correctly implemented belief update need to collapse an even 50/50 prior to 90% confidence in a two-state contact problem, assuming a sensor with 80% true-positive rate? Hold that guess, then check it against the worked example below.</p>
 <h4 data-agent="30">The Belief Update</h4>
-<p>A one-step belief update has the form $$b_{t+1}(s') = \eta O(o_{t+1}|s',a_t)\sum_s P(s'|s,a_t)b_t(s),$$ where $\eta$ normalizes the probabilities so they sum to one. The summation predicts where the hidden state could move after the action. The observation likelihood then favors states that make the new sensor reading plausible. Together these two steps form <strong>the predict-then-reweight loop</strong>, the same pattern that runs inside every <a data-agent="13" href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">Kalman filter, particle filter</a>, and learned world model.</p>
+<p>A one-step belief update has the form $$b_{t+1}(s') = \eta O(o_{t+1}|s',a_t)\sum_s P(s'|s,a_t)b_t(s),$$ where \(\eta\) normalizes the probabilities so they sum to one. The summation predicts where the hidden state could move after the action. The observation likelihood then favors states that make the new sensor reading plausible. Together these two steps form <strong>the predict-then-reweight loop</strong>, the same pattern that runs inside every <a data-agent="13" href="../../part-2-mathematical-robotics-and-control-foundations/module-08-sensors-perception-hardware-and-state-estimation/section-8.6.html">Kalman filter, particle filter</a>, and learned world model.</p>
 <div class="callout algorithm">
 <h4>Algorithm: POMDP Belief-State Update</h4>
-<p><strong>Input:</strong> current belief $b_t(s)$ over state space $\mathcal{S}$; action $a_t \in \mathcal{A}$; observation $o_{t+1} \in \Omega$; transition model $P(s'|s,a)$; observation model $O(o|s',a)$</p>
-<p><strong>Output:</strong> updated belief $b_{t+1}(s')$ normalized over $\mathcal{S}$</p>
+<p><strong>Input:</strong> current belief \(b_t(s)\) over state space \(\mathcal{S}\); action \(a_t \in \mathcal{A}\); observation \(o_{t+1} \in \Omega\); transition model \(P(s'|s,a)\); observation model \(O(o|s',a)\)</p>
+<p><strong>Output:</strong> updated belief \(b_{t+1}(s')\) normalized over \(\mathcal{S}\)</p>
 <ol>
-<li>For each next state $s' \in \mathcal{S}$, compute the predicted belief by marginalizing over current states: $\hat{b}(s') = \sum_{s \in \mathcal{S}} P(s'|s, a_t)\, b_t(s)$.</li>
-<li>For each $s' \in \mathcal{S}$, weight the predicted belief by the observation likelihood: $\tilde{b}(s') = O(o_{t+1}|s', a_t)\cdot \hat{b}(s')$.</li>
-<li>Compute the normalization constant $\eta = \sum_{s' \in \mathcal{S}} \tilde{b}(s')$. If $\eta = 0$, the observation is incompatible with all predicted states; log a divergence warning and retain $\hat{b}$.</li>
-<li>Set $b_{t+1}(s') = \tilde{b}(s') / \eta$ for all $s' \in \mathcal{S}$.</li>
-<li>Verify $\sum_{s'} b_{t+1}(s') = 1$ to within floating-point tolerance (e.g., $|1 - \sum b_{t+1}| &lt; 10^{-6}$).</li>
-<li>Log the tuple $(b_t, a_t, o_{t+1}, b_{t+1})$ with a timestamp for offline calibration and failure diagnosis.</li>
-<li>Pass $b_{t+1}$ to the policy $\pi(a | b_{t+1})$ as the new action-relevant state representation.</li>
+<li>For each next state \(s' \in \mathcal{S}\), compute the predicted belief by marginalizing over current states: \(\hat{b}(s') = \sum_{s \in \mathcal{S}} P(s'|s, a_t)\, b_t(s)\).</li>
+<li>For each \(s' \in \mathcal{S}\), weight the predicted belief by the observation likelihood: \(\tilde{b}(s') = O(o_{t+1}|s', a_t)\cdot \hat{b}(s')\).</li>
+<li>Compute the normalization constant \(\eta = \sum_{s' \in \mathcal{S}} \tilde{b}(s')\). If \(\eta = 0\), the observation is incompatible with all predicted states; log a divergence warning and retain \(\hat{b}\).</li>
+<li>Set \(b_{t+1}(s') = \tilde{b}(s') / \eta\) for all \(s' \in \mathcal{S}\).</li>
+<li>Verify \(\sum_{s'} b_{t+1}(s') = 1\) to within floating-point tolerance (e.g., \(|1 - \sum b_{t+1}| &lt; 10^{-6}\)).</li>
+<li>Log the tuple \((b_t, a_t, o_{t+1}, b_{t+1})\) with a timestamp for offline calibration and failure diagnosis.</li>
+<li>Pass \(b_{t+1}\) to the policy \(\pi(a | b_{t+1})\) as the new action-relevant state representation.</li>
 </ol>
 </div>
 <div class="callout tip">
@@ -116,18 +116,18 @@
 </div>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: Belief-State Update</h4>
-<p>Trace the predict-then-reweight loop with the two-state contact problem (dry vs. slippery), starting from prior belief $b_t = \{\text{dry}: 0.70,\ \text{slip}: 0.30\}$, taking action "press", then observing a force spike.</p>
-<p><strong>Step 1, predict.</strong> Apply the transition model $P$ (dry stays dry 0.85, dry-to-slip 0.15; slip stays slip 0.80, slip-to-dry 0.20).<br/>
-$\hat b(\text{dry}) = 0.85 \cdot 0.70 + 0.20 \cdot 0.30 = 0.595 + 0.060 = 0.655$<br/>
-$\hat b(\text{slip}) = 0.15 \cdot 0.70 + 0.80 \cdot 0.30 = 0.105 + 0.240 = 0.345$<br/>
-Predicted belief: $\{\text{dry}: 0.655,\ \text{slip}: 0.345\}$ (still sums to 1.0; the action alone has already shifted mass toward slip).</p>
-<p><strong>Step 2, reweight by observation.</strong> The force spike has likelihood $O(\text{spike}\mid\text{dry}) = 0.15$ and $O(\text{spike}\mid\text{slip}) = 0.80$.<br/>
-$\tilde b(\text{dry}) = 0.15 \cdot 0.655 = 0.09825$<br/>
-$\tilde b(\text{slip}) = 0.80 \cdot 0.345 = 0.27600$</p>
-<p><strong>Step 3, normalize.</strong> $\eta = 0.09825 + 0.27600 = 0.37425$.<br/>
-$b_{t+1}(\text{dry}) = 0.09825 / 0.37425 = 0.263$<br/>
-$b_{t+1}(\text{slip}) = 0.27600 / 0.37425 = 0.737$</p>
-<p>The posterior $\{\text{dry}: 0.263,\ \text{slip}: 0.737\}$ matches the code output below. One spike flipped a 70/30 prior favoring dry into a 26/74 posterior favoring slip: the action-relevant variable that should fork the policy toward "reobserve" rather than "commit grasp".</p>
+<p>Trace the predict-then-reweight loop with the two-state contact problem (dry vs. slippery), starting from prior belief \(b_t = \{\text{dry}: 0.70,\ \text{slip}: 0.30\}\), taking action "press", then observing a force spike.</p>
+<p><strong>Step 1, predict.</strong> Apply the transition model \(P\) (dry stays dry 0.85, dry-to-slip 0.15; slip stays slip 0.80, slip-to-dry 0.20).<br/>
+\(\hat b(\text{dry}) = 0.85 \cdot 0.70 + 0.20 \cdot 0.30 = 0.595 + 0.060 = 0.655\)<br/>
+\(\hat b(\text{slip}) = 0.15 \cdot 0.70 + 0.80 \cdot 0.30 = 0.105 + 0.240 = 0.345\)<br/>
+Predicted belief: \(\{\text{dry}: 0.655,\ \text{slip}: 0.345\}\) (still sums to 1.0; the action alone has already shifted mass toward slip).</p>
+<p><strong>Step 2, reweight by observation.</strong> The force spike has likelihood \(O(\text{spike}\mid\text{dry}) = 0.15\) and \(O(\text{spike}\mid\text{slip}) = 0.80\).<br/>
+\(\tilde b(\text{dry}) = 0.15 \cdot 0.655 = 0.09825\)<br/>
+\(\tilde b(\text{slip}) = 0.80 \cdot 0.345 = 0.27600\)</p>
+<p><strong>Step 3, normalize.</strong> \(\eta = 0.09825 + 0.27600 = 0.37425\).<br/>
+\(b_{t+1}(\text{dry}) = 0.09825 / 0.37425 = 0.263\)<br/>
+\(b_{t+1}(\text{slip}) = 0.27600 / 0.37425 = 0.737\)</p>
+<p>The posterior \(\{\text{dry}: 0.263,\ \text{slip}: 0.737\}\) matches the code output below. One spike flipped a 70/30 prior favoring dry into a 26/74 posterior favoring slip: the action-relevant variable that should fork the policy toward "reobserve" rather than "commit grasp".</p>
 </div>
 <h2>Worked Example</h2>
 <p><span data-agent="14">The arithmetic traced by hand above is exactly what the following code reproduces, so you can check each printed number against the steps you just worked through.</span> Code Fragment 2.7.1 implements the belief update for a two-state contact problem. A force spike is weakly compatible with a dry surface and strongly compatible with a slippery surface, so the posterior belief should shift toward slip risk.</p>
@@ -178,7 +178,7 @@ print({state: round(probability, 3) for state, probability in posterior.items()}
 <p>The common mistake is to pass a point estimate to the policy and call it a belief. If the logger cannot show uncertainty, the policy cannot distinguish "the block is safe to grasp" from "the block might be safe, but the evidence is weak."</p>
 </div>
 <div class="callout warning">
-<p>A common assumption is that more observations will eventually collapse the belief to certainty. In an embodied AI system, this is wrong. The transition model $P(s'|s,a)$ re-injects uncertainty every time the robot acts. Even a perfectly observed state at time $t$ becomes a distribution again at time $t+1$ after any non-deterministic transition. Contact conditions change, objects shift, and people walk into the scene. The predict step spreads probability mass back out before each observation arrives. Think of a steady-state balance: stochastic transitions spread the belief, and informative observations sharpen it. The belief does not monotonically shrink toward a point. A system that expects it to will stop gathering information too early and act on stale certainty.</p>
+<p>A common assumption is that more observations will eventually collapse the belief to certainty. In an embodied AI system, this is wrong. The transition model \(P(s'|s,a)\) re-injects uncertainty every time the robot acts. Even a perfectly observed state at time \(t\) becomes a distribution again at time \(t+1\) after any non-deterministic transition. Contact conditions change, objects shift, and people walk into the scene. The predict step spreads probability mass back out before each observation arrives. Think of a steady-state balance: stochastic transitions spread the belief, and informative observations sharpen it. The belief does not monotonically shrink toward a point. A system that expects it to will stop gathering information too early and act on stale certainty.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>

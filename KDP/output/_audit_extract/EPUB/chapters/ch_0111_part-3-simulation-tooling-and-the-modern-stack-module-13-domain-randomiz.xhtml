@@ -1,0 +1,212 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 13.1: Why synthetic variation matters</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 13.1: Why synthetic variation matters</h1>
+
+<blockquote class="epigraph"><p>"The policy trained on one world learns the quirks of one world. Variation is not noise; it is the curriculum."</p><cite>Section 13.1</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 13.1: Why synthetic variation matters." loading="lazy" src="../img/b01694cb15_chapter-13-illustration-01.jpg" />
+<figcaption>Figure 13.1A: A policy trained without domain randomization failing on a real robot due to lighting mismatch, contrasted with the same policy trained with randomized textures and lights transferring successfully.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the <a data-agent="13" href="ch_0082_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">simulation pipeline</a> introduced in section 9.2 and the reality gap framing from section 9.4. The randomization design principles developed here are extended in section 13.2, which categorizes factors into visual, physics, sensor, and task families. The transfer evaluation contract recurs in Part IV alongside reward shaping and <a data-agent="13" href="ch_0158_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">what transfers and what does not</a> in section 20.2.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A robot trained entirely under a single studio light collapses the moment a cloud passes overhead. The gripper that worked flawlessly in simulation fumbles on the real bench because no one randomized friction by even ten percent. These are not edge cases; they are the default outcome when a policy memorizes one world instead of learning to act across many.</p>
+<p>Synthetic variation is the practical fix available right now, before you have thousands of hours of real robot data. This section separates nuisance factors (lighting, texture, sensor noise) from task variables that must stay causal, builds an auditable randomization manifest before training begins, and evaluates transfer on a held-out real panel that was never touched during tuning.</p>
+</div>
+<h2>What This Section Builds</h2>
+<p data-agent="22"><span data-agent="29">Two copies of the same grasping policy reach for the same block on the same real bench. The one trained under a single fixed studio light freezes when a passing cloud dims the room. The one that saw thousands of randomized lightings and textures during training closes its fingers without hesitation. Figure 13.1A captures exactly that split.</span> This section makes synthetic variation operational. It separates task variables such as object pose and goal location from nuisance variables such as lighting, material, camera noise, friction, and actuator lag. This separation is called <strong>nuisance isolation before training begins</strong>, and it determines whether the randomized distribution teaches the policy real invariances or merely adds visual clutter.</p>
+<p>Why this matters on a real robot: a policy that cannot tell illumination from object identity will change its grasp confidence whenever the overhead lights flicker. Physical hardware cannot tolerate that fragility because retries cost time, battery, and mechanical wear. Isolating nuisance factors forces the policy to build features that survive those changes, which is what makes sim-trained behavior hold when the deployment environment differs from the training environment.</p>
+<p data-agent="17">Nuisance isolation works by labeling each factor in the manifest, not in the network. A task-causal factor changes what a correct action is; a nuisance factor should not. Hold task-causal factors stable or vary them only within the intended task range, and randomize nuisance factors broadly so the policy meets them in many combinations and learns to ignore them. The diagram below traces the loop: the manifest feeds the randomized simulator, the simulator trains the policy, and a sealed real holdout panel measures the transfer gap and feeds it back when coverage misses remain.</p>
+<figure class="diagram-container">
+<img src="../diagrams/d_dafd6d398a03e31b.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption>The synthetic variation pipeline: a manifest assigns each nuisance factor a distribution and a real failure label, the randomized simulator trains the policy across many combinations, and a sealed real holdout panel measures the transfer gap, feeding back to the manifest when coverage misses remain.</figcaption>
+</figure>
+<p>The goal is a reproducible habit: write the randomization distribution before training, name the coverage target, keep a real holdout panel untouched, and compare methods on the same seeds, scenes, and metrics.</p>
+<div class="callout key-insight">
+<div class="callout-title">Transfer Is The Test</div>
+<p>Synthetic data is not automatically evidence. It becomes evidence when the randomization plan covers a plausible deployment support, avoids leaking validation scenes into training, and shows that a specific real-world failure mode improves <span data-agent="04">(a "construct-matched" measurement: the same metric, panel, and seeds for every method being compared, so the comparison is not assembled from different runs)</span>.</p>
+</div>
+<h2>Theory</h2>
+<p data-agent="14"><span data-agent="15">To reason about that reproducible habit, give the nuisance factors a name and a distribution and ask precisely what coverage requires.</span></p>
+<p data-agent="03">Before the equations, one term needs to be pinned down: "support" means the set of parameter values a distribution can actually produce (its coverage region), not a typical value or an average. That reading matters for every coverage argument below.</p>
+<p>Let $\theta$ collect nuisance parameters such as texture, illumination, camera pose, mass, friction, and sensor noise. <a href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">Domain randomization</a> trains on $\theta \sim p_{\text{train}}(\theta)$ while deployment samples from an unknown real distribution $p_{\text{real}}(\theta)$. The first question is coverage: does the training support (in the sense just defined) include the real conditions that matter for the task?</p>
+<p>A policy that works in simulation but fails on hardware is not a policy; it is a promise the real world never received. Coverage is not the same as chaos. A drawer-opening policy that trains on impossible friction, impossible handle geometry, and impossible camera exposure learns artifacts that never occur on a real robot. <span data-agent="29">The design rule has three parts. Randomize factors that can vary in deployment. Keep task semantics stable. Evaluate on held-out real measurements that never tuned the ranges.</span> <a href="ch_0084_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">The reality gap is a measurable quantity</a>: the distance between what the simulator samples and what the robot actually encounters. A grasping policy trained on a single fixed lighting and friction setting typically needs around 50,000 simulation episodes to generalize to a real table. <span data-agent="29">Randomizing lighting and friction across plausible ranges cuts that cost: the same policy reaches the same real-world success rate in under 8,000 episodes (figures representative of mid-2020s tabletop benchmarks; exact numbers vary by task and simulator).</span> Each rollout covers different ground rather than re-confirming the same narrow condition.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: coverage means the training support must include the real deployment conditions; the reality gap measures the mismatch between simulated and real conditions; and randomizing nuisance factors within physically plausible ranges reduces the simulation episodes needed for real-world transfer, at least in the tabletop grasping example above.</p></div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism is support overlap. Randomization expands the set of conditions where the learned model has seen equivalent task evidence, while held-out real tests reveal whether the expansion covered useful cases or only generated visual noise.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="14">Since support overlap is what decides transfer, the place to enforce it is the manifest that records each factor's range, so the next step is to make that manifest concrete.</p>
+<p>Consider a <a href="ch_0082_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">tabletop grasping policy trained in simulation</a>. The following snippet turns the randomization plan into an auditable manifest, so the reader can see which factors are meant to cover reality and which ones remain fixed.</p>
+<pre><code class="language-python"><span class="c1"># Audit a synthetic variation manifest before training starts.</span>
+<span class="c1"># Each factor records a distribution and a real-world failure it should cover.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RandomizedFactor</span><span class="p">:</span>
+<span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">distribution</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">real_failure</span><span class="p">:</span> <span class="nb">str</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">factors</span> <span class="o">=</span> <span class="p">[</span>
+<span class="n">RandomizedFactor</span><span class="p">(</span><span class="s2">"lighting_lux"</span><span class="p">,</span> <span class="s2">"uniform(250, 900)"</span><span class="p">,</span> <span class="s2">"camera glare"</span><span class="p">),</span>
+<span class="n">RandomizedFactor</span><span class="p">(</span><span class="s2">"table_friction"</span><span class="p">,</span> <span class="s2">"uniform(0.35, 0.75)"</span><span class="p">,</span> <span class="s2">"block slip"</span><span class="p">),</span>
+<span class="n">RandomizedFactor</span><span class="p">(</span><span class="s2">"camera_yaw_deg"</span><span class="p">,</span> <span class="s2">"uniform(-6, 6)"</span><span class="p">,</span> <span class="s2">"calibration drift"</span><span class="p">),</span>
+<span class="p">]</span>
+<span class="k">for</span> <span class="n">factor</span> <span class="ow">in</span> <span class="n">factors</span><span class="p">:</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">factor</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">factor</span><span class="o">.</span><span class="n">distribution</span><span class="si">}</span><span class="s2"> covers </span><span class="si">{</span><span class="n">factor</span><span class="o">.</span><span class="n">real_failure</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output">lighting_lux: uniform(250, 900) covers camera glare
+table_friction: uniform(0.35, 0.75) covers block slip
+camera_yaw_deg: uniform(-6, 6) covers calibration drift</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 1:</strong> This <code>RandomizedFactor</code> dataclass and loop build the lighting, friction, and camera-yaw manifest rows and print each factor next to the real failure mode it is meant to cover.</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The manifest is the design surface. In a practical system, MuJoCo, MJX <span data-agent="04">(MuJoCo's JAX-based, GPU-parallel reimplementation)</span>, Isaac Lab, Genesis, Newton, Drake, ROS 2, modern Gazebo, Omniverse Replicator, and BlenderProc can sample those factors, render observations, log seeds, and attach labels. The tool is useful when it preserves the manifest and produces a replayable artifact.</p>
+</div>
+<h2>Practical Recipe</h2>
+<p data-agent="01">The steps below are the operational version of the "auditable randomization manifest" promised in the Big Picture callout above: each step maps directly onto a column of the manifest (factor, range, held-out check, comparison, artifact) so that finishing the recipe means the manifest already exists, not just a list of good intentions.</p>
+<ol>
+<li>List deployment factors that can change: appearance, geometry, contact, sensor, timing, and task layout.</li>
+<li>Assign each factor a range, distribution, unit, and reason tied to a real failure mode.</li>
+<li>Keep a held-out real panel or calibrated proxy panel that never informs the training ranges.</li>
+<li>Run the baseline and randomized method through one evaluation script on the same scenes, seeds, and metrics.</li>
+<li>Save the manifest, sampled seeds, videos or traces, aggregate metrics, and failure labels as one artifact.</li>
+</ol>
+<div class="callout algorithm">
+<h4>Algorithm: Domain Randomization Manifest Design</h4>
+<p><strong>Input:</strong> task definition $\tau$, deployment environment description $\mathcal{E}$, observed real failure modes $\mathcal{F}$, held-out real measurement panel $\mathcal{H}$</p>
+<p><strong>Output:</strong> auditable randomization manifest $\mathcal{M}$, trained policy $\pi_\theta$, transfer evidence artifact $\mathcal{A}$</p>
+<ol>
+<li>Enumerate nuisance factors $\{\theta_1, \theta_2, \ldots, \theta_n\}$ that can vary across deployments (lighting $\theta_\ell$, friction $\theta_f$, sensor noise $\theta_s$, camera pose $\theta_c$, actuator lag $\theta_a$); label each factor with its physical unit and the real failure mode in $\mathcal{F}$ it is meant to cover.</li>
+<li>Assign a sampling distribution $p_i(\theta_i)$ to each factor using plausible physical measurements; prefer uniform($a_i$, $b_i$) with bounds drawn from real hardware specs rather than arbitrary wide ranges that produce impossible configurations.</li>
+<li>Verify coverage: confirm that $\text{supp}(p_{\text{train}}) = \prod_i \text{supp}(p_i)$ contains the deployment conditions in $\mathcal{E}$; if the real condition is exterior to the training support, widen the range and document the rationale.</li>
+<li>Check correlation structure: if factors $\theta_i$ and $\theta_j$ co-vary in reality (for example, high ambient light coincides with specular floor reflections), sample them jointly from a correlated prior rather than independently, to avoid teaching the policy false invariances.</li>
+<li>Seal the held-out panel $\mathcal{H}$: lock real scenes, seeds, and success criteria before any training run so the panel cannot be used to tune distribution ranges.</li>
+<li>Write the manifest $\mathcal{M} = \{(\theta_i, p_i, \text{unit}_i, \text{failure}_i)\}_{i=1}^n$ as a versioned artifact with the task contract $\tau$ attached.</li>
+<li>Train policy $\pi_\theta$ by sampling $\theta \sim p_{\text{train}}(\theta)$ at each rollout; log the manifest version and random seed with every episode.</li>
+<li>Evaluate $\pi_\theta$ on held-out panel $\mathcal{H}$ using a single evaluation script; compute transfer metric $\Delta = \text{metric}(\pi_\theta, \mathcal{H}) - \text{metric}(\pi_{\text{base}}, \mathcal{H})$ where $\pi_{\text{base}}$ is trained without randomization, on the same seeds and scenes.</li>
+<li>Assign any transfer gap to a specific cause: coverage miss, unrealistic factor combination, label leakage, correlation mismatch, or metric mismatch; re-run one controlled perturbation that isolates the suspected cause.</li>
+<li>Save the complete evidence artifact $\mathcal{A} = (\mathcal{M}, \text{seeds}, \pi_\theta, \Delta, \text{failure labels}, \text{traces})$ so the comparison is construct-matched and reproducible.</li>
+</ol>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Manifest Design and Transfer Check</h4>
+<p>Trace the manifest algorithm with one factor, friction, on a tiny grasping task. <strong>Step 1 (enumerate):</strong> the only varying factor is table friction, labeled with the real failure "block slip." <strong>Step 2 (assign distribution):</strong> measured shop surfaces span 0.35 to 0.75, so set friction ~ uniform(0.35, 0.75). <strong>Step 3 (verify coverage):</strong> the real test bench measures 0.52, which lies inside [0.35, 0.75], so coverage holds; no widening needed. <strong>Step 5 (seal panel):</strong> lock 20 real grasps at friction 0.52 before training. <strong>Step 7 (train):</strong> baseline trains at fixed friction 0.50; randomized trains by drawing a fresh friction value each rollout. <strong>Step 8 (evaluate):</strong> on the sealed panel the baseline succeeds 11/20 = 0.55, the randomized policy succeeds 17/20 = 0.85, so the transfer metric is $\Delta = 0.85 - 0.55 = +0.30$. <strong>Step 9 (assign cause):</strong> the +0.30 gain traces to coverage of mid-range friction the fixed baseline never saw, not to extra data volume, since both ran the same episode count.</p>
+</div>
+<div class="callout tip"><div class="callout-title">Randomization Evidence Rule</div><p>A randomization plan is evidence only when it names the randomized factors, ranges, sampling distribution, held-out real measurements, and failure labels. Synthetic data should improve a measured transfer bottleneck, not merely increase the number of rendered images.</p></div>
+<div class="callout warning"><p>A common assumption is that adding more synthetic variation always improves real-world transfer: the wider and more diverse the randomization, the better the policy will generalize. In embodied AI this is wrong because randomization that ventures outside physically plausible bounds does not expand the policy's useful coverage; it trains the policy on conditions that never occur on real hardware, causing it to learn spurious invariances or to allocate model capacity to impossible configurations. The correct mental model is that synthetic variation is a coverage instrument, not a volume instrument: each randomized range must be anchored to a real deployment condition or a measured failure mode, and coverage should be verified against a held-out real panel rather than assumed from the breadth of the distribution.</p></div>
+<div class="callout key-insight"><p>Think of a navigator practicing routes before a road trip. Rehearsing every variation of the specific highway she will drive (morning fog, afternoon glare, light rain, moderate traffic) builds genuine readiness for the journey. Practicing routes through the Sahara, the Arctic tundra, and fictional terrain instead adds sheer volume but zero overlap with her actual destination. The training support must enclose the real deployment region, not merely be large. More rehearsal miles only help when those miles share geography with the trip ahead.</p></div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>The most common failure is over-wide dynamics randomization combined with under-wide visual randomization, or vice versa. Consider a gripper policy trained with friction uniform(0.01, 2.0): a coefficient of 2.0 does not exist on any real tabletop surface, so the policy learns to grip harder than needed and drops objects under realistic mid-range friction (around 0.4 to 0.6). The result looks like a <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">contact model bug</a> but is actually a distribution mismatch. Narrow each range to physically plausible measurements first, then widen conservatively and verify against a real holdout panel before widening further.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A robotics team training a bin-picking detector might randomize lighting, part color, camera pose, and mild occlusion, but keep object identity and graspable geometry label-consistent. The real holdout panel should include unseen parts, unseen trays, and logged failure labels, so the team can say which transfer bottleneck improved.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: In-Hand Manipulation (OpenAI Dactyl)</h4>
+<p>OpenAI's Dactyl system trained a Shadow Hand to reorient a cube entirely in simulation, then deployed it on real hardware with no real-world fine-tuning. The reported transfer success is <span data-agent="28">typically attributed, per the original paper,</span> to randomizing physics factors (object mass, friction, actuator gains, observation noise) plus visual factors across thousands of parallel environments, so the policy treated the sim-to-real differences as just another sampled variation<span data-agent="28">, though large-scale parallel training and careful reward shaping also contributed and the relative contribution of each ingredient was not fully isolated in the original study</span>. Their later "Automatic Domain Randomization" expanded each range only as the policy mastered the current one, which is the coverage-before-volume discipline this section argues for.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A random seed is not a receipt unless the manifest tells you what the seed was allowed to change.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">When Domain Randomization Stops Working</div>
+<p>Domain randomization transfers well when the real deployment condition is interior to the randomized training support: the robot has seen something similar, just noisier. It breaks in two identifiable ways. First, when the real condition is outside all trained variations (a novel object shape, a sensor fault type not in the manifest), the policy has no relevant coverage and fails silently. Second, when the randomized factors are correlated in reality but sampled independently in simulation (for example, high ambient light always coincides with specular floor reflections in real warehouses, but the simulator randomizes them independently), the policy learns the wrong invariances. Both failures show up as a gap between simulated success rate and real holdout success rate that does not close as training data grows: more synthetic frames will not fix a coverage or correlation miss.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Foundation-model-guided randomization (2024-2025).</strong> Recent work couples large vision-language models with the randomization loop rather than treating factor ranges as hand-authored. RoboGen (Wang et al., 2024, CMU) uses GPT-4 to propose task-relevant object configurations and physics parameters on the fly, generating an entire curriculum of synthetic scenes from a text description without a human-written manifest. The key result is that VLM-proposed scenes cover novel object categories that a static manifest would miss, at the cost of occasional physically implausible configurations that must be filtered by a rendering sanity check.</p>
+<p><strong>Generative-model sim-to-real bridges (2024-2025).</strong> Diffusion-based image translators now serve as a lightweight appearance bridge: after a policy trains in simulation, a fine-tuned diffusion model converts simulated observations into photorealistic frames at inference time, narrowing the visual gap without re-rendering the entire training set. UniSim (Yang et al., 2024, Stanford and Google DeepMind) demonstrated this direction for manipulation, showing that a neural world model trained on diverse real and synthetic video can synthesize realistic sensor observations for novel action sequences, enabling policy evaluation without a physical robot.</p>
+<p><strong>Structured world models replacing per-factor distributions (2025-2026).</strong> Rather than sampling independent factor distributions, teams at Physical Intelligence (pi.ai) and DeepMind have begun training generative world models directly on large heterogeneous robot datasets, learning the joint distribution of physics, appearance, and contact implicitly. The model then samples coherent scenes where lighting, friction, and object geometry co-vary as they do in reality, avoiding the false-independence assumption that breaks Automatic Domain Randomization <span data-agent="04">(ADR: a schedule that widens each factor's range automatically once the policy masters the current one, introduced by OpenAI's Dactyl work below)</span>-style schedules in correlated environments.</p>
+<p><strong>Open problem for PhD students.</strong> All three directions assume a clean signal for evaluating whether a generated scene improved policy transfer. In structured deployments (a warehouse, a factory cell) force-torque and camera feedback provide that signal. For open-ended field robots operating in GPS-denied or communication-limited environments the feedback loop closes only intermittently, if at all. Designing a randomization curriculum that remains sample-efficient when real failure labels arrive hours or days after the policy executes, and that does not catastrophically overfit to the most recent label batch, is an unsolved problem at the intersection of active learning, online RL, and sim-to-real transfer.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name three randomized factors, their units, their distributions, their real-world failure labels, and the held-out panel that will test them? If not, the experiment boundary is still too vague.</p>
+</div>
+<p>Synthetic variation becomes useful when it is tied to a closed-loop contract. The contract names the observation stream, action representation, timing budget, randomized parameter vector, and evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
+<p>The graduate-level habit is to separate three claims. The coverage claim says the sampled factors overlap deployment. The invariance claim says the policy should ignore those factors while preserving task cues. The evidence claim records a construct-matched transfer measurement on one panel and one configuration.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Omniverse Replicator</td><td>Visual factor sampling and synthetic labels</td><td>Use it when rendered perception data must keep camera, material, light, and annotation metadata together.</td></tr><tr><td>BlenderProc</td><td>Procedural scene generation</td><td>Use it when object placement, occlusion, camera pose, and labels need scripted coverage.</td></tr><tr><td>MuJoCo or MJX</td><td>Dynamics parameter sampling</td><td>Use it when mass, damping, actuator, and contact ranges must be replayable.</td></tr><tr><td><a href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Isaac Lab</a></td><td>Parallel randomized rollouts</td><td>Use it when the policy needs many randomized environments with logged seeds and task metrics.</td></tr><tr><td>LeRobot</td><td>Real episode comparison</td><td>Use it when synthetic policies need to be compared against real robot traces and dataset metadata.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to a high-throughput simulator or renderer. The baseline and the scaled run should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments. Code Fragment 1 above shows the minimum evidence record for that schema: a manifest row per factor, printed alongside the real failure it covers.</p>
+<ol>
+<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
+<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
+<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates them on the same task panel.</li>
+</ol>
+<p><strong>Expected output:</strong> the printed trace should expose the method configuration, randomized factor list, held-out panel, construct-matched metric, and leakage check. If one of those fields is missing, the example is not yet an evaluation artifact.</p>
+<h4 data-agent="30">Triaging A Failed Experiment</h4>
+<p>When a synthetic variation experiment fails, avoid labeling the whole method as weak. First assign the failure to coverage miss, unrealistic factor combination, label leakage, perception error, contact mismatch, timing drift, or metric mismatch. Then rerun one controlled perturbation that isolates the suspected cause and save the trace beside the aggregate score.</p>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Synthetic variation is useful when it makes a policy or perception model more robust under measured transfer stress, with distributions, held-out conditions, and failure labels recorded in one artifact.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 13.1.1</div><p>Design a randomization manifest for one embodied task. Specify three factors with units and distributions, one real failure each factor should cover, one held-out real or proxy panel, and one train/test leakage check.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a randomization manifest auditor in Gymnasium: wrap a standard CartPole or Pendulum environment, define three nuisance factors (pole mass, cart friction, sensor noise variance) with uniform distributions and real-failure labels, train a policy with and without randomization, and compare success rates on a held-out fixed configuration. The key challenge is keeping the held-out panel truly sealed so you do not tune ranges against it.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a tabletop block-pushing policy in MuJoCo or PyBullet with a randomization manifest covering table friction, object mass, and camera yaw, then deploy the trained policy on a real or LeRobot-recorded dataset of the same task and measure the transfer gap for each factor in isolation. The key challenge is co-computing the sim and real metrics in one evaluation script on the same seeds so the comparison is construct-matched and not assembled from separate runs.</p><p><strong>Intermediate-plus (2 weeks):</strong> Extend an Isaac Lab parallel rollout setup to implement a lightweight adaptive randomization schedule: after each real holdout evaluation, widen the distribution of the factor with the largest sim-to-real gap by ten percent and re-evaluate, logging coverage and transfer metrics across iterations with ROS2-published diagnostics. The key challenge is designing the feedback signal so the schedule responds to genuine coverage misses rather than noise in the holdout panel.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Does Friction Randomization Beat a Fixed Setting?</h4>
+<p><strong>Goal:</strong> measure empirically whether randomizing one dynamics factor improves transfer to an unseen setting, the core claim of this section.</p>
+<p><strong>Tools needed:</strong> Python, Gymnasium, and Stable-Baselines3 (<code>pip install gymnasium stable-baselines3</code>); the classic <code>CartPole-v1</code> or <code>Pendulum-v1</code> environment.</p>
+<p><strong>Setup:</strong> wrap the environment so a chosen physical parameter can be set per episode. For CartPole, override <code>env.unwrapped.length</code> (pole length) or <code>force_mag</code>; for Pendulum, override the gravity constant. Pick one target "real" value (for example pole length 0.75) and seal a 20-episode held-out panel at exactly that value before training.</p>
+<p data-agent="21"><strong>What to vary:</strong> train two policies with PPO (Proximal Policy Optimization, a standard on-policy reinforcement learning algorithm) for the same number of timesteps. The baseline trains at a single fixed value (length 0.5). The randomized policy draws the value fresh each episode from uniform(0.4, 0.8), a range that brackets the held-out 0.75.</p>
+<p><strong>What to observe:</strong> evaluate both policies on the sealed 0.75 panel using the same seeds and report mean return. Expect the randomized policy to transfer noticeably better. Then push the held-out value outside the trained range (length 1.2) and watch both policies degrade, demonstrating that randomization helps only when the deployment condition is interior to the training support.</p>
+</div>
+<div class="callout pathway" data-agent="25"><div class="callout-title">What's Next?</div><p><a href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.2 →</a> separates that manifest into visual, physics, sensor, and task factors so each transfer failure has a specific place to land.</p></div>
+<section class="bibliography">
+<div class="bibliography-title">Bibliography and Further Reading</div>
+<div class="bib-category">Foundational Papers</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2110.03239">Chen, X., Hu, J., Jin, C., Li, L., and Wang, L. (2021). "Understanding Domain Randomization for Sim-to-real Transfer." arXiv.</a></p>
+<p class="bib-annotation">This work gives a theoretical view of domain randomization as transfer across a family of parameterized MDPs. Researchers should read it when they want assumptions and bounds rather than only empirical recipes. Readers should connect this source to why synthetic variation matters when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1710.06537">Peng, X. B. et al. (2018). "Sim-to-Real Transfer of Robotic Control with Dynamics Randomization." ICRA.</a></p>
+<p class="bib-annotation">This paper studies randomized dynamics for robotic control transfer. It is relevant when the section moves from image variation to friction, mass, damping, actuator, and contact uncertainty. Readers should connect this source to why synthetic variation matters when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1703.06907">Tobin, J. et al. (2017). "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World." IROS.</a></p>
+<p class="bib-annotation">This paper introduced the visual-domain randomization argument that a real image can become one variation among many simulated appearances. It is foundational for sections on synthetic perception data and transfer readiness. Readers should connect this source to why synthetic variation matters when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://docs.omniverse.nvidia.com/extensions/latest/ext_replicator.html">NVIDIA. "Omniverse Replicator Documentation."</a></p>
+<p class="bib-annotation">Replicator documents synthetic data generation pipelines for physically based rendered data. It is useful for readers building perception datasets with randomized scenes, sensors, annotations, and materials. Readers should connect this source to why synthetic variation matters when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://dlr-rm.github.io/BlenderProc/examples/README.html">DLR-RM. "BlenderProc Documentation and Examples."</a></p>
+<p class="bib-annotation">BlenderProc provides procedural rendering workflows for synthetic data and benchmark-style dataset generation. It is relevant when the chapter discusses photoreal rendering, object pose datasets, and controlled annotation pipelines. Readers should connect this source to why synthetic variation matters when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+, what is benchmark-specific, and what must be remeasured.
+<span class="bib-meta">Tool</span>
+</section>
+
+
+
+
+</body>
+</html>

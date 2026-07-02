@@ -1,0 +1,233 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 16.2: Replay buffers and target networks</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 16.2: Replay buffers and target networks</h1>
+
+<blockquote class="epigraph"><p>"Learning from the present is noisy. Learning from a frozen copy of yourself, using memories you set aside earlier, is merely difficult."</p><cite>A Stabilized Value Estimator</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 16.2: Replay buffers and target networks." loading="lazy" src="../img/01f8ea758f_chapter-16-illustration-02.jpg" />
+<figcaption data-agent="39">Figure 16.2A: Replay buffer and target network in the DQN training loop: transitions are stored and sampled uniformly, and the target network (updated every C steps) stabilizes the bootstrap target against moving-target divergence.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the Q-learning objective and the DQN loss introduced in section 16.1. The replay buffer and Polyak target update described here <span data-agent="21">(Polyak averaging is a weighted blend of old and new network parameters, updated a little on every step rather than all at once)</span> carry forward directly into section 16.3, where Deep Deterministic Policy Gradient (DDPG), TD3, and SAC each rely on both mechanisms for continuous robot control. Section 16.4 then shows how the target network interacts with the entropy term in maximum-entropy RL.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A robot arm trains for hours, then suddenly its Q-values explode and learning collapses. The culprit is almost always one of two feedback loops: the agent trains on a stream of nearly identical, correlated observations, or it chases a learning target that shifts every time the weights update. Replay buffers and target networks are the two surgical fixes that made Deep Q-Network (DQN) training stable enough to reach superhuman Atari scores in 2015, and they remain indispensable in every <a data-agent="13" href="ch_0134_part-4-reinforcement-learning-for-embodied-agents-module-16-value-based-.xhtml">off-policy algorithm used for real robot control</a> today (as of 2024). By the end of this section you will be able to implement both mechanisms, reason about buffer capacity and sync frequency as hyperparameters, and diagnose the instability signatures that tell you which one is failing.</p>
+</div>
+<p><span data-agent="29">A Spot quadruped that has taken a single real-world step has just produced a data point too precious to use once and discard. That scarcity is exactly why off-policy learning on hardware lives or dies by two mechanisms. A Franka Panda or Spot quadruped collects experience at roughly 1 to 100 Hz. A simulator can throw away samples freely; a physical robot must reuse each grasp attempt and each footfall many times.</span> The replay buffer enables that reuse, and the target network keeps the bootstrap value from diverging while the same transition replays across thousands of gradient steps. Pin down both before any comparison against on-policy methods like <a data-agent="13" href="ch_0129_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">PPO</a> means anything.</p>
+<p data-agent="39">Replay buffers and target networks solve two different instability problems in deep Q-learning. Replay buffers slow down the data stream by training on stored transitions rather than only the newest correlated frames. Target networks slow down the learning target by using older parameters to compute the bootstrap value. Figure 16.2A above shows how both mechanisms sit inside the DQN training loop, and Figure 16.2B below traces the same flow as a wiring schematic.</p>
+<figure class="diagram-container">
+<img src="../diagrams/d_603e2fd83a0b5969.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption data-agent="09 39">Figure 16.2B: DQN training loop schematic: the environment produces transitions that the replay buffer stores and shuffles. The online network trains on sampled mini-batches (breaking correlation). The target network, a frozen copy of the online network refreshed every C steps or via Polyak averaging, supplies stable bootstrap targets for the loss, preventing the moving-target feedback loop.</figcaption>
+</figure>
+<p>The key question is practical: is the agent learning from a representative memory of interaction, or from a recent slice of behavior that overrepresents one hallway, one object pose, one lighting condition, or one failure mode?</p>
+<div class="callout key-insight">
+<div class="callout-title">Memory Is Part Of The Algorithm</div>
+<p>A replay buffer is not passive storage. Its capacity, sampling rule, freshness, and episode mix define the training distribution that the Q network sees, so buffer design is part of the learning algorithm.</p>
+</div>
+<h2>Theory</h2>
+<p>Without replay, consecutive updates come from consecutive frames. In a robot task, that means many nearly identical observations while the arm approaches the same object. Gradient descent then overfits the most recent local experience and forgets rare but important transitions. The scale of this problem can be large<span data-agent="28">: in practice, ablations on the original Atari DQN setting typically show naive online updates needing on the order of tens of thousands of episodes to reach playable performance, while the same network trained with a large (roughly 1M-transition) replay buffer reaches comparable performance in a small fraction of that, since each gradient step now draws from a diverse slice of the agent's history rather than a corridor of nearly identical frames</span>.</p>
+<p>A replay buffer stores tuples $(o_t, a_t, r_t, o_{t+1}, d_t)$ and samples mini-batches from that store. Uniform replay reduces short-range correlation. Prioritized replay samples high-error transitions more often, which can speed learning but needs correction weights because the sampled distribution no longer matches the buffer distribution.</p>
+<p></p><div class="callout tip">
+<p>When using prioritized experience replay (PER) in Stable-Baselines3 or Tianshou, set <code>optimize_memory_usage=False</code> and always pass the returned importance-sampling weights to the loss function via the <code>weights</code> argument. Skipping the IS weights corrects the sampling bias on paper but leaves it in the gradient, which silently inflates Q-values for high-priority transitions and can cause divergence that looks like a target-network problem. The PER paper (Schaul et al., 2016) uses exponent <code>beta=0.4</code> at the start and anneals to <code>1.0</code> by the end of training; most library defaults freeze <code>beta</code> at 0.4, so set a linear schedule explicitly or the correction is always partial.</p>
+</div>
+<div class="callout key-insight"><p>Imagine seasoning a soup by tasting it, adding salt, tasting again, and adjusting, but each time you taste, your own saliva has already changed the flavor. Your reference point shifts with every action you take, so you can never converge on the right amount. The moving-target feedback loop in Q-learning works the same way: the network that generates the training target is the same network being updated, so every gradient step changes both the estimate and the goal it is chasing simultaneously, making stable convergence nearly impossible without intervention.</p></div>
+<p>A target network addresses a different problem. The DQN loss uses a target of the form $r + \gamma \max_{a'}Q_{\theta^-}(o',a')$. When $\theta^-$ equals the online network after every update, the model shifts both sides of its own regression target at once. This is <strong>the moving-target feedback loop</strong>, and it is the primary reason naive deep Q-learning diverges. <span data-agent="29">On a physical robot, divergence does not stop gracefully. Runaway Q-values drive increasingly extreme action selections. They saturate motor controllers, trigger hardware fault stops, and generate torque spikes that can damage joints before any software safety layer responds. A frozen target network breaks this cycle by decoupling "how good is the next state" from the ongoing weight updates. For C gradient steps, the network computes the bootstrap value from a fixed copy of its weights, so the regression target behaves like a stable label rather than one that shifts with every batch.</span> Mnih et al. (2015) reported that removing either replay or the target network caused Q-values to diverge on most Atari games; with both, DQN reached superhuman performance on 29 of 49 games. Copying online weights into $\theta^-$ every fixed interval, or blending them with Polyak updates, keeps the target on a slower time scale than the online critic.</p>
+<div class="callout key-insight">
+<div class="callout-title">Hard Sync vs. Polyak Update: When to Use Which</div>
+<p>Hard synchronization (copying online weights into the target every C steps) produces a piecewise-constant target that is easy to audit: you always know exactly which checkpoint is computing the bootstrap value. Polyak averaging ($\theta^- \leftarrow \tau \theta + (1-\tau)\theta^-$, with $\tau$ near 0.005) produces a continuously lagged target that changes every step. Hard sync is easier to diagnose and replay; Polyak averaging is smoother and avoids the periodic jump in target values at each sync boundary. In practice, use hard sync when you want reproducible checkpoints (e.g., during a curriculum where you need to attribute a value spike to a specific policy version) and Polyak averaging when stability matters more than auditability (e.g., SAC and TD3 in continuous robot control).</p>
+</div>
+<div class="callout algorithm">
+<p>See <a href="ch_0132_part-4-reinforcement-learning-for-embodied-agents-module-16-value-based-.xhtml">section 16.1</a> for the complete DQN training loop. Here the focus is on the two internal clocks that loop introduces: the buffer sampling schedule (which controls which transitions train the critic) and the target synchronization schedule (which controls how slowly the bootstrap target moves). The key-insight callout above explains when to prefer hard sync over Polyak averaging for each of those clocks.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>Replay controls which transitions train the critic. The target network controls which critic computes the next-state value. Separating these roles helps debug whether instability came from biased data, stale targets, or overconfident bootstrap values.</p>
+</div>
+<div class="callout warning"><p>A common misconception is that the target network is a separate model trained on different data, with its own gradient updates and loss function. This is wrong: the target network holds no independent learning objective and receives no gradient updates at all. It is simply a frozen copy of the online network, refreshed either by hard copy every C steps or by Polyak averaging. In embodied AI this distinction matters because a robot's training pipeline may have several networks in use simultaneously (actor, critic, safety filter, reward model), and confusing the target network with one of those independent models leads to incorrect hyperparameter choices, such as setting a learning rate or optimizer for a network that never runs a backward pass. The correct mental model is a snapshot clock: the target network is the online network as it existed some fixed number of steps in the past, and its only job is to keep the regression target from chasing itself.</p></div>
+<h2>Worked Example</h2>
+<p>Code Fragment 1 shows the two clocks in a small replay example: the online estimate changes every update, while the target estimate is copied only at a synchronization step.</p>
+<pre><code class="language-python"><span class="c1"># Simulate replay sampling and a target-network synchronization clock.</span>
+<span class="c1"># The target estimate stays fixed until the sync interval is reached.</span>
+<span class="n">replay_rewards</span> <span class="o">=</span> <span class="p">[</span><span class="o">-</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.1</span><span class="p">]</span>
+<span class="n">online_q</span> <span class="o">=</span> <span class="mf">0.30</span>
+<span class="n">target_q</span> <span class="o">=</span> <span class="mf">0.50</span>
+<span class="n">gamma</span> <span class="o">=</span> <span class="mf">0.90</span>
+<span class="n">alpha</span> <span class="o">=</span> <span class="mf">0.20</span>
+<span class="n">sync_interval</span> <span class="o">=</span> <span class="mi">3</span>
+<span class="k">for</span> <span class="n">update</span><span class="p">,</span> <span class="n">reward</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">replay_rewards</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+<span class="n">td_target</span> <span class="o">=</span> <span class="n">reward</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">target_q</span>
+<span class="n">online_q</span> <span class="o">+=</span> <span class="n">alpha</span> <span class="o">*</span> <span class="p">(</span><span class="n">td_target</span> <span class="o">-</span> <span class="n">online_q</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">update</span> <span class="o">%</span> <span class="n">sync_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="n">target_q</span> <span class="o">=</span> <span class="n">online_q</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">update</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"online=</span><span class="si">{</span><span class="n">online_q</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"target=</span><span class="si">{</span><span class="n">target_q</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output">1 online=0.290 target=0.500
+2 online=0.322 target=0.500
+3 online=0.548 target=0.548
+4 online=0.517 target=0.548</div>
+<p>The expected output should be read as a lagged-target trace. The target value stays frozen through updates 1 and 2, synchronizes at update 3, and then remains fixed again while the online critic continues to move, which is the stabilizing behavior target networks are designed to create.</p>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 1:</strong> The variables <code>online_q</code> and <code>target_q</code> expose the separation between learning and target construction. The third update copies the online estimate into the target estimate, which changes the bootstrap value used by later replay samples.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: hard target sync vs no target network</h4>
+<p>Trace one Q-update with $\gamma = 0.90$ and $\alpha = 0.20$, comparing a frozen target against the naive moving target. Start with $Q = 0.50$ for both, replay the reward $r = 1.0$ from a transition into state $o'$ where the next-state max value is currently 0.50.</p>
+<p><strong>With a frozen target ($\theta^-$ fixed):</strong> the TD target is $1.0 + 0.90 \times 0.50 = 1.45$. The online update gives $Q \leftarrow 0.50 + 0.20 \times (1.45 - 0.50) = 0.69$. Replay the same transition again next step: the target is STILL $1.0 + 0.90 \times 0.50 = 1.45$ (the frozen copy did not change), so $Q \leftarrow 0.69 + 0.20 \times (1.45 - 0.69) = 0.842$. The target sits still at 1.45 while $Q$ climbs toward it: 0.69, 0.842, 0.964, and so on, converging smoothly.</p>
+<p><strong>Without a target network (target uses the live $Q$):</strong> step 1 target is again $1.45$, so $Q \leftarrow 0.69$. But step 2 now recomputes the target from the updated value: $1.0 + 0.90 \times 0.69 = 1.621$, so $Q \leftarrow 0.69 + 0.20 \times (1.621 - 0.69) = 0.876$. Step 3 target is $1.0 + 0.90 \times 0.876 = 1.788$. The target chases $Q$ upward every step (1.45, 1.621, 1.788, ...) instead of holding still, the runaway feedback loop the target network exists to break.</p>
+</div>
+<p>The point is not that update 3 is special, it is that the synchronization schedule is an experimental condition. In an embodied run, a target update that is too frequent can chase noise, while a target update that is too slow can train against stale dynamics after a curriculum or domain shift.</p>
+<p data-agent="14">Because that schedule is a knob you will tune dozens of times, it helps to lean on tooling that exposes the buffer and target-network internals rather than hiding them.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>CleanRL is useful for inspecting replay and target-network details in a compact script. Stable-Baselines3 and Tianshou are useful when you need maintained replay buffers, vectorized collectors, checkpointing, and logging. Keep the buffer statistics visible even when a library owns the implementation.</p>
+</div>
+<h2>Practical Recipe</h2>
+<p data-agent="14">Once the library is in place, the design decisions that actually move success rates are about buffer sizing and target-sync logging, so the following steps translate the two clocks into concrete, auditable settings.</p>
+<ol>
+<li>Size the buffer by contact-event diversity, not memory budget. A Franka Panda pick-and-place task encounters slip, grasp failure, and near-collision recovery at rates below 5% of total steps; a 100k-transition buffer drawn from a single session may hold fewer than 2,000 of those critical events. Aim for a capacity that retains at least 10,000 rare-contact transitions before the earliest ones are overwritten.</li>
+<li>Log the age distribution of sampled transitions in steps and wall-clock minutes. In a real-robot SAC run on a Spot quadruped, a 1M-step buffer combined with a 256-sample batch and a 1Hz hardware control loop means sampled transitions can be up to 17 hours old; a terrain curriculum that shifted the floor friction coefficient 6 hours ago will send stale pre-shift dynamics into the critic.</li>
+<li>Tag each transition with its simulator condition or hardware run ID. In Isaac Gym or MuJoCo, attach the friction coefficient, payload mass, and terrain type as metadata so you can compute per-condition TD error <span data-agent="21">(the temporal-difference error: the gap between the predicted Q-value and the bootstrapped target it is regressing toward)</span> and detect whether the critic has seen enough rubble-terrain or stairs transitions before deployment.</li>
+<li>Record the target-network sync interval or Polyak coefficient alongside the run's simulator commit hash and hardware firmware version. TD3 runs on the Open X-Embodiment dataset use tau=0.005; a change to tau=0.05 during a domain-randomization sweep doubles the target-lag reduction rate and can masquerade as an improvement in simulation that disappears on hardware.</li>
+<li>Recompute evaluation metrics after a terrain or payload perturbation using the same replay condition mix. A DQN checkpoint that achieves 85% success on flat floors may drop to 40% on rubble if the replay buffer contained fewer than 1% rubble transitions during training; the gap is invisible unless condition coverage is reported alongside the aggregate return.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>Replay can make old behavior look more important than it is. A buffer full of early random exploration may keep training the critic on collisions that the current policy no longer produces, while a buffer full of recent easy successes may erase rare recovery cases.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a warehouse robot, replay should preserve rare transitions such as wheel slip, blocked aisles, and near-collision recovery. If uniform replay almost never samples those events, the value function can look stable during average episodes and still fail under the exact conditions that matter operationally.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: dexterous in-hand manipulation</h4>
+<p>OpenAI's Dactyl system, which trained a Shadow Hand to reorient a cube, ran a distributed off-policy setup where hundreds of simulated workers fed transitions into a shared replay buffer while a separate optimizer pulled mini-batches and synced target networks. Decoupling collection from learning through the buffer let the system reuse each simulated grasp across many gradient steps, which was essential because the policy then had to transfer to a single, slow physical hand. The target network kept the value estimate from diverging under the massive domain-randomization spread the buffer contained.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When replay buffers and target networks feel abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Offline-to-online replay with large robot datasets (2024-2026).</strong> Researchers are initializing replay buffers from cross-embodiment demonstration corpora (Open X-Embodiment, DROID) and fine-tuning online with SAC or TD3. The challenge is avoiding critic collapse when offline and online data have mismatched dynamics: work from the Berkeley Robot Learning Lab (Nakamoto et al., 2024, "Cal-QL") addresses this with a conservative Q-value initialization that anchors the critic to the offline distribution before online fine-tuning begins.</p>
+<p><strong>Coverage-aware and curriculum-driven buffer sampling (2024-2026).</strong> Uniform replay underrepresents rare contact events critical for manipulation. Recent work on Prioritized Hindsight Replay and successor-feature-based coverage metrics (Fang et al., 2024, "OMNI-EPIC", DeepMind) shows that weighting transitions by state-space novelty rather than TD error yields faster recovery on out-of-distribution terrain for quadrupedal locomotion. The open engineering problem is combining novelty weighting with importance-sampling corrections without inflating Q-values.</p>
+<p><strong>Transformer-based target networks and slow-fast critic architectures (2025-2026).</strong> Standard Polyak-averaged target networks assume a single lag timescale. Groups at CMU and Google DeepMind are exploring two-timescale critic architectures where a slow transformer target encodes long-horizon context while a fast MLP target handles immediate bootstrap, motivated by the observation that contact-rich robot tasks have reward signals at multiple temporal scales (Hansen et al., 2025, "TD-MPC2 variants for manipulation").</p>
+<p><strong>Open problem.</strong> All three directions above assume the replay buffer is stored on a single machine. For multi-robot fleets collecting experience in parallel (warehouse logistics, drone inspection), transitions arrive asynchronously from dozens of hardware units with heterogeneous sensor noise and firmware versions. No principled method yet exists for distributed prioritized replay that (a) maintains coverage guarantees across robots with different observation spaces, (b) propagates target-network updates consistently across workers without synchronization bottlenecks, and (c) detects and rejects transitions corrupted by hardware faults before they bias the critic. Solving even one of these sub-problems cleanly would be a publishable contribution.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you report the replay capacity, sampling rule, transition age distribution, target update rule, and the environment conditions represented in sampled batches? If not, the critic's training distribution is underspecified.</p>
+</div>
+<p>Replay buffers turn interaction history into a training dataset, so they inherit every dataset problem: imbalance, stale labels, missing coverage, and selection bias. Target networks turn a moving regression target into a slower one, so they inherit a control problem: how quickly should the target follow the online critic?</p>
+<p data-agent="17">The embodied version of this tradeoff is concrete. A quadruped trained on flat-terrain replay learns stable values for flat steps, then extrapolates poorly on rubble; a target network synced mid-curriculum lags the current dynamics. Logging buffer composition and target lag makes both failures visible.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>CleanRL</td><td>Readable replay implementation</td><td>Use it to inspect buffer insertion, random sampling, target sync, and loss computation in one script.</td></tr><tr><td>Stable-Baselines3</td><td>Maintained DQN replay stack</td><td>Use it for baselines where checkpointing, vectorized collection, and logging matter.</td></tr><tr><td>Tianshou</td><td>Collector and buffer variants</td><td>Use it to compare replay policies while keeping data collection code consistent.</td></tr><tr><td>MuJoCo</td><td>Controlled perturbation source</td><td>Use it to label replay by friction, mass, contact, and terrain condition.</td></tr><tr><td>ROS 2 bags</td><td>Real interaction logs</td><td>Use them cautiously, with explicit coverage labels before mixing hardware logs into replay.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A robust implementation treats replay metadata as first-class evidence. Code Fragment 2 creates a compact buffer audit row that records not only what was sampled, but when it was collected and which condition it came from.</p>
+<p class="direct-challenge"><strong>Before reading the audit recipe below, guess: of the five fields in a replay transition tuple, which single field do most practitioners never log, yet is the one most likely to explain a sim-to-real gap?</strong> (The answer is the environment condition tag, not the reward.)</p>
+<ol>
+<li>Assign each transition an episode id, collection step, environment condition, and behavior policy tag.</li>
+<li>Compute batch summaries for transition age, reward mix, terminal fraction, and condition coverage.</li>
+<li>Store the target-network update rule in the same artifact as the training metrics.</li>
+<li>Plot TD error by condition, not only by global step.</li>
+<li>Reject comparisons where methods saw different replay condition mixes.</li>
+</ol>
+<pre><code class="language-python"><span class="c1"># Build one replay audit row for an off-policy update.</span>
+<span class="c1"># The metadata makes stale or imbalanced sampled transitions visible.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ReplayAuditRecord</span><span class="p">:</span>
+<span class="n">transition_id</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">age_steps</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">condition</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">behavior_policy</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">reward</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">target_sync_step</span><span class="p">:</span> <span class="nb">int</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">record</span> <span class="o">=</span> <span class="n">ReplayAuditRecord</span><span class="p">(</span>
+<span class="n">transition_id</span><span class="o">=</span><span class="s2">"episode_041_step_018"</span><span class="p">,</span>
+<span class="n">age_steps</span><span class="o">=</span><span class="mi">12400</span><span class="p">,</span>
+<span class="n">condition</span><span class="o">=</span><span class="s2">"low_light_wheel_slip"</span><span class="p">,</span>
+<span class="n">behavior_policy</span><span class="o">=</span><span class="s2">"epsilon_greedy_0.20"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"turn_left"</span><span class="p">,</span>
+<span class="n">reward</span><span class="o">=-</span><span class="mf">1.0</span><span class="p">,</span>
+<span class="n">target_sync_step</span><span class="o">=</span><span class="mi">12000</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">record</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre>
+<div class="code-output">{'transition_id': 'episode_041_step_018', 'age_steps': 12400, 'condition': 'low_light_wheel_slip', 'behavior_policy': 'epsilon_greedy_0.20', 'action': 'turn_left', 'reward': -1.0, 'target_sync_step': 12000}</div>
+<p>The expected output is one replay audit row whose interpretation depends on provenance, not only reward. Here the transition is already 12,400 steps old and was collected before the latest target sync, so a reader should treat it as potentially stale evidence from a shifted condition rather than as a fresh sample from the current policy regime.</p>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 2:</strong> <code>ReplayAuditRecord</code> connects one sampled transition to its age, condition, behavior policy, and target sync step. Those fields reveal whether a batch is training the critic on current task evidence or on stale off-policy leftovers.</div>
+<p>When replay-based learning fails, separate buffer failure from target failure. Buffer failure means the sampled data lacks the condition or action coverage needed by the policy. Target failure means the bootstrap value is too stale, too noisy, or too optimistic. The fix depends on which clock broke.</p>
+<div class="callout algorithm" data-agent="25">
+<div class="callout-title">Evaluation Recipe</div>
+<p>For replay-buffer experiments, compare methods only when sampled batches are audited from the same stored transition panel or from collectors with the same condition schedule. Report return together with replay age, terminal fraction, condition coverage, and target-update rule so the performance number has a data-distribution explanation.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Replay buffers stabilize DQN by changing the training distribution, and target networks stabilize DQN by slowing the bootstrap target. Both are algorithmic choices that must be logged, audited, and stress-tested under embodied distribution shift.</p>
+</div>
+<p>A value function trained on correlated, recent frames without a frozen target is not stable learning; it is a feedback loop waiting to diverge.</p>
+<div class="callout exercise"><div class="callout-title">Exercise 16.2.1</div><p>Design a replay audit for a robot navigation task. Specify buffer capacity, sampling rule, target update rule, transition metadata, and one replay imbalance that could make evaluation look better than deployment.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Ablating replay and target networks on CartPole</h4>
+<p><strong>Goal:</strong> measure how much each stabilizer contributes by turning them on and off, so you can see divergence rather than just read about it.</p>
+<p><strong>Tools needed:</strong> Python with Gymnasium (<code>CartPole-v1</code>), PyTorch, and CleanRL's single-file <code>dqn.py</code> as a starting point. No GPU required; each run finishes in a few minutes on CPU.</p>
+<p><strong>What to vary:</strong> run four configurations. (1) Full DQN with replay plus target network. (2) Replay buffer but target network synced every step (set the target sync interval to 1). (3) No replay: set buffer size to the batch size so each batch is the most recent correlated frames. (4) Neither stabilizer. Then, on the full config, sweep the target sync interval over {1, 100, 500, 2000} and the buffer capacity over {1k, 10k, 100k}.</p>
+<p><strong>What to observe:</strong> log episodic return and the mean absolute Q-value every 1000 steps. Watch for Q-values that grow without bound in configs 2, 3, and 4, the divergence signature, while config 1 stays bounded and the return climbs to 500. In the sweep, note that a sync interval of 1 reproduces config 2's instability and that a tiny buffer reintroduces correlation collapse. You should be able to attribute each failure curve to the specific clock that broke.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a DQN agent for CartPole in Gymnasium with a configurable replay buffer and target network, then run three conditions (no replay, replay only, replay plus target network) and plot the learning curves side by side. The key challenge is instrumenting buffer age and target sync step so each condition is visually comparable, not just anecdotally different.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Train a SAC agent in MuJoCo's Hopper environment using Stable-Baselines3, then corrupt the replay buffer mid-training by injecting 20% stale transitions from an earlier checkpoint and measure the drop in success rate compared to a clean buffer run. The key challenge is writing a replay wrapper that tags each transition with its collection step and condition label so you can audit whether the corruption actually changed the sampled distribution the critic saw.</p><p><strong>Stretch (2 to 3 weeks):</strong> Use LeRobot with a simulated robot arm (or a physical low-cost arm if available) to collect a dataset of pick-and-place demonstrations, initialize a replay buffer from that offline data, and then fine-tune online with DDPG while tracking how quickly the offline transitions age out and whether prioritized replay (via Tianshou's PER buffer) retains useful contact events longer than uniform sampling. The key challenge is defining a condition label per transition (grasp success, slip, near-miss) and showing that PER improves coverage of rare contact events rather than just lowering average TD error.</p></div>
+<div class="whats-next">
+<h3>What's Next?</h3>
+<p><span data-agent="15">Replay buffers and target networks form a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface.</span> Next, continue with <a href="ch_0134_part-4-reinforcement-learning-for-embodied-agents-module-16-value-based-.xhtml">Section 16.3</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1802.09477">Fujimoto, S., van Hoof, H., and Meger, D. (2018). Addressing Function Approximation Error in Actor-Critic Methods. ICML.</a></p>
+<p class="bib-annotation">Identifies and fixes the Q-value overestimation problem in DDPG through three mechanisms: clipped double critics, delayed policy updates, and target-policy smoothing. Read Section 4 for each fix and the ablation in Section 5; these three tricks are now standard practice for off-policy continuous-control and appear directly in SAC variants.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1801.01290">Haarnoja, T. et al. (2018). Soft Actor-Critic. ICML.</a></p>
+<p class="bib-annotation">Combines off-policy learning with a maximum-entropy objective, adding an automatic temperature parameter that balances exploration and exploitation without manual tuning. Read Section 4 for the soft Bellman equation and the entropy temperature update; SAC is the most widely used off-policy baseline for continuous robot control tasks.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://www.nature.com/articles/nature14236">Mnih, V. et al. (2015). Human-level control through deep reinforcement learning. Nature.</a></p>
+<p class="bib-annotation">Demonstrates that replay buffers and target networks together stabilize Q-learning with neural function approximators. Read Section 2 for the DQN algorithm and the supplementary for network architecture; replay and target-network ideas appear in every subsequent off-policy deep RL method including DDPG, TD3, and SAC.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1509.02971">Lillicrap, T. P. et al. (2015). Continuous control with deep reinforcement learning. arXiv.</a></p>
+<p class="bib-annotation">Adapts DQN to continuous action spaces by combining a deterministic policy gradient actor with a Q-function critic and using replay and target networks from DQN. Read Algorithm 1 for the full update loop; DDPG is the direct predecessor to TD3 and understanding its overestimation problem motivates TD3's twin-critic design.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://link.springer.com/article/10.1007/BF00992698">Watkins, C. J. C. H., and Dayan, P. (1992). Q-learning. Machine Learning.</a></p>
+<p class="bib-annotation">The canonical derivation of tabular Q-learning and its convergence proof. Read to understand the off-policy update rule and why the max over next-state actions makes Q-learning off-policy by construction; this distinction carries through to DQN and all its successors.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://tianshou.org/">Tianshou documentation.</a></p>
+<p class="bib-annotation">A modular PyTorch RL library with clean separation between collector, trainer, and policy components. Use it to prototype off-policy algorithms without reimplementing replay buffers and target-network logic; the policy abstraction makes it straightforward to compare DQN, DDPG, TD3, and SAC in a common framework.</p>
+<span class="bib-meta">Tool</span>
+</div>
+</section>
+
+
+
+
+</body>
+</html>

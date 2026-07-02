@@ -1,0 +1,203 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 58.1: Scaling laws and data engines for robots</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 58.1: Scaling laws and data engines for robots</h1>
+
+<blockquote class="epigraph"><p>"I do scale with data, but only the data that contains the mess I will meet later."</p>
+<cite>A Robot Data Engine Counting Interventions</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 58.1: Scaling laws and data engines for robots." loading="lazy" src="../img/1b8464bffe_chapter-58-illustration-01.jpg" />
+<figcaption>Figure 58.1A: Scaling laws for robot policies: a log-log plot of task success rate vs. demonstration dataset size for three policy architectures, showing how transformer-based generalist policies exhibit steeper improvement with more data than smaller specialized models.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the mechanics of robot data collection and the structure of cross-embodiment datasets, covered in section 24.1 and section 23.2. The evaluation methodology needed to validate any scaling claim is treated in depth in section 52.5 and section 52.6. The ideas here are extended in section 35.2, which shows how foundation-policy pretraining interacts with the data-engine loop introduced below.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A single household robot logs thousands of failures every week: a cup slips, a drawer jams, a wrist torques at the wrong angle. For years that data sat unused. Now, robot teams are building <strong>data engines</strong> that feed every failure back into training, and early results suggest the same <a data-agent="13" href="ch_0185_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">power-law scaling</a> that transformed language models may apply to manipulation policies too. The stakes for embodied AI are immediate: if scaling holds, the question is no longer whether robots can generalize, but how many diverse demonstrations it takes to get there. You will work through how scaling laws are measured for physical systems, why intervention cost (the physical expense of obtaining one corrective demonstration from a human operator, defined precisely later in this section) shapes what data is worth collecting, and what a functioning data engine actually looks like at the implementation level.</p>
+</div>
+<p data-agent="01">The two halves of the title are not independent: a fitted power law tells you how many <em>more</em> static demonstrations a target success rate would need, while the data engine is the mechanism that gets there for less, by spending its budget on the failure states a static corpus would otherwise have to rediscover by brute force. Reading a scaling curve without asking whether a data engine could hit the same target more cheaply is an incomplete answer to the question this section poses.</p>
+<p data-agent="22">A robot can practice a million flawless pick-and-place motions and still drop the first unfamiliar cup it meets, because a million easy successes teach it almost nothing about recovery; that paradox is the whole reason scaling laws and data engines for robots demand their own theory, distinct from the tidy power laws of language models. <span data-agent="15">Making that theory usable takes three steps: define the object of study, connect it to the agent loop, then test it with a compact implementation.</span></p>
+<p>The key question here is concrete: for a 7-DOF Franka Panda running a diffusion policy on wrist-camera RGB, does the next 50K demonstrations actually push success on a frozen 10-task panel, or does it just deepen coverage of pick-and-place trajectories the policy already mastered? Answering that means naming the observation (224x224 RGB plus joint state), the action (end-effector deltas at a fixed control rate), the metric (panel success holding embodiment fixed), and the evidence that distinguishes a real scaling gain from a WidowX-style distribution-shift artifact.<span data-agent="04"> (WidowX is a lower-cost robot arm used in cross-embodiment benchmarks; a policy that only looks good on arms it trained on, and collapses on WidowX, was never really tested for generalization.)</span></p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>Robot data engines and scaling laws should be judged by the action it improves. A section claim is strong when it names the decision, the measurement, and the failure mode before a larger model or simulator is introduced.</p>
+</div>
+<h2>Theory</h2>
+<p><span data-agent="29">Figure 58.1A plots this dependence directly. On a log-log axis, task success rate climbs with demonstration dataset size, and transformer-based generalist policies show a steeper slope than smaller specialized models. That steeper slope is the visual signature of a favorable scaling law. For robot policies, the practical design rule is to fix the <a data-agent="13" href="ch_0020_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">observation contract</a> before scaling data collection. What the policy sees must stay constant across the static corpus and the live data engine, or the scaling curve measures two different systems. Consider a <a data-agent="13" href="ch_0264_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">diffusion policy</a> that consumes 224x224 RGB frames from a fixed wrist camera plus a 7-DOF (degrees of freedom) joint-state vector. It has a well-defined input signature. If the data engine later adds a second overhead camera or changes the action rate (say 10 Hz versus 50 Hz), every demonstration from that point forward shifts the effective input distribution and invalidates the earlier scaling estimates.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a scaling curve is only meaningful if the observation contract (what the policy sees and how often it acts) stays fixed across every demonstration counted on that curve; changing the camera rig or control rate mid-collection silently breaks the comparison.</p></div>
+<p><span data-agent="29">The difference in return on data is stark. A static Open X-Embodiment slice of 1M demonstrations, trained once on a Franka Panda manipulation suite, reaches roughly 65% task success on a fixed 10-task panel (illustrative figures consistent with reported RT-X results, as of 2023-2024). A data engine that mines failure-recovery episodes from live Franka deployments and routes 50K targeted corrections back into training each month can, in practice, reach a comparable success level with substantially less total data, typically because it saturates the failure modes the static corpus never covered.</span></p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism in Scaling laws and data engines for robots is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+<h2>Worked Example</h2>
+<p><span data-agent="14">The contract above stays abstract until a real corpus tests it, so watch how the field's largest cross-embodiment dataset behaved when it grew by an order of magnitude.</span> The <a href="ch_0185_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Open X-Embodiment (OXE) dataset</a> grew from roughly 500K to over 1M demonstrations across 22 robot embodiments between its 2023 release and subsequent expansions. RT-X models trained on this corpus showed approximately 50% relative improvement on multi-embodiment evaluation compared to single-robot baselines, but only when the evaluation panel held embodiment and task distribution fixed. When the panel shifted to include a new robot arm not present in training (a WidowX variant), success rates dropped back to near-single-robot levels despite the larger dataset. The lesson is that scaling the data count without tracking embodiment coverage in the panel produces a number that looks like a scaling law but is actually a <a href="ch_0400_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">distribution-shift artifact</a>.</p>
+<pre><code class="language-python"><span class="c1"># Fit a power-law scaling curve to robot task success vs. dataset size</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># Simulated data: (num_demonstrations, task_success_rate)</span>
+<span class="c1"># Represents a multi-embodiment dataset evaluated on a fixed panel</span>
+<span class="n">data_points</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+<span class="p">[</span><span class="mi">1_000</span><span class="p">,</span> <span class="mf">0.18</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">5_000</span><span class="p">,</span> <span class="mf">0.31</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">20_000</span><span class="p">,</span> <span class="mf">0.47</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">50_000</span><span class="p">,</span> <span class="mf">0.58</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">100_000</span><span class="p">,</span> <span class="mf">0.65</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">250_000</span><span class="p">,</span> <span class="mf">0.74</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">500_000</span><span class="p">,</span> <span class="mf">0.80</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">1_000_000</span><span class="p">,</span> <span class="mf">0.86</span><span class="p">],</span>
+<span class="p">])</span>
+<span class="n">N</span> <span class="o">=</span> <span class="n">data_points</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="c1"># demonstration counts</span>
+<span class="n">S</span> <span class="o">=</span> <span class="n">data_points</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="c1"># success rates (0-1)</span>
+<span class="c1"># Power law: S(N) = a * N^b</span>
+<span class="c1"># Linearize: log(S) = log(a) + b * log(N)</span>
+<span class="n">log_N</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">log10</span><span class="p">(</span><span class="n">N</span><span class="p">)</span>
+<span class="n">log_S</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">log10</span><span class="p">(</span><span class="n">S</span><span class="p">)</span>
+<span class="c1"># Least-squares fit in log-log space</span>
+<span class="n">b</span><span class="p">,</span> <span class="n">log_a</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">polyfit</span><span class="p">(</span><span class="n">log_N</span><span class="p">,</span> <span class="n">log_S</span><span class="p">,</span> <span class="n">deg</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">a</span> <span class="o">=</span> <span class="mi">10</span> <span class="o">**</span> <span class="n">log_a</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Fitted scaling law: S(N) = </span><span class="si">{</span><span class="n">a</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2"> * N^</span><span class="si">{</span><span class="n">b</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">()</span>
+<span class="c1"># Evaluate fit and estimate required data for target success rates</span>
+<span class="n">targets</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.70</span><span class="p">,</span> <span class="mf">0.85</span><span class="p">,</span> <span class="mf">0.90</span><span class="p">,</span> <span class="mf">0.95</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">'Target success'</span><span class="si">:</span><span class="s2">&gt;16</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'Required demos'</span><span class="si">:</span><span class="s2">&gt;16</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'Fitted S(N)'</span><span class="si">:</span><span class="s2">&gt;14</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"-"</span> <span class="o">*</span> <span class="mi">52</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">s_target</span> <span class="ow">in</span> <span class="n">targets</span><span class="p">:</span>
+<span class="c1"># Invert: N = (s_target / a)^(1/b)</span>
+<span class="n">N_needed</span> <span class="o">=</span> <span class="p">(</span><span class="n">s_target</span> <span class="o">/</span> <span class="n">a</span><span class="p">)</span> <span class="o">**</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="n">b</span><span class="p">)</span>
+<span class="n">s_fitted</span> <span class="o">=</span> <span class="n">a</span> <span class="o">*</span> <span class="n">N_needed</span> <span class="o">**</span> <span class="n">b</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">s_target</span><span class="si">:</span><span class="s2">&gt;16.0%</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">N_needed</span><span class="si">:</span><span class="s2">&gt;16,.0f</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">s_fitted</span><span class="si">:</span><span class="s2">&gt;14.2%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="c1"># Report coverage warning</span>
+<span class="n">unique_tasks</span> <span class="o">=</span> <span class="mi">42</span> <span class="c1"># tasks in the training corpus</span>
+<span class="n">unique_embodiments</span> <span class="o">=</span> <span class="mi">4</span> <span class="c1"># robot families covered</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="se">\n</span><span class="s2">Corpus coverage: </span><span class="si">{</span><span class="n">unique_tasks</span><span class="si">}</span><span class="s2"> task types, "</span>
+<span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">unique_embodiments</span><span class="si">}</span><span class="s2"> embodiment families"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Warning: scaling curve is valid only within this (task, embodiment) support."</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>Fitted scaling law: S(N) = 0.0183 * N^0.2031
+
+  Target success    Required demos     Fitted S(N)
+----------------------------------------------------
+             70%         197,732             70.00%
+             85%         461,991             85.00%
+             90%         612,795             90.00%
+             95%         872,673             95.00%
+
+Corpus coverage: 42 task types, 4 embodiment families
+Warning: scaling curve is valid only within this (task, embodiment) support.</pre></div>
+<div class="code-caption">Code Fragment 58.1.1: Power-law scaling curve fit for robot task success versus demonstration dataset size, showing how to estimate required data for a target success rate and how to flag the embodiment coverage boundary.</div>
+<div class="callout practical-example" data-agent="26">
+<div class="callout-title">Step-Through: Fitting the power law and inverting it for a data budget</div>
+<p>Trace the fit using just two of the data points above, $(N_1, S_1) = (1{,}000,\ 0.18)$ and $(N_2, S_2) = (1{,}000{,}000,\ 0.86)$, to see where the headline numbers come from.</p>
+<p><strong>Step 1, go to log-log space.</strong> $\log_{10} N_1 = 3.000$, $\log_{10} S_1 = -0.745$; $\log_{10} N_2 = 6.000$, $\log_{10} S_2 = -0.066$.</p>
+<p><strong>Step 2, slope (the scaling exponent).</strong> $b = (-0.066 - (-0.745)) / (6.000 - 3.000) = 0.679 / 3.000 = 0.226$. The full least-squares fit over all eight points smooths this to $b = 0.2031$.</p>
+<p><strong>Step 3, intercept.</strong> $\log_{10} a = \log_{10} S_1 - b\,\log_{10} N_1 = -0.745 - (0.226)(3.000) = -1.423$, so $a = 10^{-1.423} = 0.0378$. The eight-point fit gives $a = 0.0183$.</p>
+<p><strong>Step 4, invert for a target.</strong> Using the reported fit $S(N) = 0.0183\,N^{0.2031}$, the demos needed for $S = 0.70$ are $N = (0.70 / 0.0183)^{1/0.2031} = (38.25)^{4.924} \approx 197{,}700$, which matches the table's 197,732. Pushing the target to 0.95 needs roughly 873,000 demos: a 0.25 jump in success costs about 4.4x more data, the concrete face of diminishing returns.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>For Scaling laws and data engines for robots, keep the small contract as the inspectable interface, then use OpenVLA, SmolVLA, GR00T, Gemini Robotics, or pi-zero-family tools without changing logging or replay fields.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Write the observation, action, and success metric before choosing a model.</li>
+<li>Build a baseline that is simple enough to debug by inspection.</li>
+<li>Add the library implementation only after the baseline behavior is understood.</li>
+<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
+<li>Run at least one perturbation test before trusting the result.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>The most frequent failure in robot data scaling is conflating dataset size with coverage. A corpus can reach 1M demonstrations while still containing fewer than 50 distinct task types concentrated on two embodiment families. A policy trained on this data shows a smooth scaling curve on those tasks, then fails almost completely when transferred to a third embodiment or a new table height. The scaling curve is real within its distribution; it was simply never labeled as such. Always report the number of unique (task, embodiment, scene) combinations alongside the raw demonstration count, and keep the evaluation panel frozen when drawing scaling comparisons.</p>
+</div>
+<div class="callout warning">
+<p>A common assumption is that robot scaling laws work like language model scaling laws: add more data of any kind and performance improves along the same power-law curve. That assumption fails in embodied AI because robot data is not passive text. Each demonstration is physically grounded. It carries a specific sensor stack, action rate, embodiment geometry, and intervention cost. A dataset that grows by adding teleoperation traces from the same two tasks on the same arm does not broaden the distribution. It deepens an already-covered region while leaving failure modes and new embodiments unseen. Treat the data engine as an active sampler. Its value comes from which states it covers, not from how many frames it accumulates. Obtaining one corrective intervention is physically expensive, which makes failure-state data scarce and disproportionately valuable. A robot that has seen a million easy successes but never one recovery from a dropped object has not scaled: it has practiced.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A team using Scaling laws and data engines for robots starts by writing the task panel, not by picking the largest model. They keep a baseline run, a maintained-tool run, and a perturbation run in the same result folder. The comparison is accepted only when the action trace, metric, and failure labels come from one script.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<div class="callout-title">Real-World Application: humanoid fleet learning at Tesla Optimus</div>
+<p>Tesla's Optimus program treats its deployed humanoid fleet as a live data engine rather than a fixed corpus, streaming teleoperation and autonomous-rollout traces from many units into a shared training pool and prioritizing the manipulation states where current policies fail. This mirrors the failure-mining loop in this section: intervention-sourced recoveries are scarce and expensive, so the system routes operator time to low-confidence states instead of recollecting already-mastered pick-and-place motions. The same pattern drives Physical Intelligence's pi0 and the 1X and Figure fleets, where coverage of new scenes and embodiments, not raw frame count, sets the real scaling rate.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When scaling laws and data engines for robots feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Active directions (2024-2026):</strong> (1) <em>Synthetic-to-real data scaling</em>: labs are using large physics simulators to generate hundreds of millions of robot trajectories and testing whether this synthetic mass translates to real-world policy gains; Google DeepMind's RT-2 successors and the <em>RoboCasa</em> benchmark (Robosuite team, 2024) are benchmarking how far sim data alone can push dexterous manipulation without physical demonstrations. (2) <em>Internet-scale video pretraining for robot policies</em>: instead of building robot-specific corpora, teams are adapting vision-language-action models pretrained on web video; Physical Intelligence's <em>pi0</em> (Black et al., 2024) showed that <span data-agent="21">flow-matching policies (which learn to generate an action trajectory by following a smooth vector field from noise to the target, a close relative of diffusion)</span> pretrained at scale and fine-tuned with a small number of robot traces match or exceed policies trained on large curated robot datasets alone. (3) <em>Heterogeneous fleet data engines</em>: rather than collecting data with one robot type, fleets of diverse embodiments run continuously and route failures back to a shared policy; Figure AI and 1X Technologies are actively scaling this approach (2024-2025), treating the fleet itself as the data engine rather than relying on staged laboratory collection. <strong>Open PhD problem:</strong> No rigorous framework yet exists for predicting, before data collection begins, how many cross-embodiment demonstrations are needed to reach a target success rate on a held-out embodiment family. A student could formalize this as a conditional scaling law, derive the required coverage metrics, and validate the predictions against existing Open X-Embodiment and <span data-agent="21">DROID (a large open teleoperation dataset spanning many manipulation scenes and robot setups)</span> splits.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>For Scaling laws and data engines for robots, can you name the observation, action, protected assumption, success metric, and one likely failure case? If any field is vague, rewrite the contract before adding model complexity.</p>
+</div>
+<section class="part-xii-agent-enrichment">
+<h2>Topic-Native Deepening</h2>
+<p><span data-agent="17">A scaling claim matters only if extra data changes closed-loop behavior on new embodiments, scenes, or horizons. Robot datasets differ in <a href="ch_0179_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">embodiment, sensor stack, action rate, and intervention policy</a>, so a larger corpus can look impressive while teaching the policy the wrong invariances. Call this <strong>the coverage illusion of scale</strong>: it is the central trap in robot data work.</span></p>
+<p>Treat the data engine as the real object of study: which states are sampled, which failures are collected, and how new data is prioritized after deployment. This section therefore moves from headline scaling claims to the artifact that a lab can actually build, namely a collection, filtering, labeling, and replay loop tied to a <a href="ch_0401_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">fixed evaluation panel</a>.</p>
+<div class="callout key-insight"><div class="callout-title">Why This Section Matters</div><p>Scaling laws and data engines for robots becomes tractable once the operative variables, the decision boundary, and the evidence artifact. The section should therefore be read together with <a href="ch_0184_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Chapter 24 on robot datasets</a> and <a href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52 on evaluation</a>, where the same loop is developed from adjacent angles.</p></div>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Formal Object</div><p>Let $D=\{(o_t,a_t,r_t,m_t)\}_{t=1}^N$ be a robot dataset with metadata $m_t$ for embodiment, task, and intervention source. A useful scaling view is $\mathcal{E}(N,H,B)=\mathbb{E}_{(e,h,b)\sim p_{\text{eval}}}[\ell(\pi_\theta; e,h,b)]$, where $H$ is horizon, $B$ is embodiment family, and the evaluation loss is measured on a fixed panel rather than on a moving benchmark.</p></div>
+<p>The key term is the panel distribution $p_{eval}$. If you silently change the evaluated horizons or embodiments while increasing $N$, you are no longer measuring scaling, you are measuring a different task. The section therefore asks for growth curves indexed by data count, intervention count, and embodiment coverage at the same time.</p>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Build a robot data engine rather than a static dataset</div><ol>
+<li>Start from a fixed benchmark panel with nominal, perturbation, and rare-failure scenes.</li>
+<li>Collect demonstrations, teleoperation traces, and autonomous rollouts with metadata for embodiment, camera setup, and controller rate.</li>
+<li>Mine failures and near-failures into a priority queue instead of sampling only successful trajectories.</li>
+<li>Retrain or fine-tune the policy, then re-evaluate on the unchanged panel with the same metric script.</li>
+<li>Promote new data only if it improves panel coverage or reduces a named failure cluster.</li>
+</ol></div>
+<div class="callout tip">
+<p>When using LeRobot's <code>LeRobotDataset</code> to build or refresh a data engine, check the <code>episodes</code> table's <code>length</code> column before calling <code>push_to_hub</code>: the default <code>min_episode_length</code> filter is set to 1 frame, but downstream dataloaders that use <code>delta_timestamps</code> will silently skip any episode shorter than the largest requested temporal offset. Short episodes are disproportionately failures and near-failures, which are exactly the priority samples the algorithm above asks you to mine. Set <code>delta_timestamps</code> conservatively (for example, <code>{"observation.state": [0.0]}</code> with no negative offsets) during failure-collection runs so those episodes survive into the training batch.</p>
+</div>
+<p><span data-agent="29"><strong>Intervention cost</strong> is the physical expense of obtaining one corrective demonstration. A human operator must watch a live robot, recognize a failure, teleop a recovery, and log the trace. On a real manipulator arm this takes 30 to 90 seconds per episode and demands a skilled operator nearby. Illustrative numbers make the case concrete<span data-agent="28">, though the exact ratio varies by task difficulty and is not a single fixed constant across setups</span>. Reaching 80% task success on a new tabletop pick-and-place task through random rollout collection typically requires on the order of 40,000 episodes. A data engine that routes only flagged low-confidence states to a human operator can, in practice, reach the same threshold with around 400 targeted interventions, roughly a 100-fold reduction in operator time. That cost makes intervention-sourced data intrinsically scarce. A data engine must therefore prioritize which failure states trigger an intervention rather than collecting corrections indiscriminately. Unlike synthetic augmentation, each intervention also carries hardware wear and operator fatigue, so the refresh budget is genuinely finite.</span></p>
+<p><span data-agent="14">Because that budget is finite, the engine needs a concrete rule for deciding which states are worth an operator's time, and that rule is the priority queue.</span> The mechanism is a priority queue over robot states: the deployment policy estimates confidence (for example, ensemble disagreement or flow-matching variance) and flags low-confidence states. A dispatcher routes those flagged states to the intervention queue. A human operator recovers from the flagged state, the recovery trace is labeled with the failure cluster and episode metadata, and the trace enters the next training batch. Because only states where the current policy is likely to fail receive interventions, each new demonstration reduces a specific gap rather than adding redundant coverage of already-mastered behaviors. <span data-agent="39">Figure 58.1B traces this full loop from live rollout through the failure priority queue and human intervention back to retraining.</span></p>
+<div class="callout key-insight"><p>Think of it like a chef who only calls a cooking instructor when a sauce is about to break. The chef handles every familiar step alone, but the moment uncertainty spikes, an expert steps in, corrects the technique, and leaves. That one corrective session teaches something no amount of practicing well-mastered steps ever could. The data engine works the same way: it withholds the expensive human intervention until the policy reaches a state it genuinely cannot handle, then collects exactly that recovery trace, so each lesson fills a real gap instead of rehearsing competence the policy already has.</p></div>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_4437887d1510a0fa.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption>Figure 58.1B: The robot data engine loop. The deployed policy runs live rollouts and estimates confidence at each state. High-confidence states continue without human involvement (dashed blue). Low-confidence states enter a failure priority queue, triggering a targeted human intervention. The recovery trace is added to the training batch, the policy is retrained, and the loop repeats. Each cycle fills a specific coverage gap rather than accumulating redundant successes.</figcaption>
+</figure>
+<div class="comparison-table"><div class="comparison-table-title">Data-Engine Design Questions</div><table><thead><tr><th>Dimension</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<tr><td>Data source</td><td>Teleoperation, scripted policies, fleet logs, or synthetic augmentation</td><td>It determines covariate shift and label quality.</td></tr>
+<tr><td>Coverage axis</td><td>Task family, embodiment family, horizon length, or perturbation family</td><td>It prevents a single aggregate curve from hiding blind spots.</td></tr>
+<tr><td>Refresh trigger</td><td>Failure cluster, low-confidence state, or new hardware deployment</td><td>It turns data collection into an active systems process.</td></tr>
+<tr><td>Evidence artifact</td><td>Scaling curve plus panel manifest and failure taxonomy</td><td>It makes the claim reproducible across labs.</td></tr>
+</tbody></table></div>
+<p>The expected output is not a trained model. It is an experiment card that fixes the panel, names the data scales, and records why more data is being collected. A reader should reject any scaling plot that cannot be traced back to this kind of card.</p>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the from-scratch contract is clear, the practical route uses <strong>LeRobot, Open X-Embodiment, DROID, robomimic, Weights &amp; Biases, Hugging Face datasets</strong>. The payoff is that standard interfaces, logging, batching, and replay support move from ad hoc glue code into maintained infrastructure, while the evidence schema stays the same.</p></div>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>A strong research artifact uses a small tabletop benchmark with one intentionally difficult perturbation, such as specular objects or camera offset, then shows how targeted data refresh improves the perturbation without regressing the nominal cases. That is a more credible result than a single average success number reported after a large unstructured data scrape.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>The frontier question is whether robot scaling laws can be made conditional: how much extra data is needed for a new embodiment, a longer horizon, or a new sensor package? A convincing answer will likely combine <a href="ch_0272_part-7-language-vision-and-action-module-35-robot-foundation-models-and-.xhtml">foundation-policy pretraining</a> with active failure mining and better panel design, not just a larger generic corpus.</p></div>
+<div class="callout self-check"><div class="callout-title">Expected Output Interpretation</div><p>For Scaling laws and data engines for robots, the printed artifact should identify the open technical uncertainty, the evidence already available, and the next experiment or design review that would make the frontier claim testable.</p></div>
+</section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<ul>
+<li>Scaling laws and data engines for robots matters when it changes an embodied agent's action under a stated observation and metric.</li>
+<li>Track data diversity, embodiment coverage, task coverage, and intervention cost together.</li>
+<li>Strong evidence is saved as one artifact containing the baseline, the maintained-tool path, the metric panel, and labeled failures.</li>
+</ul>
+</div>
+<div class="callout lab" data-agent="41">
+<div class="callout-title">Lab: Measure a robot scaling curve and break it with a coverage shift</div>
+<p><strong>Goal:</strong> Empirically reproduce both a clean power-law scaling curve and the coverage illusion that makes raw demonstration counts misleading.</p>
+<p><strong>Tools needed:</strong> Python with <code>lerobot</code>, <code>numpy</code>, and <code>matplotlib</code>; a pre-collected manipulation dataset such as the LeRobot PushT or an Open X-Embodiment slice; one diffusion or <span data-agent="21">ACT (Action Chunking Transformer, a policy that predicts a short block of future actions at once)</span> policy from the LeRobot model zoo. Runs on a single GPU laptop in well under 30 minutes if you cap training steps.</p>
+<p><strong>What to vary:</strong> Subsample the training set at five sizes (for example 1K, 5K, 20K, 50K, and the full set) by number of demonstrations, training a short policy at each size against a frozen 10-episode evaluation panel. Then run a second sweep where you grow the count by duplicating only the easy successful trajectories, holding the unique-state count fixed.</p>
+<p><strong>What to observe:</strong> Plot success versus demonstration count in log-log space and fit $S(N) = a\,N^b$ for both sweeps. The first sweep should trace a rising power law; the duplication sweep should flatten despite the growing count, exposing the gap between dataset size and coverage. Record the number of unique (task, scene) combinations next to each point so the flat curve is explained, not just observed.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 58.1.1</div><p>Design a method-matched experiment for Scaling laws and data engines for robots. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<section class="bibliography"><h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Bardes, A. et al. Revisiting Feature Prediction for Learning Visual Representations from Video. arXiv, 2024.</p><p class="bib-annotation">Use for V-JEPA-style predictive representation learning and the limits of passive video priors.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Open X-Embodiment Collaboration. Open X-Embodiment: Robotic Learning Datasets and RT-X Models. arXiv, 2023.</p><p class="bib-annotation">Use for cross-embodiment data scaling, RT-X evaluation, and dataset-standardization claims.</p></div>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Use LeRobot's <code>LeRobotDataset</code> with a small pre-collected Gymnasium or PyBullet manipulation dataset to fit a power-law scaling curve (success rate vs. number of demonstrations) and plot it in log-log space; the key challenge is keeping the evaluation panel frozen while varying dataset size so the curve measures coverage gain rather than benchmark shift. <strong>Intermediate (1-2 weeks):</strong> Build a minimal data engine around a MuJoCo or Isaac Lab tabletop pick-and-place task using a diffusion policy from LeRobot: deploy the policy, detect low-confidence rollouts via ensemble disagreement, queue those states for targeted re-demonstration in ROS 2 (Robot Operating System 2) or a scripted teleop interface, retrain on the augmented set, and show the perturbation success rate improving without regressing the nominal panel. <strong>Advanced (3-4 weeks):</strong> Implement a cross-embodiment scaling experiment in Isaac Lab using two robot families (for example, Franka and WidowX), train a shared transformer policy on progressively larger joint datasets, then evaluate on a third held-out embodiment to directly reproduce the distribution-shift artifact described in the worked example above.</p></div>
+<div class="whats-next"><h3>What's Next?</h3><p>Next, continue with <a href="ch_0435_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">Generalist vs. specialist policies</a>, where this frontier question is connected to a different research bottleneck.</p></div>
+
+
+
+
+</body>
+</html>

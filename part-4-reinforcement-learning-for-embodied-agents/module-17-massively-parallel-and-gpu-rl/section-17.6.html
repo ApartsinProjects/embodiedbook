@@ -117,7 +117,7 @@
 </div>
 <div class="callout warning"><p>A common assumption is that maximizing environment steps per second minimizes training cost and time to a deployable policy. <span data-agent="28">That assumption typically fails in embodied AI, because the phases it ignores are often the largest share of wall-clock:</span> Evaluation overhead, compilation, synchronization stalls, logging, and failed runs all consume billable time without producing useful gradient signal. A system running at 2,000,000 steps per second can cost more than a system at 400,000 steps per second when the faster system spends the majority of its wall-clock outside the rollout phase. Treat throughput as one term in a cost ledger. The metric that drives hardware and algorithm decisions is dollars per first checkpoint that reaches the held-out success target, counted over all billable phases and all failed runs.</p></div>
 <h2>Theory</h2>
-<p>Let a run collect $S$ environment steps in $W$ wall-clock seconds. The raw throughput is $S/W$, but the cost metric should include training, evaluation, checkpointing, and failed runs. If the target is a 90 percent held-out success rate, the relevant question is how many dollars and minutes were spent before the first checkpoint reached that target.</p>
+<p>Let a run collect \(S\) environment steps in \(W\) wall-clock seconds. The raw throughput is \(S/W\), but the cost metric should include training, evaluation, checkpointing, and failed runs. If the target is a 90 percent held-out success rate, the relevant question is how many dollars and minutes were spent before the first checkpoint reached that target.</p>
 <p>In contact-rich manipulation and legged locomotion, the throughput-versus-sample-efficiency tradeoff has a physical edge that pure RL benchmarks hide. <span data-agent="29">Isaac Lab locomotion runs with 4,096 <a href="../../part-4-reinforcement-learning-for-embodied-agents/module-17-massively-parallel-and-gpu-rl/section-17.1.html" data-agent="13">parallel Anymal environments</a> and a PPO rollout horizon of 24 steps typically saturate <span data-agent="28">(in practice, on this class of hardware; exact numbers vary with driver version and environment complexity)</span> an A100 at around 200,000 environment steps per second (as of 2024, on Isaac Lab with RSL-RL). Doubling the batch to 8,192 raises device utilization but stretches <span data-agent="04">policy lag (the real-time delay between when the environment state was sampled and when the resulting action, computed from that stale state, actually reaches the robot)</span> to roughly 48 real-time milliseconds per update cycle. For a quadruped recovering from a push disturbance, that lag can decide between a recoverable stumble and a fall, because the contact phase that needs the corrective torque command typically lasts only 60 to 80 ms <span data-agent="28">for this class of push-recovery task</span>. Smaller batches keep the policy fresher but leave the GPU at 40 to 50 percent utilization, which wastes the hardware budget. The RSL-RL locomotion stack fixes this by tuning rollout horizon rather than batch size: fix the environment count at what fills GPU memory, then shorten the horizon until the update rate matches the task's fastest transient dynamics. The horizon matters more than raw step count. Halving it from 24 to 12 steps on 4,096 environments cuts the policy lag from 48 ms to 24 ms while collecting the same 98,304 transitions per update, because the robot receives a fresher policy twice as often within the same wall-clock window.</span></p>
 <div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the cost ledger accounts for rollout, learner, evaluation, and sync/log time; throughput and policy lag trade off against each other through batch size and rollout horizon; and the accounting loop below turns those measurements into a single per-checkpoint record.</p></div>
 <div class="callout note" data-agent="25">
@@ -126,38 +126,38 @@
 </div>
 <div class="callout algorithm">
 <h4>Algorithm: GPU RL Cost-Ledger Accounting Loop</h4>
-<p><strong>Input:</strong> policy $\pi_\theta$, learning rate $\alpha$, batch size $B$, target success rate $\tau$, held-out seed panel $\mathcal{E}$, instance price $c$ (USD/hr), maximum budget $C_{\max}$</p>
-<p><strong>Output:</strong> cost ledger row $(W_{\text{train}}, W_{\text{eval}}, M_{\text{peak}}, \hat{\rho}, \$_{\text{total}})$ for the first checkpoint reaching $\hat{\rho} \ge \tau$</p>
+<p><strong>Input:</strong> policy \(\pi_\theta\), learning rate \(\alpha\), batch size \(B\), target success rate \(\tau\), held-out seed panel \(\mathcal{E}\), instance price \(c\) (USD/hr), maximum budget \(C_{\max}\)</p>
+<p><strong>Output:</strong> cost ledger row \((W_{\text{train}}, W_{\text{eval}}, M_{\text{peak}}, \hat{\rho}, \\)_{\text{total}})$ for the first checkpoint reaching $\hat{\rho} \ge \tau$</p>
 <ol>
-<li>Record instance type, $c$, $B$, $\tau$, and $\mathcal{E}$ in the ledger header before launch.</li>
-<li>Start the rollout timer after the first compiled step; measure rollout wall-clock $W_{\text{roll}}$ per update using <code>torch.cuda.synchronize()</code> at each phase boundary.</li>
-<li>Collect $B$ transitions from $N$ parallel environments; record peak GPU memory $M_{\text{peak}}$ in GB.</li>
-<li>Compute advantages $\hat{A}_t = \sum_{k=0}^{T} (\gamma \lambda)^k \delta_{t+k}$ and update $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\pi_\theta)$; measure learner wall-clock $W_{\text{learn}}$.</li>
-<li>At each evaluation checkpoint, run $\pi_\theta$ on $\mathcal{E}$ and compute held-out success rate $\hat{\rho}$; record evaluation wall-clock $W_{\text{eval}}$.</li>
-<li>Accumulate total wall-clock $W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}$ and billable cost $\$ = (W / 3600) \cdot c$.</li>
-<li>If $\hat{\rho} \ge \tau$, write the ledger row and stop; report $(\$, W, M_{\text{peak}}, \hat{\rho})$ as the cost-to-success result.</li>
-<li>If $\$ \ge C_{\max}$ before $\hat{\rho} \ge \tau$, label the run as failed, record it in the ledger, and include it in the aggregate cost estimate.</li>
-<li>Identify the dominant bottleneck: compare $W_{\text{roll}}, W_{\text{learn}}, W_{\text{eval}}, W_{\text{sync}}, W_{\text{log}}$ as fractions of $W$.</li>
-<li>Report throughput as $S / W_{\text{roll}}$ (steps per rollout second) and learning cost as $\$ / \hat{\rho}$ (dollars per unit success); never mix denominators across ledger rows.</li>
+<li>Record instance type, \(c\), \(B\), \(\tau\), and \(\mathcal{E}\) in the ledger header before launch.</li>
+<li>Start the rollout timer after the first compiled step; measure rollout wall-clock \(W_{\text{roll}}\) per update using <code>torch.cuda.synchronize()</code> at each phase boundary.</li>
+<li>Collect \(B\) transitions from \(N\) parallel environments; record peak GPU memory \(M_{\text{peak}}\) in GB.</li>
+<li>Compute advantages \(\hat{A}_t = \sum_{k=0}^{T} (\gamma \lambda)^k \delta_{t+k}\) and update \(\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\pi_\theta)\); measure learner wall-clock \(W_{\text{learn}}\).</li>
+<li>At each evaluation checkpoint, run \(\pi_\theta\) on \(\mathcal{E}\) and compute held-out success rate \(\hat{\rho}\); record evaluation wall-clock \(W_{\text{eval}}\).</li>
+<li>Accumulate total wall-clock \(W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}\) and billable cost $\\( = (W / 3600) \cdot c\).</li>
+<li>If \(\hat{\rho} \ge \tau\), write the ledger row and stop; report \((\\), W, M_{\text{peak}}, \hat{\rho})$ as the cost-to-success result.</li>
+<li>If \(\\) \ge C_{\max}\( before \)\hat{\rho} \ge \tau$, label the run as failed, record it in the ledger, and include it in the aggregate cost estimate.</li>
+<li>Identify the dominant bottleneck: compare \(W_{\text{roll}}, W_{\text{learn}}, W_{\text{eval}}, W_{\text{sync}}, W_{\text{log}}\) as fractions of \(W\).</li>
+<li>Report throughput as \(S / W_{\text{roll}}\) (steps per rollout second) and learning cost as \(\\) / \hat{\rho}$ (dollars per unit success); never mix denominators across ledger rows.</li>
 </ol>
 </div>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: Cost-Ledger Accounting Loop</h4>
-<p>Trace the cost ledger with two competing runs to the same 90 percent held-out target, plugging real numbers into $W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}$ and $\$ = (W / 3600) \cdot c$.</p>
-<p><strong>Run A (fast simulator, $c = 3.20$/hr).</strong> Reaches target with $W_{\text{roll}} = 600$ s, $W_{\text{learn}} = 240$ s, $W_{\text{eval}} = 900$ s, $W_{\text{sync}} = 180$ s, $W_{\text{log}} = 120$ s. Steps collected: $1.4 \times 10^9$.</p>
+<p>Trace the cost ledger with two competing runs to the same 90 percent held-out target, plugging real numbers into $W = W_{\text{roll}} + W_{\text{learn}} + W_{\text{eval}} + W_{\text{sync}} + W_{\text{log}}\( and \)\\( = (W / 3600) \cdot c\).</p>
+<p><strong>Run A (fast simulator, \(c = 3.20\)/hr).</strong> Reaches target with \(W_{\text{roll}} = 600\) s, \(W_{\text{learn}} = 240\) s, \(W_{\text{eval}} = 900\) s, \(W_{\text{sync}} = 180\) s, \(W_{\text{log}} = 120\) s. Steps collected: \(1.4 \times 10^9\).</p>
 <ol>
-<li>Throughput: $S / W_{\text{roll}} = 1.4 \times 10^9 / 600 = 2{,}333{,}333$ steps per rollout second. Impressive headline.</li>
-<li>Total wall-clock: $W = 600 + 240 + 900 + 180 + 120 = 2{,}040$ s.</li>
-<li>Rollout fraction: $600 / 2{,}040 = 29\%$. Evaluation fraction: $900 / 2{,}040 = 44\%$. The run is evaluation-bound, not simulation-bound.</li>
-<li>Cost: $\$ = (2{,}040 / 3600) \times 3.20 = \$1.81$.</li>
+<li>Throughput: \(S / W_{\text{roll}} = 1.4 \times 10^9 / 600 = 2{,}333{,}333\) steps per rollout second. Impressive headline.</li>
+<li>Total wall-clock: \(W = 600 + 240 + 900 + 180 + 120 = 2{,}040\) s.</li>
+<li>Rollout fraction: \(600 / 2{,}040 = 29\%\). Evaluation fraction: \(900 / 2{,}040 = 44\%\). The run is evaluation-bound, not simulation-bound.</li>
+<li>Cost: \(\\) = (2{,}040 / 3600) \times 3.20 = \\(1.81\).</li>
 </ol>
-<p><strong>Run B (slower simulator, $c = 2.20$/hr).</strong> Reaches the same target with $W_{\text{roll}} = 1{,}100$ s, $W_{\text{learn}} = 220$ s, $W_{\text{eval}} = 300$ s, $W_{\text{sync}} = 60$ s, $W_{\text{log}} = 40$ s. Steps collected: $5.0 \times 10^8$.</p>
+<p><strong>Run B (slower simulator, \(c = 2.20\)/hr).</strong> Reaches the same target with \(W_{\text{roll}} = 1{,}100\) s, \(W_{\text{learn}} = 220\) s, \(W_{\text{eval}} = 300\) s, \(W_{\text{sync}} = 60\) s, \(W_{\text{log}} = 40\) s. Steps collected: \(5.0 \times 10^8\).</p>
 <ol>
-<li>Throughput: $5.0 \times 10^8 / 1{,}100 = 454{,}545$ steps per rollout second. Five times slower on the speedometer.</li>
-<li>Total wall-clock: $W = 1{,}100 + 220 + 300 + 60 + 40 = 1{,}720$ s.</li>
-<li>Cost: $\$ = (1{,}720 / 3600) \times 2.20 = \$1.05$.</li>
+<li>Throughput: \(5.0 \times 10^8 / 1{,}100 = 454{,}545\) steps per rollout second. Five times slower on the speedometer.</li>
+<li>Total wall-clock: \(W = 1{,}100 + 220 + 300 + 60 + 40 = 1{,}720\) s.</li>
+<li>Cost: \(\\) = (1{,}720 / 3600) \times 2.20 = \\(1.05\).</li>
 </ol>
-<p><strong>Verdict.</strong> Run B is 42 percent cheaper ($\$1.05$ versus $\$1.81$) and reaches the target in less total wall-clock ($1{,}720$ s versus $2{,}040$ s), despite quoting one-fifth the steps per second. The step-rate headline pointed at the wrong winner; the ledger pointed at the right one.</p>
+<p><strong>Verdict.</strong> Run B is 42 percent cheaper (\(\\)1.05\( versus \)\\(1.81\)) and reaches the target in less total wall-clock (\(1{,}720\) s versus \(2{,}040\) s), despite quoting one-fifth the steps per second. The step-rate headline pointed at the wrong winner; the ledger pointed at the right one.</p>
 </div>
 <div class="callout tip">
 <p>When timing CUDA-based simulators such as Isaac Lab or Isaac Gym, call <code>torch.cuda.synchronize()</code> immediately before reading <code>time.perf_counter()</code> <span data-agent="28">in essentially every case where phase-level attribution matters</span>. CUDA kernel launches are asynchronous, so a timer that wraps the rollout call without a sync barrier measures kernel-launch latency rather than actual GPU compute time, silently reporting rollout as two to five times faster than it is. The resulting bottleneck diagnosis is wrong: the run looks learner-bound when it is actually simulation-bound, and you tune the wrong component. One sync call per phase boundary costs negligible overhead and makes the timing trustworthy. <span data-agent="03">The JIT-compilation pitfall discussed later in this section under Common Pitfall interacts with this same sync discipline: compilation time must be logged separately from steady-state rollout time, or the two errors compound.</span></p>

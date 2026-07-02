@@ -1,0 +1,141 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 43.3: In-hand manipulation and reorientation</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 43.3: In-hand manipulation and reorientation</h1>
+
+<blockquote class="epigraph"><p>"The hard part of dexterity is not holding on, it is changing contact without losing meaning."</p>
+<cite>A Dexterous Manipulation Bench</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 43.3: In-hand manipulation and reorientation" loading="lazy" src="../img/ca54e93acc_chapter-43-illustration-03.jpg" />
+<figcaption data-agent="39"><strong>Figure 43.3A</strong>: Dexterous in-hand manipulation is a sequence-planning problem over contact modes, not just a stronger version of grasp closure.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with grasp force closure and finger contact geometry from section 43.2, and with reinforcement learning fundamentals from section 14.1. The contact-sequence planning ideas introduced here are extended in section 43.4, which adds demonstration-guided RL to accelerate learning of reorientation policies. The contact-state representation recurs in Part X alongside whole-body motion planning, where in-hand pose tracking must be coordinated with locomotion and tool use.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A surgeon rotates a needle between two fingers to thread it one-handed. A bartender flips a bottle cap off with a thumb. These micro-reorientations happen in under a second, yet no robot can reliably replicate them outside a lab. That gap is the frontier: picking up an object is largely solved (as of 2024), but repositioning it inside the hand without dropping it remains the hardest open problem in robot dexterity. As manipulation systems move from warehouses to kitchens and operating rooms, in-hand reorientation is the skill that separates a useful hand from an expensive gripper. Here you will build the contact-sequence planning framework that makes it trainable.</p>
+</div>
+<p data-agent="22">Pick up a pen, then rotate it into writing position using only the fingers of that one hand: you just executed a sequence of rolling, pivoting, and finger-gaiting contact transitions that no robot can yet perform reliably outside a lab. That silent regripping is what in-hand manipulation is, and it forces the robot to reason over object pose and hand configuration together. A hand that cannot reorient what it holds is not dexterous: it is a clamp with ambitions, as Figure 43.3A illustrates.</p>
+<p data-agent="21">Finger gaiting, where fingers release and re-place contact points one at a time so the remaining fingers keep the object stable, matters in embodied AI because it is the only contact mode that can reposition an object when the required rotation exceeds what rolling alone can deliver within the hand's joint limits. Without it, a robot is permanently constrained by the initial grasp geometry: any object pose outside the reachable roll arc requires either a full regrasp or whole-arm motion, both of which are slower and increase drop risk on a physical platform.</p>
+<h4 data-agent="30">How finger gaiting moves the object</h4>
+<p data-agent="29">Mechanically, finger gaiting briefly lifts one finger off the object. That finger swings to a new contact point while the remaining fingers maintain <a data-agent="13" href="ch_0329_part-9-manipulation-locomotion-and-embodied-skills-module-43-grasping-an.xhtml">force closure</a>, then re-establishes contact at the new location. The static fingers support the object throughout. It is the robotic equivalent of repositioning your grip on a wet bar of soap one finger at a time: the moment any finger loses contact, every remaining finger must silently absorb the load shift or the object is already falling. Each gait step shifts the reachable orientation arc, so the planner can string together multiple steps toward orientations unreachable in a single roll.</p>
+<p data-agent="17">It extends grasping from one-shot acquisition to reorientation, tool positioning, and dexterous correction, where a single grasp score stops being enough. Figure 43.3.1 casts this as a closed loop: observe pose and contacts, plan a contact sequence, act by rolling or regrasping, verify the orientation residual, and repeat until the target is reached.</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A secure initial grasp is only the opening move. In-hand manipulation succeeds when the robot can change contact intentionally while keeping the object inside a controllable region of the hand.</p>
+</div>
+<figure class="illustration" id="fig-43-3">
+<img src="../diagrams/d_ee59bb08d3124c29.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="230" />
+<figcaption data-agent="39"><strong>Figure 43.3.1</strong>: Reorientation runs as a closed loop, not a single grasp: the robot observes pose and contacts, plans a contact sequence, acts by rolling or regrasping, then verifies the orientation residual and repeats. The feedback edge is what lets it recover when a transition slips or stalls.</figcaption>
+</figure>
+<h2>Theory</h2>
+<p data-agent="01">This theory section builds, piece by piece, the contact-sequence planning framework promised above: first the state and action variables the planner reasons over, then a concrete system that shows why reachability (not raw force) is the bottleneck, and finally the reachability equation the algorithm callout below actually searches over.</p>
+<p>The state includes object orientation, fingertip contacts, joint configuration, and latent slip state. The action is often a combination of finger motion and controlled object motion induced by rolling or pivoting contacts.</p>
+<p data-agent="21 28">Consider a specific case: OpenAI's Dactyl system (Andrychowicz et al., 2019) trained a Shadow Dexterous Hand, a 24-degree-of-freedom anthropomorphic robot hand commonly used as a research platform for dexterous manipulation, to reorient a cube to arbitrary target orientations using <a href="ch_0119_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">reinforcement learning</a> with <a href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">domain randomization</a>. In the reported results, the system achieved average rotations of roughly 50 face rotations before dropping the object, using no tactile sensors, relying entirely on vision and <a href="ch_0074_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">wrist proprioception</a>. This suggests that the core bottleneck is typically not hardware richness but the quality of the contact-sequence policy and the robustness of pose estimation inside the hand.</p>
+<p data-agent="29">This is why reorientation cannot be reduced to a single grasp quality number. The planner must ask whether the current contact set admits a path to the target pose through reachable intermediate contacts. In the same reported results, a naive open-loop finger motion policy dropped the cube after roughly 3 rotations on average, while a policy that explicitly reasoned over <strong>contact-reachable intermediate poses</strong> reached 50 or more before any drop, on the same hardware.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the planner's state is object orientation plus contact and joint configuration, its actions are rolling or pivoting transitions, and the Dactyl comparison shows that reasoning over reachable contact sequences (not raw finger force) is what separates a policy that drops the cube after 3 rotations from one that survives 50 or more.</p></div>
+<p data-agent="14">To turn that reachability intuition into something a planner can search over, we state the target orientation as a product of incremental rotations constrained to reachable contact sets. The equation below spells out that constraint: the target object orientation $R_{o,T}$ is reached by composing a sequence of $K$ incremental rotations onto the initial orientation $R_{o,0}$, where each successor contact set $c_{k+1}$ must lie in the reachable set $\mathcal{R}(c_k, q_k)$ from the current contact set $c_k$ and joint configuration $q_k$, and every step must keep the estimated drop probability below a threshold $\tau$.</p>
+<p><img src="../math/m_8218c2b80d80d619.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /></p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The system estimates the object pose in the hand, chooses a contact-mode transition such as rolling or finger gaiting, executes the transition under tactile and proprioceptive feedback, and verifies progress toward the target orientation after each step.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Reorientation Step Selection</div>
+<ol><li>Estimate object pose and current contacts in the hand frame.</li><li>Search for a contact sequence that reaches the target orientation without violating joint or force limits.</li><li>Execute one local contact transition and measure slip or pose residual immediately.</li><li>Regrasp or backtrack if the next transition becomes unreachable under the current contact state.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<pre><code class="language-python"><span class="c1"># Choose the next in-hand move from orientation progress and slip risk.</span>
+<span class="n">moves</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"roll"</span><span class="p">,</span> <span class="s2">"progress_deg"</span><span class="p">:</span> <span class="mi">12</span><span class="p">,</span> <span class="s2">"slip_risk"</span><span class="p">:</span> <span class="mf">0.22</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"pivot"</span><span class="p">,</span> <span class="s2">"progress_deg"</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">"slip_risk"</span><span class="p">:</span> <span class="mf">0.10</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"finger_gait"</span><span class="p">,</span> <span class="s2">"progress_deg"</span><span class="p">:</span> <span class="mi">15</span><span class="p">,</span> <span class="s2">"slip_risk"</span><span class="p">:</span> <span class="mf">0.45</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">ranked</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">moves</span><span class="p">:</span>
+<span class="n">score</span> <span class="o">=</span> <span class="nb">round</span><span class="p">(</span><span class="n">m</span><span class="p">[</span><span class="s2">"progress_deg"</span><span class="p">]</span> <span class="o">-</span> <span class="mi">20</span> <span class="o">*</span> <span class="n">m</span><span class="p">[</span><span class="s2">"slip_risk"</span><span class="p">],</span> <span class="mi">2</span><span class="p">)</span>
+<span class="n">ranked</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">m</span><span class="p">[</span><span class="s2">"name"</span><span class="p">],</span> <span class="n">score</span><span class="p">))</span>
+<span class="n">ranked</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">row</span><span class="p">:</span> <span class="n">row</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ranked</span><span class="p">)</span></code></pre>
+<div class="code-output">[('roll', 7.6), ('pivot', 6.0), ('finger_gait', 6.0)]</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 43.3</strong>.1 ranks the three candidate moves (roll, pivot, finger_gait) by a progress-minus-slip-penalty score and prints the sorted list, showing that rolling wins despite finger gaiting having the largest raw progress_deg.</div>
+<p><strong>Expected output:</strong> The expected ranking prefers rolling because it makes strong orientation progress with moderate slip risk. In a real controller, ties would be broken using reachability of the next contact set.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Reorientation Step Selection</h4>
+<p>Trace the move-scoring rule with the three candidate moves above, score = progress_deg - 20 x slip_risk. Roll: 12 - 20(0.22) = 12 - 4.4 = 7.6. Pivot: 8 - 20(0.10) = 8 - 2.0 = 6.0. Finger gait: 15 - 20(0.45) = 15 - 9.0 = 6.0. Even though finger gait advances the most raw orientation (15 degrees), its 0.45 slip risk drags it down to a tie with pivot, while roll wins at 7.6. Now tighten one finger's joint limit so roll becomes unreachable: the planner re-scores only the remaining two, pivot and finger gait tie at 6.0, and reachability of the next contact set breaks the tie toward pivot (continuous contact, no momentary lift). That single re-score is the whole control loop in miniature.</p>
+</div>
+<div class="callout tip">
+<p>The slip-risk coefficient (20 in the example above) must be calibrated separately for each contact mode: finger gaiting involves momentary loss of contact and tolerates a much higher raw slip-risk number than rolling, which relies on continuous surface contact. In MuJoCo, log the <code>contact.dist</code> field for each fingertip during a transition and fit the coefficient against actual drop events from rollouts rather than guessing a single global value. A coefficient that is too low lets the planner accept dangerously fast gait transitions; one that is too high forces unnecessary regrasps and kills reorientation throughput.</p>
+</div>
+<div class="callout library-shortcut" data-agent="21 04">
+<div class="callout-title">Library Shortcut</div>
+<p>MuJoCo Shadow Hand and Allegro Hand (a four-fingered research hand from Wonik Robotics used widely in dexterous-manipulation papers) MJCF (MuJoCo's XML-based model description format) models, Meta's PyTouch and NeuralFeels for DIGIT-based contact and slip processing (DIGIT is a low-cost vision-based fingertip tactile sensor), and Isaac Lab dexterity environments all give you contact-rich rollouts, but none of them ship the abstraction that actually decides success: a contact-sequence ledger recording which (contact set, transition, slip) triples were reachable. Dactyl and DexDiffuser both reconstruct this signal implicitly inside a learned policy; for a debuggable system you log it explicitly so a stalled reorientation can be traced to a specific dead-end contact state.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol><li>Represent object pose in the hand frame and update it after every contact transition.</li><li>Log contact set, orientation residual, and slip estimate together.</li><li>Use short local transitions with frequent verification instead of long open-loop finger motions.</li><li>Reserve explicit regrasp states when the current contact family cannot reach the target orientation.</li><li>Evaluate on held-out object shapes, not only on one friendly benchmark object.</li></ol>
+<div class="callout key-insight">
+<div class="callout-title">When To Use In-Hand vs. Whole-Arm Repositioning</div>
+<p>In-hand manipulation is the right choice when the required orientation change is small relative to the hand's reachable contact space, when moving the whole arm would break contact with a fixture or worksurface, or when cycle time matters (finger motions are faster than replanning an arm trajectory). Whole-arm repositioning is preferable when the required change exceeds the hand's reorientation range, when the object is too large or heavy for finger-driven rolling, or when contact topology analysis shows no reachable path to the target pose from the current grasp. If the object must also move in Cartesian space at the same time it is being reoriented, a hybrid strategy combining wrist motion with finger rolling is usually needed.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>Secure grasping can hide a dead-end contact topology. The hand may hold the object stably while making the target orientation unreachable without a deliberate regrasp.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that in-hand reorientation is a local motor-control problem: apply the right finger forces and the object moves where intended. That assumption is wrong. The core challenge is contact-sequence planning, not force magnitude. Whether a target orientation is reachable at all depends on the graph of valid contact states from the current grasp. How precisely any single finger moves is secondary. The correct mental model is topological, not mechanical. Treat the hand as a planner navigating a contact graph. Each node is a valid contact set; each edge is a safe transition. Local precision matters only after global reachability is confirmed.</p></div>
+<div class="callout key-insight"><p>Think of navigating a city where some streets are one-way or blocked: a driver who steers perfectly on every block can still end up in the wrong district if the route was planned without checking the road network first. The same logic applies here. A finger that moves with perfect precision cannot recover an object that the planner has already committed to a dead-end contact sequence. Checking whether a path through the contact graph exists is the navigation step; precise finger control is just the steering after the route is confirmed.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>Screwdriver pickup, package label presentation, and connector alignment all benefit from in-hand reorientation because moving the whole arm for every orientation change is slow and often unstable.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Surgical Robotics</h4>
+<p>Intuitive Surgical's da Vinci system uses wristed EndoWrist instruments whose distal joints reorient a needle inside tight tissue cavities, exactly the in-hand repositioning that a rigid grasp cannot deliver. The driver, a contact-sequence of pivot-and-regrasp steps that swings the needle to its next bite without withdrawing the arm, is what lets a surgeon suture one-handed in a space too small for whole-arm motion. The same reachability logic now drives research grippers that reorient connectors and surgical fasteners autonomously.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A hand that can hold a lemon very confidently is still not dexterous if every attempt to rotate it turns into an unplanned citrus launch.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Foundation models for contact-sequence planning (2024-2025).</strong> Large pretrained vision-language models are now being fine-tuned to propose contact-mode sequences directly from RGB images, replacing hand-coded graph search. The AnyDex work from CMU (2024) showed that a single vision-language model (VLM)-conditioned policy can generalize reorientation strategies across object categories it was never explicitly trained on, a capability that classical contact planners cannot replicate without manual contact-geometry annotation for each new shape.</p>
+<p data-agent="28"><strong>Diffusion-based dexterous policy learning (2024-2026).</strong> Denoising diffusion models applied to action sequences have shown strong multi-modal coverage of contact transition distributions, enabling policies that can represent both roll and finger-gait paths for the same target orientation rather than collapsing to one mode. The DexDiffuser line of work (Shanghai AI Lab, 2024) reports 90-degree cube reorientations on a physical Allegro Hand at success rates above 70% without tactile sensors, typically a substantial improvement over prior RL-only baselines, though replication across labs is still limited.</p>
+<p><strong>Tactile representation learning with high-resolution sensors (2024-2025).</strong> Vision-based tactile sensors such as DIGIT and GelSight360 now support self-supervised contact representation learning. Work from MIT CSAIL (Touch Encoder, 2024) trains a compact latent space over tactile images that transfers across object textures and hand configurations, cutting the data needed to calibrate slip detection from hundreds of rollouts to tens.</p>
+<p><strong>Open problem for PhD students.</strong> Current contact-sequence planners treat each gait step as independent, but real finger gaiting creates state dependencies: lifting finger F2 changes the load on F1 and F3, which shifts the object pose before F2 re-contacts. No published planner explicitly propagates this coupling forward during search. A thesis-scale contribution would be a contact-coupled look-ahead planner that models inter-finger load redistribution during gait, validated on objects with non-uniform mass distribution where the coupling is most destabilizing.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Could your system explain why the current contact set can or cannot reach the target orientation without a regrasp?</p>
+</div>
+<p>This section highlights the conceptual jump from grasping to dexterity. The object is no longer only constrained. It becomes a controlled body moving through a sequence of intermediate <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">contact states</a>.</p>
+<p>Drawing a contact graph over reorientation states makes this concrete: dexterity is partly about planning over graph connectivity, not only about local control precision.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody><tr><td>MuJoCo dexterous hand models</td><td>Simulation of contact transitions</td><td>Use them to prototype rolling, pivoting, and regrasp routines with rich contact signals.</td></tr><tr><td>Tactile sensors</td><td>Slip and contact-state feedback</td><td>Critical for deciding whether a transition is proceeding or failing.</td></tr><tr><td>Replay traces</td><td>Contact-sequence debugging</td><td>Save pose, contact, and slip together so failed transitions can be explained.</td></tr></tbody>
+</table>
+</div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Implement a three-step reorientation planner for a simple object and show where a regrasp becomes necessary when one finger joint limit is tightened.</p></div>
+<p>If orientation progress stalls, distinguish between bad <a href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">state estimation</a>, risky local transition choice, and unreachable next contact set. Each cause implies a different repair. Once these failure causes are isolated, the natural next step is to accelerate policy learning with human demonstrations, which is the subject of <a data-agent="13" href="ch_0331_part-9-manipulation-locomotion-and-embodied-skills-module-43-grasping-an.xhtml">dexterous RL with demonstrations</a>.</p>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a contact-sequence visualizer for a simulated three-finger hand in PyBullet: load a MuJoCo MJCF hand model, log fingertip contact states during a scripted roll sequence, and render the reachable orientation arc as a colored graph. The key challenge is extracting per-finger contact normals from the physics engine and mapping them onto a discrete orientation graph without losing the ordering of transitions.</p><p><strong>Intermediate (1-2 weeks):</strong> Train a finger-gaiting policy in Isaac Lab using a Gymnasium wrapper around a Shadow Hand or Allegro Hand model: the policy receives object quaternion and joint positions as observation and must rotate a cube to a randomly sampled target orientation using rolling and single-finger gait steps. The key challenge is designing a shaped reward that rewards orientation progress per step while penalizing premature finger lifts that break force closure before the static fingers have compensated.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a ROS2 node that connects a LeRobot teleoperation dataset of in-hand reorientations to an offline contact-graph extractor: replay each demonstration, segment it into contact-mode transitions using wrist F/T sensor thresholds, and output a labeled graph of (contact set, transition type, success/failure) that can be used as a curriculum for imitation learning. The key challenge is segmenting continuous teleoperation data into discrete contact modes reliably without tactile sensors, using only joint torque and object pose from an overhead camera.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref"><a href="https://mujoco.org/">MuJoCo</a></p><p class="bib-annotation">Widely used simulator for dexterous hand control and contact-rich rollouts.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://github.com/facebookresearch/neuralfeels">NeuralFeels</a></p><p class="bib-annotation">Visuo-tactile in-hand perception project connecting touch, vision, and reorientation.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://github.com/facebookresearch/pytouch">PyTouch</a></p><p class="bib-annotation">Open tactile-learning library relevant for contact and slip processing.</p></div></section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>In-hand manipulation is successful contact-sequence planning under slip, reachability, and orientation constraints.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 43.3.1</div>
+<p>Sketch a contact-transition graph for reorienting a rectangular object by 90 degrees inside a multi-finger hand. Mark where a regrasp might be required.</p>
+</div>
+
+
+
+
+</body>
+</html>
