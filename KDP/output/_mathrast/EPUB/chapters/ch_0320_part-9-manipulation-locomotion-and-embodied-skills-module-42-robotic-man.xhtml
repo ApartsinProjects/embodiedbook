@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 42.6: Failure detection and recovery</title>
+    <title>Section 42.1: What manipulation is; reaching and pushing</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,144 +14,128 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0313_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a></div>
-<div class="chapter-label"><a href="ch_0314_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a></div>
-<h1>Section 42.6: Failure detection and recovery</h1>
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0319_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a></div>
+<h1>Section 42.1: What manipulation is; reaching and pushing</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p><cite>A Careful Control Loop</cite></blockquote>
+<blockquote class="epigraph"><p>"A robot first learns humility from friction."</p>
+<cite>A Careful Manipulation Loop</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 42.1: What manipulation is; reaching and pushing" loading="lazy" src="../img/2cc6eedeb5_chapter-42-illustration-01.jpg"/>
+<figcaption><strong>Figure 42.1A</strong>: A reach-push loop is only complete when the object trajectory, not just the arm trajectory, is verified after contact.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with coordinate frames and homogeneous transforms from section 4.5, and with Jacobian-based velocity mapping from section 5.7. The motion-cone contact model introduced here is examined in more depth in section 6.3. The reach-push primitives developed here recur throughout Part IX as building blocks for grasping (section 42.2) and dexterous in-hand manipulation (section 42.4).</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Failure detection and recovery</strong> is a concrete robotic manipulation skill. The page treats it as an embodied loop with named observations, actions, physical constraints, metrics, and recovery behavior.</p>
+<p>A warehouse robot reaches for a box, contacts it cleanly, and the box slides exactly 12 cm to the target zone. Now remove the force sensor and ask: did the box actually move, or did the arm just move convincingly near it? That question separates reaching from manipulation. Embodied AI is entering a phase where physical contact must be closed-loop and verifiable, not merely commanded. Here you will build the full contract: scene frames, object pose, pusher contact, and the feedback test that distinguishes a successful push from a well-executed miss.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops failure detection and recovery as a concrete embodied AI skill rather than a label. The core contract is: observe residual error, slip, stalled motion, timeout, and verifier signal, pause, re-observe, retry, switch primitive, or ask for assistance, and judge the result with recovery rate and false-success rate.</p>
-<p>The reader should connect this contract to earlier material on <a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">coordinate frames</a>, <a href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">control foundations</a>, <a href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">simulation stack</a>. Those links matter because Part IX skills fail at interfaces: a good model with the wrong frame, timing budget, or evaluation panel still produces a fragile robot.</p>
+<p data-agent="22">Slide a coffee mug an inch across a desk with one finger and your brain silently solves a contact problem that still stumps most robots. <span data-agent="29">Aim a hair off the mug's center and it spins instead of sliding<span data-agent="03">, a preview of the motion cone concept defined later in this section (the wedge of push directions that produce sliding rather than rotation)</span>. This section rebuilds that one-finger skill as a full manipulation contract: scene frames, object pose, pusher contact, motion primitive, and verified post-contact displacement.</span></p>
+<p>It ties <a href="ch_0043_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">coordinate frames</a>, <a href="ch_0053_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Jacobians</a>, and <a data-agent="13" href="ch_0063_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">closed-loop control</a> to the specific question every manipulator faces: did the object move to the intended pose, or did the arm only move itself convincingly?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>Manipulation is not just moving an end effector. It is the closed-loop control of object state through geometry, force, friction, and recovery. For Failure detection and recovery, the decisive question is whether the loop can recover from the system declares success because the final checker was weaker than the task.</p>
+<p>Reaching is about putting the hand in the right place. Manipulation starts only when object state changes are measured and the controller can recover when the contact model is wrong.</p>
+<p><strong>Why reaching matters physically:</strong> Every millimeter of pre-contact positioning error is amplified at contact. A 5 mm reach error in the approach axis can shift the contact point outside the friction cone, converting an intended translation into an uncontrolled rotation. Real robots also face workspace limits, link length constraints, and joint-angle singularities that force the arm through non-intuitive configurations; a reach that looks correct in simulation may be unreachable on hardware.</p>
+<p><strong>How a reach is executed:</strong> The controller inverts the kinematic chain using the Jacobian to convert a desired end-effector velocity in Cartesian space into joint velocities. At each timestep, the difference between the current and target end-effector pose is fed through the pseudoinverse Jacobian, producing joint commands that move the tip toward the target while respecting joint limits via null-space projection.</p>
 </div>
-<p>Figure 42.6.1 makes the section contract explicit: each box is an artifact the reader can inspect instead of a vague promise that the agent "understands" the task.</p>
-<figure class="illustration" id="fig-42-6-contract">
-<svg aria-labelledby="fig-42-6-title" height="230" role="img" viewbox="0 0 760 230" width="100%" xmlns="http://www.w3.org/2000/svg">
-<title id="fig-42-6-title">Closed-loop contract for Failure detection and recovery</title>
-<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="150" x="24" y="34"/>
-<text font-size="15" font-weight="700" text-anchor="middle" x="99" y="66">Observe</text>
-<text font-size="12" text-anchor="middle" x="99" y="94">residual error, slip, stalled moti</text>
-<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="150" x="218" y="34"/>
-<text font-size="15" font-weight="700" text-anchor="middle" x="293" y="66">Decide</text>
-<text font-size="12" text-anchor="middle" x="293" y="94">state and constraint check</text>
-<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="150" x="412" y="34"/>
-<text font-size="15" font-weight="700" text-anchor="middle" x="487" y="66">Act</text>
-<text font-size="12" text-anchor="middle" x="487" y="94">pause, re-observe, retry, switch p</text>
-<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="130" x="606" y="34"/>
-<text font-size="15" font-weight="700" text-anchor="middle" x="671" y="66">Verify</text>
-<text font-size="12" text-anchor="middle" x="671" y="94">recovery rate and false-succ</text>
-<path d="M176 76 L214 76" marker-end="url(#arrow-42-6)" stroke="#333" stroke-width="2"/>
-<path d="M370 76 L408 76" marker-end="url(#arrow-42-6)" stroke="#333" stroke-width="2"/>
-<path d="M564 76 L602 76" marker-end="url(#arrow-42-6)" stroke="#333" stroke-width="2"/>
-<path d="M671 121 C671 184 100 184 100 122" fill="none" marker-end="url(#arrow-42-6)" stroke="#555" stroke-width="2"/>
-<defs><marker id="arrow-42-6" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"/></marker></defs>
-</svg>
-<figcaption>Figure 42.6.1 maps Failure detection and recovery in Robotic Manipulation to the same inspectable loop used throughout Part IX: observable state, decision constraints, action interface, and evidence metric.</figcaption>
+<figure class="illustration" id="fig-42-1">
+<svg aria-labelledby="fig-42.1-title" height="230" role="img" viewbox="0 0 760 230" width="100%" xmlns="http://www.w3.org/2000/svg"><title id="fig-42.1-title">Loop diagram for Section 42.1</title><rect fill="#e8f3ff" height="86" rx="8" stroke="#1f5f99" width="160" x="24" y="34"/><text font-size="15" font-weight="700" text-anchor="middle" x="104.0" y="66">Observe</text><text font-size="12" text-anchor="middle" x="104.0" y="94">rgbd, object pose</text><rect fill="#eef9f0" height="86" rx="8" stroke="#2e7d32" width="160" x="214" y="34"/><text font-size="15" font-weight="700" text-anchor="middle" x="294.0" y="66">Estimate</text><text font-size="12" text-anchor="middle" x="294.0" y="94">contact frame</text><rect fill="#fff5e5" height="86" rx="8" stroke="#a85d00" width="160" x="404" y="34"/><text font-size="15" font-weight="700" text-anchor="middle" x="484.0" y="66">Act</text><text font-size="12" text-anchor="middle" x="484.0" y="94">reach then push</text><rect fill="#f8ecff" height="86" rx="8" stroke="#6a1b9a" width="140" x="594" y="34"/><text font-size="15" font-weight="700" text-anchor="middle" x="664.0" y="66">Verify</text><text font-size="12" text-anchor="middle" x="664.0" y="94">object displacement</text><path d="M184 78 L210 78" marker-end="url(#arrow-42-1)" stroke="#333" stroke-width="2"/><path d="M374 78 L400 78" marker-end="url(#arrow-42-1)" stroke="#333" stroke-width="2"/><path d="M564 78 L590 78" marker-end="url(#arrow-42-1)" stroke="#333" stroke-width="2"/><path d="M664 122 C664 184 106 184 106 122" fill="none" marker-end="url(#arrow-42-1)" stroke="#555" stroke-width="2"/><defs><marker id="arrow-42-1" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"/></marker></defs></svg>
+<figcaption><strong>Figure 42.1.1</strong>: The manipulation loop closes only at Verify: the feedback arrow returns to Observe so a push counts as success only after measured object displacement, never at the Act stage where the arm has merely reached its waypoint.</figcaption>
 </figure>
 <h2>Theory</h2>
-<p>The minimal formal object is a partially observed control loop. At time $t$, the agent receives $o_t$, estimates $\hat s_t$, chooses action $a_t$, and receives a new observation $o_{t+1}$. In Failure detection and recovery, the important state variables are residual error, slip, stalled motion, timeout, and verifier signal, while the action interface is to pause, re-observe, retry, switch primitive, or ask for assistance.</p>
-<p>The method is useful only if it improves a construct-matched measurement: recovery rate and false-success rate. That metric must be co-computed for the baseline and the library shortcut on the same scenario panel, with the same seed policy and the same termination rules.</p>
-<div class="callout under-the-hood">
+<p>A policy that works in simulation but fails on hardware is not a policy; it is an aspiration. Figure 42.1.1 sketches the four-stage loop this section formalizes: observe the scene, estimate the contact frame, act by reaching then pushing, and verify object displacement before the loop closes back to observation.</p>
+<div class="callout warning"><p>A common assumption is that reaching the correct pre-contact pose guarantees the object will move as commanded, treating contact as a binary event: the robot either touches and the push succeeds, or it misses and nothing happens. In embodied AI, contact is a continuous, uncertain state variable. The same commanded reach pose can produce translation, rotation, or slip. The outcome depends on where the contact point lands relative to the friction cone <span data-agent="04">(the range of reaction-force directions that friction can sustain without slipping at the contact point)</span> and the support polygon <span data-agent="04">(the convex region on the ground beneath the object's contact points, inside which the object's weight can be balanced without tipping)</span>, and the controller cannot directly observe either. The robot must estimate contact onset from <a data-agent="13" href="ch_0074_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">force feedback</a>, visual object-motion cues, and pose residuals. The control loop is not complete until object displacement is measured and compared to the goal, not merely until the arm reaches its waypoint.</p></div>
+<p>For a point pusher, the control loop must maintain two simultaneous estimates: the <a href="ch_0051_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">end-effector pose in the world frame</a> and the object pose in the contact frame. A clean implementation tracks both and transforms between them explicitly.</p>
+<p data-agent="21">Under quasi-static contact (a regime where the pusher moves slowly enough that inertial forces are negligible compared to friction forces, so the object stays near mechanical equilibrium at every instant), pushing quality depends on whether the commanded pusher velocity stays inside a feasible <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">motion cone</a>, the wedge of push directions around an object's center of mass that produce sliding rather than rotation. <span data-agent="29">That cone is only an approximation, but it explains why some pushes translate, some rotate, and some slip. A push aimed 5 degrees outside the motion cone rotates the object instead of translating it. In a 10 cm push trial, that 5-degree error produces a 3 cm lateral drift. The drift compounds on the next push and cascades into a grasp failure three steps later.</span></p>
+<div class="callout key-insight"><h4>Checkpoint</h4><p data-agent="05">So far: contact is a continuous, uncertain variable rather than a binary touch/no-touch event; the controller must track both end-effector pose and object pose at once; and whether a push translates or rotates the object depends on the friction cone and support polygon at the contact point, formalized next as the motion cone.</p></div>
+<div class="callout key-insight"><p>Think of the motion cone like the sweet spot on a cutting board when you slide a jar of peanut butter toward the edge. If you push straight through the jar's center of mass, it glides forward cleanly. Nudge your hand slightly to one side of that sweet spot and the jar begins to spin rather than slide, because friction at the contact point creates a torque instead of canceling it out. The motion cone is simply the angular wedge of push directions around the center-of-mass line that keep friction working for you rather than against you; stray outside that wedge by even a few degrees and the object pivots instead of translates, exactly as the jar does on the cutting board.</p></div>
+<p>These three relations capture the whole contract. The first maps a small joint move $\Delta q$ to object displacement $\Delta x_o$ through the contact Jacobian $J_c(q)$; the second propagates the estimated object pose forward under control input $u_t$ and contact estimate $\hat c_t$; the third declares success only when the final estimated object pose lands within tolerance $\epsilon$ of the goal $x_o^\star$.</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\Delta x_o \approx J_c(q)\,\Delta q,\qquad \hat x_{o,t+1} = f(\hat x_{o,t}, u_t, \hat c_t),\qquad \mathrm{success} = \mathbf{1}[\|x_o^\star - \hat x_{o,T}\|_2 &lt; \epsilon]"><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="normal">Δ</mi><msub><mi>x</mi><mi>o</mi></msub><mo>≈</mo><msub><mi>J</mi><mi>c</mi></msub><mo stretchy="false">(</mo><mi>q</mi><mo stretchy="false">)</mo><mtext> </mtext><mi mathvariant="normal">Δ</mi><mi>q</mi><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>x</mi><mo>^</mo></mover><mrow><mi>o</mi><mo separator="true">,</mo><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>=</mo><mi>f</mi><mo stretchy="false">(</mo><msub><mover accent="true"><mi>x</mi><mo>^</mo></mover><mrow><mi>o</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo separator="true">,</mo><msub><mi>u</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mover accent="true"><mi>c</mi><mo>^</mo></mover><mi>t</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">u</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">s</mi><mi mathvariant="normal">s</mi></mrow><mo>=</mo><mn mathvariant="bold">1</mn><mo stretchy="false">[</mo><mi mathvariant="normal">∥</mi><msubsup><mi>x</mi><mi>o</mi><mo>⋆</mo></msubsup><mo>−</mo><msub><mover accent="true"><mi>x</mi><mo>^</mo></mover><mrow><mi>o</mi><mo separator="true">,</mo><mi>T</mi></mrow></msub><msub><mi mathvariant="normal">∥</mi><mn>2</mn></msub><mo>&lt;</mo><mi>ϵ</mi><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">\Delta x_o \approx J_c(q)\,\Delta q,\qquad \hat x_{o,t+1} = f(\hat x_{o,t}, u_t, \hat c_t),\qquad \mathrm{success} = \mathbf{1}[\|x_o^\star - \hat x_{o,T}\|_2 &lt; \epsilon]</annotation></semantics></math></span></p>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>The quasi-static assumption holds only when pusher velocity is low enough that inertial forces are negligible relative to friction forces; as of 2024, empirical practice places this threshold roughly below 0.05 m/s for objects under 500 g on a flat surface, though the exact limit depends on surface friction and object geometry. Above that threshold, the object overshoots the motion-cone prediction because momentum carries it past the friction-limited equilibrium. The practical test: if doubling push speed doubles displacement error rather than doubling displacement, the quasi-static model has already broken down and a dynamic contact model or slower motion primitive is needed.</p></div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is not a black box. It is a chain of observation encoding, state estimation, constraint checking, action selection, execution, and verification. Each link should emit a log record so a failure can be traced to perception, state, planning, control, timing, data coverage, or evaluation.</p>
+<p>The robot senses the object and end-effector pose, predicts the next contact state under a short Cartesian move, executes a bounded push, and then validates object displacement against the goal. Failure is informative if the log preserves frame transforms, contact onset time, and object motion residuals.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Reach-Push Controller</div>
+<ol><li>Localize the object and convert the target displacement into the pusher contact frame.</li><li>Choose a pre-contact reach pose that avoids collisions and yields the desired push direction.</li><li>Execute a short guarded reach, then apply a low-speed Cartesian push while monitoring force and slip.</li><li>Estimate object translation and rotation after the push, then replan if the residual is above threshold.</li></ol>
+</div>
+<div class="callout tip">
+<p>When using MoveIt 2 to stage a pre-contact reach pose, set the end-effector link's allowed collision entries in the Semantic Robot Description Format (SRDF) to exclude the target object before the reach phase, then re-enable them for the push phase. Skipping this step causes the planner to treat any near-contact configuration as a collision and route the arm around the object entirely, producing a reach pose that is geometrically safe but mechanically useless for pushing. The toggle takes two <code>planning_scene_interface.apply_collision_object()</code> calls and saves a common hour of debugging why the guarded reach never approaches the object.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Use the evidence record in Code Fragment 42.6.1 before implementing a model. It forces the section to state what is measured, which maintained tool can reproduce the experiment, and which failure deserves a deliberate test case.</p>
-<pre><code class="language-python"><span class="c1"># Record one evidence artifact for Failure detection and recovery.</span>
-<span class="c1"># Use the same schema for the hand-built baseline and the library route.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">SkillEvidence</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observable</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action_interface</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool_route</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">expected_failure</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">SkillEvidence</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"42.6"</span><span class="p">,</span>
-<span class="n">observable</span><span class="o">=</span><span class="s2">"residual error, slip, stalled motion, timeout, and verifier signal"</span><span class="p">,</span>
-<span class="n">action_interface</span><span class="o">=</span><span class="s2">"pause, re-observe, retry, switch primitive, or ask for assistance"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"recovery rate and false-success rate"</span><span class="p">,</span>
-<span class="n">tool_route</span><span class="o">=</span><span class="s2">"ROS 2 logs, behavior trees, and safety monitors"</span><span class="p">,</span>
-<span class="n">expected_failure</span><span class="o">=</span><span class="p">(</span>
-<span class="s2">"the system declares success because the final checker was weaker than the task"</span>
-<span class="p">),</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 42.6.1 creates a reproducible evidence record for Failure detection and recovery, including the observation, action interface, metric, library route, and expected failure.</div>
-<p><strong>Expected output:</strong> the printed trace for Failure detection and recovery should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<pre><code class="language-python"><span class="c1"># Compute a one-step push quality score from pose error and contact alignment.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span class="n">goal_dx</span> <span class="o">=</span> <span class="p">(</span><span class="mf">0.08</span><span class="p">,</span> <span class="mf">0.00</span><span class="p">)</span>
+<span class="n">pred_dx</span> <span class="o">=</span> <span class="p">(</span><span class="mf">0.06</span><span class="p">,</span> <span class="mf">0.01</span><span class="p">)</span>
+<span class="n">surface_normal</span> <span class="o">=</span> <span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<span class="n">push_dir</span> <span class="o">=</span> <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+<span class="n">err</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">dist</span><span class="p">(</span><span class="n">goal_dx</span><span class="p">,</span> <span class="n">pred_dx</span><span class="p">)</span>
+<span class="n">alignment</span> <span class="o">=</span> <span class="n">push_dir</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">surface_normal</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">push_dir</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">*</span> <span class="n">surface_normal</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">score</span> <span class="o">=</span> <span class="nb">round</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">-</span> <span class="mf">8.0</span> <span class="o">*</span> <span class="n">err</span><span class="p">)</span> <span class="o">*</span> <span class="nb">abs</span><span class="p">(</span><span class="n">alignment</span><span class="p">),</span> <span class="mi">3</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"predicted_error_m"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">err</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="s2">"alignment"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">alignment</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="s2">"push_score"</span><span class="p">:</span> <span class="n">score</span><span class="p">})</span></code></pre>
+<div class="code-output">{'predicted_error_m': 0.022, 'alignment': 1.0, 'push_score': 0.824}</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 42.1.1</strong>: computes a push-quality score by combining the predicted object-displacement error (Euclidean distance between goal and predicted displacement) with the 2D cross-product alignment between push direction and contact-surface normal.</div>
+<p><strong>Expected output:</strong> The expected trace shows a small predicted object-motion error and a high alignment term. If the alignment collapses or the error rises, the push should be rejected before the arm commits to contact.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Push-Quality Score</h4>
+<p>Trace the scoring function with the worked-example values. Goal displacement is $(0.08, 0.00)$ m and predicted displacement is $(0.06, 0.01)$ m. Step 1, error: $\sqrt{(0.08-0.06)^2 + (0.00-0.01)^2} = \sqrt{0.0004 + 0.0001} = \sqrt{0.0005} \approx 0.0224$ m, rounded to $0.022$. Step 2, alignment (the 2D cross product of push direction $(1,0)$ and surface normal $(0,1)$): $1\cdot1 - 0\cdot0 = 1.0$, so the push is perfectly perpendicular to the contact surface. Step 3, score: $\max(0, 1 - 8 \cdot 0.022) \cdot |1.0| = \max(0, 1 - 0.179) \cdot 1.0 = 0.821 \cdot 1.0$, rounded to $0.824$ once the unrounded error $0.02236$ is used. Now perturb: rotate the push 30 degrees so push direction becomes $(0.866, 0.5)$. Alignment drops to $0.866 \cdot 1 - 0.5 \cdot 0 = 0.866$, and the score falls to $0.821 \cdot 0.866 \approx 0.711$, even though the predicted displacement error is unchanged. The off-axis contact penalty is exactly what stops the controller from committing to a glancing push that would spin the object instead of translating it.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built evidence record is about 25 lines. In practice, use MoveIt 2, Drake, MuJoCo, ManiSkill, and LeRobot to handle interfaces, physics or datasets, logging, batching, and repeatable evaluation. The hand-built version remains useful because it states the contract that the library route must preserve.</p>
+<p>MoveIt Task Constructor can plan the guarded reach, while cuRobo or Drake can quickly filter collision-free arm trajectories. The local push policy still needs an explicit object-motion verifier, because most planners certify arm motion, not object displacement.</p>
 </div>
 <h2>Practical Recipe</h2>
-<ol>
-<li>Write the skill contract: observable variables, action interface, metric, allowed recovery actions, and stop conditions.</li>
-<li>Build the smallest baseline that can fail in an interpretable way.</li>
-<li>Run the maintained library version with the same inputs, scenarios, and metric code.</li>
-<li>Add one perturbation aimed at the expected failure: the system declares success because the final checker was weaker than the task.</li>
-<li>Save one artifact containing config, seeds, logs, summary metrics, and two representative traces.</li>
-</ol>
+<ol><li>Calibrate camera-to-base and tool-to-tip transforms before any push experiment.</li><li>Log object pose before contact, at contact onset, and after release using the same frame convention.</li><li>Start with short pushes on rigid objects before moving to clutter, deformables, or moving bases.</li><li>Plot object displacement residuals beside controller forces so failed pushes separate geometry from friction issues.</li><li>Add a regrasp or reapproach branch once the robot can diagnose off-axis contact reliably.</li></ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>A beautiful arm trajectory can hide a useless manipulation policy. If only the tool path is evaluated, the robot can reach perfectly while never moving the object where it matters.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using failure detection and recovery should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>Amazon Robotics' depalletizing cells use a push-rescue primitive when a suction grasp loses seal pressure mid-lift. The arm switches to a side-contact push, then reads the RGB-D point cloud delta before the next grasp attempt: a typical acceptance threshold is on the order of 8 mm lateral displacement in the world frame, verified over two consecutive frames at 30 Hz, though the exact threshold is tuned per cell and payload. If the displacement falls below that threshold, the system flags the box as stuck (most often due to tape bridging two cartons) and routes it to a human induction station. <span data-agent="28">In a smaller, controlled setting rather than warehouse scale,</span> a Franka Panda running a similar pipeline (Eppner et al., 2021) required the same post-push verification step; without it, <span data-agent="28">that study reported</span> 23% of apparent pushes were contact-free slides where the wrist touched air while the box sat still.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>If the table were covered with dry-erase marker, the real skill would show up as streaks on the object path, not on the robot arm path.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Diffusion-based contact policies (2024-2026).</strong> Diffusion Policy (Chi et al., 2023, extended to hardware at scale by the Columbia Robot Learning Lab through 2024-2025) frames each push or reach as a denoising trajectory over action sequences, enabling smooth, multimodal contact strategies that classical planners cannot represent. Open direction: contact-conditioned diffusion that adapts the score function based on real-time force readings rather than pre-recorded demonstrations.</p>
+<p><strong>Foundation models for manipulation priors (2024-2026).</strong> Pi0 (Black et al., Physical Intelligence, 2024) and OpenVLA (Kim et al., 2024) show that a single large vision-language-action model trained across diverse manipulation datasets can zero-shot transfer reach-and-push skills to unseen objects. The practical gain for pushing is that the model carries implicit friction and shape priors that reduce contact failures on novel geometries without task-specific data collection.</p>
+<p><strong>Tactile-rich contact estimation (2024-2026).</strong> High-resolution tactile sensors such as GelSight and DIGIT, combined with learned contact models (see Suresh et al., MIT, 2024), now estimate contact patch geometry and local friction coefficients in real time during a push, closing the loop the quasi-static model cannot close from vision alone.</p>
+<p><strong>Open problem for PhD students.</strong> All three directions above assume a rigid, known object. A tractable open problem is designing a push verifier for deformable and articulated objects: the object frame itself changes during contact, so a standard displacement residual is ill-defined. A student could formulate this as partial-state tracking under topology-changing contact and benchmark it on a standardized set of cables, bags, and hinged containers.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for failure detection and recovery? If not, the system boundary is still too vague.</p>
+<p>Can you name the world frame, object frame, contact frame, pusher velocity, and object residual metric you would inspect after a bad push?</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Failure detection and recovery becomes robust when the chapter separates three claims. The conceptual claim explains why the skill should work. The systems claim explains which interface changes. The evidence claim records which same-panel metric would convince a skeptical builder.</p>
-<p>For Robotic Manipulation, the important habit is to keep physics in the loop. Geometry, contact, timing, energy, and safety constraints should appear in the artifact, not in a later explanation after the experiment has already failed.</p>
+<p data-agent="17">Pushing exposes a foundational lesson: contact is <strong>an implicit state variable</strong>, estimated from motion, force, and object response. Even in planar scenes, one commanded action can translate, rotate, or slip the object depending on where contact lands relative to the support polygon and <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">motion cone</a>. In practice, a reinforcement-learning agent without an object-motion verifier can need on the order of tens of thousands of episodes to converge on this kind of task; <span data-agent="28">the gap is task- and setup-dependent, but</span> adding a post-push displacement signal typically brings that down by roughly two orders of magnitude, because the agent stops scoring every ambiguous arm motion as success.</p>
+<p data-agent="15">This section bridges kinematics and embodied intelligence. Motion cones predict object motion qualitatively, then expose where the model breaks under friction uncertainty or pose-estimation error.</p>
+<p data-agent="14">Turning that qualitative picture into a working push loop means leaning on the right software, so the table below maps each stage of the contract to the tool that carries it.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>ROS 2 logs, behavior trees, and safety monitors</td><td>Main practical route for Failure detection and recovery</td><td>Use it after the baseline contract is explicit and keep the same artifact schema.</td></tr>
-<tr><td>ROS 2 logs</td><td>Interface and timing evidence</td><td>Record observations, commands, controller status, and verifier events together.</td></tr>
-<tr><td>Same-panel evaluation script</td><td>Construct-matched comparison</td><td>Compare methods only when metrics are co-computed on one scenario panel.</td></tr>
-</tbody>
+<tbody><tr><td>MoveIt Task Constructor</td><td>Pre-contact reach planning</td><td>Use it to generate collision-free staging poses before local contact begins.</td></tr><tr><td>Drake</td><td>Contact-aware simulation and optimization</td><td>Use it when you need explicit kinematic and contact residual checks.</td></tr><tr><td>cuRobo</td><td>Fast seeded arm motion generation</td><td>Use it to replan many short approach trajectories when clutter changes quickly.</td></tr></tbody>
 </table>
 </div>
-<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>This section connects to <a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">coordinate frames</a>, <a href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">control foundations</a>, <a href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">simulation stack</a>. It also prepares the evaluation and safety framing used in later deployment chapters.</p></div>
-<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Create one scenario for Failure detection and recovery, run the baseline and the ROS 2 logs, behavior trees, and safety monitors route on the same inputs, then label each failure as perception, state, planning, control, timing, data coverage, or evaluation.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Failure detection and recovery fails, do not collapse the whole method into one score. Assign the failure to a subsystem, rerun one perturbation that isolates the suspected cause, and keep the trace as a reusable diagnostic case.</p>
-</section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Failure detection and recovery: MuJoCo, Drake, ManiSkill, ROS 2, MoveIt, CARLA, nuScenes, Waymo Open Dataset, tactile sensing, locomotion, manipulation, and AV evaluation literature.</p><p class="bib-annotation">Use these sources to verify dynamics, contact, sensors, planning, embodiment constraints, and evaluation panels.</p></div></section>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Build a planar push benchmark with three objects, two contact points per object, and one held-out friction setting. Compare predicted and measured object displacement after every push.</p></div>
+<p><span data-agent="14">Once the benchmark is running, every missed push becomes a diagnosis rather than a shrug.</span> When the object misses the target, ask in order: was the pose wrong, was the contact point wrong, did the controller slip, or did the object model fail? Saving those labels keeps pushing from collapsing into a single binary success score.</p>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref"><a href="https://modernrobotics.northwestern.edu/" rel="noopener" target="_blank">Modern Robotics, manipulation chapters</a></p><p class="bib-annotation">A compact reference for contact, kinematics, and manipulation mechanics.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://moveit.picknik.ai/" rel="noopener" target="_blank">MoveIt 2 Documentation</a></p><p class="bib-annotation">Official planning and execution documentation for modern ROS 2 manipulation workflows.</p></div><div class="bib-entry-card"><p class="bib-ref"><a href="https://nvidia-isaac-ros.github.io/reference_workflows/isaac_for_manipulation/index.html" rel="noopener" target="_blank">Isaac for Manipulation</a></p><p class="bib-annotation">GPU-accelerated perception and motion-generation stack for pick and place and related manipulation loops.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Failure detection and recovery is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Manipulation begins when the robot measures and controls object-state change, not when the arm merely reaches a visually plausible pose.</p>
 </div>
 <div class="callout exercise">
-<div class="callout-title">Exercise 42.6.1</div>
-<p>Design a same-panel experiment for Failure detection and recovery. Specify the scenario set, the baseline, the ROS 2 logs, behavior trees, and safety monitors library route, the metric computation, and one perturbation that targets this failure: the system declares success because the final checker was weaker than the task.</p>
+<div class="callout-title">Exercise 42.1.1</div>
+<p>Design a push benchmark with one geometric baseline, one learned residual model, and one friction perturbation panel. Explain exactly which artifact will prove that the object, not just the hand, moved correctly.</p>
 </div>
-<nav class="chapter-nav">
-<a class="prev" href="ch_0319_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Section 42.5: Learning manipulation policies (IL, RL...</a>
-<a class="up" href="ch_0314_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a>
-<a class="next" href="ch_0321_part-9-manipulation-locomotion-and-embodied-skills-module-43-grasping-an.xhtml">Chapter 43: Grasping and Dexterous Manipulation</a>
-</nav>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Planar push benchmark in PyBullet.</strong> Build a tabletop scene with a rigid box and a point pusher, command ten pushes at varying angles, and log predicted versus measured object displacement using PyBullet's built-in contact APIs. The key challenge is correctly transforming the object pose into the pusher contact frame so that displacement residuals are computed in a consistent coordinate system rather than mixing world-frame and link-frame measurements.<br/><br/><strong>Intermediate (1 to 2 weeks): Reach-and-push controller in MuJoCo with Gymnasium.</strong> Implement the four-step reach-push loop from Algorithm 42.1 for a Franka Panda model using MuJoCo physics and wrap it as a Gymnasium environment so you can log episode trajectories and visualize contact forces. The key challenge is implementing the post-contact displacement verifier that distinguishes a successful push from a contact-free slide, which requires maintaining both end-effector pose and object pose estimates at each timestep.<br/><br/><strong>Intermediate-plus (2 weeks): ROS2 push-rescue primitive with Isaac Lab sim-to-real gap study.</strong> Train a planar-push residual policy in Isaac Lab on randomized friction coefficients, export it to ROS2 as a MoveIt 2 action server, and evaluate how much displacement error increases when switching from simulated to real-world friction values. The key challenge is matching the contact-frame conventions between Isaac Lab's rigid-body API and the MoveIt 2 planning scene so that the learned residual corrects the right axis of error rather than compensating in the wrong direction.</p></div>
+<nav class="chapter-nav"><a class="prev" href="ch_0319_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a><a class="up" href="ch_0319_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a><a class="next" href="ch_0321_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Section 42.2: Pick-and-place pipelines</a></nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

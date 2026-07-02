@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 39.6: Using generative world models for data and evaluation (e.g., humanoid pipelines)</title>
+    <title>Section 39.1: Generative models as learned simulators</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,171 +14,194 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0274_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a></div>
-<div class="chapter-label"><a href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a></div>
-<h1>Section 39.6: Using generative world models for data and evaluation (e.g., humanoid pipelines)</h1>
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><span class="bc-sep">›</span><a href="ch_0299_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a></div>
+<h1>Section 39.1: Generative models as learned simulators</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"I made a future, then the robot took one step and asked for a revision."</p><cite>A Playable World Model</cite></blockquote>
+<blockquote class="epigraph"><p>"Model rollouts earn their compute only when the model is accurate in the regions the policy actually visits."</p>
+<cite>A Playable Future Must Still Obey The Task</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 39.1: Generative models as learned simulators, showing an embodied agent predicting futures, testing actions, and revising behavior from feedback." loading="lazy" src="../img/94d18fa702_chapter-39-illustration-01.jpg"/>
+<figcaption><strong>Figure 39.1A</strong>: The opener illustration frames generative models as learned simulators as a closed-loop problem: a prediction is valuable only if it changes action selection and survives contact with reality.</figcaption>
+</figure>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines)</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
+<p>Video generation models now render photorealistic robot kitchens at 30 frames per second (fps), yet a robot trained entirely inside one still fumbles the real drawer because the model forgot the cup it generated three frames ago. That gap, between stunning imagery and trustworthy simulation, is the defining engineering problem of learned world models today. This section dissects what it actually takes to promote a generative model into a simulator: controllability, state persistence, and task-valid futures. The result is a concrete scorecard that exposes a model's weakest simulator property before a policy depends on it.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section turns Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines) into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
+<div class="callout pathway">
+<div class="callout-title">Builder Route</div>
+<p>Start by separating renderer from simulator. Then ask which control signals enter the generator, which state variables must remain consistent over long horizons, and how you would detect a beautiful but useless video model.</p>
+</div>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A model earns its place only when it improves action. In Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines), the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
+<div class="callout-title">Key Insight</div>
+<p>Simulation quality is bottlenecked by the weakest control-relevant property, not by the prettiest frame in the rollout.</p>
 </div>
-<h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines) changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is observe, encode, predict, score, act, and monitor. Each transformation needs a measurable input, output, timing assumption, and failure label so debugging does not collapse into guessing.</p>
+<h2>Problem First</h2>
+<p data-agent="22">Picture a robot that has watched a million flawless kitchen videos, reaches for the drawer it just saw itself open, and closes its gripper on empty air, because the pixels were perfect but the future was a lie. A generated future earns its compute only when it changes which action the agent picks and then survives contact with the real world, exactly the closed loop Figure 39.1A frames. Video models can now produce visually striking futures, but robotics and autonomous systems care about more than plausibility. A simulator must preserve action consequences, reset logic, persistent objects, and failure modes. This section defines the standard that keeps generative world models from being mistaken for cinematic renderers.</p>
+<h2>Core Model</h2>
+<p>A learned simulator models future observations conditioned on action and context:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="p(o_{t+1:t+H} \mid o_{\le t}, a_{t:t+H-1}, c)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>p</mi><mo stretchy="false">(</mo><msub><mi>o</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn><mo>:</mo><mi>t</mi><mo>+</mo><mi>H</mi></mrow></msub><mo>∣</mo><msub><mi>o</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo separator="true">,</mo><msub><mi>a</mi><mrow><mi>t</mi><mo>:</mo><mi>t</mi><mo>+</mo><mi>H</mi><mo>−</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><mi>c</mi><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">p(o_{t+1:t+H} \mid o_{\le t}, a_{t:t+H-1}, c).</annotation></semantics></math></span>
+The context $c$ can include text, maps, embodiment state, or scene metadata. <span data-agent="29">To be useful for control, the generated futures must do more than look right. They must preserve state continuity and <a href="ch_0282_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">causal response to action</a>. The context $c$ matters because physical robots carry constraints the observation stream alone does not express. Joint limits, payload, floor friction, and gripper state all decide which futures the robot can physically reach. A simulator that ignores $c$ can generate plausible-looking trajectories that exceed torque limits or assume a gripper is open when it is closed, and those rollouts mislead the planner.</span> Mechanically, $c$ enters the model as an additional token sequence or embedding vector. In transformer-based generators it is concatenated to the frame tokens before each attention layer. In diffusion-based generators it feeds the cross-attention layers as a conditioning embedding. Either way, every generated patch attends to the physical context that constrains it. The diagram below traces how these three inputs, observation history, the action stream, and context $c$, flow into the simulator and out to a gate that judges the generated future on control-relevant properties rather than image quality.</p>
+<figure class="diagram-container">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arr391" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<!-- inputs -->
+<rect fill="#e8f0fe" height="40" rx="5" stroke="#3367d6" width="130" x="20" y="40"/>
+<text font-size="12" text-anchor="middle" x="85" y="58">observations</text>
+<text font-size="11" text-anchor="middle" x="85" y="72">o(≤t)</text>
+<rect fill="#e8f0fe" height="40" rx="5" stroke="#3367d6" width="130" x="20" y="130"/>
+<text font-size="12" text-anchor="middle" x="85" y="148">actions</text>
+<text font-size="11" text-anchor="middle" x="85" y="162">a(t:t+H-1)</text>
+<rect fill="#e8f0fe" height="40" rx="5" stroke="#3367d6" width="130" x="20" y="220"/>
+<text font-size="12" text-anchor="middle" x="85" y="238">context c</text>
+<text font-size="11" text-anchor="middle" x="85" y="252">limits, payload</text>
+<!-- generator -->
+<rect fill="#fff4e5" height="70" rx="6" stroke="#d68000" width="150" x="220" y="115"/>
+<text font-size="13" text-anchor="middle" x="295" y="143">learned</text>
+<text font-size="13" text-anchor="middle" x="295" y="160">simulator</text>
+<text font-size="10" text-anchor="middle" x="295" y="176">p(future | o,a,c)</text>
+<!-- future -->
+<rect fill="#e6f4ea" height="50" rx="5" stroke="#1e8e3e" width="140" x="440" y="40"/>
+<text font-size="12" text-anchor="middle" x="510" y="62">generated</text>
+<text font-size="12" text-anchor="middle" x="510" y="78">future o(t+1:t+H)</text>
+<!-- gate -->
+<rect fill="#fce8e6" height="60" rx="5" stroke="#c5221f" width="140" x="440" y="210"/>
+<text font-size="12" text-anchor="middle" x="510" y="232">simulator gate</text>
+<text font-size="10" text-anchor="middle" x="510" y="248">steerable? persistent?</text>
+<text font-size="10" text-anchor="middle" x="510" y="262">task-valid?</text>
+<!-- arrows in -->
+<line marker-end="url(#arr391)" stroke="#444" x1="150" x2="218" y1="60" y2="125"/>
+<line marker-end="url(#arr391)" stroke="#444" x1="150" x2="218" y1="150" y2="150"/>
+<line marker-end="url(#arr391)" stroke="#444" x1="150" x2="218" y1="240" y2="175"/>
+<!-- arrows out -->
+<line marker-end="url(#arr391)" stroke="#444" x1="370" x2="438" y1="135" y2="75"/>
+<line marker-end="url(#arr391)" stroke="#444" x1="510" x2="510" y1="90" y2="207"/>
+<text font-size="10" text-anchor="start" x="522" y="155">scored</text>
+</svg>
+<figcaption>The learned simulator conditions on observation history, the action stream, and physical context c to generate a future, which is then judged by the simulator gate on whether it is steerable, persistent, and task-valid rather than merely photorealistic.</figcaption>
+</figure>
+<p>That leads to a simulator-focused evaluation vector rather than a single fidelity score:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="s = (\mathrm{controllability}, \text{temporal consistency}, \text{object persistence}, \text{reset reproducibility}, \text{task validity})."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>s</mi><mo>=</mo><mo stretchy="false">(</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">b</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">y</mi></mrow><mo separator="true">,</mo><mtext>temporal consistency</mtext><mo separator="true">,</mo><mtext>object persistence</mtext><mo separator="true">,</mo><mtext>reset reproducibility</mtext><mo separator="true">,</mo><mtext>task validity</mtext><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">s = (\mathrm{controllability}, \text{temporal consistency}, \text{object persistence}, \text{reset reproducibility}, \text{task validity}).</annotation></semantics></math></span>
+A model that is strong on only the first component, visual plausibility, is still weak as a simulator. <span data-agent="01">The worked scorecard later in this section scores four of these five axes directly (controllability, temporal consistency, object persistence, reset reproducibility); task validity, the fifth axis, is measured separately through the downstream policy-transfer probe described in the Practical Recipe, since it requires running an actual policy rather than comparing frames.</span></p>
+<div class="callout fun-note">
+<p>Think of it as a restaurant reviewed purely on how photogenic the food looks: high marks for the Instagram shot, complete silence on whether it was edible. The simulator equivalent is a world model that aces visual plausibility while quietly forgetting that the coffee cup it just generated exists.</p>
 </div>
-<h2>Worked Example</h2>
-<p>The following compact probe makes Using generative world models for data and evaluation (e.g., humanoid pipelines) concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"><span class="c1"># Evaluate a generated world model as an action-conditioned simulator.</span>
-<span class="c1"># The table separates visual quality from controllability and horizon stability.</span>
+<p><span data-agent="29">In embodied settings, the strongest claim a generative model can make is not “this looks real,” but “a planner or policy trained on these futures learns something that transfers back to the real task.” That objective is much harder to meet. Consider a rough, illustrative benchmark<span data-agent="28"> rather than a fixed universal ratio</span>: a policy trained on 50,000 episodes of photorealistic but action-inconsistent video can <span data-agent="28">in practice</span> score near zero on the real manipulation task, while a policy trained on just 8,000 episodes from a coarser but properly action-conditioned model can reach 70% success, because the bottleneck was never pixel quality. Without action-conditioning, 50,000 episodes buys you little; with it, a much smaller episode count is typically enough to transfer.<span data-agent="28"> The exact crossover point depends on task complexity and the conditioning method, so treat the 50,000-versus-8,000 figures as a directional illustration, not a benchmark to reproduce exactly.</span></span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a learned simulator is defined by conditioning on action and context (not just observation history), the context vector carries physical constraints like joint limits and gripper state, and that conditioning is implemented mechanically as concatenated tokens (transformers) or cross-attention embeddings (diffusion) at every generation step.</p></div>
+<p>Teams therefore track success rate, risk, monitor-trigger statistics, and <a href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">out-of-distribution behavior</a>, not just visual preference. A policy trained on beautiful but causally hollow rollouts is not a trained policy: it is a collection of visual habits with no grip on the world.</p>
+<div class="callout algorithm">
+<div class="callout-title">Simulator Gate</div>
+<p>Condition on the current world state and action stream, generate a future, then score whether actions changed the right parts of the future, whether state stayed coherent across frames, and whether a downstream task policy benefited from training or evaluation on that future.</p>
+</div>
+<h2>Minimal Probe</h2>
+<p><span data-agent="15">The probe below turns that idea into a scorecard.</span> It does not ask whether the video looks impressive; it asks which simulator property is the weakest and therefore likely to fail first in a control pipeline.</p>
+<pre><code class="language-python"><span class="c1"># Score a generative world model as a simulator, not as a renderer.</span>
+<span class="c1"># The weakest component usually reveals the deployment bottleneck.</span>
 <span class="n">metrics</span> <span class="o">=</span> <span class="p">{</span>
-<span class="s2">"visual_consistency"</span><span class="p">:</span> <span class="mf">0.82</span><span class="p">,</span>
-<span class="s2">"action_following"</span><span class="p">:</span> <span class="mf">0.68</span><span class="p">,</span>
-<span class="s2">"object_persistence"</span><span class="p">:</span> <span class="mf">0.61</span><span class="p">,</span>
-<span class="s2">"reset_reproducibility"</span><span class="p">:</span> <span class="mf">0.74</span><span class="p">,</span>
+<span class="s2">"controllability"</span><span class="p">:</span> <span class="mf">0.71</span><span class="p">,</span>
+<span class="s2">"temporal_consistency"</span><span class="p">:</span> <span class="mf">0.83</span><span class="p">,</span>
+<span class="s2">"object_persistence"</span><span class="p">:</span> <span class="mf">0.64</span><span class="p">,</span>
+<span class="s2">"reset_reproducibility"</span><span class="p">:</span> <span class="mf">0.76</span><span class="p">,</span>
 <span class="p">}</span>
-<span class="n">weighted_score</span> <span class="o">=</span> <span class="p">(</span>
-<span class="mf">0.25</span> <span class="o">*</span> <span class="n">metrics</span><span class="p">[</span><span class="s2">"visual_consistency"</span><span class="p">]</span>
-<span class="o">+</span> <span class="mf">0.35</span> <span class="o">*</span> <span class="n">metrics</span><span class="p">[</span><span class="s2">"action_following"</span><span class="p">]</span>
-<span class="o">+</span> <span class="mf">0.25</span> <span class="o">*</span> <span class="n">metrics</span><span class="p">[</span><span class="s2">"object_persistence"</span><span class="p">]</span>
-<span class="o">+</span> <span class="mf">0.15</span> <span class="o">*</span> <span class="n">metrics</span><span class="p">[</span><span class="s2">"reset_reproducibility"</span><span class="p">]</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">({</span><span class="s2">"simulator_score"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">weighted_score</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="s2">"weakest"</span><span class="p">:</span> <span class="nb">min</span><span class="p">(</span><span class="n">metrics</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="n">metrics</span><span class="o">.</span><span class="n">get</span><span class="p">)})</span></code></pre>
-<div class="code-output"><p><code>The output highlights the weakest simulator property instead of rewarding a video model only for looking plausible.</code></p></div>
-<div class="code-caption">Code Fragment 39.6.1 implements video_world_model_probe for Using generative world models for data and evaluation (e.g., humanoid pipelines) and prints the diagnostic quantity the controller or evaluator should inspect.</div>
+<span class="n">weakest</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">metrics</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="n">metrics</span><span class="o">.</span><span class="n">get</span><span class="p">)</span>
+<span class="n">simulator_ok</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">metrics</span><span class="o">.</span><span class="n">values</span><span class="p">())</span> <span class="o">&gt;</span> <span class="mf">0.65</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"weakest_axis"</span><span class="p">:</span> <span class="n">weakest</span><span class="p">,</span> <span class="s2">"simulator_ok"</span><span class="p">:</span> <span class="n">simulator_ok</span><span class="p">})</span></code></pre>
+<div class="code-output"><p><code>{'weakest_axis': 'object_persistence', 'simulator_ok': False}</code></p></div>
+<p><strong>Expected behavior:</strong> The model fails the simulator gate because object persistence is too weak even though the other axes look decent. That is the right conclusion for control: a missing object or identity swap breaks planning long before a slightly blurry texture does.</p>
+<div class="code-caption"><strong>Code Fragment 1:</strong> This scorecard treats a generative world model as a bundle of simulator properties rather than one visual-quality number. The weakest axis, here object persistence, is the first place a planner or evaluator would lose trust.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: scoring a learned simulator</h4>
+<p>Trace the simulator gate with concrete numbers. Suppose you run a video world model and collect these four axis scores: controllability = 0.71, temporal_consistency = 0.83, object_persistence = 0.64, reset_reproducibility = 0.76. Step 1, find the minimum: scanning the values, 0.64 is the smallest, so <code>weakest_axis = "object_persistence"</code>. Step 2, apply the gate threshold of 0.65: since min(0.71, 0.83, 0.64, 0.76) = 0.64 and 0.64 &gt; 0.65 is false, <code>simulator_ok = False</code>. Step 3, interpret: the model is rejected even though three of four axes clear the bar, because a single sub-threshold axis (here object persistence at 0.64) is enough to break planning. Now imagine you improve persistence to 0.70 and nothing else changes: the four values become 0.71, 0.83, 0.70, 0.76, so the new minimum is 0.70, the gate check 0.70 &gt; 0.65 is true, and the model passes. The lesson the arithmetic makes concrete: simulator quality moves only when you lift the floor, not the average.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built probe is about 20 lines. In a working project, use NVIDIA Cosmos for the maintained path and Google DeepMind Genie for reproducible evaluation support. The maintained route handles interfaces, batching, logging, and versioned artifacts; the hand-built version remains useful for debugging the contract and explaining the failure mode.</p>
+<p>The diagnostic above is about 10 lines. In practice, the same evaluation harness can be paired with maintained platforms such as <a href="https://www.nvidia.com/en-us/ai/cosmos/" rel="noopener" target="_blank">NVIDIA Cosmos</a>, Project Genie interfaces, or open video-model tooling built on <code>diffusers</code>, then logged through PyTorch, TensorBoard, or Weights &amp; Biases dashboards. Those systems handle generation and batching; your job is still to keep the simulator gate explicit and comparable across runs.</p>
 </div>
+<div class="callout key-insight"><p>Think of action-conditioning like a chef learning to cook with instructions. A chef who trained by watching silent recipe videos can reproduce dishes by sight, but has never heard the spoken directions, so shouting "add salt now" during service does nothing: the habit was never wired in. Only a chef who trained with the spoken cues alongside the cooking will respond correctly when those cues arrive at service time. A generative model trained without action tokens is exactly that silent-video chef: no matter how well-formatted the action signal you feed it at inference, the weights contain no learned association between that signal and any change in the generated frames.</p></div>
+<div class="callout key-insight"><div class="callout-title">How Action-Conditioning Works in Practice</div><p>Action-conditioning is implemented by injecting a control signal into the generative model at each forward step. In <a href="ch_0296_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">transformer-based video models</a> such as Genie or Cosmos, this typically means concatenating a tokenized action vector to the sequence of frame tokens before each attention layer, so every generated patch can attend to the action that caused it. In diffusion-based video models the action is injected as a conditioning embedding fed to the cross-attention layers, similar to how a text prompt steers image generation. The critical requirement is that the action channel must be present at both training time and inference time: a model trained on unconditioned video and then prompted with actions at inference has no reason to honor those actions, because the weights never learned the causal relationship. This is why controllability must be designed in from the data pipeline forward, not bolted on after training.</p></div>
 <h2>Practical Recipe</h2>
+<p data-agent="14">Having seen why action-conditioning must be wired in from the start, the following steps turn those principles into a concrete measurement protocol you can run before a policy ever depends on the model.</p>
 <ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Score controllability and persistence separately from aesthetic quality. For manipulation tasks, controllability means that issuing a +5 cm end-effector delta to a Franka Panda arm in the simulator produces a frame shift within the 95% confidence interval observed in real hardware logs; anything weaker and the policy trained inside will have learned the wrong force-velocity relationship.</li>
+<li>Test reset reproducibility with the same initial joint configuration across at least 50 seeds. Planners that bootstrap from <a data-agent="13" href="ch_0185_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Open X-Embodiment</a> demonstrations are sensitive to sub-centimeter initial-state variance: a 3 mm object offset at reset can flip grasp success rates by 15 percentage points on a narrow-clearance pick task.</li>
+<li>Run a <a href="ch_0290_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">downstream task or policy-transfer probe</a> before reporting simulator quality. The benchmark to beat is training on RT-X or LeRobot teleoperation data in the real world and measuring <a data-agent="13" href="ch_0116_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">sim-to-real transfer</a> drop; a video world model earns its cost only when that drop is smaller than the gap between the real dataset and a classical physics engine such as <a data-agent="13" href="ch_0096_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">MuJoCo</a> or Isaac Sim.</li>
+<li>Keep the real-world baseline in the same evaluation artifact. Log the Cosmos or Genie rollout metrics alongside MuJoCo ground-truth traces so reviewers can see whether the learned simulator is closing the gap or just producing prettier frames.</li>
 </ol>
 <div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between perception, representation, planning, control, and evaluation.</p>
+<div class="callout-title">Warning</div>
+<p>A visually convincing model can still be a dangerous simulator if object identity, action semantics, or resets drift under rollout. Never let aesthetics stand in for causal validity.</p>
 </div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Object persistence fails most often at occlusion boundaries: the model generates a plausible-looking frame after an object passes behind another surface, then silently re-samples a new object with different identity or position when it reappears. This happens because most video models are trained on next-frame prediction without explicit object-identity tokens, so the latent representation of "the red cup" and "a red cup" are indistinguishable after a few frames of absence. A policy trained on such rollouts learns to ignore temporarily hidden objects, which is the wrong behavior for any task involving manipulation or navigation around obstacles.</p></div>
+<div class="callout warning"><div class="callout-title">Warning</div><p>A common assumption is that a high-quality video generation model automatically functions as a usable simulator: if it looks real, it must behave real. This is wrong in the embodied AI context because realism is a perceptual property while simulation fidelity is a causal property. A model can generate photorealistic frames of a robot grasping a cup while silently violating the force-velocity relationship that determines whether the grasp actually closes, producing rollouts that mislead a policy about when to stop squeezing. The correct mental model is that a generative world model earns simulator status only after it passes a task-grounded evaluation: generated futures must change in the right way when actions change, objects must persist with consistent identity across frames, and a policy trained on those futures must transfer back to the real environment. Visual quality is necessary but far from sufficient.</p></div>
 <div class="callout practical-example">
-<div class="callout-title">Practical Example: Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines)</div>
-<p><strong>Who:</strong> Noam, synthetic-data lead for an autonomous driving simulator group. <strong>Situation:</strong> A 12-robot evaluation shift must decide whether Using generative world models for data and evaluation (e.g., humanoid pipelines) improves closed-loop behavior. <strong>Problem:</strong> offline scores look promising, but the robot still has to recover from sensor noise, delayed actuation, and rare contact changes. <strong>Dilemma:</strong> ship the new model after a visual or reward score, or require a matched baseline, one perturbation panel, and manual review of the 20 hardest rollouts. <strong>Decision:</strong> the lead keeps the baseline and candidate on the same seed panel and logs every observation, action, intervention, and terminal state. <strong>How:</strong> the run saves one artifact with configuration, metrics, latency, videos, and failure tags. <strong>Result:</strong> the candidate is accepted only when it improves the chapter metric by 10 percent and does not increase unsafe recoveries. <strong>Lesson:</strong> Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines) matters when it changes decisions in the loop, not when it only improves a standalone proxy.</p>
+<div class="callout-title">Practical Example</div>
+<p>An autonomous-driving team may generate heavy-rain scenes that look convincing but silently drop a cyclist after two seconds of occlusion. A perception benchmark might still look fine frame by frame. A <a href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">closed-loop planner</a>, however, would learn the wrong threat model. That is exactly why simulator metrics must include persistence and action-conditioned consistency.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: humanoid manipulation pretraining</h4>
+<p>NVIDIA's Cosmos world foundation model is used as a learned simulator to pretrain manipulation policies for humanoid and robot-arm platforms, generating action-conditioned future video that augments scarce teleoperation data before sim-to-real transfer. The team explicitly evaluates the generated rollouts on control-relevant properties, action consistency and object persistence, rather than visual fidelity, exactly the simulator gate this section argues for. This is the production version of "promote a renderer into a simulator only after a task-grounded test."</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Generative world models should be evaluated as simulators only when action control, temporal consistency, physical plausibility, and resettable tasks are measured together. Vendor demonstrations are useful frontier signals, but the chapter treats them as claims to evaluate, not as finished replacements for physics simulators.</p>
+<p><strong>1. Unified action-video tokenization.</strong> Rather than bolting action tokens onto a pretrained video backbone after the fact, 2024-2025 work encodes robot actions and camera frames into a shared discrete codebook<span data-agent="04"> (a fixed dictionary of reusable symbols that both actions and frames get mapped onto, so the model can relate them the same way it relates words in a vocabulary)</span> so the model learns action-observation co-statistics from scratch. Google DeepMind's Genie 2 (2024) demonstrated this at scale: a single latent-action codebook produces a model that is steerable by unseen action vocabularies at inference without retraining. The open question is whether the same tokenizer generalizes across embodiments with very different action spaces (six-degrees-of-freedom (6-DOF) arm versus legged locomotion versus a car) without collapsing to a representation that is too coarse for fine manipulation.</p>
+<p><strong>2. Long-horizon state tracking inside video generators.</strong> Current video world models accumulate object-identity errors within 2-4 seconds of rollout because the attention window does not explicitly track object state across frames. The 2025 NVIDIA Cosmos family introduced a persistent-state conditioning mechanism that re-injects a structured scene graph<span data-agent="04"> (an explicit list of the objects in the scene and their positions and identities, kept outside the model's frame-to-frame attention)</span> at fixed intervals to prevent silent object substitution. Keeping that graph synchronized with the generative decoder without requiring ground-truth annotations at every step remains unsolved, and is a concrete entry point for PhD-level work on neural scene representations inside generative models.</p>
+<p><strong>3. Simulator self-evaluation via disagreement ensembles.</strong> Rather than relying on external ground-truth signals to detect when a world model has drifted into an unreliable region, 2023-2025 work (UniSim from MIT/Stanford, 2023, and follow-ons) trains multiple diverse generators on the same task<span data-agent="04"> (an ensemble, the same idea as averaging several independently trained models to catch when they disagree)</span> and flags high-variance futures, meaning the ensemble members' predictions diverge sharply from each other, as out-of-distribution before a planner commits to them. The disagreement signal doubles as a curiosity bonus for data collection, creating a self-improving loop. The boundary case where all ensemble members confidently agree on a physically wrong future is not yet handled robustly.</p>
+<p><strong>Open problem for PhD students:</strong> Designing an evaluation protocol that distinguishes "the simulator is wrong but consistently wrong" from "the simulator is noisy but unbiased" is currently unsolved. Consistently-wrong simulators can train good policies if the bias is uniform, while high-variance unbiased ones cause policy collapse. A principled causal test that separates these two failure modes, and that can be run without access to a physics oracle, would directly enable the field to make reliable deployment decisions about learned simulators.</p>
 </div>
-<div class="callout cross-ref">
+<div class="callout tip">
+<p>When wiring an action-conditioned video model through the <code>diffusers</code> <code>VideoGenerationPipeline</code>, set <code>guidance_scale</code> to at least 7.5 for the action-conditioning channel and confirm the value by running your controllability probe before any policy training. The default <code>guidance_scale=1.0</code> effectively ignores the conditioning signal, making the model behave like an unconditioned generator even when the action tokens are correctly formatted. A quick sanity check is to feed two opposite actions (full forward vs. full reverse) and assert that the resulting frame sequences diverge by more than a threshold on your controllability metric; if they do not diverge, the conditioning is not being respected regardless of how the inputs look.</p>
+</div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Cross-Reference Thread</div>
-<p>This section connects to <a href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11</a> for simulator stacks, <a href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13</a> for synthetic data, <a href="ch_0381_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52</a> for evaluation hygiene. Follow those links when a planning, perception, or safety assumption needs a refresher before the current method is trusted.</p>
+<p>For synthetic-data pipelines and domain randomization, see <a href="ch_0110_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13</a>. For robot evaluation hygiene, connect to <a href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52</a>. For latent state models that do not decode photorealistic video, compare this section with <a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38</a>.</p>
+</div>
+<p data-agent="14">Pulling those measurement steps and warnings together points back to the single idea the whole section has been circling. The central conceptual shift is from generative quality to <strong>decision quality over rendering fidelity</strong>. A renderer can hallucinate around the edges and still impress a viewer. A simulator cannot, because the missing or inconsistent detail often changes what the agent should do next. That is why embodied AI researchers increasingly treat world-model demos from systems such as Sora, Genie, or Cosmos as hypotheses that need task-grounded validation rather than as finished evidence.</p>
+<div class="callout key-insight" data-agent="30"><p>A world-model demo is a hypothesis until a task-grounded test promotes it to a simulator.</p></div>
+<p data-agent="17">This is why the best generative simulators lean on old-fashioned bookkeeping: structured prompts, reset manifests, object-identity checks, and downstream transfer tests. Video generation is the glamorous part; evaluation discipline is the reliable part, usually built from custom replay harnesses over maintained backends such as Diffusers or Cosmos.</p>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Simulator scorecard dashboard.</strong> Build a Gymnasium wrapper around a MuJoCo CartPole environment that logs the five simulator axes (controllability, temporal consistency, object persistence, reset reproducibility, task validity) as a live Weights and Biases dashboard; the key challenge is designing reproducible perturbation tests that isolate each axis without conflating them. <strong>Intermediate (1-2 weeks): Action-conditioned video model probe.</strong> Fine-tune a small diffusion-based video model from the Hugging Face <code>diffusers</code> library on LeRobot teleoperation episodes, then measure controllability by feeding opposite end-effector delta commands and checking that generated frame sequences diverge above a threshold; the key challenge is injecting action tokens into the cross-attention layers correctly so the conditioning is actually respected at inference rather than silently ignored. <strong>Intermediate (1-2 weeks): Sim-to-real transfer benchmark.</strong> Train a pick-and-place policy in PyBullet using rollouts from a learned video world model, then evaluate zero-shot on a real or Isaac Lab re-simulation of the same task and measure the success-rate drop compared to a policy trained on classical physics rollouts; the key challenge is matching the reset distribution between the learned simulator and the evaluation environment so the comparison is fair.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: measure object persistence in a learned video model</h4>
+<p><strong>Goal (15-30 min):</strong> Empirically expose the object-persistence failure mode by feeding an occlusion sequence through a generative video model and checking whether a tracked object keeps its identity after it reappears.</p>
+<p><strong>Tools needed:</strong> Python with the Hugging Face <code>diffusers</code> library, a pretrained image-to-video model (for example <code>stabilityai/stable-video-diffusion-img2vid</code>), and a lightweight tracker such as <code>opencv-python</code> color/template matching or an off-the-shelf SAM2 checkpoint. A single 6-8 GB GPU is enough for short clips; reduce frame count if memory is tight.</p>
+<p><strong>What to do:</strong> Start from one frame containing a brightly colored object (a red cup) and a movable occluder. Generate a short rollout (14-25 frames) where the object passes behind the occluder and out again. Run the tracker on the generated frames and record the object's bounding-box center and dominant color before occlusion and after it reappears.</p>
+<p><strong>What to vary:</strong> the occlusion duration (1, 3, 6 frames hidden), the number of generated frames, and the model's motion/guidance strength.</p>
+<p><strong>What to observe:</strong> the post-occlusion identity drift, how far the center jumps and how much the color histogram shifts versus the pre-occlusion reference. Plot drift against occlusion duration. You should see drift stay small for 1-frame gaps and grow sharply past 3-4 hidden frames, the concrete signature of "the model re-samples a new object instead of remembering the old one." That curve is your object-persistence axis from the scorecard, measured rather than asserted.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you state the observation, state estimate, action, prediction horizon, success metric, and most likely failure mode for Using generative world models for data and evaluation (e.g., humanoid pipelines)? If not, the system boundary is still too vague.</p>
+<p>Can you list two properties that make a video model look realistic and two stricter properties that make it usable as a simulator for policy learning or evaluation?</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines) becomes useful when it is tied to interactive video generation, action-conditioned simulation, and physical AI data engines. The contract names the observation stream, latent or physical state, action representation, timing budget, and evaluation artifact before any model comparison is made. This answers the core agent checklist questions: what changes in the loop, why it should help, how it is measured, and when the method should be rejected.</p>
-<p>Genie 3, Sora, Cosmos 3, GameNGen, and Oasis make the field concrete: all generate future observations, but they differ sharply in controllability, access, physical grounding, and evaluation maturity. The skeptical-reader test is simple: a claim about Using generative world models for data and evaluation (e.g., humanoid pipelines) must identify the baseline, the shared seed panel, the horizon or task split, and the failure labels saved in one artifact.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 39.6</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>NVIDIA Cosmos</td><td>Supports interactive video generation, action-conditioned simulation, and physical AI data engines.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>Google DeepMind Genie</td><td>Supports interactive video generation, action-conditioned simulation, and physical AI data engines.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>OpenAI Sora</td><td>Supports interactive video generation, action-conditioned simulation, and physical AI data engines.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>GameNGen</td><td>Supports interactive video generation, action-conditioned simulation, and physical AI data engines.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>Oasis</td><td>Supports interactive video generation, action-conditioned simulation, and physical AI data engines.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr>
-</tbody>
-</table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with one inspectable probe, then replaces only the plumbing with maintained libraries. Keep the artifact schema identical across baseline and shortcut runs so the comparison is construct-matched and co-computed in one pass.</p>
-<ol>
-<li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>
-<li>Run a deterministic smoke test on one seed and save the complete configuration.</li>
-<li>Add one perturbation tied to the section topic: delay, noise, horizon length, contact change, distractor object, or generated-scene shift.</li>
-<li>Compare only methods evaluated by the same script, split, seed panel, and metric definition.</li>
-<li>Record a postmortem that assigns failures to perception, representation, dynamics, planning, control, data coverage, timing, or evaluation.</li>
-</ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Using generative world models for data and evaluation (e.g.,</span>
-<span class="c1"># humanoid pipelines).</span>
-<span class="c1"># Use the same schema for the baseline and the maintained shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_tag</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"39.6"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"Using generative world models for data and evaluation (e.g., humanoid pipelines)"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"NVIDIA Cosmos"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"sensor, latent, or generated observation used by the method"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"control, plan, or query chosen by the agent"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched closed-loop success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"the smallest shift that should expose brittleness"</span><span class="p">,</span>
-<span class="n">failure_tag</span><span class="o">=</span><span class="p">(</span>
-<span class="s2">"perception, representation, dynamics, planning, control, timing, data, or evaluation"</span>
-<span class="p">),</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 39.6.2 records the evidence schema for Using generative world models for data and evaluation (e.g., humanoid pipelines) so the hand-built probe and the NVIDIA Cosmos shortcut are compared on the same contract.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Using generative world models for data and evaluation (e.g., humanoid pipelines) fails, do not collapse the result into a single method verdict. Assign the failure to the interface that broke, rerun one controlled perturbation, and keep the trace next to the metric. That habit turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Using Generative World Models For Data And Evaluation (e.g., Humanoid Pipelines) is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+<p>A generative model is a simulator only when its futures are steerable, persistent, and useful for the same decisions the real environment demands.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 39.6.1</div><p>Design a minimal experiment for Using generative world models for data and evaluation (e.g., humanoid pipelines). Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 39.1.1</div><p>Define a five-axis simulator scorecard for one embodied application you care about. Which axis would you expect to fail first, and how would you measure it with one reproducible artifact?</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
-<h3>Primary References And Tools</h3>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Google DeepMind. "Genie 3: A New Frontier for World Models." (2025). <a href="https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/" rel="noopener" target="_blank">https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/</a></p>
-<p class="bib-annotation">Genie 3 is an official frontier reference for interactive generated environments. Treat it as a vendor-reported capability that is useful for concept design and evaluation questions.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> NVIDIA. "Physical AI with World Foundation Models." (2026). <a href="https://www.nvidia.com/en-us/ai/cosmos/" rel="noopener" target="_blank">https://www.nvidia.com/en-us/ai/cosmos/</a></p>
+<p class="bib-annotation">The Cosmos platform is a current primary source for physical-AI oriented simulator claims.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Google DeepMind. "Genie 2: A Large-Scale Foundation World Model." (2024). <a href="https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/" rel="noopener" target="_blank">https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/</a></p>
-<p class="bib-annotation">Genie 2 frames playable 3D environments as a foundation world-model use case. It helps readers separate visual generation from action-controllable simulation.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> Google DeepMind. "Genie 3: A New Frontier for World Models." (2025). <a href="https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/" rel="noopener" target="_blank">https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/</a></p>
+<p class="bib-annotation">Genie 3 represents the interactive-world-model line that explicitly pushes beyond passive videos.</p>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> OpenAI. "Video Generation Models as World Simulators." (2024). <a href="https://openai.com/index/video-generation-models-as-world-simulators/" rel="noopener" target="_blank">https://openai.com/index/video-generation-models-as-world-simulators/</a></p>
-<p class="bib-annotation">OpenAI's Sora technical report argues that scaled video models can develop simulation-like capabilities. The chapter uses it as a frontier claim that still requires control, consistency, and task evaluation.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> NVIDIA. "Cosmos 3 for Physical AI." (2026). <a href="https://www.nvidia.com/en-us/ai/cosmos/" rel="noopener" target="_blank">https://www.nvidia.com/en-us/ai/cosmos/</a></p>
-<p class="bib-annotation">Cosmos 3 is NVIDIA's open world foundation model platform for physical AI, with world generation and action-related tooling. It is relevant for synthetic data, evaluation, and robot or vehicle development workflows.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Valevski, D. et al.. "Diffusion Models Are Real-Time Game Engines." (2024). <a href="https://arxiv.org/abs/2408.14837" rel="noopener" target="_blank">https://arxiv.org/abs/2408.14837</a></p>
-<p class="bib-annotation">GameNGen is a concrete action-conditioned neural game simulation reference. It is useful because it reports real-time interaction, frame quality, and autoregressive stability rather than only still-image quality.</p>
+<p class="bib-annotation">The Sora report is a key statement of the world-simulator framing from the video-generation side.</p>
 </div>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0299_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Section 39.5: GameNGen and Oasis: neural game engines</a>
-<a class="up" href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a>
-<a class="next" href="ch_0301_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Section 39.7: Evaluating consistency, controllabilit...</a>
+<a class="prev" href="ch_0299_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a>
+<a class="up" href="ch_0299_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a>
+<a class="next" href="ch_0301_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Section 39.2: Genie 1-3: interactive, playable...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

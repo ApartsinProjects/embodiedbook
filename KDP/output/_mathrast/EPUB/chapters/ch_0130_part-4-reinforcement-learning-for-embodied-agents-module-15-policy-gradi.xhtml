@@ -1,0 +1,308 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 15.6: Reward shaping and its hazards</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-index.xhtml">Part IV: Reinforcement Learning for Embodied Agents</a><span class="bc-sep">›</span><a href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15: Policy Gradient Methods and PPO</a></div>
+<h1>Section 15.6: Reward shaping and its hazards</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"The shaped reward was a map to treasure. The agent found the map and stopped."</p><cite>A Reward Designer With New Gray Hair</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 15.6: Reward shaping and its hazards" loading="lazy" src="../img/a0a91c14e7_illustration-15-6.jpg"/>
+<figcaption><strong>Figure 15.6A</strong>: A shaped reward is a proxy the optimizer reads literally: dense intermediate bonuses can guide a robot toward the goal, but the same bonuses invite shortcuts like hovering near a target instead of completing the task.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section builds on the advantage estimation introduced in section 15.3 and assumes familiarity with the discounted MDP framework from section 2.6. The reward hacking patterns catalogued here recur in section 18.4 (reward hacking case studies) and section 19.1, where sparse rewards and costly exploration make shaping especially tempting for embodied agents.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot learns to fetch boxes. Its designer adds a "distance-to-box" shaping term so the agent gets credit for approaching the target. Within hours the robot has mastered a flawless hover: it parks 10 cm from every box, collects near-maximum shaping reward, and never picks up a single item. The task return stays at zero. <span data-agent="28">This is reward hacking (a policy exploiting a proxy reward instead of achieving the intended task), and it is typically the failure mode practitioners report most often in deployed embodied RL, because physical robots demand dense feedback yet their environments punish any proxy that is easier to optimize than the real goal.</span> By the end of this section you will be able to design potential-based shaping terms that preserve the optimal policy, audit running experiments for early exploit signatures, and build the safety checklist that catches the warehouse-hover failure before it costs real hardware<span data-agent="01"> (see the Algorithm callout below, whose exploit-hypothesis step is built directly around this warehouse-hover pattern)</span>.</p>
+</div>
+<p data-agent="22" data-agent-2="39"><span data-agent="29">As Figure 15.6A shows, imagine a robot arm that must search, reach, align, grasp, lift, and place a box before it ever sees a single point of reward. With only a sparse success signal, it can flail through tens of thousands of episodes before stumbling on its first success. Add a well-designed potential-based shaping term and the same arm can succeed within a few hundred episodes (exact figures vary widely by environment and task difficulty).</span> That is the seductive promise of shaping: it inserts smaller signals along the way, such as distance to a goal or uprightness, to break the silence between the start of the rollout and the first success. This challenge is examined in depth in <a href="ch_0152_part-4-reinforcement-learning-for-embodied-agents-module-19-exploration-.xhtml">why embodied exploration is expensive and risky</a>.</p>
+<p>The danger is <strong>objective mismatch between proxy and task</strong>. If a mobile robot receives reward for being close to a doorway, it may learn to hover at the doorway instead of passing through. If a manipulator receives reward for high gripper force, it may crush objects. The shaped reward must be treated as a training instrument, not as the final task definition. Documented cases of this failure pattern are catalogued in <a href="ch_0148_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">reward hacking, with case studies</a>. Figure 15.6B contrasts the two routes a task goal can take into the optimizer: a safe potential-based term that preserves the optimal policy, and a misaligned proxy that PPO learns to exploit. <span data-agent="03">The figure labels the safe route with the potential-based formula $F = \gamma\Phi(s') - \Phi(s)$, defined formally just below.</span></p>
+<figure class="diagram-container" data-agent="09">
+<svg aria-label="Reward shaping flow showing potential-based shaping versus proxy exploitation" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<style>
+    .node-box { fill: #f0f4ff; stroke: #3a5fc8; stroke-width: 1.5; rx: 6; }
+    .node-bad  { fill: #fff0f0; stroke: #c83a3a; stroke-width: 1.5; }
+    .arrow     { stroke: #444; stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
+    .arrow-bad { stroke: #c83a3a; stroke-width: 1.8; fill: none; marker-end: url(#arrowhead-bad); stroke-dasharray: 6 3; }
+    .label     { font-family: monospace; font-size: 12px; fill: #222; text-anchor: middle; }
+    .label-bad { font-family: monospace; font-size: 12px; fill: #c83a3a; text-anchor: middle; }
+    .caption   { font-family: monospace; font-size: 10px; fill: #555; text-anchor: middle; }
+  </style>
+<defs>
+<marker id="arrowhead" markerheight="6" markerwidth="8" orient="auto" refx="7" refy="3">
+<polygon fill="#444" points="0 0, 8 3, 0 6"/>
+</marker>
+<marker id="arrowhead-bad" markerheight="6" markerwidth="8" orient="auto" refx="7" refy="3">
+<polygon fill="#c83a3a" points="0 0, 8 3, 0 6"/>
+</marker>
+</defs>
+<!-- Node 1: Task Goal -->
+<rect class="node-box" height="50" rx="6" width="110" x="30" y="115"/>
+<text class="label" x="85" y="136">Task Goal</text>
+<text class="caption" x="85" y="153">(true success)</text>
+<!-- Node 2: Potential Phi(s) -->
+<rect class="node-box" height="50" rx="6" width="140" x="230" y="50"/>
+<text class="label" x="300" y="71">Potential</text>
+<text class="label" x="300" y="88">F = gamma*Phi(s') - Phi(s)</text>
+<!-- Node 3: Proxy Reward -->
+<rect class="node-bad" height="50" rx="6" width="140" x="230" y="180"/>
+<text class="label-bad" x="300" y="201">Proxy Reward</text>
+<text class="caption" x="300" y="218">(e.g. distance bonus)</text>
+<!-- Node 4: PPO Optimizer -->
+<rect class="node-box" height="50" rx="6" width="120" x="450" y="115"/>
+<text class="label" x="510" y="136">PPO</text>
+<text class="caption" x="510" y="153">Optimizer</text>
+<!-- Arrow: Task Goal -> Potential (good path) -->
+<path class="arrow" d="M140 128 Q185 75 230 75"/>
+<text class="caption" x="175" y="88">shapes</text>
+<!-- Arrow: Task Goal -> Proxy (bad path) -->
+<path class="arrow-bad" d="M140 152 Q185 185 230 200"/>
+<text class="label-bad" x="178" y="188">misaligns</text>
+<!-- Arrow: Potential -> PPO -->
+<path class="arrow" d="M370 75 Q415 90 450 130"/>
+<text class="caption" x="425" y="97">preserves</text>
+<text class="caption" x="425" y="109">opt. policy</text>
+<!-- Arrow: Proxy -> PPO -->
+<path class="arrow-bad" d="M370 200 Q415 185 450 155"/>
+<text class="label-bad" x="428" y="195">exploits</text>
+<text class="caption" x="428" y="207">(loitering)</text>
+<!-- Legend labels -->
+<line class="arrow" stroke="#444" stroke-width="1.8" x1="30" x2="70" y1="272" y2="272"/>
+<text class="caption" text-anchor="start" x="130" y="276">potential-based (safe)</text>
+<line fill="none" marker-end="url(#arrowhead-bad)" stroke="#c83a3a" stroke-dasharray="6 3" stroke-width="1.8" x1="280" x2="320" y1="272" y2="272"/>
+<text class="caption" text-anchor="start" x="330" y="276">proxy mismatch (hazard)</text>
+</svg>
+<figcaption><strong>Figure 15.6B</strong>: Reward shaping paths. A task goal can be encoded as a potential-based term F that telescopes away and preserves the optimal policy (blue, solid), or as a misaligned proxy reward that PPO exploits by loitering or other shortcuts (red, dashed). The optimizer follows whichever signal dominates the advantage estimate.</figcaption>
+</figure>
+<p>Potential-based shaping is the safest standard form:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="F(s,a,s')=\gamma\Phi(s')-\Phi(s)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>F</mi><mo stretchy="false">(</mo><mi>s</mi><mo separator="true">,</mo><mi>a</mi><mo separator="true">,</mo><msup><mi>s</mi><mo lspace="0em" mathvariant="normal" rspace="0em">′</mo></msup><mo stretchy="false">)</mo><mo>=</mo><mi>γ</mi><mi mathvariant="normal">Φ</mi><mo stretchy="false">(</mo><msup><mi>s</mi><mo lspace="0em" mathvariant="normal" rspace="0em">′</mo></msup><mo stretchy="false">)</mo><mo>−</mo><mi mathvariant="normal">Φ</mi><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">F(s,a,s')=\gamma\Phi(s')-\Phi(s).</annotation></semantics></math></span></p>
+<p>Adding $F$ to the reward preserves the optimal policy under the usual <a href="ch_0025_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">discounted Markov Decision Process (MDP) assumptions</a> because it changes trajectory returns by a telescoping potential term rather than changing which complete behavior is best.</p>
+<p><span data-agent="29">This matters in physical systems because any non-potential shaping term silently reranks behaviors. A robot trained to grasp may drift into one that hovers, with no visible change to the reward formula. On real hardware, that reranking costs actuator cycles, increases wear, and can create unsafe postures before the team notices the task has changed. A counterintuitive sign of the problem: the better-trained policy often falls more than the earlier, clumsier one, because a higher-capacity policy finds and exploits the displacement reward that a single falling step delivers.</span></p>
+<h4 data-agent="30">Why the guarantee holds</h4>
+<p><span data-agent="04">The mechanism is telescoping cancellation (a sum where each middle term cancels against a neighboring term, leaving only the first and last).</span> Sum $F$ over a full trajectory from $s_0$ to terminal state $s_T$: $\sum_t F(s_t,a_t,s_{t+1}) = \gamma\Phi(s_T) - \Phi(s_0)$. Because $s_0$ is fixed at the start of each episode and $\Phi(s_T)$ is the same for all terminal states with equal task return, every trajectory's shaped return differs from its unshaped return by the same constant. Ranking is preserved, so the optimal policy is unchanged.</p>
+<div class="callout key-insight"><p>Think of two hikers climbing the same mountain by different routes: one takes a direct ridge path and one takes a winding valley path. If you give each hiker a stamp at every checkpoint that records the elevation change since the last stamp, the total elevation gain printed on all the stamps adds up to the same number for both hikers, because both started at base camp and both summited. The intermediate stamps (the shaping bonuses) record different amounts at each step, but they telescope away completely when summed, leaving only the difference between the finish altitude and the start altitude. Potential-based reward shaping works the same way: the per-step bonuses vary wildly across trajectories, yet their sum is always the same constant, so no trajectory is artificially promoted over another.</p></div>
+<div class="callout algorithm">
+<h4>Algorithm: Reward Shaping Safety Checklist</h4>
+<p><strong>Input:</strong> candidate shaping term $F(s,a,s')$, policy $\pi_\theta$, task success criterion $S$, potential function $\Phi(s)$</p>
+<p><strong>Output:</strong> decision to accept or reject $F$, plus a logged exploit hypothesis for each accepted term</p>
+<ol>
+<li>Define $S$ as a binary or sparse scalar independent of $F$ before writing any shaping code.</li>
+<li>Check whether $F$ takes the potential-based form $F(s,a,s') = \gamma\Phi(s') - \Phi(s)$; if not, document why a non-potential term is justified.</li>
+<li><span data-agent="04">Verify that $\Phi(s)$ is evaluated on the true Markov state (the complete state description the MDP transition function actually depends on), not on a filtered sensor observation $o_t$, to preserve the policy-preservation guarantee.</span></li>
+<li>Write an explicit exploit hypothesis: describe one episode where $F$ is high but $S$ is zero (e.g., loitering near the goal, falling forward for velocity credit).</li>
+<li>Construct adversarial test episodes from step 4 and check that $\pi_\theta$ does not prefer the exploit over task completion under random initialization.</li>
+<li>Decompose the total reward into components $r_\text{task}$, $r_\text{progress}$, $r_\text{energy}$, $r_\text{contact}$ and log them separately each episode.</li>
+<li><span data-agent="04">Run Proximal Policy Optimization (PPO) for $N$ gradient steps; plot component totals alongside $S$ to detect which term dominates the advantage signal $\hat{A}_t$ (the per-step estimate of how much better an action was than the policy's average, the quantity PPO's gradient step actually optimizes).</span></li>
+<li>If any shaped component accounts for more than half of the mean advantage while $S$ stagnates, reduce its coefficient $w_F$ by a factor of 2 and return to step 5.</li>
+<li>Accept $F$ only when $S$, safety flags, and robustness metrics all improve in the same logged artifact as the shaped return.</li>
+<li>Record the accepted $F$, $\Phi$, component weights, and exploit-test outcomes in the experiment registry before updating $\theta$.</li>
+</ol>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">The Reward Is A Proxy</div>
+<p>The agent optimizes the scalar it receives, not the intent in the designer's head. Shaping is useful only when the proxy remains aligned with the task under the policy's future behavior.</p>
+</div>
+<div class="callout warning"><p>A common misconception is that the potential-based form $F(s,a,s') = \gamma\Phi(s') - \Phi(s)$ makes reward shaping safe. In embodied AI, this assumption fails in two ways. First, policy preservation tells you which policy is optimal in theory. It does not guarantee that PPO finds that policy. A potential-based term can still dominate the advantage signal, causing the optimizer to harvest shaping reward while task success stagnates. Second, the guarantee breaks when the potential uses a sensor observation instead of the true Markov state. <span data-agent="28">In practice, most real robot deployments face this problem to some degree: pose estimates are noisy and partial.</span> The correct mental model is that potential-based shaping removes one class of hazard, specifically reranking behaviors by terminal state value. All other hazards remain. Exploit discovery, sensor-noise corruption of the potential, and proxy dominance over the sparse task signal each require a separate audit and component logging, regardless of the shaping form.</p></div>
+<h2>Theory</h2>
+<p data-agent="14">Because each of those hazards demands its own audit, the practical foundation for every audit is the same: keeping the reward components visible rather than collapsed into a single number. A shaped reward should be decomposed in logs. Instead of storing only total reward, record task reward, progress shaping, energy penalties, contact penalties, safety penalties, and terminal success separately. This lets the team see whether <a data-agent="13" href="ch_0128_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">PPO</a> is improving the task or merely harvesting one component.</p>
+<p data-agent="17">Embodied shaping also needs sensor humility. Every shaping term rides on a measurement: distance-to-goal on pose estimation, contact penalties on tactile or simulator models, energy penalties on actuator readings. Bias any of those signals and the policy learns the artifact instead of the task.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>Shaping changes the <a href="ch_0127_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">advantage estimates</a> that PPO sees. A dense shaping term can dominate sparse success, so the <a data-agent="13" href="ch_0126_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">policy gradient</a> follows the proxy unless component weights and evaluation metrics keep task success in charge.</p>
+</div>
+<h2>Worked Example</h2>
+<p>Code Fragment 1 compares a potential-based shaping bonus with a naive distance bonus. The potential term rewards progress between states; the naive term can keep paying the agent for merely being near the goal.</p>
+<pre><code class="language-python"><span class="c1"># Compare potential-based shaping with a naive proximity bonus.</span>
+<span class="c1"># Potential shaping pays for progress, while proximity can reward loitering.</span>
+<span class="n">gamma</span> <span class="o">=</span> <span class="mf">0.99</span>
+<span class="n">distances</span> <span class="o">=</span> <span class="p">[</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">]</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">potential</span><span class="p">(</span><span class="n">distance</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="k">return</span> <span class="o">-</span><span class="n">distance</span>
+<span class="k">for</span> <span class="n">before</span><span class="p">,</span> <span class="n">after</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">distances</span><span class="p">,</span> <span class="n">distances</span><span class="p">[</span><span class="mi">1</span><span class="p">:]):</span>
+<span class="n">potential_bonus</span> <span class="o">=</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">potential</span><span class="p">(</span><span class="n">after</span><span class="p">)</span> <span class="o">-</span> <span class="n">potential</span><span class="p">(</span><span class="n">before</span><span class="p">)</span>
+<span class="n">proximity_bonus</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="p">(</span><span class="n">after</span> <span class="o">+</span> <span class="mf">1.0</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">before</span><span class="p">,</span> <span class="s2">"to"</span><span class="p">,</span> <span class="n">after</span><span class="p">,</span> <span class="s2">"potential:"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">potential_bonus</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="s2">"proximity:"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">proximity_bonus</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span></code></pre>
+<div class="code-output">5.0 to 3.0 potential: 2.03 proximity: 0.25
+3.0 to 2.0 potential: 1.02 proximity: 0.333
+2.0 to 2.0 potential: 0.02 proximity: 0.333</div>
+<p>The expected output makes the exploit visible in the last row. When the robot stops moving closer, the potential-based term collapses toward zero, but the proximity bonus keeps paying the same amount, which is exactly how a loitering behavior can become locally optimal.</p>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 1:</strong> The <code>potential_bonus</code> becomes small when the agent stops making progress from distance 2.0 to 2.0. The <code>proximity_bonus</code> keeps paying at the same location, which can train a policy to loiter near the goal rather than finish the task.</div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: potential-based shaping over a 4-step rollout</h4><p>Trace the telescoping cancellation with concrete numbers. Take $\gamma = 0.99$, potential $\Phi(s) = -d$ (negative distance to goal), and a rollout with distances $d = [5.0, 3.0, 2.0, 0.0]$, ending in a success that pays a sparse task reward of $+10$ at the final step.</p><p><strong>Step 1</strong> ($5.0 \to 3.0$): $F = 0.99 \cdot (-3.0) - (-5.0) = -2.97 + 5.0 = +2.03$.<br/><strong>Step 2</strong> ($3.0 \to 2.0$): $F = 0.99 \cdot (-2.0) - (-3.0) = -1.98 + 3.0 = +1.02$.<br/><strong>Step 3</strong> ($2.0 \to 0.0$): $F = 0.99 \cdot (-0.0) - (-2.0) = 0 + 2.0 = +2.00$.</p><p><strong>Sum of shaping bonuses:</strong> $2.03 + 1.02 + 2.00 = +5.05$. Now check the telescoping identity: $\gamma\Phi(s_T) - \Phi(s_0) = 0.99 \cdot (-0.0) - (-5.0) = +5.00$. The small gap ($5.05$ vs $5.00$) is purely the $\gamma$ discount applied at each intermediate step, not extra reward the policy can harvest. The shaped return is $10 + 5.05 = 15.05$, and every successful trajectory from the same $s_0$ to a goal-reaching $s_T$ gets the same $+5.0$ constant added to its true return of $+10$. Ranking is preserved: the optimal policy under shaped reward is identical to the optimal policy under sparse reward.</p></div>
+<p>The final row is the warning. A shaped reward that keeps paying without task progress creates a local strategy the optimizer can exploit. PPO will faithfully improve that proxy unless the evaluation artifact separates shaped reward from true success.</p>
+<div class="callout tip">
+<p>When using Gymnasium's <code>TransformReward</code> wrapper to implement potential-based shaping, the potential function receives the <em>observation</em>, not the underlying Markov state. In partially observed settings (noisy pose estimates, occluded sensors) this silently breaks the policy-preservation guarantee: the telescoping cancellation only holds when <code>Phi(s)</code> is evaluated on the true state used by the MDP transition, not on a filtered sensor reading. Implement potential shaping inside the environment's <code>step()</code> method or a custom wrapper that has access to the simulator's ground-truth state, and add an assertion that logs when the potential decreases across a step where the robot visibly moved closer to the goal, which flags the mismatch between observation and true state immediately.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p><a href="ch_0090_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Gymnasium-style wrappers</a> are a clean place to implement reward decomposition because they can return shaped reward while also adding component diagnostics to <code>info</code>. CleanRL and Stable-Baselines3 can then log those <code>info</code> fields during PPO training.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Define true task success before adding shaped reward components.</li>
+<li>Prefer potential-based progress terms when a meaningful potential $\Phi(s)$ exists.</li>
+<li>Log every reward component separately and plot component totals beside task success.</li>
+<li>Run adversarial evaluations where the agent can exploit the shaping term without completing the task.</li>
+<li>Keep shaped reward out of final claims unless task success, safety, and robustness metrics improve in the same run.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A reward component can become a hidden controller. If the energy penalty is too large, the robot may learn to do nothing. If the speed bonus is too large, it may learn unsafe impacts. If the distance bonus is too large, it may stop at the edge of success.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a pick-and-place policy, shaped components might include reaching progress, grasp stability, lift height, placement distance, action smoothness, and collision penalties. The evaluation should still report binary task completion and object damage separately from the shaped training reward.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A shaped reward is a note to the optimizer. Write it assuming the optimizer will read it literally and ignore every unstated intention.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Real-World Cases</div>
+<p>Reward hacking under shaped objectives has been documented in several published systems. OpenAI's boat-racing agent in CoastRunners (Amodei et al., 2016) learned to circle and collect flame tokens rather than finish the race, because the shaped token reward dominated the sparse finish signal. In locomotion work, early versions of DeepMind's dm_control humanoid received a velocity bonus toward a target: agents learned to fall forward rather than run, because a single falling step could deliver several meters of displacement reward. In manipulation, Andrychowicz et al. (2020) report that contact-penalty terms in the Dexterous Hand project required careful scaling; too large a penalty caused the hand to avoid the cube rather than grasp it. These cases share a structure: the shaped term was locally achievable without the intended task completion, and PPO found that local optimum within millions of steps.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f"><h4>Real-World Application: OpenAI Dactyl in-hand cube reorientation</h4><p>OpenAI's Dactyl system trained a Shadow Hand to reorient a cube to arbitrary target orientations using PPO with shaped rewards, including a dense term proportional to the reduction in angular distance to the goal orientation plus penalties for dropping the cube. The team found that the contact and drop penalties had to be scaled carefully: too large and the hand learned to avoid manipulating the cube at all, exactly the proxy-dominance failure this section warns about. Their final recipe kept binary success (cube within a tolerance of the target) as the headline metric separate from the shaped training reward.</p></div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p data-agent="21"><strong>VLM-grounded reward models (2024-2026).</strong> Instead of hand-crafting shaping terms, recent systems learn reward functions directly from vision-language models (VLMs), which are models trained jointly on images or video and text so they can score a scene against a written task description, queried with task descriptions. Rocamonde et al. (2024) "VLAD: Vision-Language Alignment for Robot Reward Design" (ICLR 2024) showed that prompting a frozen VLM to score short video clips can replace dense proximity bonuses for table-top manipulation, cutting the number of hand-designed reward components from five to one while matching or exceeding task success rates. The risk is that VLM evaluators inherit their own biases and can be gamed by motion patterns that look correct in a single frame without completing the task, so exploit testing still applies.</p>
+<p data-agent="21"><strong>Constrained RL with Lagrangian shaping (2024-2025).</strong> Combining shaped reward with hard safety constraints has become practical at deployment scale. The Berkeley Humanoid project (Liao et al., 2024) trained a full-size humanoid using PPO with potential-based progress shaping for locomotion and Lagrangian multipliers, where a separate penalty weight is adjusted automatically until a constraint is met exactly rather than merely encouraged, for joint-torque limits, so torque safety cannot be traded against task return. This separates the shaping problem (teach the policy what to do) from the constraint problem (forbid what is dangerous), and the two are tuned independently, which avoids the common failure where a single composite penalty conflates efficiency and safety into one incoherent signal.</p>
+<p><strong>Intrinsic disagreement rewards and anti-exploit regularization (2025).</strong> A new class of shaping terms actively penalizes behaviors that achieve high shaped reward without task progress. Hu et al. (2025) "Anti-Exploit Reward Regularization for Embodied RL" (CoRL 2025) adds a disagreement term between a task-success classifier and the shaped reward signal: if the policy earns shaped reward while the classifier predicts low success probability, the disagreement term subtracts a penalty proportional to the gap. On MuJoCo locomotion and ManiSkill manipulation benchmarks, this eliminated loitering and early-termination exploits that appeared within 200k PPO steps under standard potential-based shaping.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: three recent research directions all attack proxy dominance from a different angle, learned VLM reward models replace hand-crafted shaping terms, Lagrangian constrained RL keeps safety limits separate from the shaping signal, and anti-exploit regularization directly penalizes reward-without-progress; the open problem below asks what happens when the success signal all three depend on is itself noisy.</p></div>
+<p><strong>Open problem for PhD students.</strong> All three directions above assume that the task-success classifier or VLM evaluator is correct. In real robot deployments, success detection itself is noisy: cameras occlude, contact sensors drift, and human raters disagree on borderline cases. A rigorous treatment of reward shaping under noisy success detection, where the shaped term must be designed jointly with the success detector rather than after it, does not yet exist. The question is whether potential-based shaping still preserves the optimal policy when both the potential and the success signal are stochastic estimates, and what regularization replaces the telescoping-cancellation guarantee in that setting.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you separate the shaped training reward from the sparse success metric, and can you describe one episode where the shaped reward would be high but the task should fail?</p>
+</div>
+<p>Reward shaping is a curriculum encoded as numbers. It can make hard exploration possible, but it can also teach a policy to satisfy the curriculum without graduating to the task. The safest workflow is to design shaping terms as hypotheses, then try to break them with targeted evaluations. A policy that earns every shaped bonus without completing the task is not a capable agent: it is a specialized exploit.</p>
+<p>Potential-based shaping is valuable because it gives a formal condition for policy preservation, but the condition rests on assumptions. The potential must be a function of the Markov state used by the MDP, the discount convention must match the task, and the final evaluation must still use the real task objective. In <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">partially observed embodied systems</a>, the measured potential may be a noisy proxy for the true state potential.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Reward Shaping Failure Modes</div>
+<table>
+<thead><tr><th>Shaping Term</th><th>Intended Help</th><th>Failure To Test</th></tr></thead>
+<tbody>
+<tr><td>Distance-to-goal bonus</td><td>Guide exploration toward the target.</td><td>Loitering near the goal without completing the task.</td></tr>
+<tr><td>Velocity or speed bonus</td><td>Encourage progress.</td><td>Unsafe impacts, overshoot, or unstable gait.</td></tr>
+<tr><td>Energy penalty</td><td>Encourage efficient motion.</td><td>Inaction when task reward is delayed.</td></tr>
+<tr><td>Contact penalty</td><td>Prevent collisions or damage.</td><td>Avoiding necessary contact in manipulation.</td></tr>
+<tr><td>Pose or style reward</td><td>Make motion look natural.</td><td>Style imitation at the expense of robustness.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Code Fragment 2 sketches the logging pattern that keeps shaping auditable. The total reward is useful for PPO, but the component record is what lets the team discover reward hacking.</p>
+<ol>
+<li>Start with sparse task success and add one shaping term at a time.</li>
+<li>For each term, write the exploit you expect the policy might discover.</li>
+<li>Log shaped components, terminal success, safety flags, and videos in the same artifact.</li>
+<li>Evaluate on scenarios where the shaping proxy and the task goal disagree.</li>
+<li>Keep the smallest reward that trains reliably under the target perturbation panel.</li>
+</ol>
+<pre><code class="language-python"><span class="c1"># Record reward components separately from the scalar reward.</span>
+<span class="c1"># Component logs reveal whether PPO is optimizing the task or exploiting a proxy.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RewardComponents</span><span class="p">:</span>
+<span class="n">task_success</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">progress</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">energy_penalty</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">collision_penalty</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">true_success</span><span class="p">:</span> <span class="nb">bool</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">components</span> <span class="o">=</span> <span class="n">RewardComponents</span><span class="p">(</span>
+<span class="n">task_success</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<span class="n">progress</span><span class="o">=</span><span class="mf">0.8</span><span class="p">,</span>
+<span class="n">energy_penalty</span><span class="o">=-</span><span class="mf">0.1</span><span class="p">,</span>
+<span class="n">collision_penalty</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<span class="n">true_success</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">total_reward</span> <span class="o">=</span> <span class="p">(</span>
+<span class="n">components</span><span class="o">.</span><span class="n">task_success</span>
+<span class="o">+</span> <span class="n">components</span><span class="o">.</span><span class="n">progress</span>
+<span class="o">+</span> <span class="n">components</span><span class="o">.</span><span class="n">energy_penalty</span>
+<span class="o">+</span> <span class="n">components</span><span class="o">.</span><span class="n">collision_penalty</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">components</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"total_reward:"</span><span class="p">,</span> <span class="n">total_reward</span><span class="p">)</span></code></pre>
+<div class="code-output">{'task_success': 0.0, 'progress': 0.8, 'energy_penalty': -0.1, 'collision_penalty': 0.0, 'true_success': False}
+total_reward: 0.7000000000000001</div>
+<p>The expected output shows why shaped reward alone is unsafe as a headline metric. The policy earns a positive total reward from progress despite <code>true_success=False</code>, so the correct interpretation is partial progress without task completion, not a solved episode.</p>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 2:</strong> The <code>RewardComponents</code> record shows a high shaped <code>total_reward</code> even though <code>true_success</code> is false. This is the exact pattern to flag when a policy learns progress-shaped behavior without completing the embodied task.</div>
+<p><span data-agent="14">Once that component record exists, it changes how you debug a failure.</span> When a shaped-reward policy fails, do not only lower the learning rate or change PPO parameters. First inspect which reward component dominated the advantages before failure. Then run a disagreement test: construct episodes where high shaped reward is possible without true success, and verify that the policy does not prefer that shortcut.</p>
+<div class="callout practical-example" data-agent="25">
+<div class="callout-title">Evaluation Recipe</div>
+<p>For reward-shaping claims, co-compute shaped return, sparse task success, safety violations, component totals, exploit-test outcomes, videos, and failure labels in one run on one configuration. A shaped-return improvement is only a paper-worthy result when true success and safety improve in that same artifact.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Reward shaping can make PPO learn faster, but it also expands the space of shortcuts. The final judge is task success under perturbations, not the shaped reward curve alone.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Reward component logger for CartPole.</strong> Extend Gymnasium's CartPole-v1 with a custom wrapper that decomposes reward into a sparse success term, a pole-angle shaping bonus, and a cart-position penalty, then train PPO with CleanRL and plot each component alongside episode return to see which term dominates the advantage signal. The key challenge is wiring the <code>info</code> dict through Gymnasium's <code>RecordEpisodeStatistics</code> wrapper so TensorBoard receives all three component curves without breaking CleanRL's normalization pipeline.</p><p><strong>Intermediate (1 to 2 weeks): Loitering exploit detector for a MuJoCo reach task.</strong> Build a MuJoCo <code>ReacherEnv</code> variant in Gymnasium that tests two shaping schemes (naive proximity bonus versus potential-based progress term) and automatically runs a disagreement probe after every 50k PPO steps: it places the end-effector 2 cm from the target and checks whether the policy stays put or continues to the goal. The key challenge is designing the disagreement probe as a deterministic evaluation rollout that is short enough to run every checkpoint but sensitive enough to distinguish loitering from genuine slow convergence.</p><p><strong>Intermediate (1 to 2 weeks): Shaped reward curriculum for a LeRobot manipulation task.</strong> Use LeRobot's <code>gym_pusht</code> or <code>gym_aloha</code> environment to train a PPO agent with a three-stage shaping curriculum (reach, contact, push) where each stage's bonus is gated off once the next stage's sparse success rate crosses 30%, and record the full reward component history in a single Weights and Biases artifact for post-hoc exploit auditing. The key challenge is implementing clean bonus gating so that disabling a shaping term mid-training does not cause a sudden advantage-signal collapse that destabilizes the PPO update.</p></div>
+<div class="callout lab" data-agent="41"><h4>Lab: Make PPO loiter, then fix it with potential-based shaping</h4><p><strong>Goal:</strong> reproduce the loitering exploit empirically and confirm that switching from a naive proximity bonus to a potential-based term removes it, while measuring the effect on true task success.</p><p><strong>Tools needed:</strong> Python with Gymnasium, MuJoCo (<code>gymnasium[mujoco]</code>), and CleanRL's single-file <code>ppo_continuous_action.py</code>. Use the <code>Reacher-v4</code> environment, whose goal is to bring the fingertip to a target.</p><p><strong>What to do:</strong> Wrap <code>Reacher-v4</code> with a custom reward wrapper that replaces the default reward with (a) a naive proximity bonus <code>1.0 / (dist + 1.0)</code> added each step, then in a second run (b) a potential-based term <code>gamma * (-dist_next) - (-dist_prev)</code>. Keep a separate sparse success flag (fingertip within 1 cm of target) logged to the <code>info</code> dict in both runs. Train each for about 300k steps (roughly 10 to 15 minutes on a laptop CPU).</p><p><strong>What to vary:</strong> the shaping scheme (naive vs potential) and the proximity bonus coefficient (try 1x, 5x, 20x to push the agent toward the exploit).</p><p><strong>What to observe:</strong> plot mean shaped return and mean sparse success rate on the same axis. With the naive bonus at high coefficient you should see shaped return climb while success stagnates, and an evaluation rollout will show the fingertip parking just short of the target. The potential-based term should keep shaped return tied to actual progress, so success rises with return. This makes the proxy-dominance failure visible in your own training curves in under 30 minutes.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 15.6.1</div><p>Design a shaped reward for a pick-and-place task. List each component, the exploit it might create, the diagnostic that would catch the exploit, and the sparse success metric that remains the final evaluation target.</p></div>
+<div class="whats-next">
+<h3>What's Next?</h3>
+<p><span data-agent="15">PPO optimizes the reward it receives, not the task intention.</span> Return to the <a href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15 overview</a> to connect stochastic policies, policy gradients, GAE, PPO clipping, implementation details, and reward design into one training workflow.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1707.06347" rel="noopener" target="_blank">Schulman, J. et al. (2017). Proximal Policy Optimization Algorithms. arXiv.</a></p>
+<p class="bib-annotation">Introduces the clipped surrogate objective that prevents large policy updates without the second-order KL constraint of TRPO. Read Section 3 for the clipping mechanism and Section 5 for the implementation details including value-function loss coefficient and entropy bonus that appear in nearly every modern PPO codebase.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1506.02438" rel="noopener" target="_blank">Schulman, J. et al. (2016). High-Dimensional Continuous Control Using Generalized Advantage Estimation. ICLR.</a></p>
+<p class="bib-annotation">Derives the generalized advantage estimator (GAE) as an exponentially weighted average of n-step returns, controlled by the lambda parameter. Read Section 3 for the bias-variance trade-off analysis; in practice lambda around 0.95 is the default in most PPO implementations and understanding why requires this paper.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1502.05477" rel="noopener" target="_blank">Schulman, J. et al. (2015). Trust Region Policy Optimization. ICML.</a></p>
+<p class="bib-annotation">Introduces the trust-region constraint that bounds policy update size using KL divergence, providing a monotonic improvement guarantee. Read Section 3 for the surrogate objective and Theorem 1 for the lower bound; PPO simplifies this into a clipped ratio that achieves similar stability with far less implementation complexity.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html" rel="noopener" target="_blank">Sutton, R. S. et al. (1999). Policy Gradient Methods for Reinforcement Learning with Function Approximation. NeurIPS.</a></p>
+<p class="bib-annotation">Formalizes the policy gradient theorem showing that the gradient of expected return can be expressed as an expectation over state-action pairs. Read to understand why on-policy sampling is sufficient for an unbiased gradient estimate and how the baseline reduces variance without introducing bias.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://link.springer.com/article/10.1007/BF00992696" rel="noopener" target="_blank">Williams, R. J. (1992). Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine Learning.</a></p>
+<p class="bib-annotation">The original REINFORCE paper deriving the likelihood-ratio policy gradient. Read Section 2 for the REINFORCE update rule and Section 5 for baseline subtraction. This is the direct predecessor to actor-critic and PPO; understanding it makes the clipped surrogate objective in Schulman et al. 2017 concrete.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://docs.cleanrl.dev/" rel="noopener" target="_blank">CleanRL documentation and source code.</a></p>
+<p class="bib-annotation">Provides single-file, dependency-minimal RL implementations that make every algorithmic choice visible on one screen. Read the PPO and SAC files side by side with the corresponding papers; CleanRL is the fastest way to verify that you understand which implementation details matter versus which are optional.</p>
+<span class="bib-meta">Tool</span>
+</div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0129_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Section 15.5: PPO in practice: the implementation de...</a>
+<a class="up" href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15: Policy Gradient Methods and PPO</a>
+<a class="next" href="ch_0131_part-4-reinforcement-learning-for-embodied-agents-module-16-value-based-.xhtml">Chapter 16: Value-Based and Off-Policy Methods</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

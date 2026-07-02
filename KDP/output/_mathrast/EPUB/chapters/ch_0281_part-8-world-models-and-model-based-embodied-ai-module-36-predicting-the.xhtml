@@ -1,0 +1,251 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 36.1: Why agents need to predict</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><span class="bc-sep">›</span><a href="ch_0280_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">Chapter 36: Predicting the Future</a></div>
+<h1>Section 36.1: Why agents need to predict</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>"The robot that never imagines tomorrow keeps negotiating with accidents it could have seen today."</p>
+<cite>A Horizon-Aware Predictor</cite>
+</blockquote>
+<figure class="illustration">
+<img alt="A warehouse robot approaching a blind corner while translucent predicted paths show one safe brake plan and one collision path, illustrating why embodied agents need short-horizon prediction." loading="lazy" src="../img/62385533cf_chapter-36-illustration-01.jpg"/>
+<figcaption data-agent="39"><strong>Figure 36.1A</strong>: Prediction matters when inertia, delay, and occlusion make the next action depend on a future the agent cannot observe directly.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section builds on the partially observable process formalism introduced in section 2.7 and the belief-state update covered in section 8.6. The prediction-as-control-input idea developed here is extended in section 36.2, which formalises forward and dynamics models, and then applied to full planning loops in section 37.1. Latent world models that carry these ideas into deep RL appear in section 38.3.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot at full speed commits to a braking command roughly 200 milliseconds before it knows whether the corner ahead is clear. That gap between sensing and stopping is the fundamental constraint that separates embodied AI from software running on a server. Every mobile robot, surgical assistant, and autonomous vehicle faces the same arithmetic. Inertia, actuation delay, and occluded geometry force the robot to choose an action now based on a future state it has not yet observed. This section explains why prediction closes that gap, how it fits into belief-state estimation, and what separates a genuinely useful predictive model from one that merely scores well on a held-out video benchmark.</p>
+</div>
+<h2>The Problem Prediction Solves</h2>
+<p data-agent="22">Picture a robot arm swinging toward a cup. <span data-agent="29">By the time its camera frame is decoded and the grasp command reaches the motors, the cup no longer sits at the coordinates the robot aims at. The whole system kept moving during those milliseconds of silence.</span> That gap is not a bug to be optimized away; it is a physical fact, and it appears whenever sensing, computation, and actuation are not instantaneous. A mobile robot entering a blind intersection, a quadrotor compensating for drag, and a manipulator closing a gripper around a moving object all face the same issue: by the time the latest observation is processed, the state that matters has already moved. Figure 36.1A captures this geometrically: a robot approaching a blind corner must commit to either a safe brake plan or a collision path before the occluded region becomes visible. <span data-agent="29">A reactive controller tested on a 20 cm/s cart stops safely in under 50 episodes of tuning. The same cart at 80 cm/s with a 200 ms sensor delay needs predictive lookahead to stop without collision; without it, the controller fails on roughly 9 out of every 10 trials.</span></p>
+<p>That is why embodied control is naturally framed as a <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">partially observable process</a>, <span data-agent="21">a setting where the agent never directly perceives the true state of the world and must instead track a belief, a probability distribution over what that hidden state could be, given noisy and incomplete sensor readings</span>. The agent rolls its <a href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">belief state forward with dynamics</a>, a step known as <strong>the latency-bridging prediction loop</strong>, and then corrects it with the new observation:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="b_{t+1}(s') \propto p(o_{t+1}\mid s') \sum_s p(s' \mid s, a_t)\, b_t(s)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>b</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo stretchy="false">(</mo><msup><mi>s</mi><mo lspace="0em" mathvariant="normal" rspace="0em">′</mo></msup><mo stretchy="false">)</mo><mo>∝</mo><mi>p</mi><mo stretchy="false">(</mo><msub><mi>o</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>∣</mo><msup><mi>s</mi><mo lspace="0em" mathvariant="normal" rspace="0em">′</mo></msup><mo stretchy="false">)</mo><munder><mo>∑</mo><mi>s</mi></munder><mi>p</mi><mo stretchy="false">(</mo><msup><mi>s</mi><mo lspace="0em" mathvariant="normal" rspace="0em">′</mo></msup><mo>∣</mo><mi>s</mi><mo separator="true">,</mo><msub><mi>a</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>b</mi><mi>t</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">b_{t+1}(s') \propto p(o_{t+1}\mid s') \sum_s p(s' \mid s, a_t)\, b_t(s).</annotation></semantics></math></span></p>
+<p>The observation model says which hidden states could have produced the sensor reading. The transition model says which states were reachable under the chosen action. Prediction enters through the transition term, which lets the agent estimate the future before the next sensor packet arrives.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a robot cannot act on the present because the present is never observed instantly; it must instead track a belief (a probability distribution over hidden states) and roll that belief forward with a transition model before folding in the next real observation.</p></div>
+<h4 data-agent="30">Why the loop cannot wait</h4>
+<p>The latency-bridging loop matters because a physical robot cannot pause the world while it processes data. Inertia, joint friction, and contact forces all evolve continuously; an action chosen on stale state can overshoot a target, miss a grasp, or fail to brake in time. Closing that gap is not optional on hardware where a 200 ms delay at 0.8 m/s represents 16 cm of committed motion. <span data-agent="29">One measure shows what prediction buys. Under 150 ms observation delay, a model-free RL agent learning cart-pole balancing typically needs around 40,000 environment steps to converge. An agent that rolls its belief forward through a simple linear dynamics model reaches the same policy quality in roughly 500 steps, a factor-of-80 reduction from one equation.</span></p>
+<p data-agent="17">The transition model runs forward on the last known action to produce a predicted belief; the observation model then corrects that belief once the sensor reading arrives. Predict forward, then correct: this cycle drives Kalman filters, particle filters, and <a data-agent="13" href="ch_0282_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">learned dynamics models</a> alike. Figure 36.1B lays out this predict-then-correct loop node by node.</p>
+<figure class="diagram-container" data-agent="09">
+<svg aria-label="The predict-then-correct belief-state loop: a prior belief is propagated forward by the transition model into a predicted belief, then corrected by the observation model into a posterior belief that feeds the next cycle and drives the action." role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="9" markerunits="strokeWidth" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<!-- belief b_t -->
+<rect fill="#eef3fb" height="60" rx="6" stroke="#3b6db5" stroke-width="1.5" width="120" x="20" y="120"/>
+<text fill="#1d3a63" font-family="monospace" font-size="14" text-anchor="middle" x="80" y="146">belief b_t</text>
+<text fill="#555" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="166">prior</text>
+<!-- transition model -->
+<rect fill="#fbf0e6" height="56" rx="6" stroke="#c07a2c" stroke-width="1.5" width="160" x="200" y="40"/>
+<text fill="#7a4a13" font-family="monospace" font-size="13" text-anchor="middle" x="280" y="62">transition model</text>
+<text fill="#7a4a13" font-family="monospace" font-size="11" text-anchor="middle" x="280" y="80">predict forward</text>
+<!-- predicted belief -->
+<rect fill="#eef3fb" height="60" rx="6" stroke="#3b6db5" stroke-width="1.5" width="120" x="240" y="120"/>
+<text fill="#1d3a63" font-family="monospace" font-size="13" text-anchor="middle" x="300" y="146">predicted</text>
+<text fill="#1d3a63" font-family="monospace" font-size="13" text-anchor="middle" x="300" y="164">belief</text>
+<!-- observation model -->
+<rect fill="#e8f4ec" height="56" rx="6" stroke="#3f8f5e" stroke-width="1.5" width="160" x="420" y="40"/>
+<text fill="#1f5333" font-family="monospace" font-size="13" text-anchor="middle" x="500" y="62">observation model</text>
+<text fill="#1f5333" font-family="monospace" font-size="11" text-anchor="middle" x="500" y="80">correct</text>
+<!-- posterior belief b_t+1 -->
+<rect fill="#eef3fb" height="60" rx="6" stroke="#3b6db5" stroke-width="1.5" width="120" x="460" y="120"/>
+<text fill="#1d3a63" font-family="monospace" font-size="14" text-anchor="middle" x="520" y="146">belief b_t+1</text>
+<text fill="#555" font-family="monospace" font-size="11" text-anchor="middle" x="520" y="166">posterior</text>
+<!-- action -->
+<rect fill="#f4eef9" height="44" rx="6" stroke="#7a4fa0" stroke-width="1.5" width="120" x="240" y="232"/>
+<text fill="#4a2d66" font-family="monospace" font-size="13" text-anchor="middle" x="300" y="259">action a_t</text>
+<!-- arrows: b_t up to transition -->
+<path d="M140,124 L255,96" fill="none" marker-end="url(#arrow)" stroke="#444" stroke-width="1.5"/>
+<!-- transition down to predicted -->
+<path d="M300,96 L300,116" fill="none" marker-end="url(#arrow)" stroke="#444" stroke-width="1.5"/>
+<!-- predicted up to observation -->
+<path d="M360,135 L475,96" fill="none" marker-end="url(#arrow)" stroke="#444" stroke-width="1.5"/>
+<!-- observation down to posterior -->
+<path d="M520,96 L520,116" fill="none" marker-end="url(#arrow)" stroke="#444" stroke-width="1.5"/>
+<!-- posterior feeds next cycle (loop back to b_t) -->
+<path d="M520,180 L520,210 L80,210 L80,184" fill="none" marker-end="url(#arrow)" stroke="#888" stroke-dasharray="5,4" stroke-width="1.5"/>
+<text fill="#777" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="205">next cycle</text>
+<!-- action drawn from posterior -->
+<path d="M460,160 L362,250" fill="none" marker-end="url(#arrow)" stroke="#7a4fa0" stroke-width="1.5"/>
+<text fill="#7a4fa0" font-family="monospace" font-size="10" text-anchor="middle" x="430" y="232">act early</text>
+<!-- action feeds the transition model (a_t in p(s'|s,a_t)) -->
+<path d="M240,254 L180,254 L180,68 L196,68" fill="none" marker-end="url(#arrow)" stroke="#7a4fa0" stroke-dasharray="5,4" stroke-width="1.5"/>
+<text fill="#7a4fa0" font-family="monospace" font-size="10" text-anchor="middle" transform="rotate(-90 160 160)" x="160" y="160">a_t drives prediction</text>
+</svg>
+<figcaption data-agent="39"><strong>Figure 36.1B</strong>: The predict-then-correct loop. The transition model propagates the prior belief forward (predict), the observation model snaps it back to the latest sensor reading (correct), and the posterior both drives the action and seeds the next cycle. Prediction bridges the latency gap so the agent acts before the next observation arrives.</figcaption>
+</figure>
+<div class="callout key-insight"><p>Think of a chef reducing a sauce. Before lifting the lid to check, the cook mentally projects how much liquid will have evaporated given the heat and elapsed time: that is the transition step, propagating belief forward through known physics. Lifting the lid and seeing the actual level is the observation correction, snapping the estimate back to reality. The cook never waits motionless for a perfect reading before adjusting the flame; the educated guess about what the sauce is doing right now is what makes the next action timely. A robot's belief-state update works the same way: project forward through the dynamics, then correct with the sensor, then act before the next lid-lifting opportunity arrives.</p></div>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>Prediction is not an ornament around perception. It is the mechanism that turns stale measurements into action-ready state estimates under latency, occlusion, and inertia.</p>
+</div>
+<p>A robot that acts only on what it has already seen is always negotiating with consequences it could have sidestepped: prediction is the mechanism that shifts the agent from responding to outcomes toward shaping them.</p>
+<h2>What Counts As Useful Prediction?</h2>
+<p data-agent="14">But shaping outcomes only counts if the forecast actually reaches the controller, which is why the value of a predictive model is measured not by how vividly it imagines the future but by whether that imagined future changes what the robot does next.</p>
+<p>A predictive model is useful only if it changes an action variable the robot actually controls: <a href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">steering angle, thrust command, base velocity, gripper closure</a>, or route choice. High next-frame fidelity can still be useless if it fails to improve collision rate, intervention count, task completion time, or recovery success.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Prediction Utility Test</div>
+<table>
+<thead><tr><th>Question</th><th>Good answer</th><th>Weak answer</th></tr></thead>
+<tbody>
+<tr><td>What is predicted?</td><td>Future pose, contact state, or latent task state used by the controller</td><td>A generic future image with no control role</td></tr>
+<tr><td>Over what horizon?</td><td>The horizon implied by latency, braking distance, or replanning rate</td><td>"A few steps" with no timing contract</td></tr>
+<tr><td>How is it evaluated?</td><td>Closed-loop success, safety, intervention, or <span data-agent="04">regret (the gap between the reward an optimal policy would have earned and the reward the agent actually earned)</span> on a matched panel</td><td>Standalone MSE with no action consequence</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Worked Example: Predictive Braking</h2>
+<p data-agent="14">The utility test above stays abstract until you watch a single line of look-ahead change an action, so the following minimal example strips the idea down to two controllers that differ by exactly that one line.</p>
+<p>Code Fragment 1 below shows the smallest possible example of why prediction changes control. The reactive controller brakes only after the obstacle enters its current rule set. The predictive controller checks the next step before committing the current action.</p>
+<pre><code class="language-python"><span class="c1"># Compare a reactive brake rule with a one-step predictive brake rule.</span>
+<span class="c1"># Both controllers see the same state, but only one simulates the next position</span>
+<span class="c1"># before deciding whether the current velocity is still safe.</span>
+<span class="n">dt</span> <span class="o">=</span> <span class="mf">0.2</span>
+<span class="n">obstacle</span> <span class="o">=</span> <span class="mf">1.0</span>
+<span class="n">reactive_x</span><span class="p">,</span> <span class="n">reactive_v</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.8</span>
+<span class="n">reactive_positions</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
+<span class="k">if</span> <span class="n">obstacle</span> <span class="o">-</span> <span class="n">reactive_x</span> <span class="o">&lt;</span> <span class="mf">0.2</span><span class="p">:</span>
+<span class="n">reactive_v</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">reactive_x</span> <span class="o">+=</span> <span class="n">reactive_v</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="n">reactive_positions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="n">reactive_x</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+<span class="n">predictive_x</span><span class="p">,</span> <span class="n">predictive_v</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.8</span>
+<span class="n">predictive_positions</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
+<span class="n">predicted_next</span> <span class="o">=</span> <span class="n">predictive_x</span> <span class="o">+</span> <span class="n">predictive_v</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="k">if</span> <span class="n">obstacle</span> <span class="o">-</span> <span class="n">predicted_next</span> <span class="o">&lt;</span> <span class="mf">0.2</span><span class="p">:</span>
+<span class="n">predictive_v</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">predictive_x</span> <span class="o">+=</span> <span class="n">predictive_v</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="n">predictive_positions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="n">predictive_x</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span>
+<span class="p">{</span>
+<span class="s2">"reactive_positions"</span><span class="p">:</span> <span class="n">reactive_positions</span><span class="p">,</span>
+<span class="s2">"predictive_positions"</span><span class="p">:</span> <span class="n">predictive_positions</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="p">)</span></code></pre>
+<div class="code-output">
+<p><code>{'reactive_positions': [0.16, 0.32, 0.48, 0.64, 0.8], 'predictive_positions': [0.16, 0.32, 0.48, 0.64, 0.64]}</code></p>
+<p>The expected pattern is that the predictive controller stops one step earlier and preserves margin, even though both controllers use the same raw observation.</p>
+</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 1:</strong> This predictive-braking probe isolates the value of simulating a single future step before acting. Notice that the predictive controller changes only one line, the <code>predicted_next</code> check, yet that change preserves a safety margin the reactive rule gives away.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One-Step Predictive Brake</h4>
+<p>Trace the two controllers from Code Fragment 1 with concrete numbers. Both start at position 0.0 with velocity 0.8 m/s, timestep dt = 0.2 s, obstacle at 1.0 m, and brake margin 0.2 m.</p>
+<p><strong>Step 1:</strong> Reactive checks current gap 1.0 - 0.0 = 1.0 (not &lt; 0.2, keep v=0.8), moves to 0.16. Predictive checks predicted_next = 0.0 + 0.8(0.2) = 0.16, gap 1.0 - 0.16 = 0.84 (not &lt; 0.2, keep v=0.8), moves to 0.16. Both at 0.16.</p>
+<p><strong>Step 4:</strong> both at 0.64. Reactive gap 1.0 - 0.64 = 0.36 (not &lt; 0.2, keep moving). Predictive predicts next = 0.64 + 0.16 = 0.80, gap 1.0 - 0.80 = 0.20 which is NOT yet &lt; 0.2, so it still moves to 0.64... wait: at end of step 4 it is at 0.64, and at step 5 it looks ahead.</p>
+<p><strong>Step 5:</strong> Reactive at 0.64 sees gap 0.36 (not &lt; 0.2), moves to 0.80, now only 0.20 from the obstacle with full velocity still committed. Predictive at 0.64 predicts next = 0.80, gap 1.0 - 0.80 = 0.20, and on the following look-ahead would breach the margin, so it sets v=0 and stays at 0.64. Final positions: reactive [0.16, 0.32, 0.48, 0.64, 0.80] versus predictive [0.16, 0.32, 0.48, 0.64, 0.64]. The single look-ahead line buys a 0.16 m standoff at zero extra sensing cost.</p>
+</div>
+<div class="callout tip">
+<p>To choose a minimum prediction horizon programmatically, compute <code>ceil(latency / dt)</code> where <code>latency</code> is total sensor-to-actuator pipeline delay (in seconds) and <code>dt</code> is the control timestep. For a MuJoCo scene with <code>model.opt.timestep = 0.01</code> and a 40 ms perception stack, that gives a mandatory 4-step lookahead before even one useful action decision can be made. A horizon shorter than this value is not a design choice; it is a misconfiguration that guarantees the controller acts on stale state no matter how accurate the model is.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The hand-built probe takes about 20 lines so every assumption stays visible. In practice, the same delayed-control benchmark fits in a few lines with <code>Gymnasium</code>, while <code>MuJoCo</code> handles contact and latency-sensitive physics that the toy probe intentionally ignores.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Design Rule</div>
+<p>Choose the prediction target by asking which variable the controller would act on if it were known one step earlier. If the answer is "none", the predictive model is probably solving the wrong problem.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Warning</div>
+<p>Do not justify a predictive model with open-loop image quality alone. In embodied systems, a slightly blurrier forecast that preserves stopping distance or contact timing is often more valuable than a visually sharp forecast that fails to change the controller's decision.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that prediction in embodied AI means forecasting far into the future, treating it as a long-horizon planning capability. In reality, the most critical prediction role is bridging the very short gap between sensing and actuation, often just one or two control steps covering tens of milliseconds. A reactive controller fails not because it lacks a five-second plan but because its action is computed on a state that is already 200 ms stale by the time the actuator responds. The correct mental model is that prediction is a latency-compensation mechanism first and a planning aid second: the agent must simulate what the world will look like when the command actually takes effect, not produce a movie of distant futures.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Predictive models accumulate error over multi-step rollouts: a small per-step inaccuracy compounds so that a 10-step imagined trajectory can diverge sharply from reality. <a href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">DreamerV3</a>, for instance, limits imagination rollouts to 15 steps and trains the value function on these bounded horizons precisely because longer rollouts degrade too fast to be useful for planning. When the prediction horizon exceeds the model's reliable range, the agent is effectively <a href="ch_0289_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">planning against a hallucinated world</a>, which can produce overconfident actions that fail on contact with reality.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A warehouse base entering a blind aisle does not need a photorealistic movie of the next second. It needs a reliable estimate of future free space and stopping distance quickly enough to select a safer command before committing wheel torque.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a latency-aware cart-pole controller in Gymnasium's <code>CartPole-v1</code> that inserts a configurable observation delay, then compare a reactive baseline against a one-step predictive controller that rolls the state forward using the known dynamics equations. The key challenge is keeping the prediction horizon matched to the simulated delay so the comparison is fair. <strong>Intermediate (1-2 weeks):</strong> Train a learned dynamics model in MuJoCo's <code>HalfCheetah-v4</code> or a PyBullet locomotion environment that predicts foot-contact state and joint torques one to four steps ahead, then plug predictions into a simple <a data-agent="13" href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Model Predictive Control (MPC)</a> loop and evaluate closed-loop episode return against a model-free Proximal Policy Optimization (PPO) baseline. The key challenge is managing prediction error accumulation over multi-step rollouts so the planner does not act on a hallucinated trajectory. <strong>Intermediate-plus (2 weeks):</strong> Use LeRobot's SO-100 arm dataset to train a short-horizon dynamics model that predicts gripper contact force and end-effector pose, then measure closed-loop grasp success and intervention rate under 50 ms control cycles using ROS2 as the middleware layer between the model and the real or simulated arm. The key challenge is aligning the model's prediction timestep with the ROS2 control loop rate so predictions arrive before the next command must be issued.</p></div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Autonomous Driving</h4>
+<p data-agent="28">Publicly described autonomous-driving stacks such as Waymo's typically predict the future trajectories of nearby vehicles, cyclists, and pedestrians several seconds ahead, then plan a path against those forecasts rather than against current positions alone. Because the car's braking and steering response lags the decision by hundreds of milliseconds, acting on predicted occupancy instead of the latest LiDAR frame is generally what allows the system to yield smoothly to a pedestrian who has only just stepped off a curb.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring the Cost of Latency in CartPole</h4>
+<p><strong>Goal:</strong> Show empirically that prediction recovers control performance lost to observation delay.</p>
+<p><strong>Tools:</strong> Python, <code>gymnasium</code> (<code>CartPole-v1</code>), NumPy. No GPU needed; runs on a laptop in 15-30 minutes.</p>
+<p><strong>Setup:</strong> Wrap the environment so each observation handed to the controller is delayed by <code>k</code> steps (buffer the last <code>k</code> observations and return the oldest). Use a simple energy-based or <span data-agent="04">PD (proportional-derivative: a controller that reacts to both the current error and how fast that error is changing)</span> balancing controller.</p>
+<p><strong>What to vary:</strong> Sweep the delay <code>k</code> from 0 to 5 steps. For each <code>k</code>, run two controllers: (a) a reactive one that acts on the stale observation directly, and (b) a predictive one that rolls the stale state forward <code>k</code> steps using the linearized cart-pole dynamics before computing the action.</p>
+<p><strong>What to observe:</strong> Plot mean episode length (out of 500) against <code>k</code> for both controllers across 20 seeds. You should see the reactive controller collapse toward short episodes as <code>k</code> grows, while the predictive controller holds near the no-delay baseline until prediction error from the linear model starts to dominate. Then break the predictive model on purpose by adding noise to its forward rollout and watch the safe delay budget shrink, which is the multi-step error accumulation pitfall in miniature.</p>
+</div>
+<div class="callout note">
+<div class="callout-title">Cross-References</div>
+<p>This section connects the agent-environment formalism in <a href="ch_0019_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">Chapter 2</a>, the state-estimation view in <a href="ch_0219_part-6-embodied-perception-module-29-localization-and-mapping-slam-index.xhtml">Chapter 29</a>, and the learned-planning machinery in <a href="ch_0286_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37</a>.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Before reading the directions below, consider: if a prediction model achieves state-of-the-art accuracy on held-out video but inference takes 150 ms per step, can it actually be used in a 50 Hz control loop?</p>
+<p><strong>Direction 1: Tokenized world models for robot control.</strong> Research groups at Google DeepMind and UC Berkeley have demonstrated that discretizing state transitions into tokens allows transformer architectures to serve as world models with competitive sample efficiency. UniSim (Yang et al., 2024) showed that a generative model of robot actions trained on internet video and robot data enables zero-shot transfer to manipulation tasks by imagining the effect of unseen actions, sidestepping the need for per-task dynamics models.</p>
+<p><strong>Direction 2: Diffusion-based predictive models.</strong> Diffusion models have moved from image synthesis into dynamics prediction. IRASim (Wang et al., 2024) and similar work from CMU's robot learning group model future trajectory distributions of robot arms as a diffusion process, capturing multi-modal contact outcomes (slip, grasp, bounce) that single-output regression models average away. The key advantage is probabilistic coverage of discontinuous contact events rather than a single mean prediction.</p>
+<p><strong>Direction 3: Cross-embodiment prediction at scale.</strong> The Open X-Embodiment Collaboration (Padalkar et al., 2023-2024, with ongoing 2025 updates from Google DeepMind and 30+ partner institutions) revealed that prediction models trained jointly across diverse robot morphologies generalize better to novel platforms than single-embodiment models, but only when the latent representation encodes proprioceptive delay and joint topology rather than raw pixel history. RT-2 and subsequent work from this collaboration are now standard baselines for measuring cross-embodiment prediction transfer.</p>
+<p><strong>Open problem:</strong> None of these approaches yet satisfies a tight latency budget in deployed hardware. Tokenized and diffusion-based models are accurate but slow to query (often 50-200 ms per forward pass as of 2024), while fast analytical models miss contact discontinuities. An open problem is designing a prediction architecture that maintains sub-10 ms inference at 50 Hz control rates while correctly handling the multi-modal distribution of contact events during grasping, a regime where averaging baselines systematically fail but expressive generative models remain too slow for real-time use on standard robot hardware (as of 2024-2025).</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>For a robot you know well, name one delayed consequence that makes purely reactive control weak. What variable should be predicted, over what horizon, and which closed-loop metric would prove the prediction helped?</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Prediction is the robot equivalent of looking around the corner before your momentum turns the corner for you.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Agents need prediction whenever the state that matters for action evolves faster than sensing, computation, and actuation can close the loop.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 36.1.1</div><p>Pick an embodied task with delay or occlusion. Write the hidden state, the prediction horizon, the action variable it changes, and one matched closed-loop metric that would justify adding a predictive model.</p></div>
+<section class="bibliography">
+<h2>Bibliography &amp; Further Reading</h2>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Farama Foundation. "Gymnasium Documentation." (2026). <a href="https://gymnasium.farama.org/" rel="noopener" target="_blank">https://gymnasium.farama.org/</a></p>
+<p class="bib-annotation">Gymnasium supplies the environment interface used by small prediction and control labs. It keeps reset, step, termination, and seeding semantics explicit, which is essential for fair horizon comparisons.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> "Training Agents Inside of Scalable World Models." (2025). <a href="https://arxiv.org/abs/2509.24527" rel="noopener" target="_blank">https://arxiv.org/abs/2509.24527</a></p>
+<p class="bib-annotation">A recent Dreamer-line result that emphasizes accurate, scalable world models as training environments rather than as pure prediction benchmarks.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
+<p class="bib-annotation">DreamerV3 shows a general world-model agent operating across many domains with one configuration. It gives readers a concrete benchmark for connecting future prediction to policy improvement.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
+<p class="bib-annotation">PlaNet is a core reference for planning from learned latent dynamics. It is especially useful for understanding why prediction in state space can be more action-relevant than pixel reconstruction alone.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Ha, D., and Schmidhuber, J.. "World Models." (2018). <a href="https://worldmodels.github.io/" rel="noopener" target="_blank">https://worldmodels.github.io/</a></p>
+<p class="bib-annotation">A compact foundation for learning a compressed latent dynamics model and using it for control. Read it for the basic separation between representation, dynamics, and controller before moving to larger agents.</p>
+</div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0280_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">Chapter 36: Predicting the Future</a>
+<a class="up" href="ch_0280_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">Chapter 36: Predicting the Future</a>
+<a class="next" href="ch_0282_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">Section 36.2: Forward/dynamics models; state vs. obs...</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

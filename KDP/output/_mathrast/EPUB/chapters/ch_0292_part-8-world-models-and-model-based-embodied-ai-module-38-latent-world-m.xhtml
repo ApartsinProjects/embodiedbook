@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 38.5: TD-MPC2: latent MPC at scale</title>
+    <title>Chapter 38: Latent World Models</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,170 +14,110 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0274_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a></div>
-<div class="chapter-label"><a href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a></div>
-<h1>Section 38.5: TD-MPC2: latent MPC at scale</h1>
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a></div>
+<h1>Chapter 38: Latent World Models</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"I made a future, then the robot took one step and asked for a revision."</p>
-<figure class="illustration">
-<img alt="Cartoon educational scene for Section 38.5: TD-MPC2: latent MPC at scale, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/8d1dbf3530_chapter-38-illustration-05.jpg"/>
-<figcaption><strong>Figure 38.5A</strong>: Section 38.5: TD-MPC2: latent MPC at scale becomes easier to reason about when the reader can see the perception, decision, action, and feedback loop as one physical situation.</figcaption>
-</figure>
-<cite>A Compact Latent State</cite></blockquote>
+<blockquote class="epigraph">
+<p>"A world model stops being a toy when the planner starts depending on it."</p>
+<cite>A Builder Who Keeps The Replay Buffer</cite>
+</blockquote>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>TD-MPC2: Latent MPC At Scale</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
+<p>Chapter 38 explains how embodied agents compress observations into action-relevant latent state, predict that state forward under candidate actions, and use the result for planning, value estimation, or imagined policy learning. The through-line is decision sufficiency: the latent must preserve what matters for control while discarding what only bloats computation.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section turns TD-MPC2: Latent MPC At Scale into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A model earns its place only when it improves action. In TD-MPC2: Latent MPC At Scale, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
+<div class="callout-title">Remember This Chapter</div>
+<p>The theory thread moves from state abstraction to RSSMs, Dreamer-style imagination, transformer token world models, and decoder-free latent MPC. The practical thread keeps asking the same operational question: what evidence shows that the latent state improved closed-loop behavior rather than only reconstruction quality or benchmark aesthetics?</p>
 </div>
-<h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. TD-MPC2: Latent MPC At Scale changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is observe, encode, predict, score, act, and monitor. Each transformation needs a measurable input, output, timing assumption, and failure label so debugging does not collapse into guessing.</p>
+<div class="overview">
+<h2>Chapter Overview</h2>
+<p>Chapter 38 explains how embodied agents compress observations into action-relevant latent state, predict that state forward under candidate actions, and use the result for planning, value estimation, or imagined policy learning. The through-line is decision sufficiency: the latent must preserve what matters for control while discarding what only bloats computation.</p>
+<p>The theory thread moves from state abstraction to RSSMs, Dreamer-style imagination, transformer token world models, and decoder-free latent MPC. The practical thread keeps asking the same operational question: what evidence shows that the latent state improved closed-loop behavior rather than only reconstruction quality or benchmark aesthetics?</p>
 </div>
-<h2>Worked Example</h2>
-<p>The following compact probe makes TD-MPC2: latent MPC at scale concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"><span class="c1"># Roll a compact latent state forward and score action relevance.</span>
-<span class="c1"># Decoder-free diagnostics focus on control variables, not pixel detail.</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<span class="n">latent</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.2</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">])</span>
-<span class="n">action</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.10</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.02</span><span class="p">])</span>
-<span class="n">value_weights</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">])</span>
-<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
-<span class="n">latent</span> <span class="o">=</span> <span class="mf">0.92</span> <span class="o">*</span> <span class="n">latent</span> <span class="o">+</span> <span class="n">action</span>
-<span class="n">value</span> <span class="o">=</span> <span class="n">latent</span> <span class="o">@</span> <span class="n">value_weights</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">value</span><span class="p">),</span> <span class="mi">3</span><span class="p">))</span></code></pre>
-<div class="code-output"><p><code>The printed latent value trace checks whether imagined states preserve the variables that matter for choosing actions.</code></p></div>
-<div class="code-caption">Code Fragment 38.5.1 implements latent_rollout_probe for TD-MPC2: latent MPC at scale and prints the diagnostic quantity the controller or evaluator should inspect.</div>
+<div class="prereqs"><h3>Prerequisites</h3><p>Readers should already be comfortable with partially observed control, the state-estimation material in <a href="ch_0286_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37</a>, and the reinforcement-learning objectives in <a href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15</a>. When the chapter uses variational inference or sequence modeling, it briefly recaps the needed pieces locally and points back to the originating chapters.</p></div>
+<h2>Chapter Roadmap</h2>
+<div class="section-grid"><span class="section-num">38.1</span> <a href="ch_0293_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">Why predict in latent space</span></a><span class="section-desc">Defines the control argument for compression, belief state, and decision-sufficient latent dynamics.</span><span class="section-num">38.2</span> <a href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">Autoencoders and recurrent state-space models (RSSM)</span></a><span class="section-desc">Builds the prior-posterior memory model that underlies latent filtering and imagination.</span><span class="section-num">38.3</span> <a href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">Dreamer to DreamerV3</span></a><span class="section-desc">Explains how actor-critic learning happens inside imagined latent trajectories and why robust training matters.</span><span class="section-num">38.4</span> <a href="ch_0296_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">Transformer world models (IRIS)</span></a><span class="section-desc">Casts world modeling as token sequence prediction and compares attention-based memory with recurrent state.</span><span class="section-num">38.5</span> <a href="ch_0297_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">TD-MPC2: latent MPC at scale</span></a><span class="section-desc">Shows how decoder-free latent dynamics support online trajectory optimization across many continuous-control tasks.</span><span class="section-num">38.6</span> <a href="ch_0298_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml"><span class="section-title">World models for visual control</span></a><span class="section-desc">Turns latent theory into a deployment checklist for multimodal sensing, uncertainty, and fallback behavior.</span></div>
 <div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut</div>
-<p>The hand-built probe is about 20 lines. In a working project, use PyTorch for the maintained path and JAX for reproducible evaluation support. The maintained route handles interfaces, batching, logging, and versioned artifacts; the hand-built version remains useful for debugging the contract and explaining the failure mode.</p>
+<div class="callout-title">Tooling Note</div>
+<p>This chapter follows the right-tool pattern carefully. Learn the mechanics with small probes, then reach for maintained stacks such as DreamerV3, the IRIS repository, TD-MPC2, PyTorch sequence modules, JAX utilities, MuJoCo, and Isaac Lab when the task becomes a real system rather than a didactic exercise.</p>
 </div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
-</ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between perception, representation, planning, control, and evaluation.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example: TD-MPC2: Latent MPC At Scale</div>
-<p><strong>Who:</strong> Aisha, robot-learning researcher maintaining a visual-control benchmark. <strong>Situation:</strong> A 12-robot evaluation shift must decide whether TD-MPC2: latent MPC at scale improves closed-loop behavior. <strong>Problem:</strong> offline scores look promising, but the robot still has to recover from sensor noise, delayed actuation, and rare contact changes. <strong>Dilemma:</strong> ship the new model after a visual or reward score, or require a matched baseline, one perturbation panel, and manual review of the 20 hardest rollouts. <strong>Decision:</strong> the lead keeps the baseline and candidate on the same seed panel and logs every observation, action, intervention, and terminal state. <strong>How:</strong> the run saves one artifact with configuration, metrics, latency, videos, and failure tags. <strong>Result:</strong> the candidate is accepted only when it improves the chapter metric by 10 percent and does not increase unsafe recoveries. <strong>Lesson:</strong> TD-MPC2: Latent MPC At Scale matters when it changes decisions in the loop, not when it only improves a standalone proxy.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Latent world models are strongest when the latent state preserves action-relevant variables while discarding pixel detail that does not change control. Current systems differ on whether they decode images, plan directly in latent space, or train a policy inside imagined latent rollouts.</p>
-</div>
-<div class="callout cross-ref">
-<div class="callout-title">Cross-Reference Thread</div>
-<p>This section connects to <a href="ch_0210_part-6-embodied-perception-module-28-3d-perception-and-neural-scene-repr.xhtml">Chapter 28</a> for visual state, <a href="ch_0281_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37</a> for model predictive control, <a href="ch_0302_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">Chapter 40</a> for predictive representations. Follow those links when a planning, perception, or safety assumption needs a refresher before the current method is trusted.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you state the observation, state estimate, action, prediction horizon, success metric, and most likely failure mode for TD-MPC2: latent MPC at scale? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>TD-MPC2: Latent MPC At Scale becomes useful when it is tied to compact latent states, recurrent dynamics, imagination, and scalable visual control. The contract names the observation stream, latent or physical state, action representation, timing budget, and evaluation artifact before any model comparison is made. This answers the core agent checklist questions: what changes in the loop, why it should help, how it is measured, and when the method should be rejected.</p>
-<p>DreamerV3 and TD-MPC2 are complementary anchors: Dreamer emphasizes imagined policy learning, while TD-MPC2 emphasizes value-guided latent MPC for continuous control. The skeptical-reader test is simple: a claim about TD-MPC2: latent MPC at scale must identify the baseline, the shared seed panel, the horizon or task split, and the failure labels saved in one artifact.</p>
+<section class="lab" id="lab-38">
+<h2>Hands-On Lab: Build a Latent World-Model Audit Panel</h2>
+<div class="lab-meta"><span class="lab-duration">Duration: about 80 minutes</span><span class="lab-difficulty">Difficulty: Intermediate</span></div>
+<div class="lab-objective"><h3>Objective</h3><p>Build a reproducible audit panel that compares one latent world-model baseline and one maintained implementation on the same observation, action, horizon, and failure-tag contract.</p></div>
+<div class="lab-skills"><h3>Skills</h3><ul><li>Write an explicit observation, latent state, action, and metric contract.</li><li>Compare a minimal baseline with a maintained implementation on the same seed panel.</li><li>Decide which failure belongs to representation, dynamics, planning, or evaluation.</li></ul></div>
+<div class="lab-prereqs"><h3>Setup</h3><p>Use Python, NumPy, and one maintained stack of your choice, such as DreamerV3 or TD-MPC2. Keep the evaluation artifact format identical across both paths.</p></div>
+<div class="lab-steps"><h3>Steps</h3><ol>
+<li><h4>Step 1: Freeze the task contract</h4><p>List the observation channels, action space, horizon, reset logic, and success metric before touching model code.</p></li>
+<li><h4>Step 2: Build the inspectable baseline</h4><p>The snippet below creates the minimal manifest every run must save.</p><pre><code class="language-python"><span class="c1"># Create the run manifest before touching the model code.</span>
+<span class="c1"># The same manifest must be reused by the baseline and the maintained stack.</span>
+<span class="n">manifest</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"chapter"</span><span class="p">:</span> <span class="mi">38</span><span class="p">,</span>
+<span class="s2">"observation_stream"</span><span class="p">:</span> <span class="s2">"rgb plus proprio"</span><span class="p">,</span>
+<span class="s2">"action_space"</span><span class="p">:</span> <span class="s2">"continuous gripper velocity"</span><span class="p">,</span>
+<span class="s2">"horizon"</span><span class="p">:</span> <span class="mi">12</span><span class="p">,</span>
+<span class="s2">"failure_tag"</span><span class="p">:</span> <span class="s2">"representation"</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">manifest</span><span class="p">)</span></code></pre><div class="code-output"><p><code>{'chapter': 38, 'observation_stream': 'rgb plus proprio', 'action_space': 'continuous gripper velocity', 'horizon': 12, 'failure_tag': 'representation'}</code></p></div><p><strong>Expected behavior:</strong> The printed manifest should make it obvious which observation stream, horizon, and failure tag each experiment belongs to.</p><div class="code-caption"><strong>Code Fragment 1:</strong> The manifest fixes the contract that both latent-world-model implementations must obey. If the contract changes between runs, any later comparison of reward, horizon, or safety becomes invalid.</div></li>
+<li><h4>Step 3: Swap in the maintained world-model stack</h4><p>Reuse the exact manifest, metric, and perturbation panel while replacing only the model and logging glue.</p></li>
+<li><h4>Step 4: Add one stressor</h4><p>Choose one shift that matters for this chapter, such as actuator delay, horizon extension, unseen lighting, or prompt drift.</p></li>
+<li><h4>Step 5: Write the postmortem</h4><p>Assign each failure to perception, representation, dynamics, planning, control, or evaluation. Do not stop at a single scalar score.</p></li>
+</ol></div>
+<div class="lab-expected"><h3>Expected Result</h3><p>A reproducible folder containing configuration, a seed list, one matched-metric table, two diagnostic traces, and a short note explaining the first failure mode that would block deployment.</p></div>
+<div class="lab-stretch"><h3>Stretch Goals</h3><p>Add a second model family from the chapter and compare whether its failure happens earlier in latent rollout horizon, action following, or reset consistency.</p></div>
+<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Reference Solution Sketch</p><pre><code class="language-python"><span class="c1"># Extend the manifest with the exact metric and perturbation used in the audit.</span>
+<span class="n">manifest</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"chapter"</span><span class="p">:</span> <span class="mi">38</span><span class="p">,</span>
+<span class="s2">"observation_stream"</span><span class="p">:</span> <span class="s2">"rgb plus proprio"</span><span class="p">,</span>
+<span class="s2">"action_space"</span><span class="p">:</span> <span class="s2">"continuous gripper velocity"</span><span class="p">,</span>
+<span class="s2">"horizon"</span><span class="p">:</span> <span class="mi">12</span><span class="p">,</span>
+<span class="s2">"metric"</span><span class="p">:</span> <span class="s2">"success without emergency stop"</span><span class="p">,</span>
+<span class="s2">"perturbation"</span><span class="p">:</span> <span class="s2">"camera occlusion for 0.5 seconds"</span><span class="p">,</span>
+<span class="s2">"failure_tag"</span><span class="p">:</span> <span class="s2">"representation"</span><span class="p">,</span>
+<span class="p">}</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">manifest</span><span class="p">)</span></code></pre><div class="code-output"><p><code>{'chapter': 38, 'observation_stream': 'rgb plus proprio', 'action_space': 'continuous gripper velocity', 'horizon': 12, 'metric': 'success without emergency stop', 'perturbation': 'camera occlusion for 0.5 seconds', 'failure_tag': 'representation'}</code></p></div><p><strong>Expected behavior:</strong> The completed manifest should be ready to serialize directly next to videos, latent traces, or evaluation CSV files.</p><div class="code-caption"><strong>Code Fragment 2:</strong> The completed manifest is ready to save beside latent traces, videos, and metric tables. It also makes it obvious what perturbation the world model was expected to survive.</div></div>
+</section>
+<section class="chapter-agent-checklist">
+<h2>Production Checklist Applied</h2>
+<p>This chapter is intentionally built as a self-contained technical unit: problem statement first, formal mechanism second, runnable probe third, and deployment cautions before frontier claims.</p>
+<div class="callout key-insight"><div class="callout-title">Chapter Evidence Standard</div><p>Compare latent world models only when the observation interface, action space, horizon, seed panel, perturbation, and saved artifact are all matched. A prettier reconstruction or a lower latent loss is not enough.</p></div>
+</section>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue with <a href="ch_0293_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.1</a>, where the chapter turns the overview into a concrete diagnostic model.</p></div>
+<p>The sections in this chapter are deliberately paired: first the compact theoretical mechanism, then the practical route to a maintained implementation. Read the code fragments as diagnostic probes rather than production stacks. Their job is to keep the mathematics inspectable before the heavy frameworks take over.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 38.5</div>
+<div class="comparison-table-title">Chapter Tool Map</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>PyTorch</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>JAX</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>DreamerV3</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>TD-MPC2</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>MuJoCo</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr>
-</tbody>
+<thead><tr><th>Tool or Library</th><th>Where It Pays Off</th></tr></thead>
+<tbody><tr><td>DreamerV3</td><td>Robust latent imagination for actor-critic learning across diverse domains.</td></tr><tr><td>TD-MPC2</td><td>Decoder-free latent planning for continuous-control tasks with tight replanning loops.</td></tr><tr><td>IRIS</td><td>Tokenized transformer world modeling when long-range visual context matters.</td></tr><tr><td>PyTorch and JAX</td><td>Sequence modules, distributions, scans, and return-estimation utilities for building small probes.</td></tr><tr><td>MuJoCo and Isaac Lab</td><td>Simulation backends for visual-control experiments and matched rollout evaluation.</td></tr></tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with one inspectable probe, then replaces only the plumbing with maintained libraries. Keep the artifact schema identical across baseline and shortcut runs so the comparison is construct-matched and co-computed in one pass.</p>
-<ol>
-<li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>
-<li>Run a deterministic smoke test on one seed and save the complete configuration.</li>
-<li>Add one perturbation tied to the section topic: delay, noise, horizon length, contact change, distractor object, or generated-scene shift.</li>
-<li>Compare only methods evaluated by the same script, split, seed panel, and metric definition.</li>
-<li>Record a postmortem that assigns failures to perception, representation, dynamics, planning, control, data coverage, timing, or evaluation.</li>
-</ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for TD-MPC2: latent MPC at scale.</span>
-<span class="c1"># Use the same schema for the baseline and the maintained shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_tag</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"38.5"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"TD-MPC2: latent MPC at scale"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"PyTorch"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"sensor, latent, or generated observation used by the method"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"control, plan, or query chosen by the agent"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched closed-loop success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"the smallest shift that should expose brittleness"</span><span class="p">,</span>
-<span class="n">failure_tag</span><span class="o">=</span><span class="p">(</span>
-<span class="s2">"perception, representation, dynamics, planning, control, timing, data, or evaluation"</span>
-<span class="p">),</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 38.5.2 records the evidence schema for TD-MPC2: latent MPC at scale so the hand-built probe and the PyTorch shortcut are compared on the same contract.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When TD-MPC2: latent MPC at scale fails, do not collapse the result into a single method verdict. Assign the failure to the interface that broke, rerun one controlled perturbation, and keep the trace next to the metric. That habit turns a disappointing rollout into a reusable diagnostic asset.</p>
+<div class="callout lab"><div class="callout-title">Builder Habit</div><p>Save one evidence artifact per comparison. That means one manifest, one metric table, one trace sample, and one postmortem note, all generated under the same configuration and seed panel.</p></div>
+<section class="production-index-depth-topup">
+<p>This chapter works well when taught as a loop: derive the state update, inspect the failure mode, then ask what evidence would justify trusting that model on a real robot, vehicle, or interactive simulation system.</p>
+<div class="callout self-check"><div class="callout-title">Readiness Check</div><p>If a reader cannot say what information is compressed, what information is preserved, and how rollout errors accumulate with horizon, they are not ready to compare world models yet.</p></div>
+<div class="callout key-takeaway"><div class="callout-title">Teaching Takeaway</div><p>A world model chapter lands when prediction, control, and evaluation are treated as one technical object rather than three unrelated topics.</p></div>
 </section>
-<div class="callout key-takeaway">
-<div class="callout-title">Key Takeaway</div>
-<p>TD-MPC2: Latent MPC At Scale is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
-</div>
-<div class="callout exercise"><div class="callout-title">Exercise 38.5.1</div><p>Design a minimal experiment for TD-MPC2: latent MPC at scale. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
-<h3>Primary References And Tools</h3>
+<h3>Foundational Papers, Tools, and References</h3>
 <div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
-<p class="bib-annotation">PlaNet explains recurrent latent state-space modeling for control from pixels. It is the best starting point for understanding why the agent should remember hidden state instead of predicting pixels alone.</p>
-</div>
-<div class="bib-entry-card">
+<p class="bib-annotation">Foundational RSSM and latent-planning reference.</p>
+</div><div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
-<p class="bib-annotation">DreamerV3 shows how latent imagination can train behavior across a broad task set with one configuration. It is the central reference for robust latent world-model training in this part.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Su, H., and Wang, X.. "TD-MPC2: Scalable, Robust World Models for Continuous Control." (2023). <a href="https://arxiv.org/abs/2310.16828" rel="noopener" target="_blank">https://arxiv.org/abs/2310.16828</a></p>
-<p class="bib-annotation">TD-MPC2 demonstrates decoder-free latent control at scale. It is most relevant when the reader wants to compare image reconstruction, latent prediction, value learning, and planning latency.</p>
-</div>
-<div class="bib-entry-card">
+<p class="bib-annotation">Primary DreamerV3 reference.</p>
+</div><div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Micheli, V., Alonso, E., and Fleuret, F.. "Transformers Are Sample-Efficient World Models." (2022). <a href="https://arxiv.org/abs/2209.00588" rel="noopener" target="_blank">https://arxiv.org/abs/2209.00588</a></p>
-<p class="bib-annotation">IRIS is a useful transformer world-model reference. It helps readers compare recurrent state-space models with tokenized latent sequence models.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Danijar Hafner. "DreamerV3 Project Page." (2023). <a href="https://danijar.com/project/dreamerv3/" rel="noopener" target="_blank">https://danijar.com/project/dreamerv3/</a></p>
-<p class="bib-annotation">The project page links to code, videos, and paper material for DreamerV3. It is useful for inspecting implementation choices after the chapter explains the mechanism.</p>
+<p class="bib-annotation">Primary IRIS reference.</p>
+</div><div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Su, H., and Wang, X.. "TD-MPC2: Scalable, Robust World Models for Continuous Control." (2023). <a href="https://openreview.net/forum?id=Oxh5CstDJU" rel="noopener" target="_blank">https://openreview.net/forum?id=Oxh5CstDJU</a></p>
+<p class="bib-annotation">Primary TD-MPC2 reference.</p>
 </div>
 </section>
-<nav class="chapter-nav">
-<a class="prev" href="ch_0291_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.4: Transformer world models (IRIS)</a>
-<a class="up" href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
-<a class="next" href="ch_0293_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.6: World models for visual control</a>
-</nav>
+<nav class="chapter-nav"><a class="prev" href="ch_0291_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Section 37.5: Sample-efficiency advantages and failu...</a><a class="up" href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><a class="next" href="ch_0293_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.1: Why predict in latent space</a></nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

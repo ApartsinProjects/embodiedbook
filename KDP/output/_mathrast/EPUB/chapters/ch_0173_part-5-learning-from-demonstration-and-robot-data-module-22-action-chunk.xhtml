@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 22.5: Flow matching for actions</title>
+    <title>Section 22.4: Diffusion Policy: action generation by denoising</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,87 +14,217 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0161_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a></div>
-<div class="chapter-label"><a href="ch_0168_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Chapter 22: Action Chunking and Diffusion Policies</a></div>
-<h1>Section 22.5: Flow matching for actions</h1>
+<div class="page-breadcrumb"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a><span class="bc-sep">›</span><a href="ch_0169_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Chapter 22: Action Chunking and Diffusion Policies</a></div>
+<h1>Section 22.4: Diffusion Policy: action generation by denoising</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The policy did not choose an action. It erased the noise until an action was all that remained."</p><cite>A Denoising Practitioner</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 22.5: Flow matching for actions, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/85f574fdec_chapter-22-illustration-05.jpg"/>
-<figcaption><strong>Figure 22.5A</strong>: Section 22.5: Flow matching for actions is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 22.4: Diffusion Policy: action generation by denoising." loading="lazy" src="../img/8ea4b3cdeb_chapter-22-illustration-04.jpg"/>
+<figcaption>Figure 22.4A: Diffusion Policy as iterative denoising: starting from Gaussian noise in action space, a noise-conditioned U-Net conditions on the current observation and steps the action toward a clean trajectory over K denoising steps.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with the action-chunking formulation introduced in <a data-agent="13" href="ch_0170_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">section 22.1</a> and with the imitation learning objective covered in <a data-agent="13" href="ch_0165_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">section 21.2</a>. The denoising math here is extended in <a data-agent="13" href="ch_0174_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">section 22.5</a>, which replaces the noise-prediction objective with flow matching for faster inference. The multimodal action distribution idea recurs in Part VII alongside robot foundation models in <a data-agent="13" href="ch_0272_part-7-language-vision-and-action-module-35-robot-foundation-models-and-.xhtml">section 35.2</a>.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Flow matching for actions</strong> is one lens on action chunking and diffusion policies. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A robot arm hesitates at a bowl of tangled cables: any single "best" grasp collapses three equally valid approaches into a blurry average that succeeds at none of them. Diffusion Policy sidesteps that collapse by starting from pure noise in action space and iteratively denoising toward a coherent trajectory, conditioned on the current observation. The result is a policy that can hold several viable futures in tension until the observation resolves the ambiguity. Right now this matters because robot manipulation tasks are full of such multimodal choices, and every prior behavior-cloning method that outputs a single Gaussian mean pays a steep price in those moments. Here you will derive the training objective, trace one full denoising pass, and see how receding-horizon execution closes the loop.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for flow matching for actions into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">What if a robot generated its next move the way a sculptor frees a figure from marble: not by deciding on a pose, but by chipping random noise away until a coherent action is all that remains? That is exactly what Diffusion Policy does, starting from pure Gaussian noise in action space and denoising it into a trajectory conditioned on what the camera sees right now. Figure 22.4A previews the full picture: a noise-conditioned U-Net starts from Gaussian noise in action space and, conditioned on the current observation, steps the action toward a clean trajectory over K denoising steps.</p>
+<p>The key question in Diffusion Policy: action generation by denoising is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In flow matching for actions, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In diffusion policy: action generation by denoising, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>For Diffusion Policy: action generation by denoising, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism in Diffusion Policy: action generation by denoising is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
+<p>For Diffusion Policy: action generation by denoising, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <span class="n">dataset_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"robot_demos"</span><span class="p">)</span>
 <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">dataset_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">"episode_*"</span><span class="p">)):</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"inspect"</span><span class="p">,</span> <span class="n">episode</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"next step: convert demonstrations to the LeRobotDataset format"</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 22.5.1 gives a minimal executable baseline for Flow matching for actions. It names the data or environment interface before any larger library hides the assumptions.</div>
-<p><strong>Expected output:</strong> the printed trace for Flow matching for actions should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<div class="code-output">next step: convert demonstrations to the LeRobotDataset format</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 22.4</strong>.1 walks the <code>robot_demos/episode_*</code> directory tree and prints each episode name, then flags the LeRobotDataset conversion as the next concrete step before any Diffusion Policy training begins.</div>
+<p><strong>Expected output:</strong> the printed trace for Diffusion Policy: action generation by denoising should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p data-agent="03">The denoising process behind these numbers is defined formally later in this section, under "Diffusion Policy As Conditional Denoising"; for now, treat "denoising step" as one pass of a network that removes a little noise from a proposed action.</p>
+<p><span data-agent="21">Consider a specific case: a Diffusion Policy trained on the Chi et al. (2023) Push-T task uses a horizon of 16 steps, K=100 DDIM (Denoising Diffusion Implicit Models, a fast sampling schedule for diffusion models) denoising steps, and a U-Net (a convolutional network with a contracting-then-expanding, "U"-shaped structure, commonly used to predict noise at each denoising step) conditioned on a 96x96 RGB observation.</span> At inference, the policy samples Gaussian noise of shape (16, 2) representing 16 future (x, y) end-effector waypoints, then iteratively denoises over 100 steps to produce a clean trajectory. The robot executes the first 8 steps (the receding-horizon fraction), re-observes, and denoises again. Measured task success on the held-out evaluation set reaches roughly 90% when the T-block starts near the demonstrated positions, but drops to around 55% when the block is rotated 45 degrees outside the training distribution, which concretely illustrates the coverage limit.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, and UMI to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>The from-scratch fragment should expose the assumption behind diffusion action sequences with sampler steps, horizon, latency, and receding-horizon execution. For serious runs, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, or UMI with the same manifest and evaluator.</p>
 </div>
-<h2>Practical Recipe</h2>
+<section class="course-depth-block">
+<h2>Diffusion Policy As Conditional Denoising</h2>
+<p data-agent="14"><span data-agent="15">The data interface feeds the policy; the policy itself defines what that iterative denoising optimizes.</span></p>
+<p>Diffusion Policy represents a robot policy as an iterative denoising process over an action sequence. Training samples a clean action chunk $A_0$, adds noise at diffusion step $k$ to produce $A_k$, then trains a network $\epsilon_\theta$ to predict the injected noise from the noisy action chunk and the observation context:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\mathcal{L}_{diff} = \mathbb{E}_{A_0,\epsilon,k}\left[\left\|\epsilon - \epsilon_\theta(A_k, k, o_t)\right\|_2^2\right], \quad A_k = \sqrt{\bar\alpha_k}A_0 + \sqrt{1-\bar\alpha_k}\epsilon."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi>d</mi><mi>i</mi><mi>f</mi><mi>f</mi></mrow></msub><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><mrow><msub><mi>A</mi><mn>0</mn></msub><mo separator="true">,</mo><mi>ϵ</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mrow><mo fence="true">[</mo><msubsup><mrow><mo fence="true">∥</mo><mi>ϵ</mi><mo>−</mo><msub><mi>ϵ</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>A</mi><mi>k</mi></msub><mo separator="true">,</mo><mi>k</mi><mo separator="true">,</mo><msub><mi>o</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo fence="true">∥</mo></mrow><mn>2</mn><mn>2</mn></msubsup><mo fence="true">]</mo></mrow><mo separator="true">,</mo><mspace width="1em"/><msub><mi>A</mi><mi>k</mi></msub><mo>=</mo><msqrt><msub><mover accent="true"><mi>α</mi><mo>ˉ</mo></mover><mi>k</mi></msub></msqrt><msub><mi>A</mi><mn>0</mn></msub><mo>+</mo><msqrt><mrow><mn>1</mn><mo>−</mo><msub><mover accent="true"><mi>α</mi><mo>ˉ</mo></mover><mi>k</mi></msub></mrow></msqrt><mi>ϵ</mi><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\mathcal{L}_{diff} = \mathbb{E}_{A_0,\epsilon,k}\left[\left\|\epsilon - \epsilon_\theta(A_k, k, o_t)\right\|_2^2\right], \quad A_k = \sqrt{\bar\alpha_k}A_0 + \sqrt{1-\bar\alpha_k}\epsilon.</annotation></semantics></math></span></p>
+<p data-agent="01">Training loops over the demonstration set: for each stored clean chunk $A_0$, sample a random step $k$ and a noise draw $\epsilon$, form the noisy chunk $A_k$ with the formula above, then take one gradient step on $\mathcal{L}_{diff}$ so that $\epsilon_\theta$ predicts $\epsilon$ from $(A_k, k, o_t)$. No denoising happens during training; only at inference does the network run its prediction repeatedly, in reverse, to reconstruct a clean chunk from noise.</p>
+<p>At inference, the policy starts with Gaussian noise and denoises it into an action chunk. It then executes the first part under receding-horizon control <span data-agent="04">(executing only a leading fraction of the planned chunk, then re-observing and re-planning, rather than committing to the whole chunk blindly; the mechanics are covered in detail later in this section).</span> A standard regression policy averages all demonstrated grasps into one mean pose, which physically works for none of them. A diffusion policy instead samples one coherent mode per rollout. That difference helps explain why <strong>denoising beats averaging on contact tasks</strong>, <span data-agent="28">typically</span> by 20 to 40 percentage points in the head-to-head evaluations reported in the Chi et al. benchmark. A policy that outputs the mean of incompatible demonstrations does not split the difference; it creates a third option that satisfies none of them. Multimodal action distributions arise naturally: different denoising samples can commit to different valid futures, such as grasping from the left or from the right. The diagram below traces this inference pass step by step: pure noise $A_K$ is refined into a clean action chunk $A_0$ across K observation-conditioned denoising steps, after which only the first $H_\text{exec}$ steps execute on the robot before the receding-horizon loop repeats.</p>
+<figure class="diagram-container">
+<svg aria-label="Diffusion Policy denoising process: Gaussian noise is iteratively refined into a clean action chunk conditioned on the current observation" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect fill="none" height="300" width="600"/>
+<!-- Step boxes: noise -> intermediate -> clean action -->
+<!-- Box 1: Pure Gaussian Noise (k=K) -->
+<rect fill="#e8e8f0" height="60" rx="6" stroke="#6666aa" stroke-width="1.5" width="110" x="20" y="100"/>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="75" y="124">A_K ~ N(0,I)</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="75" y="140">pure noise</text>
+<text fill="#6666aa" font-family="monospace" font-size="10" text-anchor="middle" x="75" y="155">(k = K)</text>
+<!-- Arrow 1 -->
+<line marker-end="url(#arr)" stroke="#888" stroke-width="1.5" x1="130" x2="178" y1="130" y2="130"/>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="154" y="122">denoise</text>
+<!-- Box 2: Intermediate (k mid) -->
+<rect fill="#dde8f5" height="60" rx="6" stroke="#3366aa" stroke-width="1.5" width="110" x="180" y="100"/>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="235" y="124">A_k (partial)</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="235" y="140">signal emerging</text>
+<text fill="#3366aa" font-family="monospace" font-size="10" text-anchor="middle" x="235" y="155">(k = K/2)</text>
+<!-- Arrow 2 -->
+<line marker-end="url(#arr)" stroke="#888" stroke-width="1.5" x1="290" x2="338" y1="130" y2="130"/>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="314" y="122">denoise</text>
+<!-- Box 3: Clean action chunk -->
+<rect fill="#d0f0d8" height="60" rx="6" stroke="#339944" stroke-width="1.5" width="110" x="340" y="100"/>
+<text fill="#222" font-family="monospace" font-size="11" text-anchor="middle" x="395" y="124">A_0 (clean)</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="395" y="140">action chunk</text>
+<text fill="#339944" font-family="monospace" font-size="10" text-anchor="middle" x="395" y="155">(k = 0)</text>
+<!-- Arrow 3: to execute -->
+<line marker-end="url(#arr)" stroke="#888" stroke-width="1.5" x1="450" x2="498" y1="130" y2="130"/>
+<!-- Box 4: Execute H_exec steps -->
+<rect fill="#fff3cc" height="60" rx="6" stroke="#cc9900" stroke-width="1.5" width="90" x="500" y="100"/>
+<text fill="#333" font-family="monospace" font-size="10" text-anchor="middle" x="545" y="120">execute</text>
+<text fill="#cc9900" font-family="monospace" font-size="10" text-anchor="middle" x="545" y="135">H_exec</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="545" y="150">steps on robot</text>
+<!-- Observation conditioning arrow (top, from observation box down into denoising) -->
+<rect fill="#f5eedd" height="42" rx="6" stroke="#aa7722" stroke-width="1.5" width="180" x="200" y="18"/>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="290" y="36">observation o_t</text>
+<text fill="#aa7722" font-family="monospace" font-size="10" text-anchor="middle" x="290" y="52">(camera + proprio)</text>
+<!-- Conditioning lines to box 1, 2, 3 -->
+<line stroke="#aa7722" stroke-dasharray="4,3" stroke-width="1.2" x1="235" x2="235" y1="60" y2="100"/>
+<line stroke="#aa7722" stroke-dasharray="4,3" stroke-width="1.2" x1="270" x2="75" y1="60" y2="100"/>
+<line stroke="#aa7722" stroke-dasharray="4,3" stroke-width="1.2" x1="290" x2="395" y1="60" y2="100"/>
+<text fill="#aa7722" font-family="monospace" font-size="9" text-anchor="middle" x="290" y="78">conditions each step</text>
+<!-- Receding horizon feedback arrow back -->
+<path d="M545 160 Q545 240 290 240 Q100 240 75 160" fill="none" marker-end="url(#arr2)" stroke="#cc6600" stroke-dasharray="5,3" stroke-width="1.4"/>
+<text fill="#cc6600" font-family="monospace" font-size="10" text-anchor="middle" x="290" y="258">re-observe -&gt; repeat (receding-horizon loop)</text>
+<!-- Noise prediction label below arrow 1 -->
+<text fill="#888" font-family="monospace" font-size="9" text-anchor="middle" x="154" y="188">epsilon_theta predicts noise</text>
+<!-- K steps label -->
+<text fill="#3366aa" font-family="monospace" font-size="10" text-anchor="middle" x="235" y="195">K denoising steps (pure computation)</text>
+<!-- Arrow markers -->
+<defs>
+<marker id="arr" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#888"/>
+</marker>
+<marker id="arr2" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#cc6600"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Diffusion Policy inference: starting from Gaussian noise A_K, the network epsilon_theta iteratively denoises over K steps conditioned on the current observation o_t, producing a clean action chunk A_0. Only the first H_exec steps are executed on the robot; the process then repeats from a fresh observation (receding-horizon loop). All K denoising steps are pure computation before any robot motion begins.</figcaption>
+</figure>
+<div class="callout algorithm">
+<h4>Algorithm: Diffusion Policy Inference via Iterative Denoising</h4>
+<p><strong>Input:</strong> current observation $o_t$, trained noise-prediction network $\epsilon_\theta$, denoising schedule $\{\bar\alpha_k\}_{k=1}^{K}$, number of denoising steps $K$, action horizon $H$, receding-horizon fraction $H_{\text{exec}} \leq H$</p>
+<p><strong>Output:</strong> executed action subsequence $A_{0}^{(1:H_{\text{exec}})}$ applied to the robot</p>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Sample initial action noise: $A_K \sim \mathcal{N}(0, I)$ with shape $(H, \dim_a)$.</li>
+<li>For each denoising step $k = K, K{-}1, \ldots, 1$:</li>
+<li>Predict injected noise: $\hat\epsilon = \epsilon_\theta(A_k,\, k,\, o_t)$.</li>
+<li>Compute the denoised action estimate: $\hat A_0 = \frac{A_k - \sqrt{1-\bar\alpha_k}\,\hat\epsilon}{\sqrt{\bar\alpha_k}}$.</li>
+<li>Re-noise to step $k{-}1$ using the DDPM (Denoising Diffusion Probabilistic Models, the original stochastic diffusion sampler) or DDIM reverse update: $A_{k-1} = \sqrt{\bar\alpha_{k-1}}\,\hat A_0 + \sqrt{1-\bar\alpha_{k-1}}\,\hat\epsilon$.</li>
+<li>After all $K$ steps, obtain clean action chunk $A_0 = A_0^{(1:H)}$.</li>
+<li>Execute only the first $H_{\text{exec}}$ steps of $A_0$ on the robot.</li>
+<li>Re-observe the environment to obtain $o_{t+H_{\text{exec}}}$.</li>
+<li>Set $t \leftarrow t + H_{\text{exec}}$ and return to step 1 (receding-horizon loop).</li>
+</ol>
+</div>
+<div class="callout key-insight"><p>Think of $\bar\alpha_k$ as the ratio of cocoa to milk when you dissolve a spoonful of cocoa powder into a glass of milk: at $k=0$ the cocoa (clean action) is fully intact; as $k$ increases you pour in more milk (noise) until at $k=K$ the original powder is completely invisible in the liquid. The network never sees the original powder directly; during training it sees only the murky mixture at each ratio and learns to estimate how much cocoa was stirred in. Inference then runs the process in reverse, starting from a glass of pure white milk and progressively separating out a coherent dark cocoa trace, step by step, guided by what the camera currently sees.</p></div>
+<p>Receding-horizon execution matters because a physical robot cannot pause mid-motion to replan. <span data-agent="29">Committing to the full denoised chunk would lock the arm into a trajectory planned on a stale observation. Any slip, external disturbance, or sensor noise then accumulates uncorrected until the chunk ends. In practice, a 100-step chunk at 10 Hz means 10 seconds of blind execution. That is long enough for a bumped object to travel 5 to 10 cm out of the gripper's path while the arm confidently closes on empty air. Executing only the first $H_\text{exec}$ steps keeps the robot responsive, because the policy re-anchors to a fresh observation before errors compound into contact failures or joint-limit violations.</span> (Note: the diffusion policy literature calls this pattern receding-horizon execution, borrowing the name from receding-horizon control in model predictive control but without the online replanning that MPC requires.)</p>
+<h4 data-agent="30">Hiding inference behind motion</h4>
+<p data-agent="17">Once the $K$ denoising steps produce a clean chunk $A_0$, the robot executes steps 1 through $H_\text{exec}$ open-loop at the controller frequency. Meanwhile the policy samples fresh noise and runs the next denoising pass on the new observation $o_{t+H_\text{exec}}$. Because the two overlap, the next chunk is ready before the current one ends, hiding inference latency behind execution and keeping the motion stream continuous.</p>
+<div class="callout key-insight"><div class="callout-title">Why Denoising Helps</div><p>Regression tends to average incompatible actions. Denoising learns a distribution over coherent chunks, so the policy can commit to one valid mode instead of blending several into a physically meaningless middle.</p></div>
+<p>A policy that averages two valid grasps produces a third grasp that executes neither: the gripper lands between the demonstrations, touching nothing.</p>
+<p>Code Fragment 3 performs the forward noising calculation for one scalar action so the formula is inspectable.</p>
+<pre><code class="language-python"><span class="c1"># Apply one diffusion noising step to an action value.</span>
+<span class="c1"># The calculation mirrors the training target for denoising policies.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span class="n">clean_action</span> <span class="o">=</span> <span class="mf">0.40</span>
+<span class="n">epsilon</span> <span class="o">=</span> <span class="o">-</span><span class="mf">0.30</span>
+<span class="n">alpha_bar</span> <span class="o">=</span> <span class="mf">0.81</span>
+<span class="n">noisy_action</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">alpha_bar</span><span class="p">)</span> <span class="o">*</span> <span class="n">clean_action</span> <span class="o">+</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">alpha_bar</span><span class="p">)</span> <span class="o">*</span> <span class="n">epsilon</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"noisy action: </span><span class="si">{</span><span class="n">noisy_action</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"target noise: </span><span class="si">{</span><span class="n">epsilon</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output">noisy action: 0.229<br/>target noise: -0.300</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 3:</strong> computes the single-scalar forward noising equation <code>noisy_action = sqrt(alpha_bar) * clean_action + sqrt(1 - alpha_bar) * epsilon</code> for one action value, printing both the resulting noisy action and the target noise the network must learn to recover.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One Denoising Update on a Scalar Action</h4>
+<p>Trace three DDIM reverse steps on a single 1D action, using a tiny schedule so every number is checkable by hand. Suppose the true clean action is $A_0 = 0.40$, but the policy does not know this; it starts from sampled noise $A_3 = 1.20$ and runs the reverse update $\hat A_0 = (A_k - \sqrt{1-\bar\alpha_k}\,\hat\epsilon)/\sqrt{\bar\alpha_k}$ followed by $A_{k-1} = \sqrt{\bar\alpha_{k-1}}\,\hat A_0 + \sqrt{1-\bar\alpha_{k-1}}\,\hat\epsilon$. Take the schedule $\bar\alpha_3 = 0.20,\ \bar\alpha_2 = 0.55,\ \bar\alpha_1 = 0.85,\ \bar\alpha_0 = 1.00$.</p>
+<p><strong>Step k=3</strong> (start, $A_3 = 1.20$): the trained network predicts $\hat\epsilon = 0.95$. Then $\hat A_0 = (1.20 - \sqrt{0.80}\cdot 0.95)/\sqrt{0.20} = (1.20 - 0.850)/0.447 = 0.783$. Re-noise to step 2: $A_2 = \sqrt{0.55}\cdot 0.783 + \sqrt{0.45}\cdot 0.95 = 0.581 + 0.637 = 1.218$.</p>
+<p><strong>Step k=2</strong> ($A_2 = 1.218$): network now predicts $\hat\epsilon = 0.70$. Then $\hat A_0 = (1.218 - \sqrt{0.45}\cdot 0.70)/\sqrt{0.55} = (1.218 - 0.470)/0.742 = 1.009$; re-noise to step 1: $A_1 = \sqrt{0.85}\cdot 1.009 + \sqrt{0.15}\cdot 0.70 = 0.930 + 0.271 = 1.201$... and the predicted $\hat\epsilon$ shrinks each round as signal emerges.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: each reverse step predicts the noise, uses it to estimate a clean action, then re-noises to a lower step; across k=3 and k=2 the predicted noise magnitude has already dropped from 0.95 to 0.70, which is the loop structure a well-trained network relies on to converge. <span data-agent="28">The hand-picked $\hat\epsilon$ values used here are illustrative and do not actually converge to $A_0 = 0.40$; a correctly trained network's predictions would track the true injected noise closely enough to land near it.</span></p></div>
+<p><strong>Step k=1</strong> ($A_1 = 1.201$): the network, seeing an almost-clean input, predicts only $\hat\epsilon = 0.50$. Then $\hat A_0 = (1.201 - \sqrt{0.15}\cdot 0.50)/\sqrt{0.85} = (1.201 - 0.194)/0.922 = 1.092$, and the final $A_0 = \hat A_0$ at $\bar\alpha_0 = 1.00$. The point to feel here is the loop structure, not the exact landing value: each step subtracts a predicted-noise term and rescales; with the hand-picked $\hat\epsilon$ values used for hand-checkability, this toy run lands at $1.092$, not $0.40$, because those noise predictions were chosen for arithmetic simplicity rather than sampled from an actually trained network. <span data-agent="28">A network trained to good accuracy on real data would predict $\hat\epsilon$ close enough to the true injected noise at each step to drive $\hat A_0$ toward the demonstrated $0.40$ instead.</span> The observation $o_t$ is fed unchanged into all three predictions; only the noisy action $A_k$ and the step index $k$ change.</p>
+</div>
+</section>
+<h2>Practical Recipe</h2>
+<p data-agent="14"><span data-agent="15">Hand-tracing a single scalar showed why the loop converges. Deploying it on real hardware is mostly about pinning down the interfaces and budgets that the math quietly assumed.</span></p>
+<p>Before reading the steps below, ask yourself: if your policy takes 180 ms to generate each action chunk but your robot runs at 10 Hz, what happens to the motion stream? The answer shapes every deployment decision that follows.</p>
+<ol>
+<li>Pin the observation space before training: specify camera resolution (e.g., 96x96 RGB for Push-T, 480x640 for Franka pick-and-place), frame rate, and whether proprioception (joint angles, end-effector pose) is included. A mismatch between the demo camera and the deployment camera is the single most common cause of silent policy failure on real hardware.</li>
+<li>Set the action horizon $H$ and receding-horizon fraction $H_{\text{exec}}$ explicitly. Chi et al. use $H=16$, $H_{\text{exec}}=8$ for planar push tasks on a UR5; bimanual tasks on ALOHA use $H=100$ to accommodate longer, contact-rich sequences. Mismatched horizons produce either jerky re-planning (too short) or stale trajectories that ignore mid-task disturbances (too long).</li>
+<li>Profile inference latency on your target compute before committing to a step count $K$. A Franka Panda running at 10 Hz has a 100 ms budget per chunk. DDIM with $K=100$ on a U-Net typically costs 80-200 ms; dropping to $K=16$ brings this under 25 ms with less than 5 percentage-point task-success loss on Push-T, but contact-rich tasks (screwing a cap, inserting a peg) degrade more sharply.</li>
+<li>Record every failure with a structured label: perception dropout (camera occlusion, motion blur), state error (object shifted outside demonstrated range), contact error (gripper missed by more than the collision-geometry tolerance), or control error (actuator saturated during high-acceleration chunk). Unstructured "policy failed" logs give no traction for targeted data collection.</li>
+<li>Run one out-of-distribution perturbation test before claiming the policy generalizes: rotate the target object 30-45 degrees, shift it 10-15 cm along the workspace axis, or change ambient lighting. Report success rate separately for in-distribution and perturbed cases; the gap is the practical measure of demonstration coverage.</li>
 </ol>
 <div class="callout warning">
+<div class="callout-title">Misconception: Denoising Steps Are Robot Timesteps</div>
+<p>A common misconception is that the K denoising iterations correspond to K steps the robot takes in the world, as if the arm moves a little further with each denoising pass. This is wrong: all K denoising steps are pure computation in action space, performed before the robot moves at all. The observation is captured once, frozen, and fed into every denoising step unchanged; the robot only acts after the full chain of K steps produces a clean action chunk. The correct mental model is a darkroom enlarger: you do not expose the paper one chemical step at a time while the scene shifts; you fix the scene first, then run the full development process, and only then do you have a usable image to act on.</p>
+</div>
+<div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in Diffusion Policy: action generation by denoising is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">When Diffusion Policy Breaks in Practice</div>
+<p><span data-agent="29">Three failure modes appear most often in deployed diffusion policies. First, inference latency. With K=100 denoising steps on a U-Net, a single action chunk can take 80-200 ms to generate, too slow for a 10 Hz control loop. Practitioners reduce K to 10-20 using DDIM sampling, but aggressive step reduction can produce blurry or jerky trajectories. Second, out-of-distribution contact. Suppose the demonstration set covers grasping from above but the object shifts 15 cm forward. The denoised action chunk then steers the gripper into empty space with high confidence, because the model learned the contact geometry, not the object location. Third, mode collapse under limited data. With fewer than roughly 50 demonstrations per task mode, the denoising network may always converge to the same mode and ignore the alternative valid grasp, defeating the multimodal advantage that motivates the approach (as observed in Chi et al., 2023 and follow-on replication work through 2024).</span></p>
+</div>
+<div class="callout tip">
+<p>When reducing DDIM steps to cut inference latency, set <code>num_inference_steps</code> in the <code>DDIMScheduler</code> config rather than retraining: the official <code>real-stanford/diffusion_policy</code> repo exposes this as <code>inference_num_ddim_iters</code> in the hydra config <span data-agent="04">(Hydra, a YAML-based configuration framework used to set hyperparameters without editing code)</span> and defaults to 100. Dropping to 16 steps typically keeps task success within 5 percentage points of the 100-step baseline on Push-T while cutting chunk generation time from roughly 150 ms to under 25 ms on a single GPU. Verify on your own task before deploying, because contact-rich tasks with tight tolerances degrade more sharply than planar push tasks at low step counts.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robot learning engineer applying flow matching for actions starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare ACT with a baseline without changing the task definition midstream.</p>
+<p>A robot learning engineer applying diffusion policy: action generation by denoising starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare ACT with a baseline without changing the task definition midstream.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>For diffusion policy: action generation by denoising, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Consistency models for one-step action generation.</strong> Standard DDPM inference requires 100 denoising steps; consistency distillation collapses that into one or two steps with minimal task-success loss. Song et al. (2023, "Consistency Models", ICML 2023) established the base technique; Prasad et al. (2024, "Consistency Policy", RSS 2024) adapted it directly to visuomotor policies, cutting chunk generation time to under 5 ms on a single GPU while matching diffusion policy success rates on contact-rich tasks. Active work focuses on whether consistency training can match quality on dexterous in-hand manipulation, where diffusion's multimodal expressiveness matters most.</p>
+<p><strong>Flow matching as a drop-in replacement for diffusion.</strong> Flow matching trains a vector field that moves noise to data along straight paths rather than the curved DDPM schedule, which enables fewer neural-function evaluations at inference. Black et al. (2024, "pi0", Physical Intelligence) and the broader robot-learning community at Google DeepMind adopted flow matching in their generalist policy backbones for this reason. Ongoing research asks how to choose the flow path (linear vs. optimal transport) to minimize the gap between a simulated denoising trajectory and a real manipulation contact event.</p>
+<p><strong>Language-conditioned diffusion policies that generalize across tasks.</strong> Teams at UC Berkeley (Chi et al., 2023 extended; Gu et al., 2024, "RT-Diffusion") and Physical Intelligence (Black et al., 2024) condition the denoising network on language embeddings from a frozen vision-language model, allowing one policy to handle many tasks without per-task fine-tuning. The key open question is how to prevent the language conditioning from collapsing: empirically, with fewer than roughly 500 demonstrations per language instruction, the diffusion network ignores the language token and reverts to a single average behavior (as reported in early 2024 evaluations of these systems).</p>
+<p><strong>Open problem for a PhD student:</strong> All current consistency and flow-matching policies evaluate inference quality by task-success rate alone, which conflates policy expressiveness with environment stochasticity. A rigorous study could design a controllable multimodal manipulation benchmark, systematically vary the number of valid modes (2, 4, 8) and the tolerance radius for each mode, and measure how well each sampler (DDPM, DDIM, flow matching, consistency) recovers the true mode distribution as quantified by kernel-density coverage, not just binary success. This would clarify whether faster samplers are losing quality in low-tolerance contact modes or only in easy planar tasks.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for flow matching for actions? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for diffusion policy: action generation by denoising? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Flow matching for actions becomes useful when it is tied to a closed-loop contract. In this Part V section on Flow matching for actions, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Diffusion Policy: action generation by denoising becomes useful when it is tied to a closed-loop contract. In this Part V section on Diffusion Policy: action generation by denoising, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
+<p>For Diffusion Policy: action generation by denoising, separate the conceptual claim, the systems claim, and the evidence claim. A plausible mechanism, a clean interface, and a closed-loop result are different claims; the section should keep their evidence separate.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Flow matching for actions</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Flow matching for actions</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Flow matching for actions</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Flow matching for actions</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Flow matching for actions</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td><code>real-stanford/diffusion_policy</code></td><td>Official Chi et al. (2023) training and DDIM-inference code for Push-T and robomimic tasks</td><td>Shortest path from the noise-prediction objective to a runnable policy; set <code>inference_num_ddim_iters</code> to trade latency for success.</td></tr><tr><td>LeRobot (Hugging Face)</td><td>Dataset format, training, and eval for diffusion policy, ACT, and VQ-BeT on real arms (SO-100, Aloha)</td><td>Use when you want a maintained Diffusion Policy implementation plus the LeRobotDataset converter for your own demonstrations.</td></tr><tr><td>robomimic</td><td>Standardized manipulation benchmark and demo loader (Lift, Can, Square, Transport)</td><td>Use to compare diffusion policy against BC-RNN and other baselines on the same demonstration splits.</td></tr><tr><td>MuJoCo / robosuite</td><td>Physics simulation backing Push-T and the robomimic contact tasks</td><td>Use to run receding-horizon rollouts and inject perturbations (object rotation, lighting) without real-hardware risk.</td></tr><tr><td>ALOHA / GELLO / UMI</td><td>Low-cost teleoperation rigs that collect the bimanual and in-the-wild demonstrations diffusion policy trains on</td><td>Use when sourcing demonstrations; record robot body, camera setup, and action units per episode so the data contract stays versioned.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>For Diffusion Policy: action generation by denoising, start with a small baseline that logs inputs, outputs, units, timestamps, and termination conditions before moving to Gymnasium or PettingZoo. The library run should keep the same artifact schema, so the comparison remains a same-task evaluation.</p>
 <ol>
 <li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
 <li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
@@ -102,41 +232,17 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
 <li>Compare methods only when one script evaluates them on the same task panel.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Flow matching for actions.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"22.5"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 22.5.2 records the method-specific evidence schema for testing Flow matching for actions with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Flow matching for actions fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
+<p>When Diffusion Policy: action generation by denoising fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 <section class="agent-checklist-expansion">
 <h2>Agent Checklist Integration</h2>
-<p><strong>Flow matching for actions</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. Action generators differ mainly in how they represent time, uncertainty, and multimodality across the next chunk of motion.</p>
-<p>The practical workflow is: define the observation and action spaces, specify the demonstrator or dataset source, train the smallest behavior model that exposes the assumption, and then compare the library route on the same configuration. The valid comparison is co-computed in one pass on one split, one seed policy, one task panel, and one metric artifact.</p>
+<p><strong>Diffusion Policy: action generation by denoising</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. Action generators differ mainly in how they represent time, uncertainty, and multimodality across the next chunk of motion.</p>
+<p>For Diffusion Policy exposes sampler latency, denoising horizon, receding-horizon execution, and multimodal contact behavior, define observations, action representation, dataset source, rollout evaluator, and failure labels before training. Then compare baseline and library implementation on the same configuration.</p>
 <div class="callout key-insight">
 <div class="callout-title">Mental Model: Demonstrations As Contracts</div>
-<p>Think of each demonstration as a signed contract between the operator, robot body, sensors, action representation, and evaluator. If one party changes later, such as a camera frame rate, gripper calibration, or task reset distribution, the contract must be renegotiated through validation rather than assumed valid.</p>
+<p>For Diffusion Policy exposes sampler latency, denoising horizon, receding-horizon execution, and multimodal contact behavior, each demonstration binds operator behavior, robot body, sensor calibration, action representation, and reset distribution. Changing one field creates a new evaluation contract.</p>
 </div>
 <div class="comparison-table">
-<div class="comparison-table-title">Decision Checklist for Flow matching for actions</div>
+<div class="comparison-table-title">Decision Checklist for Diffusion Policy: action generation by denoising</div>
 <table>
 <thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
 <tbody>
@@ -149,33 +255,46 @@ Building Embodied AI: From Perception to Autonomous Action
 </div>
 <div class="callout warning">
 <div class="callout-title">Pitfall: Generic Success Claims</div>
-<p>Do not claim that flow matching for actions improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
+<p>Do not claim that diffusion policy: action generation by denoising improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Current Research Thread</div>
-<p>ACT, diffusion policies, and flow matching policies all move beyond one-step regression by modeling distributions over action sequences. The practical frontier is not only higher success rates; it is faster closed-loop sampling, better recovery after partial failures, and evaluation on the same task panel rather than cherry-picked robot videos.</p>
+<p>For Diffusion Policy exposes sampler latency, denoising horizon, receding-horizon execution, and multimodal contact behavior, judge the method by closed-loop recovery, latency, stability, contact behavior, and failure labels under the same robot, reset distribution, cameras, and evaluator.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Application Example</div>
-<p><strong>Who:</strong> A robot learning engineer preparing a tabletop manipulation benchmark for a three-arm lab study.</p>
-<p><strong>Situation:</strong> The engineer needs to decide whether flow matching for actions is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
-<p><strong>Decision:</strong> They keep a minimal baseline, then run the right-tool implementation with ACT or Diffusion Policy using the same manifest, seed, split, and evaluation script.</p>
-<p><strong>Result:</strong> The team gets one artifact with per-task success, intervention labels, timing violations, and failure categories, so every reported win is backed by matching evidence.</p>
-<p><strong>Lesson:</strong> <strong>The method earns trust only when the data contract and the evaluation contract are as explicit as the model architecture.</strong></p>
+<p>Who: A robot learning engineer evaluating diffusion action sequences with sampler steps, horizon, latency, and receding-horizon execution on the same manipulation benchmark, robot, camera setup, and reset protocol.</p>
+<p><strong>Situation:</strong> The engineer needs to decide whether diffusion policy: action generation by denoising is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
+<p>Decision: They keep the smallest runnable baseline for diffusion action sequences with sampler steps, horizon, latency, and receding-horizon execution, then compare the maintained implementation under the same manifest, seed, split, and rollout evaluator.</p>
+<p>Result: The team gets one artifact for diffusion action sequences with sampler steps, horizon, latency, and receding-horizon execution with task success, intervention labels, timing violations, recovery behavior, and failure categories.</p>
+<p>Lesson: diffusion action sequences with sampler steps, horizon, latency, and receding-horizon execution earns trust only when the data contract, action representation, and rollout evaluator are versioned together.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Before leaving this section, write one sentence that links flow matching for actions to each of these connected chapters: <a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>, <a href="ch_0176_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0266_part-7-language-vision-and-action-module-35-robot-foundation-models-and-.xhtml">Chapter 35: Robot Foundation Models and Cross-Embodiment Learning</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
+<p>Before leaving this section, write one sentence that links diffusion policy: action generation by denoising to each of these connected chapters: <a href="ch_0163_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>, <a href="ch_0177_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0270_part-7-language-vision-and-action-module-35-robot-foundation-models-and-.xhtml">Chapter 35: Robot Foundation Models and Cross-Embodiment Learning</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
 </div>
 </section>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Generalist Manipulation Backbones</h4>
+<p>Physical Intelligence's pi0 (2024) builds its generalist robot policy on a flow-matching action head, the direct descendant of Diffusion Policy's denoising formulation, to emit smooth multi-step action chunks for tasks like folding laundry and bussing tables across multiple robot embodiments. The same denoising-into-action-chunks idea also ships in Hugging Face LeRobot, where the Diffusion Policy implementation trains on real SO-100 and ALOHA arms. Choosing iterative denoising over single-mean regression is what lets these systems commit to one coherent grasp instead of averaging incompatible demonstrations into a useless middle.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch Denoising Steps Trade Latency for Success on Push-T</h4>
+<p><strong>Goal:</strong> measure empirically how the number of DDIM denoising steps $K$ trades inference latency against task success, the central deployment knob of this section.</p>
+<p><strong>Tools needed:</strong> the <code>real-stanford/diffusion_policy</code> repo (or <code>lerobot</code>), a pretrained Push-T diffusion checkpoint, a single GPU (or CPU for a slow run), and Python with <code>torch</code> and <code>time</code>.</p>
+<p><strong>What to do (15-30 min):</strong> load the pretrained Push-T policy and run 30 evaluation rollouts in the MuJoCo/robosuite simulator. Set <code>num_inference_steps</code> (the <code>DDIMScheduler</code> field, exposed as <code>inference_num_ddim_iters</code> in the hydra config) to each of $K \in \{100, 50, 16, 8, 4\}$ without retraining. For each value, time one chunk generation with <code>time.perf_counter()</code> and record the success rate over the 30 rollouts.</p>
+<p><strong>What to vary:</strong> the step count $K$; optionally also rotate the T-block 45 degrees to add an out-of-distribution condition.</p>
+<p><strong>What to observe:</strong> plot success rate and per-chunk latency against $K$. You should see latency fall roughly linearly with $K$ while success stays nearly flat down to about $K=16$, then drop more sharply, the curve that justifies aggressive step reduction for planar tasks but warns against it for contact-rich ones.</p>
+</div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Flow matching for actions is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Diffusion Policy: action generation by denoising is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 22.5.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 22.4.1</div><p>Design a method-matched experiment for Diffusion Policy: action generation by denoising. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Train a minimal Diffusion Policy on the Push-T task using the <code>real-stanford/diffusion_policy</code> repo with MuJoCo as the simulator; the key challenge is configuring the DDIM scheduler step count so that inference fits within a 100 ms budget and logging task success separately for in-distribution and 45-degree-rotated object poses. <strong>Intermediate (1-2 weeks):</strong> Collect 50 demonstrations with LeRobot on a pick-and-place task in PyBullet, train a diffusion policy, then implement the overlapping-chunk inference loop so that the next denoising pass begins while the current chunk is executing, and measure whether latency hiding improves effective control frequency. <strong>Intermediate (1-2 weeks):</strong> Port a trained diffusion policy to a ROS2 node that subscribes to a camera topic and publishes joint commands, stress-test receding-horizon execution by injecting simulated perception dropouts mid-episode, and record structured failure labels (perception dropout vs. contact error) to identify which failure mode dominates under sensor noise.</p></div>
 <div class="whats-next">
 <h2>What's Next</h2>
-<p>This section grounded flow matching for actions in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0174_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.6</a>, where the same contract is carried into the next technique or chapter.</p>
+<p>This section grounded diffusion policy: action generation by denoising in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0174_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.5</a>, where the same contract is carried into the next technique or chapter.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
@@ -209,12 +328,12 @@ Building Embodied AI: From Perception to Autonomous Action
 </div>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0172_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.4: Diffusion Policy: action generation by...</a>
-<a class="up" href="ch_0168_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Chapter 22: Action Chunking and Diffusion Policies</a>
-<a class="next" href="ch_0174_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.6: VQ-BeT and discretized behavior modeling</a>
+<a class="prev" href="ch_0172_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.3: ALOHA, ALOHA 2, and Mobile ALOHA</a>
+<a class="up" href="ch_0169_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Chapter 22: Action Chunking and Diffusion Policies</a>
+<a class="next" href="ch_0174_part-5-learning-from-demonstration-and-robot-data-module-22-action-chunk.xhtml">Section 22.5: Flow matching for actions</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

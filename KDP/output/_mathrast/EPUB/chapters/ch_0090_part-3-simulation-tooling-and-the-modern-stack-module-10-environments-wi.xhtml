@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 10.5: Rendering, logging, and debugging</title>
+    <title>Section 10.4: Vectorized environments; wrappers</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,170 +14,318 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0078_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a></div>
-<div class="chapter-label"><a href="ch_0085_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Chapter 10: Environments with Gymnasium (and PettingZoo)</a></div>
-<h1>Section 10.5: Rendering, logging, and debugging</h1>
+<div class="page-breadcrumb"><a href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a><span class="bc-sep">›</span><a href="ch_0086_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Chapter 10: Environments with Gymnasium (and PettingZoo)</a></div>
+<h1>Section 10.4: Vectorized environments; wrappers</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"One environment teaches. Thirty-two environments running in lockstep teach thirty-two times faster, and every lesson is already batched."</p><cite>A Throughput-Conscious Trainer</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 10.5: Rendering, logging, and debugging, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/86dc7a6cf9_chapter-10-illustration-05.jpg"/>
-<figcaption><strong>Figure 10.5A</strong>: Section 10.5: Rendering, logging, and debugging is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 10.4: Vectorized environments; wrappers." loading="lazy" src="../img/cb8689cfd0_chapter-10-illustration-04.jpg"/>
+<figcaption>Figure 10.4A: Vectorized environment architecture: N independent environment copies run in parallel subprocesses, their observations are stacked into a batch tensor, and the policy processes the batch in a single forward pass. The insight is throughput without changing the policy: one forward pass now yields N transitions instead of one, so a 32-copy run collects the same experience in roughly 1/32 the wall-clock time.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with Gymnasium observation and action spaces introduced in section 10.2. The vectorization patterns here are extended in section 17.1, which scales the same batched rollout technique to GPU-accelerated parallel simulation across thousands of sub-environments. The autoreset semantics and bootstrap-target pitfalls covered here (a sub-environment that finishes an episode is reset immediately, and the section below explains exactly how that silently overwrites the observation you need; see the worked walkthrough later in this section) also recur in section 14.2, where value-function targets must be computed from terminal observations rather than from the reset observations that vectorized environments return in their place.<span data-agent="03"/></p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p>Rendering, logging, and debugging defines the contract an embodied experiment exposes to learning code: observations, actions, rewards, termination, truncation, rendering, and diagnostic info. Gymnasium handles the single-agent version of that contract, while PettingZoo extends the same discipline to multi-agent interaction.</p>
-<p>This section turns the interface from <a class="cross-ref" href="ch_0018_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">Chapter 2: The Agent-Environment Interface</a> into runnable Gymnasium and PettingZoo practice. It prepares the reinforcement-learning algorithms in <a class="cross-ref" href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a> and the benchmark protocols in <a class="cross-ref" href="ch_0102_part-3-simulation-tooling-and-the-modern-stack-module-12-benchmarks-and-.xhtml">Chapter 12: Benchmarks and Task Suites</a> by making spaces, seeds, wrappers, and termination semantics explicit.</p>
+<p>A robot policy trained on a single simulated arm learns painfully slowly. Run 32 copies of that arm in parallel, stack their observations into one batch tensor, and a single GPU forward pass consumes all 32 transitions at once (Figure 10.4A). Training that took hours now takes minutes. In practice, this kind of batched-rollout throughput underlies many competitive locomotion and manipulation results in the current literature.<span data-agent="28"/></p>
+<p>Vectorized environments make that parallelism safe and auditable. Wrappers let you reshape observations, clip rewards, or inject time signals without touching the base simulator. Together they define the exact contract your policy signs. Here you will build a wrapper stack, spin up a vectorized rollout, and learn the autoreset pitfall, where a terminated sub-environment is silently reset before you can read its final state, that silently corrupts value targets if you are not watching for it.<span data-agent="21"/></p>
 </div>
 <h2>What This Section Builds</h2>
-<p>This section makes rendering, logging, and debugging operational. It names the task contract, the evidence artifact, and the failure mode that would make a result untrustworthy.</p>
-<p>The goal is not vocabulary recognition. The goal is a reproducible habit: define the task, run an inspectable baseline, apply the maintained tool, and save the comparison as one artifact.</p>
+<p data-agent="22">A single-arm policy that crawls toward convergence overnight can finish before lunch the moment you run 32 copies in lockstep and feed all their observations through one GPU forward pass; that 32x throughput, and the wrapper contract that makes it trustworthy, is what this section builds. Wrappers change what an environment exposes without rewriting the base simulator. Vector environments run several copies of a task behind one batched API. A single-environment CartPole training run typically needs around 500,000 steps to converge; a 32-environment vectorized run collects those same 500,000 steps in roughly 1/32 the wall-clock time, because every GPU forward pass consumes 32 transitions at once instead of one.</p>
+<p>The goal is to keep throughput improvements honest. A wrapper stack should be declared, ordered, and logged, and a vectorized rollout should preserve per-environment termination, truncation, reward, and info fields.</p>
 <div class="callout key-insight">
 <div class="callout-title">The Interface Is The Test</div>
-<p>An environment is not ready because it runs. It is ready when another person can reset it with the same seed, inspect the same spaces, interpret the same termination flags, and reproduce the same evidence artifact.</p>
+<p>This environment is ready when another reader can reset it with the same seed, inspect vectorized reset semantics, wrapper order, batch shape, and per-environment info records, reproduce the same rollout, and recover the same logged evidence.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>A wrapper is an environment transformation. It can alter observations, actions, rewards, metadata, or the behavior of <code>reset</code> and <code>step</code>. The base task remains underneath, but the policy sees the wrapped contract.</p>
+<p>A vector environment batches several environment copies so the learner collects experience faster. Gymnasium vector envs return arrays for rewards, terminations, and truncations with one element per sub-environment. Observations are batched according to the observation space, which is why <a href="ch_0088_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">space design from Section 10.2</a> matters before vectorization.</p>
+<figure class="diagram-container">
+<svg font-family="monospace" font-size="12" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Title -->
+<text fill="currentColor" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="22">Wrapper Pipeline + Vectorized Batch</text>
+<!-- ===== LEFT SIDE: Wrapper stack (single env) ===== -->
+<text fill="currentColor" font-size="11" text-anchor="middle" x="130" y="48">Single environment</text>
+<!-- Policy box -->
+<rect fill="none" height="30" rx="4" stroke="currentColor" stroke-width="1.5" width="140" x="60" y="58"/>
+<text fill="currentColor" text-anchor="middle" x="130" y="78">Policy</text>
+<!-- Arrow down: action -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="130" x2="130" y1="88" y2="108"/>
+<text fill="currentColor" font-size="10" x="138" y="102">action</text>
+<!-- RewardWrapper box -->
+<rect fill="none" height="28" rx="4" stroke="currentColor" stroke-dasharray="4 2" stroke-width="1.5" width="140" x="60" y="108"/>
+<text fill="currentColor" text-anchor="middle" x="130" y="127">RewardWrapper</text>
+<!-- Arrow down -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="130" x2="130" y1="136" y2="150"/>
+<!-- ActionWrapper box -->
+<rect fill="none" height="28" rx="4" stroke="currentColor" stroke-dasharray="4 2" stroke-width="1.5" width="140" x="60" y="150"/>
+<text fill="currentColor" text-anchor="middle" x="130" y="169">ActionWrapper</text>
+<!-- Arrow down -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="130" x2="130" y1="178" y2="192"/>
+<!-- ObservationWrapper box -->
+<rect fill="none" height="28" rx="4" stroke="currentColor" stroke-dasharray="4 2" stroke-width="1.5" width="140" x="60" y="192"/>
+<text fill="currentColor" text-anchor="middle" x="130" y="211">ObservationWrapper</text>
+<!-- Arrow down -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="130" x2="130" y1="220" y2="234"/>
+<!-- Base Simulator box -->
+<rect fill="none" height="30" rx="4" stroke="currentColor" stroke-width="2" width="140" x="60" y="234"/>
+<text fill="currentColor" font-weight="bold" text-anchor="middle" x="130" y="254">BaseEnv</text>
+<!-- obs return arrow (up the right side) -->
+<line stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="200" x2="218" y1="249" y2="249"/>
+<line stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="218" x2="218" y1="249" y2="73"/>
+<line marker-end="url(#arr)" stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="218" x2="200" y1="73" y2="73"/>
+<text fill="currentColor" font-size="10" transform="rotate(90,224,165)" x="224" y="165">obs (transformed)</text>
+<!-- ===== DIVIDER ===== -->
+<line opacity="0.4" stroke="currentColor" stroke-dasharray="6 3" stroke-width="0.8" x1="285" x2="285" y1="40" y2="280"/>
+<!-- ===== RIGHT SIDE: VecEnv ===== -->
+<text fill="currentColor" font-size="11" text-anchor="middle" x="440" y="48">Vectorized (N copies)</text>
+<!-- Policy batch box -->
+<rect fill="none" height="30" rx="4" stroke="currentColor" stroke-width="1.5" width="160" x="360" y="58"/>
+<text fill="currentColor" text-anchor="middle" x="440" y="78">Policy (batch forward)</text>
+<!-- Arrow down: actions [N] -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="440" x2="440" y1="88" y2="108"/>
+<text fill="currentColor" font-size="10" x="448" y="102">actions [N]</text>
+<!-- VecEnv box -->
+<rect fill="none" height="44" rx="4" stroke="currentColor" stroke-width="2" width="160" x="360" y="108"/>
+<text fill="currentColor" font-weight="bold" text-anchor="middle" x="440" y="127">SyncVectorEnv</text>
+<text fill="currentColor" font-size="10" text-anchor="middle" x="440" y="144">(N wrapped copies)</text>
+<!-- Sub-env rows -->
+<rect fill="none" height="22" rx="3" stroke="currentColor" stroke-width="1" width="40" x="368" y="162"/>
+<text fill="currentColor" font-size="10" text-anchor="middle" x="388" y="177">env 0</text>
+<rect fill="none" height="22" rx="3" stroke="currentColor" stroke-width="1" width="40" x="420" y="162"/>
+<text fill="currentColor" font-size="10" text-anchor="middle" x="440" y="177">env 1</text>
+<rect fill="none" height="22" rx="3" stroke="currentColor" stroke-width="1" width="40" x="472" y="162"/>
+<text fill="currentColor" font-size="10" text-anchor="middle" x="492" y="177">env N-1</text>
+<!-- Lines from VecEnv to sub-envs -->
+<line stroke="currentColor" stroke-width="1" x1="388" x2="388" y1="152" y2="162"/>
+<line stroke="currentColor" stroke-width="1" x1="440" x2="440" y1="152" y2="162"/>
+<line stroke="currentColor" stroke-width="1" x1="492" x2="492" y1="152" y2="162"/>
+<!-- Dots for ellipsis -->
+<text fill="currentColor" font-size="14" x="514" y="177">...</text>
+<!-- Stacked obs arrow back up -->
+<line marker-end="url(#arr)" stroke="currentColor" stroke-width="1.5" x1="440" x2="440" y1="184" y2="210"/>
+<!-- Batch tensor box -->
+<rect fill="none" height="30" rx="4" stroke="currentColor" stroke-dasharray="4 2" stroke-width="1.5" width="160" x="360" y="210"/>
+<text fill="currentColor" text-anchor="middle" x="440" y="229">obs batch [N x obs_dim]</text>
+<!-- Arrow back to policy -->
+<line stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="520" x2="540" y1="225" y2="225"/>
+<line stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="540" x2="540" y1="225" y2="73"/>
+<line marker-end="url(#arr)" stroke="currentColor" stroke-dasharray="3 2" stroke-width="1" x1="540" x2="520" y1="73" y2="73"/>
+<!-- autoreset note -->
+<text fill="currentColor" font-size="10" text-anchor="middle" x="440" y="265">autoreset: terminal obs in</text>
+<text fill="currentColor" font-size="10" text-anchor="middle" x="440" y="279">infos["final_observation"]</text>
+<!-- Arrow marker definition -->
+<defs>
+<marker id="arr" markerheight="7" markerwidth="7" orient="auto" refx="6" refy="3.5">
+<path d="M0,0 L0,7 L7,3.5 Z" fill="currentColor"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Figure 10.4B: Left: a wrapper pipeline where each layer transforms the action (downward) or observation (upward return path) before reaching the base simulator. Right: a vectorized environment runs N wrapped copies in parallel, stacks their observations into one batch tensor for a single policy forward pass, and stores terminal observations in the info dictionary on autoreset.</figcaption>
+</figure>
+<p>In embodied AI, the wrapper contract is not just a software convenience. A real robot's sensors have fixed ranges, its actuators accept commands in specific units, and its safety system may cut power if a reward signal drives joint torques beyond hardware limits. A wrapper that rescales torque commands or clips force observations must match the physical actuator's operating envelope exactly. The wrong scaling can silently train the policy in a fantasy space, and the mismatch typically only surfaces when the policy runs on the physical arm and commands forces the joints cannot produce or cannot safely stop.<span data-agent="28"/></p>
+<p data-agent="29">Figure 10.4B makes this two-part structure concrete. On the left, a wrapper stack sends actions down to the base simulator and passes observations back up through each transform. On the right, the same wrapped environment repeats N times behind a single batched vector API. The mechanism is direct. Every Gymnasium wrapper subclasses <code>gym.Wrapper</code> and overrides only the methods it transforms. When your code calls <code>wrapped.step(action)</code>, Python calls the outermost wrapper's <code>step</code>. That wrapper applies its action transform, then delegates to the next wrapper's <code>step</code>, and so on until the innermost call reaches the base simulator. The returned observation travels back up through each wrapper's <code>observation</code> method and accumulates transformations in reverse. Gymnasium updates the spaces at construction time, so the policy always sees the final, post-wrapper space.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a wrapper transforms one environment's observations, actions, or rewards while leaving the base simulator untouched; wrappers compose into an ordered pipeline (outermost to innermost on the way in, innermost to outermost on the way out); and Gymnasium updates the observation/action spaces at construction time so the policy always sees the final, post-wrapper contract. The next paragraphs build on these three facts to show why the order of that pipeline is not arbitrary.</p></div>
+<p>A wrapper that ships the wrong unit scaling to a physical joint does not produce a suboptimal policy; it produces a policy that was never trained for the hardware it will run on.</p>
+<div class="callout warning"><p>A common assumption is that wrapper order does not matter because each wrapper is "just a transformation" and the final result is the same regardless of sequence. In embodied AI this assumption can cause silent, hard-to-diagnose errors: applying an action-clipping wrapper before an action-rescaling wrapper clips in the original unit range and then rescales, whereas applying rescaling first clips after scaling, sending different torque magnitudes to the simulated or physical joint. The correct mental model is that wrappers form an ordered pipeline, not a commutative set; the policy sees the composition applied from outermost to innermost on inputs and innermost to outermost on outputs, so swapping any two wrappers changes the effective contract and can train a policy that commands forces a real actuator cannot safely produce.<span data-agent="28"/></p></div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Think of wrappers as a visible pipeline around the simulator and vectorization as a batch dimension around that pipeline. The audit question is always the same: which contract did the policy actually see?</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Create a typed record for Rendering, logging, and debugging.</span>
-<span class="c1"># The fields expose the environment contract before policy code appears.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EmbodiedStep</span><span class="p">:</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">result</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">step</span> <span class="o">=</span> <span class="n">EmbodiedStep</span><span class="p">(</span><span class="s2">"rendering_logging_and_debuggin"</span><span class="p">,</span> <span class="s2">"act"</span><span class="p">,</span> <span class="s2">"observe consequence"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 10.5.1 creates an <code>EmbodiedStep</code> record for Rendering, logging, and debugging. The observation, action, and result fields make the interface explicit before a simulator or policy is added.</div>
+<p data-agent="15">Code Fragment 10.4.1 applies a Gymnasium observation wrapper that adds time awareness to the observation, so the policy sees a five-value observation instead of the base four-value CartPole state.</p>
+<pre><code class="language-python"><span class="c1"># Wrap an environment so the observation includes elapsed time.</span>
+<span class="c1"># The policy sees the wrapped observation space, not the base one.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gymnasium</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">gym</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">gymnasium.wrappers</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeAwareObservation</span>
+<span class="n">env</span> <span class="o">=</span> <span class="n">gym</span><span class="o">.</span><span class="n">make</span><span class="p">(</span><span class="s2">"CartPole-v1"</span><span class="p">)</span>
+<span class="n">wrapped</span> <span class="o">=</span> <span class="n">TimeAwareObservation</span><span class="p">(</span><span class="n">env</span><span class="p">)</span>
+<span class="n">observation</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">wrapped</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">wrapped</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">action</span> <span class="o">=</span> <span class="n">wrapped</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
+<span class="n">next_observation</span><span class="p">,</span> <span class="n">reward</span><span class="p">,</span> <span class="n">terminated</span><span class="p">,</span> <span class="n">truncated</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">wrapped</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">wrapped</span><span class="o">.</span><span class="n">observation_space</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">next_observation</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">reward</span><span class="p">),</span> <span class="n">terminated</span><span class="p">,</span> <span class="n">truncated</span><span class="p">)</span>
+<span class="n">wrapped</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></code></pre>
+<div class="code-output">(5,)
+(5,) 1.0 False False</div>
+<p data-agent="17">The output shows the observation shape growing from four entries to five, and the second line confirms the wrapped environment still returns a legal step tuple. The policy now receives time information as part of its observation.</p>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 10.4</strong>.1 shows that <code>TimeAwareObservation</code> changes the observation contract from four values to five. A result table that omits this wrapper would be incomplete because the policy received extra time information.</div>
+<p data-agent="01">A single wrapper is easy to reason about; the harder skill this section promises is stacking several wrappers and knowing the resulting contract. Code Fragment 10.4.1b stacks a reward-clipping wrapper on top of the time-aware observation wrapper, in that order, and shows how to read off the combined effect.</p>
+<pre><code class="language-python"><span class="c1"># Stack two wrappers: first add time awareness, then clip rewards.</span>
+<span class="c1"># Order matters: this clips the *base* reward, before any later</span>
+<span class="c1"># reward-shaping wrapper would see it.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gymnasium</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">gym</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">gymnasium.wrappers</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeAwareObservation</span><span class="p">,</span> <span class="n">ClipReward</span>
+<span class="n">env</span> <span class="o">=</span> <span class="n">gym</span><span class="o">.</span><span class="n">make</span><span class="p">(</span><span class="s2">"CartPole-v1"</span><span class="p">)</span>
+<span class="n">stacked</span> <span class="o">=</span> <span class="n">ClipReward</span><span class="p">(</span><span class="n">TimeAwareObservation</span><span class="p">(</span><span class="n">env</span><span class="p">),</span> <span class="n">min_reward</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">max_reward</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+<span class="n">observation</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">stacked</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">stacked</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="mi">13</span><span class="p">)</span>
+<span class="n">action</span> <span class="o">=</span> <span class="n">stacked</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
+<span class="n">next_observation</span><span class="p">,</span> <span class="n">reward</span><span class="p">,</span> <span class="n">terminated</span><span class="p">,</span> <span class="n">truncated</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">stacked</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">stacked</span><span class="o">.</span><span class="n">observation_space</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">next_observation</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">reward</span><span class="p">))</span>
+<span class="n">stacked</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></code></pre>
+<div class="code-output">(5,)
+(5,) 0.5</div>
+<p data-agent="01">The observation shape is still <code>(5,)</code> because <code>TimeAwareObservation</code> runs unchanged underneath; the reward is now clamped to <code>0.5</code> instead of the base environment's <code>1.0</code>, because <code>ClipReward</code> is the outer layer. Reversing the stacking order would still clip to the same range here since CartPole's reward is a constant 1.0 per step, but with a reward that varies per step, clipping before versus after another reward transform can change the training signal, which is exactly why the wrapper order must be recorded alongside the result, not just the final wrapper class names.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use MuJoCo, MJX, Isaac Lab, Genesis, Newton, Drake, ROS 2, and modern Gazebo to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Gymnasium wrappers replace custom preprocessing glue with named, inspectable transformations. The shortcut is safe only when the wrapper order is saved, because reward clipping before logging and reward clipping after logging produce different evidence.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Write the base environment contract before adding wrappers.</li>
+<li>Add one wrapper at a time and record how it changes spaces, rewards, or info.</li>
+<li>Use vector environments when rollout throughput, not environment semantics, is the bottleneck.</li>
+<li>Interpret vector outputs per sub-environment, not as one scalar episode.</li>
+<li>Log autoreset mode and final observations when using vector rollouts that reset sub-environments automatically.</li>
 </ol>
-<div class="callout tip"><div class="callout-title">Gymnasium And PettingZoo Practice</div><p>A usable environment wrapper records observation and action spaces, reset seeds, termination and truncation rules, wrappers, render modes, and info dictionaries. For multi-agent work, PettingZoo also needs the agent order, parallel versus AEC API choice, and per-agent reward semantics.</p></div>
+<div class="callout tip"><div class="callout-title">Gymnasium And PettingZoo Practice</div><p>A usable environment wrapper for this section records vectorized reset semantics, wrapper order, batch shape, and per-environment info records, plus observation and action spaces, reset seed, info dictionary fields, and reproducible evidence artifacts.</p></div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is comparing a wrapped run with an unwrapped run as if only the policy changed. If one run clips rewards, normalizes observations, or adds time features, the comparison is no longer construct matched (construct matched means both runs measure the same underlying quantity under the same conditions, so a difference in the result can only be attributed to the one thing you meant to vary).<span data-agent="04"/></p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team working on rendering, logging, and debugging should log final success, intermediate observations, chosen actions, controller status, seed, wrapper stack, and recovery events. The logs reveal whether the method solves the task or merely passes the easiest episodes.</p>
+<p>A manipulation lab might <a href="ch_0138_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">vectorize 32 simulated arms to collect rollouts faster</a>, then wrap observations with normalization and action scaling. The result artifact should list both the vector environment parameters and the wrapper stack, because both affect what the policy learned.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: OpenAI Five (Dota 2)</h4>
+<p>OpenAI Five trained its Dota 2 agents by running thousands of game instances in parallel and stepping them through a vectorized rollout API, the same batch-the-contract pattern shown here scaled to a production cluster. Custom wrappers reshaped the raw game state into the fixed observation vector the policy expected and clipped reward shaping signals before they reached the learner. The throughput from this vectorization let the system consume the equivalent of hundreds of years of self-play per day, which was a major contributing factor in the system's eventual wins over professional teams.<span data-agent="28"/></p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When vectorized environments; wrappers feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Heterogeneous wrapper stacks across massive parallelism.</strong> Isaac Lab (NVIDIA, 2024) demonstrated vectorized environments at 100,000+ parallel instances on a single GPU, but exposed a new wrapper correctness problem: a single misconfigured normalization layer corrupts every sub-environment simultaneously with no observable reward drop until transfer. The 2024 Isaac Lab paper (Mittal et al., "Isaac Lab: Towards Unified and Modular Robotic Learning," arXiv 2024) introduced per-environment telemetry hooks that independently verify each wrapper's output distribution during training rather than at evaluation time.</p>
+<p><strong>Adaptive wrapper composition for sim-to-real transfer.</strong> Rather than fixing a static wrapper stack at training time, work from the Berkeley Robot Learning Lab (2024-2025) explores meta-wrappers that adjust observation noise, action latency injection, and <a data-agent="13" href="ch_0111_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">domain randomization</a> ranges on-the-fly based on sim-to-real distribution shift signals. This connects wrapper design directly to online transfer monitoring instead of treating it as a one-time design decision.</p>
+<p><strong>Formal wrapper verification.</strong> The ManiSkill3 benchmark (Gu et al., 2025) surfaces a category of wrapper bugs that are correct in isolation but produce invalid compositions: for example, a time-limit wrapper applied outside a frame-skip wrapper changes the effective episode horizon in a way that neither wrapper's unit tests catch. Current work in this space is developing type-level contracts for wrapper pipelines so that illegal compositions are rejected at environment construction time rather than discovered via corrupted gradients.</p>
+<p><strong>Open problem.</strong> No principled method exists for automatically ordering a set of candidate wrappers to minimize the sim-to-real gap for a given task. Given $k$ wrappers and $k!$ possible orderings, the space is too large to search exhaustively, yet the ordering affects both learning dynamics and transfer fidelity. A tractable subproblem: can a learned "wrapper scheduler" that conditions on early training diagnostics select an ordering that outperforms the expert-designed default without requiring hardware rollouts for each candidate ordering?</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, action, metric, perturbation, seed policy, and most likely failure mode for rendering, logging, and debugging? If not, the experiment boundary is still too vague.</p>
+<p>Can you write the wrapper stack in order and explain the shape of one batched observation, reward, termination, and truncation array? If not, the vectorized experiment is not yet inspectable.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Rendering, logging, and debugging becomes useful when it is tied to a closed-loop contract. In this chapter on Environments with Gymnasium (and PettingZoo), the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<h4 data-agent="30">Why The Contract Must Be Logged</h4>
+<p>Wrappers are powerful because they separate task dynamics from interface transformations. That separation also creates a risk: the experiment may claim to evaluate a base environment while the policy actually saw normalized observations, <a href="ch_0146_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">clipped rewards</a>, time features, action rescaling, and a time-limit wrapper.</p>
+<p>Vector environments add another layer. They make the rollout batch look like one object, but each sub-environment still has its own episode boundary. Evaluation code should preserve that identity so one unstable instance does not disappear inside an average.</p>
+<p data-agent="14">Choosing the right wrapper and vectorization primitives is what makes that per-environment discipline practical, so the next table maps each transformation type to the role it plays and the cautions it carries.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Rendering, logging, and debugging</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Rendering, logging, and debugging</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Rendering, logging, and debugging</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Rendering, logging, and debugging</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Rendering, logging, and debugging</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td><code>ObservationWrapper</code></td><td>Observation transformation</td><td>Use for time features, resizing, normalization, or sensor projection.</td></tr><tr><td><code>ActionWrapper</code></td><td>Action transformation</td><td>Use for rescaling, clipping, or translating policy actions into controller commands.</td></tr><tr><td><code>RewardWrapper</code></td><td>Reward transformation</td><td>Use with caution, because it changes the training signal.</td></tr><tr><td><code>SyncVectorEnv</code></td><td>Batched rollout in one process</td><td>Use for simple debugging and deterministic batched smoke tests.</td></tr><tr><td><code>AsyncVectorEnv</code></td><td>Batched rollout across processes</td><td>Use when environment stepping is expensive enough to justify multiprocessing complexity.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p data-agent="29">One subtlety in vectorized rollouts is worth examining before touching code. When a sub-environment inside a <code>SyncVectorEnv</code> or <code>AsyncVectorEnv</code> reaches a terminal state, Gymnasium immediately resets it and places the first observation of the <em>new</em> episode into the returned batch. This behavior is called <strong>silent autoreset overwrite</strong>, and it is the most common source of corrupted value targets in vectorized training. Gymnasium moves the terminal observation into <code>infos["final_observation"]</code> for that sub-environment index. Consider a concrete case. Three CartPole environments run together, and environment index 1 falls after 12 steps. At step 12, <code>envs.step(actions)</code> returns the reset observation for index 1, not the observation where the pole fell. Code that reads <code>observations[1]</code> to compute a <a href="ch_0120_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">value-function</a> bootstrap target (an estimate of future return computed from the state where an episode ended, used to fill in the reward-to-go beyond the collected rollout) then uses the wrong state.<span data-agent="04"/> The correct value comes from <code>infos["final_observation"][1]</code>. In a 32-environment rollout of 1,000 steps, a CartPole episode ends roughly every 200 steps per sub-environment. The policy therefore receives around 160 corrupted bootstrap targets before any reward-curve blip grows large enough to notice, so the bug trains the value function on wrong states for hundreds of updates in complete silence.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Autoreset and final_observation in a 3-env batch</h4>
+<p>Trace through one vectorized step where env 1 terminates. Suppose at step 11 the batch holds <code>observations = [[ 0.01, 0.20, -0.04, -0.31], [ 0.09, 0.51, -0.21, -0.88], [-0.02, 0.10, 0.03, 0.22]]</code> and the policy issues <code>actions = [1, 0, 1]</code>. We call <code>envs.step(actions)</code>. Env 1's pole angle crosses the failure threshold, so internally Gymnasium computes its terminal observation <code>[ 0.10, 0.30, -0.25, -0.60]</code>, then immediately resets env 1 to a fresh start such as <code>[ 0.03, -0.01, 0.01, 0.02]</code>. The returned batch is now <code>observations = [[ 0.02, 0.01, -0.05, -0.05], [ 0.03, -0.01, 0.01, 0.02], [-0.01, -0.18, 0.04, 0.50]]</code> with <code>rewards = [1.0, 1.0, 1.0]</code> and <code>terminations = [False, True, False]</code>. Notice slot 1 already shows the new episode's start, not the failure state. The true terminal state lives in <code>infos["final_observation"][1] = [ 0.10, 0.30, -0.25, -0.60]</code>. To bootstrap, you read <code>terminations[1] == True</code>, fetch <code>infos["final_observation"][1]</code>, and feed that to the value head; using <code>observations[1]</code> instead would estimate the value of a brand-new pole that has nothing to do with the transition that just ended.</p>
+</div>
+<div class="callout key-insight"><p>Think of a relay race where a runner crosses the finish line and the next runner immediately steps onto the starting block in the same lane. If you glance at that lane a moment too late, you see the fresh runner ready to go, not the exhausted finisher who just completed the lap. Vectorized autoreset works exactly the same way: the moment a sub-environment terminates, it resets and puts a brand-new starting observation in its slot. Read the batch without checking termination flags and you see the new runner, not the one whose final position you actually need for your value calculation. The finished runner's true last position is preserved in the infos record, just as a photograph taken at the exact finish line captures the real moment.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Autoreset in vectorized environments overwrites the terminal observation with the first observation of the next episode before the caller can read it. Any bootstrap, logging, or intrinsic-reward computation that reads the raw observation array at a termination step is using the wrong state. Always check <code>infos["final_observation"]</code> for the true last observation when <code>terminations[i]</code> is <code>True</code>.</p></div>
+<p data-agent="14">Avoiding that autoreset trap is easier when the batched rollout is built on a foundation you have already verified one environment at a time.</p>
+<p>A robust vector implementation proves the single environment first, then creates a batched version with the same wrappers. The first artifact explains semantics; the second artifact explains throughput.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Run one unwrapped environment step and save the return shapes.</li>
+<li>Add wrappers and rerun the same seed to show how the contract changed.</li>
+<li>Create the vector environment only after the wrapper stack is fixed.</li>
+<li>Store per-sub-environment rewards, termination flags, truncation flags, and final info.</li>
+<li>Use aggregate plots only after preserving the per-environment traces.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Rendering, logging, and debugging.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"10.5"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 10.5.2 records the method-specific evidence schema for testing Rendering, logging, and debugging with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<p><strong>Expected output:</strong> the printed trace for Rendering, logging, and debugging should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When an experiment about rendering, logging, and debugging fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
+<pre><code class="language-python"><span class="c1"># Step three CartPole environments through one vectorized API call.</span>
+<span class="c1"># Rewards and ending flags retain one element per sub-environment.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gymnasium</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">gym</span>
+<span class="n">envs</span> <span class="o">=</span> <span class="n">gym</span><span class="o">.</span><span class="n">make_vec</span><span class="p">(</span><span class="s2">"CartPole-v1"</span><span class="p">,</span> <span class="n">num_envs</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">vectorization_mode</span><span class="o">=</span><span class="s2">"sync"</span><span class="p">)</span>
+<span class="n">observations</span><span class="p">,</span> <span class="n">infos</span> <span class="o">=</span> <span class="n">envs</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">11</span><span class="p">)</span>
+<span class="n">envs</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="mi">11</span><span class="p">)</span>
+<span class="n">actions</span> <span class="o">=</span> <span class="n">envs</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
+<span class="n">observations</span><span class="p">,</span> <span class="n">rewards</span><span class="p">,</span> <span class="n">terminations</span><span class="p">,</span> <span class="n">truncations</span><span class="p">,</span> <span class="n">infos</span> <span class="o">=</span> <span class="n">envs</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">actions</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">observations</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">actions</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">rewards</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">terminations</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span> <span class="n">truncations</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="n">envs</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></code></pre>
+<div class="code-output">(3, 4)
+[0, 0, 1]
+[1.0, 1.0, 1.0]
+[False, False, False] [False, False, False]</div>
+<p>The expected output should be read row-wise across three sub-environments: a batched observation tensor of shape <code>(3, 4)</code>, three sampled actions, three rewards, and one termination and truncation flag per environment. Nothing is aggregated yet, which is exactly the right interpretation for vectorized evidence.</p>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 10.4</strong>.2 uses <code>gym.make_vec</code> to step three environments together. The observation shape <code>(3, 4)</code> shows the batch dimension, and the reward and ending arrays keep one value per sub-environment.</div>
+<div class="callout algorithm">
+<h4>Algorithm: Vectorized Rollout with a Verified Wrapper Stack</h4>
+<p><em>Before reading the steps, ask yourself: if one sub-environment silently resets mid-batch and you never check the termination flags, how many training updates could pass before you notice the corrupted value targets?</em></p>
+<p><strong>Input:</strong> base environment factory $f$, wrapper list $W = [w_1, w_2, \ldots, w_k]$ in application order, number of parallel copies $N$, rollout horizon $T$, policy $\pi_\theta$</p>
+<p><strong>Output:</strong> per-sub-environment trajectory arrays $\{o_t^i, a_t^i, r_t^i, d_t^i, \tau_t^i\}$ for $i \in [N]$, $t \in [T]$; final-observation buffer $F$</p>
+<ol>
+<li>Construct the base environment $e_0 = f()$ and record its observation space $\mathcal{O}_0$ and action space $\mathcal{A}_0$.</li>
+<li>Apply wrappers in order: set $e_j = w_j(e_{j-1})$ for $j = 1, \ldots, k$. After each step record $(\mathcal{O}_j, \mathcal{A}_j)$ to confirm the contract change; abort if any wrapper leaves $\mathcal{O}_j$ or $\mathcal{A}_j$ undefined.</li>
+<li>Create the vector environment: $\text{VecEnv} = \text{SyncVectorEnv}([e_k^{(1)}, \ldots, e_k^{(N)}])$, where each copy is built from the fully wrapped factory.</li>
+<li>Reset all copies with a fixed seed $s$: obtain batch $o_0 \in \mathbb{R}^{N \times |\mathcal{O}_k|}$ and initial info dictionary $I_0$.</li>
+<li>For each step $t = 0, 1, \ldots, T-1$: sample or compute $a_t = \pi_\theta(o_t)$ and call $\text{VecEnv.step}(a_t)$ to receive $(o_{t+1}, r_t, d_t, \tau_t, I_t)$ where each array has shape $[N]$ (scalar fields) or $[N, \ldots]$ (observation fields).</li>
+<li>For each index $i$ where $d_t^i = \text{True}$: copy $I_t[\text{"final\_observation"}][i]$ into the final-observation buffer $F[i]$ before overwriting $o_{t+1}^i$ with the autoreset observation.</li>
+<li>Use $F[i]$ (not $o_{t+1}^i$) to compute any value-function bootstrap target $V(s_T^i)$ at episode boundaries, ensuring $\nabla_\theta$ flows through the correct terminal state.</li>
+<li>Accumulate per-sub-environment episode returns $G^i = \sum_t r_t^i$ and episode lengths $L^i$; never aggregate across $i$ before storing per-environment traces.</li>
+<li>Log the complete wrapper stack $[w_1, \ldots, w_k]$, $N$, $T$, and seed $s$ alongside the trajectory arrays so any downstream comparison uses construct-matched observations and rewards.</li>
+<li>Close the vector environment with $\text{VecEnv.close}()$ and verify no sub-process leaks remain before returning results.</li>
+</ol>
+</div>
+<p>When a vectorized run fails, the wrapper stack is a reasonable first suspect, not automatically the policy. A concrete instance: an Isaac Lab ANYmal locomotion policy that trained cleanly in 4,096 parallel environments but collapsed on the physical ANYmal-C can fail because an action-rescaling wrapper mapped the policy output to a joint-torque range the real Series-Elastic Actuators, the spring-coupled motor units that let the robot's joints absorb impact instead of transmitting it directly<span data-agent="21"/>, cannot deliver, rather than because <a data-agent="13" href="ch_0125_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Proximal Policy Optimization</a> underfit.<span data-agent="28"/> Isolate the cause before blaming the algorithm: pin one sub-environment, replay its logged action stream through the wrapper chain, and compare the post-wrapper torque command against the actuator's rated peak (ANYmal-C joints saturate near 80 Nm). If the wrapper emits commands above that ceiling, the bug is the contract, not the gradient. This single-environment replay turns a disappointing batched rollout into a reusable diagnostic asset.</p>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Rendering, logging, and debugging is useful when it turns an embodied task into a reproducible environment contract, not when it merely wraps a simulator behind a familiar API name.</p>
+<p>Wrappers change the contract and vector environments batch the contract. Treat both as first-class experiment settings, not invisible implementation details.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 10.5.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
-<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0091_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Section 10.6 →</a> continues the thread with the next piece of the Part III stack.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a custom Gymnasium wrapper stack for CartPole that normalizes observations, clips rewards to [-1, 1], and injects a time-remaining signal; verify that swapping wrapper order changes the training signal by logging observation statistics before and after each wrapper. The key challenge is keeping the logged wrapper order as a first-class artifact so comparisons between runs are construct-matched.<br/><br/><strong>Intermediate (1-2 weeks):</strong> Implement a vectorized rollout harness using <code>SyncVectorEnv</code> around a PyBullet locomotion task (such as HalfCheetahBulletEnv), correctly handling the autoreset overwrite by storing terminal observations from <code>infos["final_observation"]</code> and using them for value-function bootstrap targets; compare per-sub-environment episode returns against a single-environment baseline to measure the throughput gain. The key challenge is diagnosing silent bootstrap corruption when a sub-environment terminates mid-batch without crashing the training loop.<br/><br/><strong>Intermediate-to-advanced (2-3 weeks):</strong> Port a Gymnasium wrapper stack to Isaac Lab by wrapping an Isaac Lab task environment so it exposes a Gymnasium-compatible API, then run the same Stable-Baselines3 Proximal Policy Optimization (PPO) policy on both the Gymnasium single-env version and the Isaac Lab 64-environment vectorized version; measure wall-clock steps-per-second and final policy performance. The key challenge is reconciling Isaac Lab's GPU tensor observations with the NumPy arrays Gymnasium wrappers expect, without introducing dtype or device-transfer overhead that undermines the parallelism gain.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 10.4.1</div><p>Create a two-environment vector rollout for a Gymnasium task, then add one observation wrapper. Record the observation shape before and after wrapping, and explain which result table fields must mention the wrapper.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring the throughput payoff of vectorization</h4>
+<p><strong>Goal:</strong> empirically confirm that batching environments speeds up experience collection and see where the gain saturates. <strong>Tools needed:</strong> Python, Gymnasium (<code>pip install gymnasium</code>), and the standard library <code>time</code> module; no GPU required. <strong>Procedure:</strong> write a loop that calls <code>gym.make_vec("CartPole-v1", num_envs=N, vectorization_mode="sync")</code>, resets with a fixed seed, then steps with random actions for 2,000 steps while timing the wall-clock. <strong>What to vary:</strong> run the experiment for <code>N = 1, 2, 4, 8, 16, 32, 64</code>, and also repeat the sweep with <code>vectorization_mode="async"</code>. <strong>What to observe:</strong> compute steps-per-second (total transitions = N times 2,000 divided by elapsed time) and plot it against N. You should see near-linear scaling at small N that flattens once per-step Python overhead dominates the cheap CartPole dynamics, and you should find that async only overtakes sync once each environment's step cost is high enough to hide the inter-process communication latency. Then add a <code>terminations</code>-aware counter and confirm that as N grows you accumulate more terminal events per wall-clock second, which is exactly the autoreset traffic you must handle correctly for value bootstrapping.</p>
+</div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p>The next section should inherit the Vectorized environments; wrappers interface contract and change only the next environment-design variable under study.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Tools And Libraries</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://gymnasium.farama.org/index.html" rel="noopener" target="_blank">Farama Foundation. "Gymnasium Documentation."</a></p>
-<p class="bib-annotation">The official Gymnasium docs define the reset, step, render, terminated, truncated, and info conventions used by maintained environments. Readers implementing custom environments should use this as the API reference. Readers should connect this source to rendering, logging, and debugging when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
-<span class="bib-meta">Tool</span>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><a href="https://pettingzoo.farama.org/index.html" rel="noopener" target="_blank">Farama Foundation. "PettingZoo Documentation."</a></p>
-<p class="bib-annotation">PettingZoo defines maintained APIs for multi-agent reinforcement learning. It is directly relevant when a section moves from one embodied agent to turn-based, simultaneous, or mixed multi-agent interaction. Readers should connect this source to rendering, logging, and debugging when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
-<span class="bib-meta">Tool</span>
-</div>
-<div class="bib-category">Foundational Papers</div>
-<div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2009.14471" rel="noopener" target="_blank">Terry, J. K. et al. (2021). "PettingZoo: Gym for Multi-Agent Reinforcement Learning." NeurIPS Datasets and Benchmarks.</a></p>
-<p class="bib-annotation">This paper explains why multi-agent environments need explicit agent ordering and interface discipline. It gives researchers the context behind the AEC and parallel API choices described in this chapter. Readers should connect this source to rendering, logging, and debugging when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-annotation">This paper explains why multi-agent environments need explicit agent ordering and interface discipline. It gives researchers the context behind the Agent Environment Cycle (AEC) and parallel API choices described in this chapter. Readers should connect this source to vectorized environments; wrappers when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1606.01540" rel="noopener" target="_blank">Brockman, G. et al. (2016). "OpenAI Gym." arXiv.</a></p>
-<p class="bib-annotation">The original Gym paper explains the environment abstraction that Gymnasium modernizes. It is useful for readers comparing legacy examples with the maintained Farama stack. Readers should connect this source to rendering, logging, and debugging when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-annotation">The original Gym paper explains the environment abstraction that Gymnasium modernizes. It is useful for readers comparing legacy examples with the maintained Farama stack. Readers should connect this source to vectorized environments; wrappers when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Tools And Libraries</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://stable-baselines3.readthedocs.io/" rel="noopener" target="_blank">Stable-Baselines3 Contributors. "Stable-Baselines3 Documentation."</a></p>
-<p class="bib-annotation">Stable-Baselines3 gives a practical reference for how environment spaces, vectorized environments, wrappers, and evaluation callbacks are consumed by training code. Engineers should read it when turning a custom environment into a reproducible RL experiment. Readers should connect this source to rendering, logging, and debugging when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-ref"><a href="https://gymnasium.farama.org/index.html" rel="noopener" target="_blank">Farama Foundation. "Gymnasium Documentation."</a></p>
+<p class="bib-annotation">The official Gymnasium docs define the reset, step, render, terminated, truncated, and info conventions used by maintained environments. Readers implementing custom environments should use this as the API reference. Readers should connect this source to vectorized environments; wrappers when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Tool</span>
 </div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://pettingzoo.farama.org/index.html" rel="noopener" target="_blank">Farama Foundation. "PettingZoo Documentation."</a></p>
+<p class="bib-annotation">PettingZoo defines maintained APIs for multi-agent reinforcement learning. It is directly relevant when a section moves from one embodied agent to turn-based, simultaneous, or mixed multi-agent interaction. Readers should connect this source to vectorized environments; wrappers when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://stable-baselines3.readthedocs.io/" rel="noopener" target="_blank">Stable-Baselines3 Contributors. "Stable-Baselines3 Documentation."</a></p>
+<p class="bib-annotation">Stable-Baselines3 gives a practical reference for how environment spaces, vectorized environments, wrappers, and evaluation callbacks are consumed by training code. Engineers should read it when turning a custom environment into a reproducible RL experiment. Readers should connect this source to vectorized environments; wrappers when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+ what is benchmark-specific, and what must be remeasured.
+<span class="bib-meta">Tool</span>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0089_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Section 10.4: Vectorized environments; wrappers</a>
-<a class="up" href="ch_0085_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Chapter 10: Environments with Gymnasium (and Petting...</a>
-<a class="next" href="ch_0091_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Section 10.6: Evaluation protocol and seeding</a>
+<a class="prev" href="ch_0089_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Section 10.3: Reward design and termination</a>
+<a class="up" href="ch_0086_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Chapter 10: Environments with Gymnasium (and Petting...</a>
+<a class="next" href="ch_0091_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Section 10.5: Rendering, logging, and debugging</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

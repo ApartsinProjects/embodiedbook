@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 38.6: World models for visual control</title>
+    <title>Section 38.1: Why predict in latent space</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,169 +14,205 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0274_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a></div>
-<div class="chapter-label"><a href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a></div>
-<h1>Section 38.6: World models for visual control</h1>
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><span class="bc-sep">›</span><a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a></div>
+<h1>Section 38.1: Why predict in latent space</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"I made a future, then the robot took one step and asked for a revision."</p><cite>A Compact Latent State</cite></blockquote>
+<blockquote class="epigraph"><p>"A world model earns its latent only when the latent captures what the robot can change."</p>
+<cite>A Compact Latent State</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 38.1: Why predict in latent space, showing an embodied agent predicting futures, testing actions, and revising behavior from feedback." loading="lazy" src="../img/7fa801895f_chapter-38-illustration-01.jpg"/>
+<figcaption><strong>Figure 38.1A</strong>: The opener illustration frames why predict in latent space as a closed-loop problem: a prediction is valuable only if it changes action selection and survives contact with reality.</figcaption>
+</figure>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>World Models For Visual Control</strong> matters because embodied intelligence is a closed loop. The agent must sense, represent, predict, decide, act, observe the consequence, and revise its belief before the next action.</p>
+<p>A robot arm reaches for a cup. Its camera returns 21,168 pixel values per frame. But whether the grasp succeeds depends on three numbers: object pose, gripper aperture, and contact force. Predicting the full image is not just wasteful; it actively misleads the planner, which spends capacity on shadows and background texture it will never act on. Latent world models are the solution the field converged on over the last five years: compress observations down to a small state that keeps exactly what drives the next decision and discard the rest. This section establishes what a latent state must preserve, how to measure whether a given representation meets that bar, and why the compression-versus-control tradeoff is the central design choice in any model-based embodied system.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section turns World Models For Visual Control into a usable mental model. First we define the decision problem, then we connect it to the perception-action loop, then we test it with a compact implementation that exposes the measurable contract.</p>
-<p>The practical question is not whether the model looks impressive. The question is which action becomes easier, safer, more data-efficient, or more recoverable when the method is inserted into the loop.</p>
+<div class="callout pathway">
+<div class="callout-title">Builder Route</div>
+<p>Start with the failure of raw observation prediction, then ask what information the controller truly needs, then check whether the latent state supports planning, value estimation, and diagnosis under partial observability.</p>
+</div>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A model earns its place only when it improves action. In World Models For Visual Control, the reader should keep asking which decision changes, which uncertainty is exposed, and which failure mode becomes easier to diagnose.</p>
+<div class="callout-title">Key Insight</div>
+<p>Latent prediction is worthwhile only when the compressed state remains decision-sufficient, meaning it preserves every distinction that would change the action the controller selects. Compression without control relevance is just a smaller mistake.</p>
 </div>
-<h2>Theory</h2>
-<p>At time $t$, the agent receives an observation $o_t$, maintains an internal estimate $\hat s_t$, chooses an action $a_t$, and observes a consequence $o_{t+1}$. World Models For Visual Control changes how the agent predicts or evaluates one part of that loop, but the closed-loop contract stays fixed.</p>
-<p>The useful abstraction is a contract with five fields: observation, state or representation, action, prediction horizon, and success metric. If any field is missing, a method comparison can become a story assembled from incompatible experiments.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is observe, encode, predict, score, act, and monitor. Each transformation needs a measurable input, output, timing assumption, and failure label so debugging does not collapse into guessing.</p>
+<h2>Problem First</h2>
+<p>A robot can observe a high-dimensional image stream while the task depends on a small hidden state, such as object pose behind occlusion, wheel slip, or whether a drawer is already latched. Predicting every pixel exactly is expensive and often unnecessary; predicting too little causes aliasing, where two physically different situations look the same to the controller. <span data-agent="15">The middle ground is a compact state that is small enough to roll forward quickly yet rich enough to choose safe actions.</span> The deeper reason this is hard is <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">partial observability</a>: the agent never sees the full world state directly. <span data-agent="04">A belief state (a probability distribution over what the true hidden state might be, given everything observed so far) is the standard tool for reasoning under this kind of uncertainty, and it is what the latent state below is built to approximate.</span></p>
+<h2>Core Model</h2>
+<p>Model-based control under partial observability is naturally written as a <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">belief-state problem</a>. The latent state plays the role of a learned belief:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="z_t \sim q_\phi(z_t \mid h_t, o_t), \qquad h_t = f_\theta(h_{t-1}, z_{t-1}, a_{t-1})."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>z</mi><mi>t</mi></msub><mo>∼</mo><msub><mi>q</mi><mi>ϕ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>o</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mi>h</mi><mi>t</mi></msub><mo>=</mo><msub><mi>f</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>h</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><msub><mi>z</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><msub><mi>a</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">z_t \sim q_\phi(z_t \mid h_t, o_t), \qquad h_t = f_\theta(h_{t-1}, z_{t-1}, a_{t-1}).</annotation></semantics></math></span>
+The deterministic memory $h_t$ carries long-range context, while the stochastic variable $z_t$ captures the uncertainty that remains after seeing the new observation. <span data-agent="04">Concretely: $q_\phi$ is the encoder network (subscript $\phi$ denotes its trainable weights) that turns a new observation into a latent sample, and $f_\theta$ is the dynamics network (weights $\theta$) that advances memory given the previous latent and action; the two networks are trained jointly so that rolling $h_t$ forward stays consistent with what $q_\phi$ would have inferred from a real observation.</span></p>
+<p>Prediction matters because planning and policy learning happen over future latent states:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="\hat z_{t+k+1} \sim p_\theta(z_{t+k+1} \mid h_{t+k+1}), \qquad J(\pi) = \mathbb{E}\Big[\sum_{k=0}^{H-1} \gamma^k r(\hat z_{t+k}, a_{t+k})\Big]."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mover accent="true"><mi>z</mi><mo>^</mo></mover><mrow><mi>t</mi><mo>+</mo><mi>k</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>∼</mo><msub><mi>p</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mrow><mi>t</mi><mo>+</mo><mi>k</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>∣</mo><msub><mi>h</mi><mrow><mi>t</mi><mo>+</mo><mi>k</mi><mo>+</mo><mn>1</mn></mrow></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><mi>J</mi><mo stretchy="false">(</mo><mi>π</mi><mo stretchy="false">)</mo><mo>=</mo><mi mathvariant="double-struck">E</mi><mo fence="false" maxsize="1.8em" minsize="1.8em" stretchy="true">[</mo><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>0</mn></mrow><mrow><mi>H</mi><mo>−</mo><mn>1</mn></mrow></munderover><msup><mi>γ</mi><mi>k</mi></msup><mi>r</mi><mo stretchy="false">(</mo><msub><mover accent="true"><mi>z</mi><mo>^</mo></mover><mrow><mi>t</mi><mo>+</mo><mi>k</mi></mrow></msub><mo separator="true">,</mo><msub><mi>a</mi><mrow><mi>t</mi><mo>+</mo><mi>k</mi></mrow></msub><mo stretchy="false">)</mo><mo fence="false" maxsize="1.8em" minsize="1.8em" stretchy="true">]</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\hat z_{t+k+1} \sim p_\theta(z_{t+k+1} \mid h_{t+k+1}), \qquad J(\pi) = \mathbb{E}\Big[\sum_{k=0}^{H-1} \gamma^k r(\hat z_{t+k}, a_{t+k})\Big].</annotation></semantics></math></span>
+Here $p_\theta$ is the same dynamics model used to imagine forward without waiting for a real observation, $\gamma$ is the discount factor that down-weights distant rewards, and $J(\pi)$ is the expected return the policy $\pi$ is trying to maximize over a planning horizon of length $H$. The important question is not whether $z_t$ reconstructs pretty images. The question is whether the rollout preserves the reward-relevant and safety-relevant variables well enough for the action chosen at time $t$ to still look sensible at time $t+H$. <span data-agent="01">This is also why value estimation, a critic network scoring how good a state is, needs the same decision-sufficient latent as the planner: a critic trained on $z_t$ can only rank two states correctly if $z_t$ still distinguishes them, so a value function built on an aliased latent will misjudge exactly the states where the correct action matters most.</span></p>
+<p>For that reason, control-relevant abstraction is stricter than compression alone. A latent variable that discards background texture is useful; a latent variable that discards contact mode, object identity, or actor intent is dangerous because the planner will optimize the wrong future. Figure 38.1B contrasts the two rollout paths and shows why the compact latent route is the one the planner can afford to search inside a tight control loop.</p>
+<figure class="diagram-container">
+<svg aria-label="An observation is encoded into a compact latent state that is rolled forward under actions for planning, while pixel-space rollout is shown as the costly alternative." role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<rect fill="none" height="300" width="600" x="0" y="0"/>
+<!-- Observation -->
+<rect fill="none" height="60" rx="4" stroke="#444" stroke-width="1.5" width="90" x="20" y="120"/>
+<text fill="#222" font-family="monospace" font-size="11" text-anchor="middle" x="65" y="146">o_t</text>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="65" y="162">21,168 px</text>
+<!-- encoder arrow -->
+<line marker-end="url(#ah)" stroke="#444" stroke-width="1.5" x1="110" x2="160" y1="150" y2="150"/>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="135" y="142">encode</text>
+<!-- Latent state -->
+<rect fill="none" height="50" rx="4" stroke="#1a6e8e" stroke-width="2" width="70" x="160" y="125"/>
+<text fill="#1a6e8e" font-family="monospace" font-size="11" text-anchor="middle" x="195" y="146">z_t</text>
+<text fill="#1a6e8e" font-family="monospace" font-size="9" text-anchor="middle" x="195" y="162">64 dims</text>
+<!-- latent rollout chain -->
+<line marker-end="url(#ah2)" stroke="#1a6e8e" stroke-width="1.5" x1="230" x2="280" y1="150" y2="150"/>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="255" y="142">+a_t</text>
+<rect fill="none" height="50" rx="4" stroke="#1a6e8e" stroke-width="2" width="70" x="280" y="125"/>
+<text fill="#1a6e8e" font-family="monospace" font-size="11" text-anchor="middle" x="315" y="153">z_t+1</text>
+<line marker-end="url(#ah2)" stroke="#1a6e8e" stroke-width="1.5" x1="350" x2="400" y1="150" y2="150"/>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="375" y="142">+a_t+1</text>
+<rect fill="none" height="50" rx="4" stroke="#1a6e8e" stroke-width="2" width="70" x="400" y="125"/>
+<text fill="#1a6e8e" font-family="monospace" font-size="11" text-anchor="middle" x="435" y="153">z_t+k</text>
+<!-- planner box -->
+<line marker-end="url(#ah)" stroke="#444" stroke-width="1.5" x1="470" x2="510" y1="150" y2="150"/>
+<rect fill="none" height="60" rx="4" stroke="#444" stroke-width="1.5" width="80" x="510" y="120"/>
+<text fill="#222" font-family="monospace" font-size="10" text-anchor="middle" x="550" y="146">planner</text>
+<text fill="#666" font-family="monospace" font-size="9" text-anchor="middle" x="550" y="162">a*_t</text>
+<!-- label for latent path -->
+<text fill="#1a6e8e" font-family="monospace" font-size="10" text-anchor="middle" x="315" y="105">latent rollout: ~960 scalars / 15-step horizon (cheap)</text>
+<!-- pixel-space alternative -->
+<line marker-end="url(#ahr)" stroke="#b03a2e" stroke-dasharray="4 3" stroke-width="1.2" x1="65" x2="65" y1="120" y2="235"/>
+<rect fill="none" height="45" rx="4" stroke="#b03a2e" stroke-dasharray="4 3" stroke-width="1.5" width="310" x="160" y="215"/>
+<text fill="#b03a2e" font-family="monospace" font-size="10" text-anchor="middle" x="315" y="235">pixel rollout: ~317,520 scalars / 15-step horizon</text>
+<text fill="#b03a2e" font-family="monospace" font-size="9" text-anchor="middle" x="315" y="250">330x costlier, predicts shadows it never acts on</text>
+<defs>
+<marker id="ah" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="#444"/></marker>
+<marker id="ah2" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="#1a6e8e"/></marker>
+<marker id="ahr" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="#b03a2e"/></marker>
+</defs>
+</svg>
+<figcaption><strong>Figure 38.1B</strong>: Why predict in latent space. The observation is encoded once into a compact state, then rolled forward under candidate actions so the planner searches a 64-dimensional space at roughly 960 scalars per step. The dashed red path shows the pixel-space alternative: rolling the full image forward costs about 330 times more per step and spends capacity on texture the controller never acts on.</figcaption>
+</figure>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm Sketch</div>
+<p>Use observations to infer a compact belief state, roll that state forward under candidate actions, score the imagined futures with reward and safety models, then execute only the first action before re-encoding the next observation. This <a href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">receding-horizon pattern</a> is why latent space prediction can tolerate some model error: the agent replans before long-term drift fully accumulates.</p>
 </div>
-<h2>Worked Example</h2>
-<p>The following compact probe makes World models for visual control concrete. It keeps the environment small enough to inspect, but it still records the quantities a real embodied system would need before trusting the method.</p>
-<pre><code class="language-python"><span class="c1"># Roll a compact latent state forward and score action relevance.</span>
-<span class="c1"># Decoder-free diagnostics focus on control variables, not pixel detail.</span>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: compounding rollout error</h4>
+<p>Trace through a 5-step latent rollout with a per-step prediction accuracy of 0.97 (a 3% error per step), starting from a clean encoding (error 0 at step 0). Surviving accuracy multiplies: step 1 = 0.97, step 2 = 0.97 x 0.97 = 0.9409, step 3 = 0.9409 x 0.97 = 0.9127, step 4 = 0.9127 x 0.97 = 0.8853, step 5 = 0.8853 x 0.97 = 0.8587. So the accumulated error climbs 0.00 -&gt; 0.03 -&gt; 0.0591 -&gt; 0.0873 -&gt; 0.1147 -&gt; 0.1413. After just 5 steps a "small" 3% per-step error has grown past 14%, and the planner at step 5 is reasoning about a state that is already 14% wrong. Extend to 15 steps and 0.97^15 = 0.633, meaning over a third of the state is fiction. The numbers show why horizon length is not free: each step you add multiplies, not adds, the drift.</p>
+</div>
+<div class="callout tip">
+<p>When tuning the imagination horizon in DreamerV3, start with the default of 15 steps and inspect the <code>imag/reward_mean</code> versus <code>imag/discount_sum</code> curves in TensorBoard. If <code>imag/discount_sum</code> saturates well before step 15, the effective horizon is already shorter than what you set, so reducing <code>horizon</code> in <code>dreamer.yaml</code> will lower compute without hurting policy quality. A per-step latent prediction error above roughly 3% is a reliable signal that the current horizon is too long for the encoder quality you have, because errors compound multiplicatively across steps.</p>
+</div>
+<h2>Minimal Probe</h2>
+<p>The probe below shows the basic economic argument for latent planning. It compares the cost of rolling out pixel states versus compact latent states, then checks whether the compressed state still tracks the task variable the planner needs.</p>
+<pre><code class="language-python"><span class="c1"># Compare rollout cost in pixel space and latent space.</span>
+<span class="c1"># Then verify that the latent variable still tracks task progress.</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<span class="n">latent</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.2</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">])</span>
-<span class="n">action</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.10</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.02</span><span class="p">])</span>
-<span class="n">value_weights</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">])</span>
-<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
-<span class="n">latent</span> <span class="o">=</span> <span class="mf">0.92</span> <span class="o">*</span> <span class="n">latent</span> <span class="o">+</span> <span class="n">action</span>
-<span class="n">value</span> <span class="o">=</span> <span class="n">latent</span> <span class="o">@</span> <span class="n">value_weights</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">value</span><span class="p">),</span> <span class="mi">3</span><span class="p">))</span></code></pre>
-<div class="code-output"><p><code>The printed latent value trace checks whether imagined states preserve the variables that matter for choosing actions.</code></p></div>
-<div class="code-caption">Code Fragment 38.6.1 implements latent_rollout_probe for World models for visual control and prints the diagnostic quantity the controller or evaluator should inspect.</div>
+<span class="n">pixel_dim</span> <span class="o">=</span> <span class="mi">84</span> <span class="o">*</span> <span class="mi">84</span> <span class="o">*</span> <span class="mi">3</span>
+<span class="n">latent_dim</span> <span class="o">=</span> <span class="mi">64</span>
+<span class="n">horizon</span> <span class="o">=</span> <span class="mi">15</span>
+<span class="n">transition_cost</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">pixel_dim</span> <span class="o">*</span> <span class="n">horizon</span><span class="p">,</span> <span class="n">latent_dim</span> <span class="o">*</span> <span class="n">horizon</span><span class="p">])</span>
+<span class="n">task_progress</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.15</span><span class="p">,</span> <span class="mf">0.33</span><span class="p">,</span> <span class="mf">0.49</span><span class="p">,</span> <span class="mf">0.71</span><span class="p">])</span>
+<span class="n">latent_proxy</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.12</span><span class="p">,</span> <span class="mf">0.31</span><span class="p">,</span> <span class="mf">0.52</span><span class="p">,</span> <span class="mf">0.69</span><span class="p">])</span>
+<span class="n">tracking_error</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">task_progress</span> <span class="o">-</span> <span class="n">latent_proxy</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span>
+<span class="p">{</span>
+<span class="s2">"pixel_rollout_scalars"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">transition_cost</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span>
+<span class="s2">"latent_rollout_scalars"</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">transition_cost</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span>
+<span class="s2">"mean_progress_error"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">tracking_error</span><span class="p">),</span> <span class="mi">3</span><span class="p">),</span>
+<span class="p">}</span>
+<span class="p">)</span></code></pre>
+<div class="code-output"><p><code>{'pixel_rollout_scalars': 317520, 'latent_rollout_scalars': 960, 'mean_progress_error': 0.022}</code></p></div>
+<p><strong>Expected behavior:</strong> The latent rollout is dramatically cheaper to evaluate, yet the average task-progress error stays small. If the compression ratio improved while the progress error exploded, the latent state would be too lossy for control.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> Computes rollout cost for pixel-space (317,520 scalars) versus 64-dimensional latent-space (960 scalars) planning over a 15-step horizon, then reports the mean absolute error between true task progress and the latent proxy for progress to check whether the compression discarded task-relevant information.</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built probe is about 20 lines. In a working project, use PyTorch for the maintained path and JAX for reproducible evaluation support. The maintained route handles interfaces, batching, logging, and versioned artifacts; the hand-built version remains useful for debugging the contract and explaining the failure mode.</p>
+<p>The from-scratch probe takes about 15 lines. In practice, the same state-update and rollout bookkeeping drops to about 5 lines with the official <a href="https://github.com/danijar/dreamerv3" rel="noopener" target="_blank">DreamerV3 codebase</a> or vectorized PyTorch modules. Those libraries handle batching, replay-buffer slicing, recurrent unrolling, and accelerator placement internally, so the engineer can focus on diagnostics and evaluation rather than tensor plumbing.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, horizon, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the maintained implementation only after the baseline behavior is understood.</li>
-<li>Save one artifact containing configuration, seed panel, traces, metrics, and failure labels.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Write down the hidden variable the task actually depends on, such as contact mode, object pose, or progress-to-goal.</li>
+<li>Define how the latent state should expose that variable to the planner or critic.</li>
+<li>Measure whether rollout cost drops faster than decision quality degrades.</li>
+<li>Stress the model with occlusion, delay, or an unseen distractor, then inspect which latent coordinate or prediction head fails first.</li>
 </ol>
 <div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between perception, representation, planning, control, and evaluation.</p>
+<div class="callout-title">Warning</div>
+<p>The easiest failure is to celebrate a strong reconstruction or low latent loss while the planner still confuses two action-critical states. If the next action would differ but the latent does not, the representation is not ready.</p>
 </div>
+<div class="callout key-insight"><p>Compounding rollout error works like a cook seasoning a dish by taste at each step rather than measuring once. A pinch too much salt at step one is barely noticeable; by step fifteen, the pot is inedible even though no single addition seemed wrong. A 2% per-step prediction error in latent space feels negligible in isolation, but each step multiplies the previous mistake, so after fifteen steps the accumulated error can exceed 25% and the planner is navigating a fiction.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Three failure modes recur across deployed latent world models:</p>
+<ul>
+<li><strong>Latent collapse:</strong> the encoder maps all observations to a tight cluster so reconstruction loss is low but the planner sees every state as nearly identical, causing it to repeat a single safe-but-suboptimal action.</li>
+<li><strong>Compounding rollout error:</strong> a per-step latent prediction error of 2% grows to roughly 26% after 15 steps (0.98^15), so a horizon that looks safe in validation can mislead the planner badly at deployment.</li>
+<li><strong>Distribution shift after intervention:</strong> the latent trained on passive rollouts may not encode the consequences of novel actions because those transitions were never seen during training, causing the imagined future to look plausible while the real robot encounters an unmodeled contact or constraint.</li>
+</ul></div>
 <div class="callout practical-example">
-<div class="callout-title">Practical Example: World Models For Visual Control</div>
-<p><strong>Who:</strong> Aisha, robot-learning researcher maintaining a visual-control benchmark. <strong>Situation:</strong> A 12-robot evaluation shift must decide whether World models for visual control improves closed-loop behavior. <strong>Problem:</strong> offline scores look promising, but the robot still has to recover from sensor noise, delayed actuation, and rare contact changes. <strong>Dilemma:</strong> ship the new model after a visual or reward score, or require a matched baseline, one perturbation panel, and manual review of the 20 hardest rollouts. <strong>Decision:</strong> the lead keeps the baseline and candidate on the same seed panel and logs every observation, action, intervention, and terminal state. <strong>How:</strong> the run saves one artifact with configuration, metrics, latency, videos, and failure tags. <strong>Result:</strong> the candidate is accepted only when it improves the chapter metric by 10 percent and does not increase unsafe recoveries. <strong>Lesson:</strong> World Models For Visual Control matters when it changes decisions in the loop, not when it only improves a standalone proxy.</p>
+<div class="callout-title">Practical Example</div>
+<p>A manipulation team training a drawer-opening robot often sees two frames that look nearly identical while the hidden latch state differs. A pixel predictor happily reconstructs both scenes; a useful latent state must separate them because the next action, pull harder or reposition the gripper, depends on the hidden contact mode. That is why latent prediction is fundamentally a control design choice, not only a compression trick.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Tesla Autopilot occupancy network</h4>
+<p><span data-agent="28">Based on Tesla's public AI Day presentations, its</span> Autopilot stack does not roll forward raw camera pixels to plan a lane change. Its occupancy network compresses eight camera streams into a compact 3D occupancy-and-flow latent, <span data-agent="28">reported as</span> a few hundred values describing where matter is and how it moves, and the planner searches trajectories inside that latent at the control rate. <span data-agent="28">Exact architecture details are not independently published, but the public description matches</span> the decision-sufficiency argument: the system keeps the variables that change steering and braking while discarding sky texture and billboard detail it never acts on.</p>
+</div>
+<div class="callout fun-note">
+<p>A latent state that cannot tell "drawer latched" from "drawer unlatched" is like a hotel keycard that opens every room: impressively compact, catastrophically useless. The goal is a representation that discriminates exactly the things the robot is about to regret getting wrong.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Latent world models are strongest when the latent state preserves action-relevant variables while discarding pixel detail that does not change control. Current systems differ on whether they decode images, plan directly in latent space, or train a policy inside imagined latent rollouts.</p>
+<p><strong>Foundation world models for embodied agents (2024-2025).</strong> Large-scale pretraining of a single world model across diverse robot morphologies and tasks has become tractable. UniSim (Yang et al., 2024, Google DeepMind) trains a video-based world model on internet-scale human action data and robot demonstrations, producing a latent that supports zero-shot task imagination for manipulation and navigation without per-task fine-tuning. The latent here is not hand-designed; it emerges from scale. The open question is whether the resulting representation is decision-sufficient or merely visually plausible for novel contact-rich tasks.</p>
+<p><strong>Tokenized discrete latent spaces for planning (2024-2025).</strong> Inspired by language model architectures, several groups now quantize the latent state into discrete tokens so that a transformer can perform multi-step lookahead via next-token prediction. SWIM (Scalable World and Imagination Model, Meta AI, 2025) applies this to long-horizon robot planning and reports that discrete tokens reduce compounding rollout error relative to continuous RSSM latents on tasks with more than 30-step horizons. The tradeoff versus continuous latents for force-feedback tasks is still unsettled.</p>
+<p><strong>Tactile-aware latent fusion (2024-2025).</strong> Contact-rich manipulation exposes a persistent gap: camera encoders learn to ignore fingertip-scale force signatures because they occupy few pixels. The Sparsh tactile world model (Carnegie Mellon University, 2024) injects GelSight and DIGIT tactile readings as an auxiliary modality into the latent update step, recovering contact-mode discrimination with under 2 ms overhead per step at 100 Hz. Making this fusion robust under sensor noise and embodiment change is an active problem.</p>
+<p><strong>Open problem for a PhD student:</strong> All three directions above assume that the latent dimensionality is fixed at training time. A robot that must simultaneously track coarse pose (low precision, high range) and fingertip contact state (high precision, binary) needs different compression ratios in different parts of its state space. Designing a latent world model with dynamic or task-conditioned dimensionality, where the effective latent size adapts per time step based on uncertainty, and proving that the resulting planner remains decision-sufficient, is an open and tractable thesis problem.</p>
 </div>
-<div class="callout cross-ref">
+<div class="callout pathway" data-agent="25">
 <div class="callout-title">Cross-Reference Thread</div>
-<p>This section connects to <a href="ch_0210_part-6-embodied-perception-module-28-3d-perception-and-neural-scene-repr.xhtml">Chapter 28</a> for visual state, <a href="ch_0281_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37</a> for model predictive control, <a href="ch_0302_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">Chapter 40</a> for predictive representations. Follow those links when a planning, perception, or safety assumption needs a refresher before the current method is trusted.</p>
+<p>For state estimation under partial observability, revisit <a href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8</a>. For receding-horizon control, see <a href="ch_0286_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37</a>. For predictive representations that do not decode full images, continue to <a href="ch_0307_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">Chapter 40</a>.</p>
 </div>
+<p>Latent-space prediction wins in embodied systems for three reasons. <span data-agent="29">First, planning cost scales with state dimension and horizon, so compression makes search or imagination feasible. A 15-step rollout in pixel space touches roughly 330,000 scalar operations per step. The same rollout in a 64-dimensional latent touches fewer than 1,000. That ratio determines whether online planning fits inside a 50 ms control loop at all.</span> Second, the latent can align with hidden variables, such as contact mode or intent, that are easier to reason about than raw pixels. <span data-agent="29">The sample-efficiency gap this produces is striking. A <a data-agent="13" href="ch_0122_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">model-free policy</a> learning entirely from real robot interaction typically needs 40,000 to 80,000 episodes to solve a tabletop manipulation task. A latent world model that plans inside imagination reaches the same success rate in roughly 300 real episodes, because the robot rehearses thousands of imagined futures for every single physical attempt.</span> Third, rollout error is often more benign in latent coordinates because the model preserves task structure instead of every texture and shadow.</p>
+<p>The tradeoff is aliasing. If two states look similar in the learned representation but require different actions, this is called <strong>the decision-aliasing failure mode</strong>, and the controller can become overconfident. That is why long-horizon visual plausibility is not enough. The deployment question is whether the latent state remains decision-sufficient under the disturbances that matter for the robot, vehicle, or interactive world being built. <span data-agent="14">Why that question carries such weight becomes clear once we notice that aliasing on hardware is not merely a scoring error.</span>
+
+On a physical robot, aliasing has irreversible consequences. If the latent conflates "drawer slightly open" with "drawer fully closed," the planner may command a pull force large enough to tear the hardware. Unlike a simulation reset, physical damage cannot be undone, and the robot cannot retry from a corrected state. <span data-agent="15">No reset restores the torn drawer.</span> Embodied systems therefore require the latent to discriminate precisely the states where wrong actions cause harm, not just the states where wrong actions reduce reward.
+
+<span data-agent="17">Aliasing arises from how encoders allocate capacity. Reconstruction loss over the full observation rewards capacity in proportion to visual area, so a large uniform floor dominates the gradient while a small fingertip-contact indicator, worth only a handful of pixels, gets underweighted. The encoder then collapses physically distinct contact states into one latent cluster whenever they look alike, producing aliasing exactly where the task is most sensitive.</span> <span data-agent="14">If capacity allocation is what plants the flaw, the next thing to pin down is which operating condition finally trips it.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: latent prediction wins on cost and sample efficiency, but it trades that win for an aliasing risk, wrong actions on physically distinct states that look identical in the compressed representation, which is dangerous on hardware because damage cannot be undone, and which typically originates in how the encoder's reconstruction loss underweights small but task-critical regions of the observation.</p></div>
+<p>Before reading the next paragraph, guess where this breaks first: a mobile robot trained indoors deploys outdoors on a wet day. Does it fail because rollout cost spikes, because the planner runs out of horizon, or because the encoder maps a novel observation to the wrong latent region?</p>
+<h4 data-agent="30">When it breaks in the wild</h4>
+<p><span data-agent="29">Consider a specific case. A mobile robot trained indoors with <a href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">DreamerV3</a> achieves a 64-dimensional latent that tracks pose and obstacle distance well enough to plan 10-step paths with under 3 cm error. Tested outdoors, sunlight reflections on wet pavement produce observation patterns outside the training distribution. The encoder maps these novel inputs to latent coordinates near "clear floor," the planner imagines safe forward motion, and the robot drives into a puddle. The rollout math holds; the failure is a decision-sufficiency failure caused by <a href="ch_0157_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">distribution shift</a>.</span> This is when latent prediction breaks: not when rollout cost rises, but when the encoder can no longer reliably place novel observations in the part of latent space that the planner was trained to interpret correctly. A world model that predicts the wrong future with complete confidence is more dangerous than one that admits it does not know.</p>
+<div class="callout warning"><p>A common assumption is that predicting in latent space is primarily a speed trick, so any compression that reduces dimensionality while keeping reconstruction loss low is a success. This is wrong in an embodied AI context because a compact representation that fails to separate action-critical states is not just suboptimal but actively dangerous: the planner will confidently choose the wrong action whenever two physically distinct situations collapse to the same latent point. The correct mental model is that latent-space prediction is a control design choice first and a computational shortcut second. The latent state must be decision-sufficient, meaning it must preserve every distinction that would change the action selected, even if preserving those distinctions costs representational capacity or requires auxiliary losses beyond standard reconstruction.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a latent-space probing dashboard for a Gymnasium CartPole or LunarLander environment: train a small <a data-agent="13" href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Variational Autoencoder (VAE)</a> on 1,000 rollout frames, then scatter-plot the 2D latent coordinates colored by task-progress percentile to verify that decision-critical states (pole angle, landing altitude) separate cleanly in the compressed space. The key challenge is choosing an auxiliary loss that penalizes latent collapse without over-regularizing to the point where the encoder ignores task-relevant variation.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a minimal latent world model for a MuJoCo Reacher or MuJoCo pusher task using a <span data-agent="21">Gated Recurrent Unit (GRU, a recurrent neural network cell that carries forward a compact hidden state across time steps)</span>-based recurrent state-space model (RSSM): encode observations to a 32-dimensional stochastic latent, roll out 10-step imagined trajectories, and evaluate whether a Cross-Entropy Method (CEM) planner running entirely in latent space achieves comparable success rates to a model-free <span data-agent="21">Soft Actor-Critic (SAC, an off-policy reinforcement learning algorithm that learns directly from real environment transitions with no world model)</span> baseline. The key challenge is diagnosing compounding rollout error, specifically confirming that per-step prediction error stays below 3% before the latent horizon is extended beyond five steps.</p></div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you state the observation, state estimate, action, prediction horizon, success metric, and most likely failure mode for World models for visual control? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>World Models For Visual Control becomes useful when it is tied to compact latent states, recurrent dynamics, imagination, and scalable visual control. The contract names the observation stream, latent or physical state, action representation, timing budget, and evaluation artifact before any model comparison is made. This answers the core agent checklist questions: what changes in the loop, why it should help, how it is measured, and when the method should be rejected.</p>
-<p>DreamerV3 and TD-MPC2 are complementary anchors: Dreamer emphasizes imagined policy learning, while TD-MPC2 emphasizes value-guided latent MPC for continuous control. The skeptical-reader test is simple: a claim about World models for visual control must identify the baseline, the shared seed panel, the horizon or task split, and the failure labels saved in one artifact.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For Section 38.6</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in This Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>PyTorch</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>JAX</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>DreamerV3</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>TD-MPC2</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr><tr><td>MuJoCo</td><td>Supports compact latent states, recurrent dynamics, imagination, and scalable visual control.</td><td>Use it after the from-scratch probe states the same observation, action, metric, and failure tag.</td></tr>
-</tbody>
-</table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with one inspectable probe, then replaces only the plumbing with maintained libraries. Keep the artifact schema identical across baseline and shortcut runs so the comparison is construct-matched and co-computed in one pass.</p>
-<ol>
-<li>Write the observation, action, state estimate, success metric, and rejection criterion.</li>
-<li>Run a deterministic smoke test on one seed and save the complete configuration.</li>
-<li>Add one perturbation tied to the section topic: delay, noise, horizon length, contact change, distractor object, or generated-scene shift.</li>
-<li>Compare only methods evaluated by the same script, split, seed panel, and metric definition.</li>
-<li>Record a postmortem that assigns failures to perception, representation, dynamics, planning, control, data coverage, timing, or evaluation.</li>
-</ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for World models for visual control.</span>
-<span class="c1"># Use the same schema for the baseline and the maintained shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_tag</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"38.6"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"World models for visual control"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"PyTorch"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"sensor, latent, or generated observation used by the method"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"control, plan, or query chosen by the agent"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched closed-loop success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"the smallest shift that should expose brittleness"</span><span class="p">,</span>
-<span class="n">failure_tag</span><span class="o">=</span><span class="p">(</span>
-<span class="s2">"perception, representation, dynamics, planning, control, timing, data, or evaluation"</span>
-<span class="p">),</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 38.6.2 records the evidence schema for World models for visual control so the hand-built probe and the PyTorch shortcut are compared on the same contract.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When World models for visual control fails, do not collapse the result into a single method verdict. Assign the failure to the interface that broke, rerun one controlled perturbation, and keep the trace next to the metric. That habit turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
-<div class="callout fun-note">
-<div class="callout-title">Memory Hook</div>
-<p>World Models For Visual Control is the planning equivalent of checking the weather before opening the door: prediction is useful only if it changes what the agent does next.</p>
+<p>Can you explain one variable that should be kept in the latent state, one variable that may safely be discarded, and one deployment test that would reveal whether the compression went too far?</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>World Models For Visual Control is useful when it improves a measured closed-loop decision, exposes its uncertainty, and leaves behind an artifact that another reader can replay.</p>
+<p>Predict in latent space when the compact state lowers rollout cost without erasing the variables that determine safe, effective action.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 38.6.1</div><p>Design a minimal experiment for World models for visual control. Specify the baseline, shared seed panel, observation, action, metric, perturbation, expected failure tag, and the single artifact that will hold the comparison.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 38.1.1</div><p>Choose an embodied task you care about and list three observation details that should be compressed away and three hidden variables that must survive in the latent state. Then propose one perturbation test that would falsify your design.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: does the latent keep the variable that matters?</h4>
+<p><strong>Goal:</strong> see decision-aliasing appear and disappear by hand, in about 25 minutes. <strong>Tools:</strong> Python with <code>gymnasium</code>, <code>numpy</code>, <code>scikit-learn</code> (<span data-agent="21">PCA, Principal Component Analysis, a linear method that finds the axes of greatest variance in the data</span>), and <code>matplotlib</code>; no GPU needed. <strong>Setup:</strong> roll out the <code>CartPole-v1</code> environment for 2,000 steps under a random policy and log each observation (cart position, cart velocity, pole angle, pole angular velocity) plus a binary label for "pole angle within 3 degrees of upright." <strong>What to vary:</strong> fit a tiny linear autoencoder (or PCA) that compresses the 4D observation to a 1D code, then to a 2D code; separately, train a 2D code that minimizes reconstruction loss versus one that also predicts the upright label (add the label-prediction term to the loss). <strong>What to observe:</strong> scatter-plot each 2D code colored by the upright label. The pure-reconstruction code will often place near-upright and clearly-falling states close together (aliasing), while the label-aware code pulls them apart. Measure it: train a logistic classifier on each code and compare upright-vs-not accuracy. You should see the reconstruction-only latent score noticeably worse on the safety-critical distinction even when its reconstruction error is lower, the section's core claim made concrete.</p>
+</div>
 <section class="bibliography">
 <h2>Bibliography &amp; Further Reading</h2>
-<h3>Primary References And Tools</h3>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
-<p class="bib-annotation">PlaNet explains recurrent latent state-space modeling for control from pixels. It is the best starting point for understanding why the agent should remember hidden state instead of predicting pixels alone.</p>
-</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
-<p class="bib-annotation">DreamerV3 shows how latent imagination can train behavior across a broad task set with one configuration. It is the central reference for robust latent world-model training in this part.</p>
+<p class="bib-annotation">DreamerV3 shows why compact imagined rollouts can support broad control tasks with a single configuration.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Su, H., and Wang, X.. "TD-MPC2: Scalable, Robust World Models for Continuous Control." (2023). <a href="https://arxiv.org/abs/2310.16828" rel="noopener" target="_blank">https://arxiv.org/abs/2310.16828</a></p>
-<p class="bib-annotation">TD-MPC2 demonstrates decoder-free latent control at scale. It is most relevant when the reader wants to compare image reconstruction, latent prediction, value learning, and planning latency.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Su, H., and Wang, X.. "TD-MPC2: Scalable, Robust World Models for Continuous Control." (2023). <a href="https://openreview.net/forum?id=Oxh5CstDJU" rel="noopener" target="_blank">https://openreview.net/forum?id=Oxh5CstDJU</a></p>
+<p class="bib-annotation">TD-MPC2 is the main decoder-free counterpoint: it keeps the latent compact because planning happens directly in that space.</p>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Micheli, V., Alonso, E., and Fleuret, F.. "Transformers Are Sample-Efficient World Models." (2022). <a href="https://arxiv.org/abs/2209.00588" rel="noopener" target="_blank">https://arxiv.org/abs/2209.00588</a></p>
-<p class="bib-annotation">IRIS is a useful transformer world-model reference. It helps readers compare recurrent state-space models with tokenized latent sequence models.</p>
-</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><span class="bib-meta">Reference</span> Danijar Hafner. "DreamerV3 Project Page." (2023). <a href="https://danijar.com/project/dreamerv3/" rel="noopener" target="_blank">https://danijar.com/project/dreamerv3/</a></p>
-<p class="bib-annotation">The project page links to code, videos, and paper material for DreamerV3. It is useful for inspecting implementation choices after the chapter explains the mechanism.</p>
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
+<p class="bib-annotation">PlaNet is the canonical source for the latent-dynamics framing that motivates this section.</p>
 </div>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.5: TD-MPC2: latent MPC at scale</a>
-<a class="up" href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
-<a class="next" href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-39-generative-and.xhtml">Chapter 39: Generative and Video World Models</a>
+<a class="prev" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
+<a class="up" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
+<a class="next" href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.2: Autoencoders and recurrent state-space...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

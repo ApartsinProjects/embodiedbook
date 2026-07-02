@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 21.3: DAgger and dataset aggregation</title>
+    <title>Section 21.2: Behavior cloning; the distribution-shift problem</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,48 +14,158 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0161_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a></div>
-<div class="chapter-label"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a></div>
-<h1>Section 21.3: DAgger and dataset aggregation</h1>
+<div class="page-breadcrumb"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a><span class="bc-sep">›</span><a href="ch_0163_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a></div>
+<h1>Section 21.2: Behavior cloning; the distribution-shift problem</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The expert never made that mistake, so the policy was never taught to undo it. Every small error compounded into territory the training data had never mapped."</p><cite>A Cloned Policy, Drifting</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 21.3: DAgger and dataset aggregation, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/4e19052d31_chapter-21-illustration-03.jpg"/>
-<figcaption><strong>Figure 21.3A</strong>: Section 21.3: DAgger and dataset aggregation is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 21.2: Behavior cloning; the distribution-shift problem." loading="lazy" src="../img/a8151b99c3_chapter-21-illustration-02.jpg"/>
+<figcaption>Figure 21.2A: Behavior cloning distribution shift: the policy's own compounding errors push the state off the demonstrated manifold, and the cloned policy, trained only on expert states, has no recovery signal.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with supervised learning loss functions and the Markov decision process formulation introduced in section 14.1. The distribution-shift problem diagnosed here is resolved through dataset aggregation in section 21.3, and the same covariate-shift challenge recurs in Part VII alongside vision-language-action models in section 34.2, where large pretrained policies face identical out-of-distribution recovery demands.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>DAgger and dataset aggregation</strong> is one lens on imitation learning. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A robot arm learns to stack blocks by watching a human do it flawlessly two hundred times. At test time, one joint overshoots by three degrees. The expert never made that error, so the cloned policy has no idea how to recover; each corrective attempt pushes deeper into territory the training data never mapped, and the tower falls every time. This compounding failure is distribution shift, and it is the central reason behavior cloning breaks on real hardware even when training loss hits zero. Right now, as robotics labs scale up teleoperation datasets to millions of demonstrations, understanding exactly why and how fast this collapse happens is not academic: it determines whether those datasets are worth collecting at all. Work through the math here and you will be able to bound the error growth, diagnose it in rollout logs, and know precisely what dataset aggregation must fix next.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for dagger and dataset aggregation into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">Train a policy to copy a flawless expert, drive the training loss to exactly zero, and then watch it fail nine times out of ten the moment it touches real hardware: that paradox is the whole story of <strong>behavior cloning</strong>, the simplest form of imitation learning, which treats a set of expert demonstrations as a labeled dataset and fits a policy with ordinary supervised learning, mapping each observation to the action the expert took. <span data-agent="15">This seemingly straightforward setup breaks under <strong>distribution shift</strong> (the mismatch between the states the expert visited and the states the trained policy actually reaches), and the sections below explain why, bound how fast the resulting error grows, and show how to diagnose it in closed-loop rollout logs.</span> Figure 21.2A illustrates the core failure: the policy's own compounding errors push the system off the demonstrated state manifold, where the cloned policy was never given a recovery signal. This section develops the technical contract for behavior cloning into a usable mental model: first we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<p>The key question in Behavior cloning; the distribution-shift problem is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In dagger and dataset aggregation, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In behavior cloning; the distribution-shift problem, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p data-agent="01">For Behavior cloning; the distribution-shift problem, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact. Concretely, this means logging the Mahalanobis distance from the expert state distribution at every closed-loop timestep, not only the supervised action loss: a policy audit that records only training-time MSE cannot answer the question this section exists to answer, namely when and how fast the rollout leaves the expert manifold.</p>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism in Behavior cloning; the distribution-shift problem is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
+<p>Keep one concrete rollout in view: a Franka Panda arm running a cloned policy on the robomimic Lift task. The wrist-camera RGB and joint proprioception become an end-effector pose estimate, that estimate sets a delta-pose action at 20 Hz, the action moves the gripper toward the cube, and the next observation either confirms the approach or reveals that the gripper is now 3 cm off-center, a state none of the 200 human teleoperation demonstrations ever recorded. Behavior cloning is useful here only if it keeps that closed loop on the expert manifold long enough to close the gripper on contact.</p>
 <pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <span class="n">dataset_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"robot_demos"</span><span class="p">)</span>
 <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">dataset_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">"episode_*"</span><span class="p">)):</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"inspect"</span><span class="p">,</span> <span class="n">episode</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"next step: convert demonstrations to the LeRobotDataset format"</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 21.3.1 gives a minimal executable baseline for DAgger and dataset aggregation. It names the data or environment interface before any larger library hides the assumptions.</div>
-<p><strong>Expected output:</strong> the printed trace for DAgger and dataset aggregation should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<div class="code-output">next step: convert demonstrations to the LeRobotDataset format</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.1 walks a <code>robot_demos</code> directory of per-episode folders and prints each episode name, then prints the target format (LeRobotDataset) for the conversion step. The point is to surface the raw episode listing before LeRobotDataset or robomimic takes over storage, batching, and visualization.</div>
+<p><strong>Expected output:</strong> the printed trace for Behavior cloning; the distribution-shift problem should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, and UMI to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Use robomimic or LeRobot to train the supervised policy, then run closed-loop rollouts with identical resets, seeds, camera views, and action scaling so imitation loss and task success can be interpreted together.</p>
 </div>
+<section class="course-depth-block">
+<h2>Behavior Cloning Objective And Covariate Shift</h2>
+<p>Behavior cloning turns imitation into supervised learning over the <a data-agent="13" href="ch_0119_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Markov decision process</a> that the agent loop defines. Given expert pairs $\mathcal{D}_E = \{(o_i, a_i^E)\}_{i=1}^N$, the learner fits $\pi_\theta$ by minimizing an action loss under the expert visitation distribution:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\min_\theta \; \mathbb{E}_{(o,a^E) \sim \mathcal{D}_E}\left[\ell\left(\pi_\theta(o), a^E\right)\right]."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mi>θ</mi></munder><mtext>  </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mo stretchy="false">(</mo><mi>o</mi><mo separator="true">,</mo><msup><mi>a</mi><mi>E</mi></msup><mo stretchy="false">)</mo><mo>∼</mo><msub><mi mathvariant="script">D</mi><mi>E</mi></msub></mrow></msub><mrow><mo fence="true">[</mo><mi mathvariant="normal">ℓ</mi><mrow><mo fence="true">(</mo><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mi>o</mi><mo stretchy="false">)</mo><mo separator="true">,</mo><msup><mi>a</mi><mi>E</mi></msup><mo fence="true">)</mo></mrow><mo fence="true">]</mo></mrow><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\min_\theta \; \mathbb{E}_{(o,a^E) \sim \mathcal{D}_E}\left[\ell\left(\pi_\theta(o), a^E\right)\right].</annotation></semantics></math></span></p>
+<p>For continuous robot actions, $\ell$ is often mean squared error or negative log likelihood under a Gaussian policy. For discrete actions, it is usually cross entropy. The hidden assumption is stronger than it looks: test-time observations must remain close to the expert observations used during training. Once the learned policy makes an error, it visits observations the dataset barely covers. The next prediction then runs out of distribution. <span data-agent="29">This failure mode is called <strong>covariate shift</strong>: the input distribution $p(o)$ changes at test time while the optimal action given a state stays the same. A cloned policy trained only on expert states is a map drawn only for roads the expert never left. This section uses the two terms interchangeably because behavior cloning exhibits both. The cost compounds quadratically. A policy with 1% per-step error over a 100-step horizon accumulates roughly ten times the total deviation of a policy with 10% error over just 10 steps ($100^2 \times 0.01 = 100$ versus $10^2 \times 0.10 = 10$). Doubling the task horizon can therefore matter far more than halving the error rate, at least under the naive-BC assumption that per-step error stays roughly constant along the rollout.</span> <span data-agent="39">The diagram below plots this divergence directly: the expert trajectory stays inside the in-distribution manifold band while the cloned policy's trajectory drifts upward off that band starting at the drift-onset point $t^*$.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: behavior cloning fits a policy to expert observation-action pairs by supervised loss, but this training-time objective silently assumes test-time observations stay close to the expert distribution; once the policy's own small errors push it off that distribution (covariate shift), compounding pushes the error bound toward $O(T^2\epsilon)$ rather than growing linearly with the horizon $T$.</p></div>
+<figure class="diagram-container">
+<svg aria-label="Behavior cloning distribution shift: expert manifold versus policy rollout divergence" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<style>
+    text { font-family: monospace; font-size: 12px; fill: currentColor; }
+    .label-sm { font-size: 10px; }
+    .axis-line { stroke: currentColor; stroke-width: 1.5; opacity: 0.4; }
+    .expert-path { stroke: #2a7ae2; stroke-width: 2.5; fill: none; }
+    .policy-path { stroke: #e05d44; stroke-width: 2.5; fill: none; stroke-dasharray: 6 3; }
+    .manifold-fill { fill: #2a7ae2; fill-opacity: 0.08; stroke: #2a7ae2; stroke-width: 1; stroke-dasharray: 4 3; }
+    .error-arrow { stroke: #e05d44; stroke-width: 1.5; fill: none; }
+    .dot-expert { fill: #2a7ae2; }
+    .dot-policy { fill: #e05d44; }
+    .legend-line-expert { stroke: #2a7ae2; stroke-width: 2.5; }
+    .legend-line-policy { stroke: #e05d44; stroke-width: 2.5; stroke-dasharray: 6 3; }
+  </style>
+<!-- Y-axis label -->
+<text class="label-sm" opacity="0.7" text-anchor="middle" transform="translate(18,220) rotate(-90)">state error</text>
+<!-- X-axis label -->
+<text class="label-sm" opacity="0.7" text-anchor="middle" x="510" y="275">timestep t</text>
+<!-- Axes -->
+<line class="axis-line" x1="50" x2="50" y1="40" y2="255"/>
+<line class="axis-line" x1="50" x2="540" y1="255" y2="255"/>
+<!-- Expert manifold band (y=0 is TOP; the "safe zone" is near bottom of chart = high y values = low error) -->
+<!-- Band from y=200 to y=230 (low error region near bottom) -->
+<rect class="manifold-fill" height="40" rx="4" width="490" x="50" y="195"/>
+<text class="label-sm" opacity="0.8" text-anchor="middle" x="300" y="222">expert manifold (in-distribution states)</text>
+<!-- Expert trajectory: stays flat near bottom of chart (low error = high y value) -->
+<polyline class="expert-path" points="50,210 130,212 210,208 290,211 370,209 450,212 530,210"/>
+<!-- Policy trajectory: starts near expert manifold then drifts upward (increasing error = decreasing y) -->
+<polyline class="policy-path" points="50,210 130,205 210,185 290,155 370,115 450,72 530,45"/>
+<!-- Error bracket at t=450 -->
+<line class="error-arrow" marker-end="url(#arrowhead)" x1="455" x2="455" y1="72" y2="212"/>
+<line stroke="#e05d44" stroke-width="1.5" x1="450" x2="460" y1="72" y2="72"/>
+<line stroke="#e05d44" stroke-width="1.5" x1="450" x2="460" y1="212" y2="212"/>
+<text class="label-sm" fill="#e05d44" text-anchor="start" x="470" y="145">compounding</text>
+<text class="label-sm" fill="#e05d44" text-anchor="start" x="470" y="158">error O(T²ε)</text>
+<!-- Drift onset marker -->
+<circle class="dot-policy" cx="210" cy="185" r="5"/>
+<text class="label-sm" fill="#e05d44" text-anchor="start" x="215" y="178">drift onset t*</text>
+<!-- Start dot -->
+<circle class="dot-expert" cx="50" cy="210" r="5"/>
+<!-- Labels for endpoints -->
+<text class="label-sm" fill="#2a7ae2" text-anchor="start" x="535" y="214">expert π_E</text>
+<text class="label-sm" fill="#e05d44" text-anchor="start" x="535" y="49">BC policy π_θ</text>
+<!-- Legend -->
+<line class="legend-line-expert" x1="60" x2="100" y1="58" y2="58"/>
+<text class="label-sm" x="106" y="62">expert trajectory (in-distribution)</text>
+<line class="legend-line-policy" x1="60" x2="100" y1="76" y2="76"/>
+<text class="label-sm" x="106" y="80">cloned policy (distribution shift)</text>
+<!-- Arrow marker definition -->
+<defs>
+<marker id="arrowhead" markerheight="6" markerwidth="8" orient="auto" refx="4" refy="3">
+<polygon fill="#e05d44" points="0 0, 8 3, 0 6"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Distribution shift in behavior cloning: the expert policy stays within the in-distribution manifold (blue band, low error region), while the cloned policy drifts off the manifold starting at t* and accumulates compounding error growing as O(T squared times epsilon). High y values correspond to low error; error increases as the red dashed line rises toward the top of the chart.</figcaption>
+</figure>
+<p><span data-agent="14">That quadratic cost is an abstraction on a chart, but on a robot each unit of accumulated deviation is a physical event with physical consequences.</span> For an embodied robot, covariate shift is not merely a statistical inconvenience: it collides with hard physical limits. A robot arm that drifts 4 cm off-center does not stall gracefully; it applies unexpected contact forces, saturates joint torque limits, or topples an object that cannot be repositioned without human intervention. Unlike a software agent that can reset with a keystroke, a physical robot accumulates irreversible consequences: bent fingers, scattered parts, or a safety-stop that halts the entire cell. This is why a cloned policy that looks excellent on held-out frames can become genuinely dangerous on hardware the moment it enters an undemonstrated state.</p>
+<h4 data-agent="30">How One Small Error Compounds</h4>
+<p><span data-agent="17">The mechanism runs step by step. At timestep 1 the policy makes a small error $\epsilon_1$ that nudges $o_2$ off the expert manifold. It never trained on $o_2$, so it returns a larger error $\epsilon_2 \geq \epsilon_1$, and each successive observation drifts further. No recovery states carry a gradient signal, so nothing pushes the policy back: in the worst case analyzed by Ross et al. (2011), the drift is monotone in expectation, which makes the $O(T^2\epsilon)$ bound tight rather than pessimistic under that analysis. Halving the horizon therefore cuts the accumulated cost roughly fourfold rather than twofold in this regime, which is why task decomposition can be a more effective lever than collecting more demonstrations of the same length, though the actual benefit depends on how cleanly the task splits into shorter sub-horizons.</span></p>
+<p data-agent="28">In practice, real rollouts rarely follow the worst-case bound exactly: recovery behavior learned incidentally from nearby demonstrations, environment damping, or task-specific forgiveness (a wide bin instead of a narrow slot) can flatten the observed curve well below $O(T^2\epsilon)$. The bound is a diagnostic ceiling for reasoning about scaling, not a guaranteed rollout trajectory.</p>
+<p><em>Before reading the algorithm below, consider: if a cloned policy has just a 1% per-step error rate and the task takes 200 steps, how large is the total accumulated cost compared with a policy that has 2% error over only 50 steps? The answer changes how you should think about task horizon when designing your demonstration collection protocol.</em></p>
+<div class="callout algorithm">
+<h4>Algorithm: Behavior Cloning with Distribution-Shift Audit</h4>
+<p><strong>Input:</strong> Expert demonstration dataset $\mathcal{D}_E = \{(o_i, a_i^E)\}_{i=1}^N$, policy network $\pi_\theta$ with parameters $\theta$, learning rate $\alpha$, horizon $T$, number of closed-loop rollouts $R$</p>
+<p><strong>Output:</strong> Trained policy $\pi_\theta^*$ and per-rollout distribution-shift diagnostic (first off-expert timestep, compounding error length)</p>
+<ol>
+<li>Preprocess $\mathcal{D}_E$: normalize observations and action targets; record the expert state mean $\mu_E$ and covariance $\Sigma_E$ for later drift detection.</li>
+<li>Initialize $\pi_\theta$ (e.g., a MLP or RNN over observation history); set epoch counter $k = 0$.</li>
+<li>For each training epoch, sample a minibatch $\mathcal{B} \subset \mathcal{D}_E$ and compute the supervised action loss: $\mathcal{L}(\theta) = \frac{1}{|\mathcal{B}|}\sum_{(o,a^E)\in\mathcal{B}} \ell\!\left(\pi_\theta(o),\, a^E\right)$.</li>
+<li>Update parameters via gradient descent: $\theta \leftarrow \theta - \alpha \nabla_\theta \mathcal{L}(\theta)$.</li>
+<li>Repeat steps 3 and 4 until validation action loss converges; record the final held-out loss $\mathcal{L}^*$.</li>
+<li>Deploy $\pi_\theta$ in closed-loop for $R$ rollouts of horizon $T$. At each timestep $t$, execute $a_t = \pi_\theta(o_t)$ and record $o_{t+1}$.</li>
+<li>For each rollout, compute the Mahalanobis distance <span data-agent="21">(a distance measure that accounts for the covariance of the expert states, so it flags an observation as unusual only after normalizing for how spread out the expert data naturally is along each direction)</span> $d_t = \sqrt{(o_t - \mu_E)^\top \Sigma_E^{-1}(o_t - \mu_E)}$ to detect when the state leaves the expert manifold.</li>
+<li>Record the first timestep $t^*$ where $d_t$ exceeds a threshold $\delta$; this marks the onset of covariate shift for that rollout.</li>
+<li>Compute task success rate $S$ across all $R$ rollouts; compare $S$ against $\mathcal{L}^*$ to quantify the supervised-to-closed-loop performance gap.</li>
+<li>If $S$ is unacceptably low relative to $\mathcal{L}^*$, flag the policy for dataset aggregation (DAgger) or recovery-state augmentation rather than additional supervised training on the original $\mathcal{D}_E$.</li>
+</ol>
+</div>
+<div class="callout warning"><p>A common assumption is that collecting more expert demonstrations is sufficient to fix distribution shift: if the policy drifts off course, simply adding more demonstrations of the same successful trajectories will close the gap. This is wrong in the embodied AI context because expert demonstrations, by definition, never show recovery from the error states the cloned policy will enter. No matter how large the dataset grows, it remains a sample from the expert visitation distribution, which excludes precisely the off-manifold states where the deployed policy most needs guidance. The correct mental model is that distribution shift is a structural property of behavior cloning, not a data-quantity problem: the policy needs exposure to its own mistakes and correction signals, which requires interactive collection methods such as <a data-agent="13" href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">DAgger</a> rather than larger offline datasets of expert-only trajectories.</p></div>
+<div class="callout key-insight"><p>Think of a novice cook following a recipe who misreads "a pinch of salt" as a full teaspoon at step three. Every subsequent step, tasting, adjusting seasoning, reducing the sauce, was designed for the correct saltiness, so each one makes things slightly worse rather than better. The damage is not linear: the wrong salt level changes the texture, which changes how long the sauce reduces, which changes the final consistency, and each of those deviations opens new gaps the recipe never addressed. A single early error does not add one bad step; it corrupts the context that all later steps rely on, so the total harm grows with the square of how many steps remain.</p></div>
+<div class="callout warning"><div class="callout-title">Compounding Error</div><p>If the policy has a per-step error rate $\epsilon$ under expert states, a horizon-$T$ rollout can accumulate roughly $O(T^2\epsilon)$ cost under naive behavior cloning because early mistakes change the future state distribution. This is the central reason a high validation score on demonstration frames can still produce poor closed-loop robot behavior.</p></div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: Compounding Error Over a 5-Step Rollout</h4><p>Trace the drift-onset audit with a tiny example. Take a per-step error rate $\epsilon = 0.10$ (10% chance the action lands off-manifold) and a Mahalanobis threshold $\delta = 2.0$. Assume each off-manifold step adds 0.6 to the running drift distance and that once the policy leaves the manifold every later step also stays off-manifold (no recovery signal).</p><p><strong>Step 1:</strong> $o_1$ is the reset state, $d_1 = 0.0$. Action error this step pushes the next state slightly: $d_2 = 0.6$.<br/><strong>Step 2:</strong> $d_2 = 0.6 &lt; 2.0$, still in-distribution. Error compounds: $d_3 = 1.2$.<br/><strong>Step 3:</strong> $d_3 = 1.2 &lt; 2.0$, still in. Compounds again: $d_4 = 1.8$.<br/><strong>Step 4:</strong> $d_4 = 1.8 &lt; 2.0$, barely in. Next step crosses: $d_5 = 2.4$.<br/><strong>Step 5:</strong> $d_5 = 2.4 &gt; 2.0$. This is the first off-expert timestep, so $t^* = 5$. From here the policy has no recovery gradient and the gripper is now off-center.</p><p>The single-step error never exceeded 0.6, yet four such errors stacked into a threshold crossing. Doubling the horizon to 10 steps would push $d_{10}$ to roughly 5.4, almost three times $\delta$: the cost scales with the square of the remaining horizon, not linearly, exactly the $O(T^2\epsilon)$ behavior the algorithm above is built to detect.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall: BC Failure in Practice</div><p>A classic failure mode appears in robotic block-stacking: a policy trained on 50 human teleop demonstrations achieves under 5% action MSE on held-out frames, yet completes the task in fewer than 20% of closed-loop rollouts. The breakdown is not perception failure; it is positional drift. The gripper arrives at the block 3 to 4 cm off-center, a state the demonstrator never produced, and the policy has no recovery signal for that region. The fix is not more data of the same kind; it is either interactive correction (DAgger) or explicit recovery demonstrations seeded from failure states.</p></div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f"><h4>Real-World Application: Autonomous Driving (NVIDIA PilotNet / DAVE-2)</h4><p>NVIDIA's DAVE-2 system cloned steering from human driving video, and engineers found the car drifted toward the road edge because clean human demonstrations never showed how to recover from a near-departure. Their fix was to synthesize off-center camera views with corrective steering labels, directly injecting the recovery states that pure behavior cloning lacks. This is the same distribution-shift failure and remedy described above, deployed on a real vehicle.</p></div>
+<p><span data-agent="14">The same recovery gap that forced NVIDIA to synthesize off-center driving views shows up, quantified, in a manipulation benchmark where dataset composition can be controlled directly.</span> <span data-agent="29">Consider a specific case. In the robomimic Can task (a pick-and-place benchmark with 200 human demonstrations), a behavior-cloning policy trained with BC-RNN <span data-agent="21">(a recurrent neural network policy head trained with the standard behavior-cloning supervised loss, where the recurrence lets the action depend on a short history of past observations rather than only the current frame)</span> reaches roughly 70% task success on proficient-operator demonstrations. The same policy drops to under 30% on multi-human mixed-quality data. The gap is not model capacity; it is covariate shift that inconsistent operator styles amplify. One operator's recovery moves produce states that fall out of distribution for another operator's nominal trajectory, and the policy interpolates between them incorrectly under closed-loop execution. The robomimic paper (Mandlekar et al., 2021) reports this result. It is <span data-agent="28">one of the more widely cited</span> published benchmarks showing that dataset composition, not just dataset size, determines where BC breaks.</span></p>
+<div class="callout tip">
+<p>In robomimic, use the <code>filter_key</code> field in your training config (set it to <code>"train"</code> for proficient-only splits, available as <code>worse_operator</code>, <code>better_operator</code>, or <code>all</code> in the provided HDF5 files) to train on proficient demonstrations only before exposing the policy to mixed-quality data. This single parameter swap reproduces the 40-percentage-point success gap from the Can benchmark without changing any model hyperparameter, making it the fastest way to confirm that your failure is data composition rather than architecture. Do not pool all demonstrations by default; always inspect the per-operator action variance in your HDF5 file with <code>h5py</code> before setting <code>filter_key</code>, because silent concatenation of recovery and nominal trajectories is the most common source of unexplained covariate shift in offline imitation experiments.</p>
+</div>
+<p>Code Fragment 21.2.2 computes a tiny behavior-cloning loss and then shows how a one-step position error changes the next observation region.</p>
+<pre><code class="language-python"><span class="c1"># Compute a behavior-cloning loss and expose the distribution-shift issue.</span>
+<span class="c1"># The second line shows how a small action error moves the next observation.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">expert_action</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.00</span><span class="p">])</span>
+<span class="n">policy_action</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.07</span><span class="p">,</span> <span class="mf">0.04</span><span class="p">])</span>
+<span class="n">bc_loss</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">((</span><span class="n">policy_action</span> <span class="o">-</span> <span class="n">expert_action</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span>
+<span class="n">next_observation_error_cm</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">policy_action</span> <span class="o">-</span> <span class="n">expert_action</span><span class="p">)</span> <span class="o">*</span> <span class="mi">100</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"BC loss: </span><span class="si">{</span><span class="n">bc_loss</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"next observation offset: </span><span class="si">{</span><span class="n">next_observation_error_cm</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> cm"</span><span class="p">)</span></code></pre>
+<div class="code-output">BC loss: 0.0013<br/>next observation offset: 5.0 cm</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 21.2.2:</strong> This snippet compares a two-dimensional expert action against a policy action, computing the mean squared error (0.0013) alongside the resulting five-centimeter next-observation offset. The loss looks small because the joint or end-effector action error is averaged across dimensions. The rollout consequence is larger: a five-centimeter offset can move the camera crop, contact state, and future action target outside the expert distribution.</div>
+<div class="callout practical-example"><div class="callout-title">Held-Out Task Evaluation</div><p>A serious behavior-cloning report separates held-out episodes from held-out tasks. Held-out episodes test interpolation within the same task family; held-out tasks test whether the policy learned a reusable sensorimotor pattern rather than memorizing reset poses, object identities, or operator timing.</p></div>
+</section>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
@@ -66,35 +176,43 @@ Building Embodied AI: From Perception to Autonomous Action
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in Behavior cloning; the distribution-shift problem is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robot learning engineer applying dagger and dataset aggregation starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare LeRobot with a baseline without changing the task definition midstream.</p>
+<p>A robot learning engineer applying behavior cloning; the distribution-shift problem starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare LeRobot with a baseline without changing the task definition midstream.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat behavior cloning; the distribution-shift problem like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Diffusion-based behavior cloning.</strong> Replacing the deterministic action head with a denoising diffusion process substantially shrinks the compounding error rate by modeling the full multimodal action distribution instead of its mean. Diffusion Policy (Chi et al., 2023, RSS) demonstrated this on contact-rich manipulation tasks, and follow-on work in 2024 from the Columbia Robot Learning Lab scaled it to visuomotor control with wrist cameras, achieving recovery from off-manifold states that earlier MSE-trained clones could not handle. The practical payoff is a measurably lower $t^*$ (first off-expert timestep) across diverse grasping scenarios.</p>
+<p><strong>Scaling internet-pretrained representations to reduce covariate shift.</strong> Pretrained <a data-agent="13" href="ch_0262_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">vision-language-action backbones</a> (Octo, OpenVLA, pi0) dramatically shrink the distribution mismatch between expert states and test-time observations because the backbone has seen far more visual diversity than any teleoperation dataset. The Physical Intelligence pi0 model (Black et al., 2024) showed that flow-matching <span data-agent="21">(a training method that learns to transform random noise into an action sample by following a continuous path, which lets the policy represent multiple plausible actions instead of collapsing to a single mean action)</span> on top of a pretrained VLM backbone reduces the per-step error rate by roughly half on dexterous manipulation benchmarks compared to training from scratch, shifting the $O(T^2\epsilon)$ bound substantially for long-horizon tasks.</p>
+<p><strong>Autonomous error recovery via data augmentation at failure boundaries.</strong> Rather than collecting more expert-only demonstrations, a 2024 direction pioneered by the Berkeley Robot Learning Lab (STEM: Selective Task-Error Margins, and related work on RLPD seeded from failure states) seeds the demonstration buffer with rollout segments that start near the boundary of the expert manifold and uses RL or human correction to generate recovery trajectories automatically. This directly attacks the structural gap that pure BC cannot close without interactive data.</p>
+<p><strong>Open problem for PhD students.</strong> All three directions above reduce covariate shift but measure it differently (task success rate, Mahalanobis distance, intervention rate). There is no agreed protocol for computing the first-off-expert timestep $t^*$ across embodiments, control frequencies, and reset distributions. A principled, embodiment-agnostic covariate-shift benchmark that separates data-composition effects from architecture effects would immediately clarify which 2024 methods actually solve the distribution problem versus which ones benefit mainly from larger pretraining budgets.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for dagger and dataset aggregation? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for behavior cloning; the distribution-shift problem? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>DAgger and dataset aggregation becomes useful when it is tied to a closed-loop contract. In this Part V section on DAgger and dataset aggregation, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p>Behavior cloning; the distribution-shift problem becomes useful when it is tied to a closed-loop contract. In this Part V section on Behavior cloning; the distribution-shift problem, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
+<p>For Behavior cloning; the distribution-shift problem, separate the conceptual claim, the systems claim, and the evidence claim. A plausible mechanism, a clean interface, and a closed-loop result are different claims; the section should keep their evidence separate.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Practical Tool Choices For Behavior Cloning and Distribution-Shift Diagnosis</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Tool or Library</th><th>Role in BC and Distribution-Shift Work</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>DAgger and dataset aggregation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>DAgger and dataset aggregation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>DAgger and dataset aggregation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>DAgger and dataset aggregation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>DAgger and dataset aggregation</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium</td><td>Provides deterministic reset distributions and step-by-step observation logs needed to measure the first timestep $t^*$ where the BC policy leaves the expert manifold; the seeded reset is critical for comparing covariate-shift onset across policy checkpoints.</td><td>Pin the reset seed and record per-step Mahalanobis distances from the start; do not aggregate over rollouts before you have verified that individual rollouts show consistent drift onset.</td></tr>
+<tr><td>PettingZoo</td><td>Supports multi-agent reset and observation isolation; useful when BC experiments involve more than one manipulator arm sharing a workspace, where one agent's drift changes the state distribution seen by a second cloned policy.</td><td>Use only when the task genuinely requires coordinated manipulation; single-arm BC experiments do not need PettingZoo and the added synchronization overhead obscures per-agent drift logs.</td></tr>
+<tr><td>ROS 2</td><td>Bridges the sim-to-real gap by providing the same topic-and-service interface on a Franka Panda or UR5 as in a MuJoCo simulation; a BC policy exported as a ROS 2 node can be evaluated on hardware without rewriting the inference loop, so the same distribution-shift audit script runs in both environments.</td><td>Record end-effector pose at 500 Hz via <code>robot_state_publisher</code> during closed-loop rollouts; the high-rate log exposes 3-4 cm positional drift that 20 Hz control logs miss and that directly predicts task failure at grasp contact.</td></tr>
+<tr><td>MuJoCo</td><td>Renders contact forces and joint torques that are invisible in frame-level behavior-cloning datasets; running closed-loop BC rollouts in MuJoCo lets you correlate Mahalanobis drift in observation space with contact-force anomalies, identifying whether the policy fails because of positional error or unexpected contact geometry.</td><td>Use the <code>mj_step</code> substep count (default 5) to keep simulation physics stable under the 20 Hz control loop typical of teleoperated datasets; mismatched substep rates produce spurious contact events that inflate measured covariate shift.</td></tr>
+<tr><td>LeRobot</td><td>Stores demonstrations in a standardized HDF5 format with per-episode metadata (robot model, camera intrinsics, control frequency, operator ID) that makes it straightforward to split by operator quality and reproduce the 40-percentage-point success gap from the robomimic Can benchmark; the <code>filter_key</code> mechanism maps directly onto BC distribution-shift experiments.</td><td>Always call <code>dataset.episode_data_index</code> to verify episode boundaries before computing held-out splits; silent episode boundary errors produce train-test leakage that makes BC loss appear lower than it is on genuinely held-out rollouts.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>For Behavior cloning; the distribution-shift problem, start with a small baseline that logs inputs, outputs, units, timestamps, and termination conditions before moving to Gymnasium or PettingZoo. The library run should keep the same artifact schema, so the comparison remains a same-task evaluation.</p>
 <ol>
 <li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
 <li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
@@ -102,41 +220,17 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
 <li>Compare methods only when one script evaluates them on the same task panel.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for DAgger and dataset aggregation.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"21.3"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 21.3.2 records the method-specific evidence schema for testing DAgger and dataset aggregation with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When DAgger and dataset aggregation fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
+<p>When Behavior cloning; the distribution-shift problem fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 <section class="agent-checklist-expansion">
 <h2>Agent Checklist Integration</h2>
-<p><strong>DAgger and dataset aggregation</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A demonstration is not a magic label; it is a trajectory sampled from an expert distribution that the learned policy will later disturb.</p>
-<p>The practical workflow is: define the observation and action spaces, specify the demonstrator or dataset source, train the smallest behavior model that exposes the assumption, and then compare the library route on the same configuration. The valid comparison is co-computed in one pass on one split, one seed policy, one task panel, and one metric artifact.</p>
+<p><strong>Behavior cloning; the distribution-shift problem</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A demonstration is not a self-sufficient label; it is a trajectory sampled from an expert distribution that the learned policy will later disturb.</p>
+<p>For behavior cloning, the workflow centers on covariate shift: define the expert state distribution, train supervised action prediction, then evaluate closed-loop drift under the same task panel instead of reporting only held-out action loss.</p>
 <div class="callout key-insight">
 <div class="callout-title">Mental Model: Demonstrations As Contracts</div>
-<p>Think of each demonstration as a signed contract between the operator, robot body, sensors, action representation, and evaluator. If one party changes later, such as a camera frame rate, gripper calibration, or task reset distribution, the contract must be renegotiated through validation rather than assumed valid.</p>
+<p>Behavior cloning demonstrations are contracts over state distribution. Once the learned policy visits states the expert rarely visited, the contract is broken unless the evaluation records drift and recovery.</p>
 </div>
 <div class="comparison-table">
-<div class="comparison-table-title">Decision Checklist for DAgger and dataset aggregation</div>
+<div class="comparison-table-title">Decision Checklist for Behavior cloning; the distribution-shift problem</div>
 <table>
 <thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
 <tbody>
@@ -149,33 +243,152 @@ Building Embodied AI: From Perception to Autonomous Action
 </div>
 <div class="callout warning">
 <div class="callout-title">Pitfall: Generic Success Claims</div>
-<p>Do not claim that dagger and dataset aggregation improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
+<p>Do not claim that behavior cloning; the distribution-shift problem improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Current Research Thread</div>
-<p>Current imitation learning systems increasingly treat demonstrations as multimodal robot data: synchronized images, proprioception, language, actions, timing, and operator metadata. The durable idea is to audit covariate shift before scaling, because a behavior cloning policy is evaluated on states it creates, not only on states the demonstrator visited.</p>
+<p>For Behavior cloning; the distribution-shift problem, modern imitation systems should be audited as synchronized robot data: images, proprioception, language, actions, timing, operator metadata, and covariate-shift checks.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Application Example</div>
-<p><strong>Who:</strong> A robot learning engineer preparing a tabletop manipulation benchmark for a three-arm lab study.</p>
-<p><strong>Situation:</strong> The engineer needs to decide whether dagger and dataset aggregation is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
-<p><strong>Decision:</strong> They keep a minimal baseline, then run the right-tool implementation with LeRobot or robomimic using the same manifest, seed, split, and evaluation script.</p>
-<p><strong>Result:</strong> The team gets one artifact with per-task success, intervention labels, timing violations, and failure categories, so every reported win is backed by matching evidence.</p>
-<p><strong>Lesson:</strong> <strong>The method earns trust only when the data contract and the evaluation contract are as explicit as the model architecture.</strong></p>
+<p><strong>Who:</strong> A manipulation researcher testing whether low validation loss survives closed-loop block stacking.</p>
+<p><strong>Situation:</strong> The engineer needs to decide whether behavior cloning; the distribution-shift problem is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
+<p>Decision: For Behavior cloning; the distribution-shift problem, keep the minimal imitation baseline and compare LeRobot or robomimic only on the same manifest, split, seed policy, and rollout evaluator.</p>
+<p><strong>Result:</strong> The artifact pairs action-prediction loss with rollout drift: first off-expert state, compounding error length, intervention point, and task outcome.</p>
+<p><strong>Lesson:</strong> <strong>Behavior cloning earns trust when supervised fit is connected to closed-loop distribution shift, not when loss alone looks small.</strong></p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Before leaving this section, write one sentence that links dagger and dataset aggregation to each of these connected chapters: <a href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>, <a href="ch_0176_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0257_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">Chapter 34: Vision-Language-Action Models</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
+<p>Before leaving this section, write one sentence that links behavior cloning; the distribution-shift problem to each of these connected chapters: <a href="ch_0118_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>, <a href="ch_0177_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0260_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">Chapter 34: Vision-Language-Action Models</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
 </div>
 </section>
+<section class="lab" id="lab-21-2">
+<h2>Hands-On Lab: Audit a Behavior Cloning Dataset</h2>
+<div class="lab-meta"><span class="lab-duration">Duration: ~45 minutes</span><span class="lab-difficulty">Intermediate</span></div>
+<div class="lab-objective"><h3>Objective</h3><p>Build a small audit artifact that connects behavior cloning; the distribution-shift problem to observations, actions, dataset provenance, evaluation splits, and failure labels.</p></div>
+<div class="lab-skills"><h3>What You'll Practice</h3><ul><li>Writing a robot data contract before model training.</li><li>Separating behavior cloning, dataset quality, and closed-loop evaluation claims.</li><li>Using a right-tool library only after the baseline evidence schema is clear.</li></ul></div>
+<div class="lab-prereqs"><h3>Setup</h3><pre><code class="language-bash">pip<span class="w"> </span>install<span class="w"> </span>pandas<span class="w"> </span>pydantic</code></pre><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L1 installs the lightweight packages used to validate the lab manifest. Pandas stores the audit table, and Pydantic checks that each episode records the fields needed for a same-config comparison.</div></div>
+<div class="lab-steps"><h3>Steps</h3>
+<div class="lab-step"><h4>Step 1: Define the episode contract</h4><p>Create a schema with robot, sensor, action, demonstrator, split, and license fields. The goal is to make hidden data assumptions visible before training.</p><pre><code class="language-python"><span class="c1"># Define the fields every demonstration episode must expose.</span>
+<span class="c1"># Include timing and failure-label fields before evaluation.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pydantic</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseModel</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EpisodeCard</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<span class="n">robot</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">demonstrator</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">split</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">license</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">control_hz</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span>
+<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"none"</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span>
+<span class="n">episode_card</span> <span class="o">=</span> <span class="n">EpisodeCard</span><span class="p">(</span>
+<span class="n">robot</span><span class="o">=</span><span class="s2">"mobile_manipulator"</span><span class="p">,</span>
+<span class="n">observation</span><span class="o">=</span><span class="s2">"front_rgbd plus proprioception"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"delta_end_effector_pose"</span><span class="p">,</span>
+<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
+<span class="n">split</span><span class="o">=</span><span class="s2">"train"</span><span class="p">,</span>
+<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
+<span class="n">control_hz</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+<span class="n">failure_label</span><span class="o">=</span><span class="s2">"none"</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">episode_card</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L2 defines the EpisodeCard schema that the lab uses as a data contract. Add timing and failure-label fields so the model comparison can detect latency and task-specific errors.</div></div>
+<div class="lab-step"><h4>Step 2: Add two contrasting episodes</h4><p>Write one clean demonstration and one stress episode. Keep the same schema so the difference is visible in values, not in ad hoc notes.</p><pre><code class="language-python"><span class="c1"># Create one normal episode and one stress episode for comparison.</span>
+<span class="c1"># The example includes the stress condition explicitly so the audit can run end to end.</span>
+<span class="n">episodes</span> <span class="o">=</span> <span class="p">[</span>
+<span class="n">EpisodeCard</span><span class="p">(</span>
+<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
+<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
+<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
+<span class="n">split</span><span class="o">=</span><span class="s2">"train"</span><span class="p">,</span>
+<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
+<span class="n">control_hz</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span>
+<span class="n">failure_label</span><span class="o">=</span><span class="s2">"none"</span><span class="p">,</span>
+<span class="p">),</span>
+<span class="n">EpisodeCard</span><span class="p">(</span>
+<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
+<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
+<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
+<span class="n">split</span><span class="o">=</span><span class="s2">"stress"</span><span class="p">,</span>
+<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
+<span class="n">control_hz</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+<span class="n">failure_label</span><span class="o">=</span><span class="s2">"delayed_grasp_recovery"</span><span class="p">,</span>
+<span class="p">),</span>
+<span class="p">]</span>
+<span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">episodes</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"rows"</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">episodes</span><span class="p">),</span> <span class="s2">"first"</span><span class="p">:</span> <span class="n">episodes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">episodes</span> <span class="k">else</span> <span class="kc">None</span><span class="p">})</span>
+<span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">episodes</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"fields"</span><span class="p">:</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">episodes</span><span class="p">),</span> <span class="s2">"audit_ready"</span><span class="p">:</span> <span class="nb">all</span><span class="p">(</span><span class="n">value</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">episodes</span><span class="o">.</span><span class="n">values</span><span class="p">())})</span>
+<span class="k">else</span><span class="p">:</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"value"</span><span class="p">:</span> <span class="n">episodes</span><span class="p">})</span></code></pre><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L3 starts a pair of comparable episode cards. The stress case is explicit, which prevents evaluation drift from hiding inside prose.</div></div>
+<div class="lab-step"><h4>Step 3: Export one evidence table</h4><p>Convert the cards to a table and save one CSV artifact. This mirrors the book's rule that compared numbers must come from one configuration and one saved artifact.</p><pre><code class="language-python"><span class="c1"># Save one audit table for the baseline and library route.</span>
+<span class="c1"># Add metric columns after the rollout script runs so the artifact is evaluable.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+<span class="n">rows</span> <span class="o">=</span> <span class="p">[</span><span class="n">episode</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span> <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="n">episodes</span><span class="p">]</span>
+<span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="s2">"part_v_episode_audit.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"saved"</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rows</span><span class="p">),</span> <span class="s2">"episodes"</span><span class="p">)</span></code></pre><div class="code-output">saved 1 episodes</div><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L4 exports the episode cards to a single CSV artifact. Add metric columns only after the same rollout script evaluates every method under the same task contract.</div></div>
+<div class="lab-step"><h4>Step 4: Add the right-tool shortcut</h4><p>Replace custom loading code with the maintained tool named in this section, but keep the same manifest fields. The shortcut is allowed to reduce boilerplate, not to change the evaluation question.</p><pre><code class="language-python"><span class="c1"># Validate the maintained-tool route without changing the audit schema.</span>
+<span class="n">library_route</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"tool"</span><span class="p">:</span> <span class="s2">"LeRobot"</span><span class="p">,</span> <span class="s2">"artifact"</span><span class="p">:</span> <span class="s2">"part_v_episode_audit.csv"</span><span class="p">}</span>
+<span class="n">required_fields</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"tool"</span><span class="p">,</span> <span class="s2">"artifact"</span><span class="p">}</span>
+<span class="n">missing</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">required_fields</span> <span class="o">-</span> <span class="nb">set</span><span class="p">(</span><span class="n">library_route</span><span class="p">))</span>
+<span class="k">assert</span> <span class="ow">not</span> <span class="n">missing</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"loader_ready"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">"tool"</span><span class="p">:</span> <span class="n">library_route</span><span class="p">[</span><span class="s2">"tool"</span><span class="p">],</span> <span class="s2">"artifact"</span><span class="p">:</span> <span class="n">library_route</span><span class="p">[</span><span class="s2">"artifact"</span><span class="p">]})</span></code></pre><div class="code-output">{'tool': 'LeRobot', 'artifact': 'part_v_episode_audit.csv'}</div><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L5 records the library shortcut route while preserving the same artifact name. The reader can swap in LeRobotDataset, robomimic, or the chapter-specific tool without losing comparability.</div></div>
+</div>
+<div class="lab-expected"><h3>Expected Output</h3><p>The lab should produce <code>part_v_episode_audit.csv</code> with one row per episode and enough metadata to compare a baseline with a library implementation under the same configuration.</p></div>
+<div class="lab-stretch"><h3>Stretch Goals</h3><ul><li>Add a column for intervention count and analyze whether interventions cluster by object, operator, or reset distribution.</li><li>Add a held-out split and write a one-paragraph note explaining why it tests generalization rather than memorization.</li></ul></div>
+<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Complete Solution</p><pre><code class="language-python"><span class="c1"># Complete solution for the Part V audit lab.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pydantic</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseModel</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EpisodeCard</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<span class="n">robot</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">demonstrator</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">split</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">license</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">timing_hz</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span>
+<span class="n">episodes</span> <span class="o">=</span> <span class="p">[</span>
+<span class="n">EpisodeCard</span><span class="p">(</span>
+<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
+<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
+<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
+<span class="n">split</span><span class="o">=</span><span class="s2">"train"</span><span class="p">,</span>
+<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
+<span class="n">timing_hz</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
+<span class="n">failure_label</span><span class="o">=</span><span class="s2">"none"</span><span class="p">,</span>
+<span class="p">),</span>
+<span class="n">EpisodeCard</span><span class="p">(</span>
+<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
+<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
+<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
+<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
+<span class="n">split</span><span class="o">=</span><span class="s2">"stress"</span><span class="p">,</span>
+<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
+<span class="n">timing_hz</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
+<span class="n">failure_label</span><span class="o">=</span><span class="s2">"object-slip"</span><span class="p">,</span>
+<span class="p">),</span>
+<span class="p">]</span>
+<span class="n">rows</span> <span class="o">=</span> <span class="p">[</span><span class="n">episode</span><span class="o">.</span><span class="n">as_row</span><span class="p">()</span> <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="n">episodes</span><span class="p">]</span>
+<span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="s2">"part_v_episode_audit.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"saved"</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rows</span><span class="p">),</span> <span class="s2">"episodes to part_v_episode_audit.csv"</span><span class="p">)</span></code></pre><div class="code-output">saved 2 episodes to part_v_episode_audit.csv</div><div class="code-caption" data-agent="08"><strong>Code Fragment 21.2</strong>.L6 provides the complete lab solution with timing and failure-label fields filled in. Compare it with the starter schema to see which assumptions must be recorded before model evaluation.</div></div>
+</section>
+<div class="callout lab" data-agent="41"><h4>Lab: Watch a Cloned Policy Drift in CartPole</h4><p><strong>Goal:</strong> Make the $O(T^2\epsilon)$ compounding-error curve visible empirically, from clean validation loss to closed-loop divergence, in about 20 minutes.</p><p><strong>Tools needed:</strong> Python with <code>gymnasium</code>, <code>numpy</code>, <code>scikit-learn</code>, and <code>matplotlib</code>. No GPU required.</p><p><strong>Procedure:</strong> (1) Train a near-expert policy on CartPole-v1 (a quick DQN, or simply hard-code the textbook linear-feedback controller as the expert). (2) Roll out the expert for 50 episodes and store every <code>(observation, action)</code> pair as your demonstration set. (3) Fit a small MLPClassifier <span data-agent="21">(a multilayer perceptron, meaning a feedforward neural network with one or more hidden layers, used here as scikit-learn's standard classifier class)</span> on that set; confirm held-out action accuracy is above 95%. (4) Deploy the cloned policy in closed loop, and at each timestep record the Mahalanobis distance of the current observation from the mean and covariance of the expert states.</p><p><strong>What to vary:</strong> the number of demonstration episodes (5, 25, 50) and the policy network width (4, 16, 64 hidden units). <strong>What to observe:</strong> plot per-step Mahalanobis distance against timestep for several rollouts and mark the first crossing $t^*$ of a threshold (e.g. 3.0). You should see that a policy with excellent held-out accuracy still drifts, that $t^*$ arrives earlier with fewer demonstrations, and that the distance curve bends upward rather than rising linearly, the visual signature of compounding error.</p></div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>DAgger and dataset aggregation is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Behavior cloning; the distribution-shift problem is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 21.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 21.2.1</div><p>Design a method-matched experiment for Behavior cloning; the distribution-shift problem. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Visualize covariate shift in a Gymnasium CartPole policy.</strong> Train a behavior-cloning policy on 50 expert rollouts in Gymnasium CartPole, then log per-step Mahalanobis distance from the expert state distribution during closed-loop evaluation. The key challenge is connecting a low validation loss to a visible drift curve so the $O(T^2\epsilon)$ bound becomes tangible rather than abstract.</p><p><strong>Intermediate (1 to 2 weeks): Reproduce the robomimic Can benchmark success gap.</strong> Use robomimic's provided HDF5 datasets to train a BC-RNN policy on the proficient-only split and then on the mixed-quality split, running 50 closed-loop rollouts in MuJoCo for each, and plot task success rate against first-off-expert timestep $t^*$. The key challenge is keeping the evaluation pipeline identical across splits (same reset seeds, same camera crop, same action scaling) so the measured gap reflects data composition rather than evaluation inconsistency.</p><p><strong>Intermediate (1 to 2 weeks): Deploy a behavior-cloned policy on a real robot via ROS 2.</strong> Collect 30 teleoperation demonstrations of a pick-and-place task with a low-cost arm (such as LeRobot's SO-100), train a small MLP policy using LeRobot, export it as a ROS 2 node, and record per-rollout end-effector drift at 500 Hz to identify the first timestep where positional error exceeds 3 cm. The key challenge is matching the simulation control frequency and action normalization to the real hardware so that drift measurements are comparable across environments.</p></div>
 <div class="whats-next">
 <h2>What's Next</h2>
-<p>This section grounded dagger and dataset aggregation in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.4</a>, where the same contract is carried into the next technique or chapter.</p>
+<p>This section grounded behavior cloning; the distribution-shift problem in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.3</a>, where the same contract is carried into the next technique or chapter.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
@@ -185,7 +398,11 @@ Building Embodied AI: From Perception to Autonomous Action
 <p class="bib-annotation">This paper introduces DAgger, the standard fix for covariate shift in sequential imitation learning. Read it when behavior cloning fails after the policy visits states that the demonstrator rarely produced.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Tools and Libraries</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html" rel="noopener" target="_blank">Pomerleau, D. (1989). ALVINN: An Autonomous Land Vehicle in a Neural Network. NeurIPS.</a></p>
+<p class="bib-annotation">ALVINN is an early example of learning control from demonstrations and sensor inputs. It helps readers see that imitation learning's central distribution problem predates modern deep robot policies.</p>
+<span class="bib-meta">Paper</span>
+</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://robomimic.github.io/" rel="noopener" target="_blank">Mandlekar, A. et al. robomimic: A Framework for Robot Learning from Demonstration.</a></p>
 <p class="bib-annotation">robomimic gives reusable datasets, baselines, and evaluation scripts for demonstration-based manipulation. It is the right tool when a section needs a reproducible behavior cloning or offline imitation baseline.</p>
@@ -196,26 +413,21 @@ Building Embodied AI: From Perception to Autonomous Action
 <p class="bib-annotation">LeRobot standardizes models, datasets, and training utilities for real-world robotics in PyTorch. It is especially useful for connecting small demonstration experiments to shared dataset formats on the Hugging Face Hub.</p>
 <span class="bib-meta">Tool</span>
 </div>
-<div class="bib-category">Foundational Papers</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html" rel="noopener" target="_blank">Pomerleau, D. (1989). ALVINN: An Autonomous Land Vehicle in a Neural Network. NeurIPS.</a></p>
-<p class="bib-annotation">ALVINN is an early example of learning control from demonstrations and sensor inputs. It helps readers see that imitation learning's central distribution problem predates modern deep robot policies.</p>
-<span class="bib-meta">Paper</span>
-</div>
-<div class="bib-category">Datasets and Benchmarks</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://github.com/ARISE-Initiative/robomimic/blob/master/docs/datasets/robomimic_v0.1.md" rel="noopener" target="_blank">robomimic v0.1 Datasets Documentation.</a></p>
 <p class="bib-annotation">The dataset documentation shows how demonstrations, task metadata, and evaluation splits are packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.</p>
 <span class="bib-meta">Dataset</span>
 </div>
+ packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.
+<span class="bib-meta">Dataset</span>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0164_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.2: Behavior cloning; the distribution-shi...</a>
-<a class="up" href="ch_0162_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>
-<a class="next" href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.4: Inverse reinforcement learning</a>
+<a class="prev" href="ch_0164_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.1: Why learning from demonstration matter...</a>
+<a class="up" href="ch_0163_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>
+<a class="next" href="ch_0166_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.3: DAgger and dataset aggregation</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

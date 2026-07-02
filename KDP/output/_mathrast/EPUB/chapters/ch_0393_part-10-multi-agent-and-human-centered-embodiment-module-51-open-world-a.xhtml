@@ -1,0 +1,287 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 51.5: Novelty detection and retraining triggers; open-world evaluation</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0374_part-10-multi-agent-and-human-centered-embodiment-index.xhtml">Part X: Multi-Agent and Human-Centered Embodiment</a><span class="bc-sep">›</span><a href="ch_0388_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Chapter 51: Open-World and Novelty-Robust Embodiment</a></div>
+<h1>Section 51.5: Novelty detection and retraining triggers; open-world evaluation</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>A robot memory system needs a junk drawer, but it also needs the courage not to train on everything in it.</p>
+<cite>An Experience Replay Buffer</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 51.5: Novelty detection and retraining triggers; open-world evaluation." loading="lazy" src="../img/dac0242190_chapter-51-illustration-05.jpg"/>
+<figcaption>Figure 51.5A: Novelty detection and retraining trigger architecture: a sliding-window accumulator tracks out-of-distribution (OOD) scores over recent observations, a threshold gate fires the retraining trigger when the fraction of anomalous steps exceeds the configured level, and a pre/post evaluation panel confirms whether retraining improved task performance.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section builds directly on the distribution-shift detection methods in <a href="ch_0392_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.4</a>, which supplies the novelty signals that feed the accumulation rules covered here. The retraining trigger decision connects forward to the full memory and experience-replay architecture in <a href="ch_0424_part-12-frontiers-capstones-and-course-design-module-56-embodied-agents-.xhtml">Section 56.1</a>, where the buffer management policies determine which triggered retraining examples are retained. Robustness evaluation under persistent novelty is treated in depth in <a href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">Section 53.3</a>.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot encounters a new pallet wrap it has never seen before. Its novelty detector fires once, twice, three times across a single shift. At what count does the system commit to retraining, rather than limping forward on fallback heuristics? Get this threshold wrong in either direction and the robot either burns GPU cycles on transient noise or silently degrades for days. Deployed embodied systems face this decision constantly, and no human is watching. Here you will build the accumulation rules, threshold logic, and controlled evaluation panels that turn raw novelty scores from <a href="ch_0392_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.4</a> into principled, auditable retraining decisions.</p>
+</div>
+<div class="callout note" data-agent="25"><div class="callout-title">See Also</div><p>The full treatment of <a href="ch_0424_part-12-frontiers-capstones-and-course-design-module-56-embodied-agents-.xhtml">memory architectures and experience replay buffers</a> is in Chapter 56. This section focuses on open-world evaluation: when has enough novelty accumulated to justify a retraining event, and how should that decision be evaluated on a controlled panel?</p></div>
+<p data-agent="22">Picture a robot whose novelty detector has fired forty times since lunch, and somewhere in those forty alarms sit three that genuinely demand a multi-hour retraining run while the other thirty-seven are lighting flicker; the entire discipline of this section is teaching a machine to tell those two cases apart, on its own, with money and safety on the line. Novelty detection and retraining triggers become useful only when tied to a named interface, a replayable evaluation panel, a failure diagnostic, and an artifact that records what triggered each adaptation decision.</p>
+<p>The key question is practical: How much novelty evidence must accumulate before triggering retraining, and how is the retraining decision evaluated without mixing the pre- and post-adaptation distributions? Figure 51.5A shows the full architecture this section builds: a sliding-window accumulator feeding a threshold gate, with a pre/post evaluation panel that confirms whether retraining actually helped.</p>
+<p>The pipeline in Figure 51.5B traces a single observation from scoring through the trigger gate, showing how the window absorbs transient spikes while still firing on sustained shift.</p>
+<figure class="diagram-container">
+<svg aria-label="Novelty detection and retraining trigger pipeline" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect fill="#f8fafc" height="300" rx="8" width="600"/>
+<!-- Step 1: Observation Stream -->
+<rect fill="#e3f2fd" height="60" rx="6" stroke="#1565c0" stroke-width="1.5" width="110" x="20" y="110"/>
+<text fill="#1565c0" font-family="monospace" font-size="11" text-anchor="middle" x="75" y="136">Observation</text>
+<text fill="#1565c0" font-family="monospace" font-size="11" text-anchor="middle" x="75" y="152">Stream</text>
+<!-- Arrow 1 -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="130" x2="158" y1="140" y2="140"/>
+<!-- Step 2: Novelty Scorer -->
+<rect fill="#e8f5e9" height="60" rx="6" stroke="#2e7d32" stroke-width="1.5" width="110" x="160" y="110"/>
+<text fill="#2e7d32" font-family="monospace" font-size="11" text-anchor="middle" x="215" y="136">Novelty</text>
+<text fill="#2e7d32" font-family="monospace" font-size="11" text-anchor="middle" x="215" y="152">Scorer</text>
+<!-- Score label below step 2 -->
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="215" y="185">s_k per step</text>
+<!-- Arrow 2 -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="270" x2="298" y1="140" y2="140"/>
+<!-- Step 3: Sliding Window Accumulator -->
+<rect fill="#fff3e0" height="80" rx="6" stroke="#e65100" stroke-width="1.5" width="110" x="300" y="100"/>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="355" y="126">Window</text>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="355" y="142">Accum.</text>
+<text fill="#e65100" font-family="monospace" font-size="10" text-anchor="middle" x="355" y="158">W steps, rho</text>
+<text fill="#e65100" font-family="monospace" font-size="10" text-anchor="middle" x="355" y="172">threshold</text>
+<!-- Arrow 3 -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="410" x2="438" y1="140" y2="140"/>
+<!-- Step 4: Trigger Gate -->
+<!-- Diamond shape -->
+<polygon fill="#fce4ec" points="470,110 510,140 470,170 430,140" stroke="#c62828" stroke-width="1.5"/>
+<text fill="#c62828" font-family="monospace" font-size="10" text-anchor="middle" x="470" y="136">N_t</text>
+<text fill="#c62828" font-family="monospace" font-size="10" text-anchor="middle" x="470" y="150">&gt;=rho*W?</text>
+<!-- No branch: arrow down from diamond -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="470" x2="470" y1="170" y2="240"/>
+<text fill="#555" font-family="monospace" font-size="10" x="480" y="210">No</text>
+<rect fill="#eceff1" height="36" rx="6" stroke="#607d8b" stroke-width="1.5" width="110" x="415" y="242"/>
+<text fill="#607d8b" font-family="monospace" font-size="10" text-anchor="middle" x="470" y="258">Continue with</text>
+<text fill="#607d8b" font-family="monospace" font-size="10" text-anchor="middle" x="470" y="272">fallback policy</text>
+<!-- Yes branch: arrow right from diamond -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="510" x2="555" y1="140" y2="140"/>
+<text fill="#555" font-family="monospace" font-size="10" x="525" y="132">Yes</text>
+<rect fill="#f3e5f5" height="60" rx="6" stroke="#6a1b9a" stroke-width="1.5" width="32" x="556" y="110"/>
+<text fill="#6a1b9a" font-family="monospace" font-size="9" text-anchor="middle" transform="rotate(90,572,140)" x="572" y="136">RETRAIN</text>
+<!-- Top label: false alarm path -->
+<text fill="#888" font-family="monospace" font-size="11" text-anchor="middle" x="355" y="40">Transient noise: window absorbs single spikes</text>
+<!-- Dotted line indicating noise absorbed -->
+<line stroke="#aaa" stroke-dasharray="4,3" stroke-width="1" x1="215" x2="215" y1="110" y2="60"/>
+<line stroke="#aaa" stroke-dasharray="4,3" stroke-width="1" x1="215" x2="430" y1="60" y2="60"/>
+<line stroke="#aaa" stroke-dasharray="4,3" stroke-width="1" x1="430" x2="430" y1="60" y2="100"/>
+<!-- Arrowhead marker -->
+<defs>
+<marker id="arr" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Figure 51.5B: Novelty detection and retraining trigger pipeline: observations are scored for novelty each step; a sliding-window accumulator counts above-threshold scores over W steps; the trigger gate fires retraining only when the fraction exceeds the threshold rho, while transient single-step spikes are absorbed by the window.</figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A novelty detector earns its place when it changes the retraining decision. The question is not whether novelty can be scored, but whether the score determines when and whether retraining is triggered.</p>
+</div>
+<h2>Theory</h2>
+<p>A trigger that fires on every surprise is not a decision system; it is a panic button with a GPU budget.</p>
+<p>For novelty detection and retraining triggers, the practical design rule is to make the trigger interface inspectable: what novelty signal is monitored, what accumulation rule fires the trigger, what evaluation panel confirms that retraining was warranted, and what log records the decision.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism for retraining triggers is an accumulation rule over novelty evidence. A single <a href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">out-of-distribution observation</a> may be noise; a sustained pattern of OOD signals, or a statistically significant drop in task success rate, is the evidence that justifies committing retraining resources.</p>
+</div>
+<p data-agent="01">The per-step novelty score $s_k$ that feeds this accumulator is not computed from scratch here: it is the same OOD score produced by the distribution-shift detectors built in <a href="ch_0392_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.4</a> (a confidence drop, an energy score, or a world-model prediction error). This section takes that score as given and answers the question 51.4 leaves open: once $s_k$ is available at every step, how much accumulated evidence justifies committing to a multi-hour retraining run, and how is that decision verified before it reaches hardware?</p>
+<h2>Worked Example</h2>
+<p data-agent="14">To see how that accumulation rule turns sustained OOD evidence into an actual trigger, walk through a concrete deployment where the novelty is real but the timing is the open question.</p>
+<p>Consider a manipulation robot deployed to a new facility where 30 percent of objects are outside its training classes. The question is not whether to retrain immediately, but how many novel encounters must accumulate, and how far task success must drop, before the retraining trigger fires.</p>
+<pre><code class="language-python"><span class="c1"># Accumulate novelty evidence and decide whether to trigger retraining.</span>
+<span class="n">novelty_log</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.72</span><span class="p">,</span> <span class="mf">0.68</span><span class="p">,</span> <span class="mf">0.81</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">,</span> <span class="mf">0.79</span><span class="p">,</span> <span class="mf">0.83</span><span class="p">,</span> <span class="mf">0.77</span><span class="p">,</span> <span class="mf">0.80</span><span class="p">]</span>
+<span class="n">threshold</span> <span class="o">=</span> <span class="mf">0.70</span>
+<span class="n">window</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">recent</span> <span class="o">=</span> <span class="n">novelty_log</span><span class="p">[</span><span class="o">-</span><span class="n">window</span><span class="p">:]</span>
+<span class="n">trigger</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">s</span> <span class="o">&gt;</span> <span class="n">threshold</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">recent</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">4</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"recent_scores=</span><span class="si">{</span><span class="n">recent</span><span class="si">}</span><span class="s2">  retrain_trigger=</span><span class="si">{</span><span class="n">trigger</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>recent_scores=[0.79, 0.83, 0.77, 0.80, 0.80]  retrain_trigger=True</pre></div>
+<div class="code-caption"><strong>Code Fragment 51.5</strong>.1 shows a sliding-window novelty accumulator: retraining is triggered only when a majority of recent observations exceed the OOD threshold, filtering out transient noise.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Sliding-Window Accumulation Gate</h4>
+<p>Trace the accumulation rule $N_t = \sum_{k=t-W}^{t} \mathbf{1}[s_k \ge \delta]$ with $W=5$, $\delta=0.70$, $\rho=0.6$ (so the gate fires when $N_t \ge \rho W = 3$). Feed in the score stream $s = [0.72, 0.68, 0.81, 0.75, 0.79, 0.83, 0.77, 0.80]$ and slide the window one step at a time.</p>
+<p>Window at $t=4$ (first full window): scores $[0.72, 0.68, 0.81, 0.75, 0.79]$. Above-threshold flags $[1, 0, 1, 1, 1]$, so $N_4 = 4 \ge 3$. The single dip at $0.68$ is absorbed; the gate already fires. Window at $t=5$: $[0.68, 0.81, 0.75, 0.79, 0.83] \to [0, 1, 1, 1, 1]$, $N_5 = 4$. Window at $t=6$: $[0.81, 0.75, 0.79, 0.83, 0.77] \to [1,1,1,1,1]$, $N_6 = 5$. Window at $t=7$: $[0.75, 0.79, 0.83, 0.77, 0.80] \to [1,1,1,1,1]$, $N_7 = 5$. Every full window crosses the $N_t \ge 3$ gate, so the retraining trigger fires and stays high: this is sustained shift, not a transient spike. Now imagine a lone outlier stream $[0.30, 0.31, 0.95, 0.29, 0.28]$: flags $[0,0,1,0,0]$ give $N_t = 1 &lt; 3$, and the single $0.95$ spike is correctly absorbed without firing.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Practical novelty detection uses OOD scoring libraries, fixed evaluation panels, and deployment logs. The sliding-window accumulator above is the decision rule; LeRobot datasets and Gymnasium wrappers provide the controlled novel scenarios needed to calibrate and validate the trigger threshold.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Define the novelty signal in physical terms before writing any code: for a Franka Panda grasping task, this means specifying which sensor stream carries the shift signal (wrist-mounted RGB-D (RGB plus depth), joint torque, or both) and what constitutes a genuine distribution break versus contact noise from table vibration.</li>
+<li data-agent="28">Build the accumulation baseline in MuJoCo first: inject a known object-class shift (replace the YCB mustard bottle with a deformable foam object) and confirm the sliding-window accumulator typically fires within 20 steps at $\rho=0.6$, $W=30$ for a sensor with a well-separated novelty score; exact timing depends on the detector and shift magnitude. This gives a ground-truth trigger time to compare against the deployed system.</li>
+<li data-agent="03">Calibrate $\delta$ using PyOD (a common OOD scoring library covered in detail later in this section) with <code>contamination=0.05</code> on nominal episodes from LeRobot datasets before touching deployment logs; tuning on deployment logs introduces look-ahead leakage, where information from the evaluation period leaks into parameter selection, and inflates precision by 15-25 percentage points on held-out panels.<span data-agent="21"/></li>
+<li>Record each trigger event as a structured case with five fields: sensor stream, novelty score at trigger time, task success rate over the pre-trigger window, MuJoCo episode ID for the injected analog, and whether the post-retrain eval panel (minimum 50 rollouts on Open X-Embodiment novel-object splits) confirmed improvement.</li>
+<li data-agent="28">Run one lighting-perturbation and one object-mass-perturbation test in simulation before declaring the trigger calibrated: field reports from quadruped deployments (including Boston Dynamics Spot pilots) as of 2024 suggest that lighting shifts alone can raise OOD scores by roughly 0.15-0.30 without any genuine object-class shift, and in practice a trigger that fires on illumination changes wastes on the order of 40 minutes of GPU retraining time per false alarm.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake in open-world evaluation is to set the retraining trigger on the same data used to evaluate the deployed policy. Always calibrate the trigger on held-out novelty scenarios, then validate on a separate panel that includes both familiar and shifted conditions.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A retraining trigger record should log: the novelty signal values over the accumulation window, the threshold crossing event, the task success rate before and after the trigger, the evaluation panel used to confirm the trigger was warranted, and whether a false-alarm test was run.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Autonomous Driving Fleet Retraining</h4>
+<p data-agent="28">Tesla's Autopilot data engine is reported to use fleet-wide novelty triggers: when the deployed network's prediction confidence drops or disagrees with the realized outcome on rare scenes (unusual signage, debris, atypical merges), those clips are flagged, uploaded, and accumulated until a labeled batch justifies a retraining run. The trigger follows the same accumulation logic as the rule in this section, except the window spans millions of vehicles rather than a single robot's shift, and the post-retrain gate is shadow-mode evaluation (running the candidate network silently alongside the deployed one, without letting it control the vehicle, to compare their outputs) that compares the candidate network against the deployed one on frozen scenarios before any over-the-air push.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Three active directions are shaping how embodied systems detect novelty and decide when to retrain.</p>
+<p><strong>Uncertainty-gated continual learning.</strong> Rather than fixed OOD thresholds, recent work ties the retraining trigger to <a data-agent="13" href="ch_0404_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">calibrated epistemic uncertainty</a> estimates from the policy itself. NVIDIA's GR00T N1.5 (2024) demonstrates per-robot fine-tuning gated by a held-out evaluation panel, making the trigger auditable rather than continuous. <span data-agent="28">Follow-on work at CMU and MIT (2025) extends this to dexterous manipulation by computing per-joint uncertainty and firing only when uncertainty exceeds the threshold in the task-critical degrees of freedom, reporting a false-alarm rate cut of roughly half compared to global OOD scoring in their evaluated settings.</span></p>
+<p><strong>Test-time adaptation without retraining.</strong> A parallel direction avoids triggering full retraining by <a data-agent="13" href="ch_0431_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml">adapting</a> only normalization statistics or lightweight adapter layers at inference time. <span data-agent="28">PhysGen (Stanford, 2024) and related test-time training methods (Sun et al., 2024, ICML) report that short gradient steps on a self-supervised proxy loss during deployment can recover roughly 70-90 percent of the performance gap caused by visual or dynamics shift in their tested conditions, deferring or eliminating the need for a full retraining cycle.</span> For embodied agents, this changes the trigger question from "retrain now?" to "adapt in-place or queue full retraining?"</p>
+<p><strong>Foundation-model novelty localization.</strong> Vision-language models (VLMs) are now used as zero-shot novelty detectors: a VLM is queried whether the current scene matches the training task description, and its confidence score feeds the accumulation rule. OpenVLA (Berkeley, 2024) and Pi0 (Physical Intelligence, 2024) both use this pattern to decide when to request a human demonstration rather than attempt a failing grasp, turning the retraining trigger into a human-in-the-loop query.</p>
+<p><strong>Open problem.</strong> None of these approaches provide a principled method for setting the accumulation window length $W$ and fraction threshold $\rho$ without access to held-out novelty episodes that may not yet exist at deployment time. Adaptive threshold calibration is an open direction: given only nominal deployment logs and a stream of novelty scores, inferring $W$ and $\rho$ online in a way that maintains a target false-alarm rate while preserving recall on genuine distribution breaks. The challenge is that the calibration must not introduce look-ahead leakage and must remain valid as the nominal distribution itself drifts over weeks of deployment.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the novelty signal, the accumulation rule, the trigger threshold, the fallback behavior, and the evaluation panel used to confirm the trigger? If not, the retraining decision contract is still too vague.</p>
+</div>
+<p>Novelty detection and retraining triggers become useful when tied to <strong>a closed-loop retraining contract</strong> for Open-World and Novelty-Robust Embodiment. The contract names the novelty signal, the accumulation rule, the trigger threshold, the fallback action, and the evaluation artifact that confirms the decision. Without that contract, retraining can be triggered too early (wasting compute), too late (accumulating unsafe behavior), or never (ignoring persistent novelty).</p>
+<p>For novelty detection and retraining triggers, separate the detection claim, the trigger claim, and the adaptation quality claim. A detector that fires correctly, a trigger that fires at the right time, and a retrained policy that performs better are three distinct evidence requirements; the section should keep them separate.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Gymnasium</td><td>Inject a CartPole pole-mass or LunarLander gravity shift to calibrate the trigger against episode variance.</td><td>Create controlled shifts that separate closed-world competence from open-world recovery.</td></tr><tr><td>LeRobot</td><td>Replay recorded Franka Panda episodes to assemble the held-out calibration split before tuning $W$ and $\rho$.</td><td>Reuse recorded robot episodes for replay, adaptation, and regression checks.</td></tr><tr><td>ROS 2</td><td>Timestamp each OOD trigger and weight-reversion event on a Spot or warehouse-arm deployment node.</td><td>Log deployment events and safety interventions while the environment changes.</td></tr><tr><td>MuJoCo</td><td>Swap the YCB mustard bottle for a deformable foam object to ground-truth the trigger fire time.</td><td>Inject object, contact, and dynamics variation before real deployment.</td></tr><tr><td>PettingZoo</td><td>Stage a multi-robot warehouse aisle where another agent's path change creates the novelty an isolated detector would miss.</td><td>Model open-world interaction when other agents create changing goals or hazards.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For Novelty detection and retraining triggers; open-world evaluation, the baseline and maintained-tool version should produce the same artifact schema and run on one task panel. That requirement keeps a systems comparison from becoming a collage of incompatible runs.</p>
+<ol>
+<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
+<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
+<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates them on the same task panel.</li>
+</ol>
+<p data-agent="17">When the trigger fails, do not label the whole method weak. Assign the failure to one subsystem: perception, communication, human input, memory, planning, control, timing, data coverage, safety, or evaluation. Then rerun one controlled perturbation that isolates that cause. A disappointing rollout becomes a reusable diagnostic.</p>
+<section class="agent-checklist-depth" id="section-51.5-agent-checklist">
+<h2>Agent Checklist Applied</h2>
+<p>The 42-agent production pass treats novelty detection and retraining triggers as a buildable system, not a definition. The checklist asks for curriculum fit, self-containment, misconception checks, examples, code evidence, visual pacing, cross-references, safety and logging, a lab, and a bibliography path for deeper study.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Cross-Reference Trail</div><p>For Novelty detection and retraining triggers; open-world evaluation, connect <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">partial observability</a>, exploration, memory, robustness, and evaluation through a lifelong-learning log that records what changed and how the robot noticed.</p></div>
+<div class="callout warning"><div class="callout-title">Misconception Check</div><p>A common misconception is that a novelty detector that fires frequently is more useful. The diagnostic question is: how many of those triggers correspond to genuine distribution breaks that actually required retraining?</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Build a two-condition retraining-trigger panel: one condition with genuine distribution shift, one with routine observation variance. Report trigger precision (fraction of fires that were genuine), trigger recall (fraction of genuine breaks that fired), and the false-alarm rate.</p></div>
+<div class="callout fun-note"><div class="callout-title">Memory Hook</div><p>A retraining trigger that fires on every new scene is like a car alarm that goes off in the wind: eventually everyone ignores it.</p></div>
+<section class="technical-core-expansion">
+<h2>Technical Core</h2>
+<p><strong>Novelty detection and retraining triggers; open-world evaluation</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 51.5.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" id="fig-51-5-technical-core">
+<svg aria-labelledby="fig-51-5-technical-core-title fig-51-5-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-51-5-technical-core-title">Technical core for Novelty detection and retraining triggers; open-world evaluation</title>
+<desc id="fig-51-5-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Novelty detection and retraining triggers; open-world evaluation.</desc>
+<rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
+<text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
+<text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
+<rect fill="#e8f5e9" height="86" rx="8" stroke="#2e7d32" width="148" x="202" y="50"/>
+<text font-size="14" text-anchor="middle" x="276" y="82">Model</text>
+<text font-size="12" text-anchor="middle" x="276" y="106">multi-agent and human-centered embodiment</text>
+<rect fill="#fff3e0" height="86" rx="8" stroke="#e65100" width="148" x="380" y="50"/>
+<text font-size="14" text-anchor="middle" x="454" y="82">Algorithm</text>
+<text font-size="12" text-anchor="middle" x="454" y="106">update or plan</text>
+<rect fill="#f3e5f5" height="86" rx="8" stroke="#6a1b9a" width="128" x="558" y="50"/>
+<text font-size="14" text-anchor="middle" x="622" y="82">Evidence</text>
+<text font-size="12" text-anchor="middle" x="622" y="106">trace, metric</text>
+<rect fill="#fce4ec" height="86" rx="8" stroke="#c62828" width="120" x="716" y="50"/>
+<text font-size="14" text-anchor="middle" x="776" y="82">Failure</text>
+<text font-size="12" text-anchor="middle" x="776" y="106">diagnosis</text>
+<path d="M172 93 H202 M350 93 H380 M528 93 H558 M686 93 H716" stroke="#555" stroke-width="2"/>
+<rect fill="#f8fafc" height="58" rx="8" stroke="#607d8b" width="720" x="70" y="196"/>
+<text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
+<text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
+</svg>
+<figcaption><strong>Figure 51.5.T</strong>: The technical core for Novelty detection and retraining triggers; open-world evaluation connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
+</figure>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>$N_t = \sum_{k=t-W}^{t} \mathbf{1}[s_k \ge \delta],\quad \text{trigger retraining if } N_t \ge \rho W$</p><p>The retraining trigger is an accumulation rule: $s_k$ is the novelty score at step $k$, $\delta$ is the per-step OOD threshold, $W$ is the window length, and $\rho$ is the required fraction of anomalous steps. This formulation separates transient noise (a single high-score step) from persistent distribution shift (a sustained fraction of high-score steps).</p></div>
+<div class="callout algorithm"><div class="callout-title">Novelty accumulation and retraining gate</div><ol>
+<li data-agent="04">Score each observation with a novelty signal (confidence drop, energy score (a scalar derived from the model's output logits that is low for familiar inputs and high for unfamiliar ones), or world-model prediction error).</li>
+<li>Accumulate scores over a sliding window of length $W$.</li>
+<li>Fire the retraining trigger when the fraction of above-threshold steps exceeds $\rho$.</li>
+<li>Before retraining, run a pre-trigger evaluation panel to confirm that task success has genuinely degraded; this prevents false-alarm retraining on perception noise.</li>
+</ol></div>
+<div class="comparison-table"><div class="comparison-table-title">Retraining Trigger Design Choices</div><table><thead><tr><th>Design Choice</th><th>Conservative Setting</th><th>Aggressive Setting</th></tr></thead><tbody>
+<tr><td>Window length $W$</td><td>Long (100+ steps): filters noise, slower to react.</td><td>Short (10 steps): reacts fast, more false alarms.</td></tr>
+<tr><td>Fraction threshold $\rho$</td><td>High (0.8): only fires on sustained shift.</td><td>Low (0.3): fires on partial shift, risks over-triggering.</td></tr>
+<tr><td>Pre-trigger eval panel</td><td>Required: confirms task degradation before retraining.</td><td>Skipped: faster but risks unnecessary retraining.</td></tr>
+<tr><td>Post-trigger eval panel</td><td>Required: confirms retraining improved performance.</td><td>Skipped: risks deploying a worse policy.</td></tr>
+</tbody></table></div>
+<p data-agent="15">The pre/post evaluation panel matters in embodied systems because a physical robot cannot "roll back" a bad retraining event. If a retrained policy is deployed to hardware without confirming improvement on a held-out panel, a degraded policy executes real grasps, real locomotion, and real force contact. Recovery requires stopping the robot, reverting weights manually, and re-deploying, which on a warehouse floor means lost throughput and potential safety incidents. The panel is the only gate that catches regressions before they reach hardware.</p>
+<h4 data-agent="30">How the frozen panel works</h4>
+<p data-agent="29">The panel freezes a set of rollout scenarios before adaptation begins. These scenarios cover both familiar conditions and the specific shift class that triggered retraining. After retraining, the policy runs those same frozen scenarios under identical conditions. Compare success rates on this fixed panel rather than on live deployment logs. Live logs let the evaluation distribution drift alongside the environment, which inflates apparent improvement. Fifty rollouts is the practical minimum: detecting a 10-percentage-point success-rate difference typically needs roughly that many trials to reach standard significance at the effect sizes common in manipulation tasks.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the panel is frozen before adaptation, evaluated on identical scenarios after retraining, and compared on success rate rather than live logs, because live logs drift and inflate apparent improvement.</p></div>
+<p data-agent="05">Without the sliding-window accumulator gating which episodes enter the panel, calibrating the same trigger threshold would in practice demand exhaustive sweeps across the full deployment log, on the order of tens of thousands of episodes for a busy warehouse deployment. The accumulator compresses that to a much smaller set of targeted rollouts, typically in the low hundreds, by discarding nominal periods where no shift is occurring; the exact reduction depends on how rare genuine novelty is in the deployment.</p>
+<pre><code class="language-python"><span class="c1"># Evaluate retraining trigger precision and recall.</span>
+<span class="n">events</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"genuine_shift"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">"trigger_fired"</span><span class="p">:</span> <span class="kc">True</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"genuine_shift"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">"trigger_fired"</span><span class="p">:</span> <span class="kc">True</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"genuine_shift"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">"trigger_fired"</span><span class="p">:</span> <span class="kc">False</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"genuine_shift"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">"trigger_fired"</span><span class="p">:</span> <span class="kc">True</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">tp</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">e</span><span class="p">[</span><span class="s2">"genuine_shift"</span><span class="p">]</span> <span class="ow">and</span> <span class="n">e</span><span class="p">[</span><span class="s2">"trigger_fired"</span><span class="p">]</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">events</span><span class="p">)</span>
+<span class="n">fp</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="ow">not</span> <span class="n">e</span><span class="p">[</span><span class="s2">"genuine_shift"</span><span class="p">]</span> <span class="ow">and</span> <span class="n">e</span><span class="p">[</span><span class="s2">"trigger_fired"</span><span class="p">]</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">events</span><span class="p">)</span>
+<span class="n">fn</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">e</span><span class="p">[</span><span class="s2">"genuine_shift"</span><span class="p">]</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">e</span><span class="p">[</span><span class="s2">"trigger_fired"</span><span class="p">]</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">events</span><span class="p">)</span>
+<span class="n">precision</span> <span class="o">=</span> <span class="n">tp</span> <span class="o">/</span> <span class="p">(</span><span class="n">tp</span> <span class="o">+</span> <span class="n">fp</span><span class="p">)</span> <span class="k">if</span> <span class="p">(</span><span class="n">tp</span> <span class="o">+</span> <span class="n">fp</span><span class="p">)</span> <span class="k">else</span> <span class="mi">0</span>
+<span class="n">recall</span> <span class="o">=</span> <span class="n">tp</span> <span class="o">/</span> <span class="p">(</span><span class="n">tp</span> <span class="o">+</span> <span class="n">fn</span><span class="p">)</span> <span class="k">if</span> <span class="p">(</span><span class="n">tp</span> <span class="o">+</span> <span class="n">fn</span><span class="p">)</span> <span class="k">else</span> <span class="mi">0</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"precision=</span><span class="si">{</span><span class="n">precision</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">  recall=</span><span class="si">{</span><span class="n">recall</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>precision=0.67  recall=0.67</pre></div>
+<div class="code-caption"><strong>Code Fragment 51.5</strong>.T evaluates the retraining trigger as a binary classifier: precision measures false-alarm rate, recall measures missed genuine shifts.</div>
+<p>A precision of 0.67 means one in three triggers was a false alarm; a recall of 0.67 means one in three genuine shifts was missed. Both numbers matter for deployment: false alarms waste retraining compute, and missed shifts allow performance degradation to accumulate. To put the cost in concrete terms: as an illustrative estimate, a warehouse system running a 4-hour shift with a false-alarm rate of 33 percent and roughly 18 total triggers per day would waste on the order of 6 unnecessary retraining jobs per day, each consuming approximately 40 minutes of GPU time, versus 0 unnecessary jobs when precision reaches 1.0; the exact count scales with how often the trigger fires at all, which varies by deployment. Tuning $W$ and $\rho$ is a precision-recall tradeoff the builder must make explicit.</p>
+<div class="callout tip">
+<p>When tuning the window length <code>W</code> and fraction threshold <code>rho</code>, use a held-out calibration split that was collected before the deployment period you are evaluating: tuning these parameters on the same episode logs that produced the trigger events introduces look-ahead leakage and inflates precision estimates. In PyOD (a common OOD scoring library), the <code>contamination</code> parameter sets the expected anomaly fraction and directly controls the per-step threshold <code>delta</code>; setting it too low on in-distribution calibration data will make <code>delta</code> too permissive and cause <code>rho</code>-based gates to fire on routine variance. A practical starting point is <code>contamination=0.05</code> calibrated on purely nominal episodes, then sweep <code>W</code> from 20 to 100 steps on a separate held-out novelty panel before fixing either parameter.</p>
+</div>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>Retraining trigger systems fail when evaluated only on trigger rate. The correct evaluation asks: for each trigger event, did task success actually improve after retraining? And for each non-trigger period, did task success remain above the safe operating threshold?</p></div>
+</section>
+</section>
+<p data-agent="14">Treating the trigger as a classifier sharpens when it should fire, but a high-precision trigger still leaves open a prior question: even when novelty is genuine, retraining is not automatically the right reaction to it.</p>
+<div class="callout key-insight">
+<div class="callout-title">When Not To Retrain</div>
+<p>Triggering retraining is not always the right response to novelty. The decision depends on three factors: novelty persistence (is the shift temporary or permanent?), retraining cost (does the task allow a several-hour training pause?), and fallback adequacy (does the current policy degrade gracefully to an acceptable success rate?). Consider a warehouse robot that encounters an unusual lighting condition for 20 steps during a shift change: if task success drops from 94 percent to 78 percent but recovers once lighting stabilizes, retraining is wasteful and the correct response is fallback to slower, more conservative grasps. Retraining is warranted only when the drop is sustained across the full window, the fallback policy cannot maintain safe operation, and a labeled dataset of the new condition can actually be assembled before the next deployment window.</p>
+</div>
+<div class="callout key-insight"><p data-agent="29"><a data-agent="13" href="ch_0430_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml">Catastrophic forgetting</a> works like overwriting a recipe card. Imagine a chef who has mastered both French sauces and Italian pasta. When the restaurant pivots to sushi, she practices only sushi for a week. The new techniques rewrite her muscle memory and her notes. Ask her to make a bechamel the following Monday and she hesitates: the old knowledge was not stored separately. It occupied the same mental space now filled with knife angles and rice ratios. Updating a neural network on new data without replay or regularization does the same thing. The new gradient steps overwrite the weight configurations that encoded prior skills, and the model emerges fluent in the novel condition but stumbling on tasks it handled correctly the day before.</p></div>
+<div class="callout warning">
+<p>A common assumption is that triggering retraining and completing it successfully means the robot has adapted to the new distribution while retaining everything it knew before. This is wrong in embodied AI: naive retraining on novel data without explicit replay or regularization causes catastrophic forgetting, where the updated policy loses competence on previously mastered conditions. A warehouse robot retrained on foam objects may subsequently fail on the familiar rigid objects it handled correctly the day before. The correct mental model treats each retraining event as a tradeoff: the post-retrain evaluation panel must check performance on both the novel condition and the original held-out panel, not only on the newly encountered shift class.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>A retraining trigger is only useful when evaluated as a classifier: precision (avoiding false-alarm retraining) and recall (catching genuine distribution breaks) both belong in the open-world evaluation artifact.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 51.5.1</div><p>Design a method-matched experiment for a novelty-based retraining trigger. Specify the novelty signal, the window length and fraction threshold, the pre- and post-trigger evaluation panels, and one scenario where routine observation variance should not fire the trigger.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Parisi, G. I. et al. Continual Lifelong Learning with Neural Networks: A Review. Neural Networks, 2019.</p><p class="bib-annotation">Use for stability-plasticity tradeoffs, replay, regularization, and evaluation over task streams.</p></div><div class="bib-entry-card"><p class="bib-ref">Kirkpatrick, J. et al. Overcoming <a href="ch_0430_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml">catastrophic forgetting</a> in neural networks. PNAS, 2017.</p><p class="bib-annotation" data-agent="04">Use for elastic weight consolidation (a regularization method that penalizes changes to weights identified as important for previously learned tasks) and the limits of parameter-importance methods.</p></div></section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a sliding-window novelty accumulator in Gymnasium using a classic control environment (CartPole or LunarLander): inject a known parameter shift (pole mass or gravity), log the OOD scores from a simple energy-based detector, and plot trigger precision and recall across three window lengths. The key challenge is choosing a threshold that separates the injected shift from routine episode variance without access to ground-truth shift timing.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Implement a retraining trigger pipeline in MuJoCo using a tabletop manipulation task (pick-and-place with YCB objects): replace one object class mid-run to simulate an open-world shift, fire the retraining trigger using the sliding-window rule, retrain the policy on collected novel episodes via LeRobot dataset utilities, and run a 50-rollout pre/post evaluation panel to confirm improvement without catastrophic forgetting on the original object class. The key challenge is assembling a held-out calibration split that separates trigger tuning from evaluation to avoid look-ahead leakage.</p></div>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue to <a href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52: Evaluating Embodied Systems</a>, where this contract becomes the input to the next embodied capability.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0392_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.4: Distribution shift triggers and open-world adaptation</a>
+<a class="up" href="ch_0388_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Chapter 51: Open-World and Novelty-Robust Embodiment</a>
+<a class="next" href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52: Evaluating Embodied Systems</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,259 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 46.9: Boston Dynamics-style loco-manipulation research track</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0345_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Chapter 46: Humanoid Robots and Whole-Body Control</a></div>
+<h1>Section 46.9: Boston Dynamics-style loco-manipulation research track</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"A humanoid research program is only as strong as its failure replay loop: every hardware miss should become a simulation perturbation."</p><cite>A Field-Tested Control Loop</cite></blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>Spot carries a package across uneven ground, hands it off at a loading dock, and resumes patrol without a human ever touching a controller. That footage is no longer a demo reel; it is a research target with a deployment deadline. The wave of commercial humanoids shipping in 2024 and 2025 has made loco-manipulation (the coupled problem of locomotion and manipulation, where a robot must walk or balance and use its arms at the same time, often while the two interact through shared contact forces) a hard engineering problem rather than a conference exhibit. This section traces the full research loop: from contact-aware whole-body control and sim-to-real transfer through teleoperation data pipelines, failure replay, and fleet-level safety supervision, with the goal of building the judgment needed to design and evaluate programs at this frontier.</p>
+</div>
+<figure class="illustration">
+<img alt="Cartoon humanoid robot in a factory workcell learning from a simulated version while moving a tote safely." loading="lazy" src="../img/3f45f26a70_chapter-46-illustration-09.jpg"/>
+<figcaption><strong>Figure 46.9A</strong>: The research loop couples simulation, robot data, field telemetry, and safety supervision, so each hardware failure can become a better training and evaluation case.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with whole-body contact mechanics and hybrid dynamics from section 46.8, and with sim-to-real reinforcement learning from section 20.3. The evaluation methodology introduced here is extended in section 52.2, which formalises success, recovery, and safety-intervention metrics for embodied systems, and the safety-filter architecture recurs in Part 11 alongside runtime supervision and fleet reliability in section 54.4.</p>
+</div>
+<h2>The Research Contract</h2>
+<p>The research contract for enterprise humanoids is stricter than a benchmark score: the robot must perform useful material-handling or workstation tasks, recover from ordinary disturbances, expose failures in logs, and improve through simulation, <a href="ch_0179_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">teleoperation</a>, <a data-agent="13" href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">reinforcement learning</a>, and field feedback. Figure 46.9A sketches how these four sources, simulation, robot data, field telemetry, and safety supervision, feed one another so that every hardware failure becomes a better training and evaluation case. This closed improvement cycle is called <strong>the hardware-to-simulation feedback loop</strong>, and it is what separates a research program that compounds progress from one that plateaus after the first deployment.</p>
+<figure class="diagram-container">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow469" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<!-- Simulation -->
+<rect fill="#e8f0fe" height="56" rx="6" stroke="#3367d6" stroke-width="2" width="150" x="40" y="40"/>
+<text fill="#1a2733" font-size="13" text-anchor="middle" x="115" y="64">Simulation</text>
+<text fill="#55636e" font-size="10" text-anchor="middle" x="115" y="82">proposes behavior</text>
+<!-- Policy / Learning -->
+<rect fill="#e8f0fe" height="56" rx="6" stroke="#3367d6" stroke-width="2" width="150" x="410" y="40"/>
+<text fill="#1a2733" font-size="13" text-anchor="middle" x="485" y="64">Train Policy</text>
+<text fill="#55636e" font-size="10" text-anchor="middle" x="485" y="82">RL + demonstrations</text>
+<!-- Hardware -->
+<rect fill="#fde8e8" height="56" rx="6" stroke="#d63333" stroke-width="2" width="150" x="410" y="204"/>
+<text fill="#1a2733" font-size="13" text-anchor="middle" x="485" y="228">Hardware Run</text>
+<text fill="#55636e" font-size="10" text-anchor="middle" x="485" y="246">reveals failures</text>
+<!-- Telemetry / Cluster -->
+<rect fill="#fff4e0" height="56" rx="6" stroke="#d68a00" stroke-width="2" width="150" x="40" y="204"/>
+<text fill="#1a2733" font-size="13" text-anchor="middle" x="115" y="228">Cluster Failures</text>
+<text fill="#55636e" font-size="10" text-anchor="middle" x="115" y="246">expand panel</text>
+<!-- Arrows: Sim -> Train -->
+<line marker-end="url(#arrow469)" stroke="#444" stroke-width="2" x1="190" x2="404" y1="68" y2="68"/>
+<!-- Train -> Hardware -->
+<line marker-end="url(#arrow469)" stroke="#444" stroke-width="2" x1="485" x2="485" y1="96" y2="198"/>
+<!-- Hardware -> Cluster -->
+<line marker-end="url(#arrow469)" stroke="#444" stroke-width="2" x1="410" x2="196" y1="232" y2="232"/>
+<!-- Cluster -> Sim (close the loop) -->
+<line marker-end="url(#arrow469)" stroke="#444" stroke-width="2" x1="115" x2="115" y1="204" y2="102"/>
+<!-- edge labels -->
+<text fill="#55636e" font-size="9" text-anchor="middle" x="297" y="60">scenario panel</text>
+<text fill="#55636e" font-size="9" text-anchor="middle" x="303" y="224">telemetry logs</text>
+<text fill="#55636e" font-size="9" text-anchor="start" x="118" y="158">expanded panel</text>
+<text fill="#1a2733" font-size="11" font-weight="bold" text-anchor="middle" x="150" y="270">closed loop: each miss becomes a perturbation</text>
+</svg>
+<figcaption>The hardware-to-simulation feedback loop. Simulation proposes behavior, the policy trains, hardware runs reveal failures no randomization covered, and clustered telemetry expands the panel before retraining, so progress compounds rather than plateaus.</figcaption>
+</figure>
+<p><span data-agent="29">Why this loop is physically unavoidable: a simulator can only randomize the dynamics it models. Real hardware surfaces failure modes that no a priori randomization covers. These modes include resonance in cable-driven joints, asymmetric friction under load, and sensor latency jitter. If you never route those hardware failures back into the simulation panel, each new training iteration tightens behavior on already-covered regimes. Meanwhile the real failure distribution stays unchanged.</span></p>
+<p><span data-agent="17">How the loop operates: after each hardware batch, cluster the robot's telemetry (contact forces, foot-slip events, joint saturation timestamps) by failure cause. Map the top clusters to the simulator parameters they implicate, such as friction range or actuator damping, and widen those ranges to cover the observed regime. Retrain on the expanded panel. The next deployment then tests directly whether the gap closed.</span></p>
+<p><span data-agent="14">This same closed-loop discipline, not any single lab's breakthrough, is what the leading humanoid programs now converge on.</span> Recent public signals from Boston Dynamics, the Robotics and AI Institute, Toyota Research Institute, Google DeepMind, and NVIDIA all point in the same direction: humanoids need whole-body manipulation, simulation-trained behaviors, foundation-model reasoning, tactile feedback, and runtime safety supervision.</p>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat boston dynamics-style loco-manipulation research track like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Frontier Watch</div>
+<p><strong>Active research directions (2024-2026):</strong></p>
+<p><strong>1. Whole-body loco-manipulation with diffusion-based motion priors.</strong> Groups at NVIDIA, ETH Zurich's Robotic Systems Lab, and Unitree are replacing hand-tuned reference trajectories (the kind hand-authored for ANYmal and the Unitree H1) with learned motion priors that synthesize physically feasible full-body trajectories conditioned on task goals, then track them with an RL policy on real torque-controlled hardware. NVIDIA's HOVER (2024), trained in Isaac Gym and deployed on the Unitree H1, demonstrated a single neural controller that switches across locomotion, loco-manipulation, and whole-body interaction modes by sampling from a learned motion prior, closing the gap between agile locomotion and dexterous arm use without mode-switching heuristics.</p>
+<p><strong>2. Scalable humanoid imitation from Internet video.</strong> Rather than relying solely on teleoperation, labs are now extracting whole-body motion data directly from monocular video at scale. Berkeley's HumanPlus (2024) and CMU's follow-on work (2024-2025) retarget human video demonstrations to robot morphology and use them as behavior priors for downstream RL fine-tuning, dramatically reducing the per-skill teleoperation burden while retaining recovery behavior learned from the physical robot. A skill that previously required 50,000 RL episodes to converge from a random initialization needed only around 300 when seeded with a video-derived motion prior, because the prior collapses the search space from "all possible joint trajectories" to "trajectories that already look human."</p>
+<p><strong>3. Contact-rich manipulation with tactile-proprioceptive foundation models.</strong> Teams at MIT CSAIL and Stanford are training transformer-based policies that fuse dense tactile arrays with joint proprioception (the robot's internal sense of its own joint angles and forces, without external vision) to generalize across object geometries and surface textures. The key 2025 result (MIT TacDiffusion) showed that tactile-conditioned diffusion policies transfer across a 10x variation in object stiffness with no fine-tuning, outperforming vision-only baselines on deformable object handling.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: three frontier directions all attack the same gap between simulation-trained behavior and real hardware, learned motion priors replace hand-tuned trajectories, video-derived priors cut the RL episodes needed per skill, and tactile-proprioceptive models let contact-rich manipulation generalize across object properties, and the open problem below asks how to connect these layers into one feedback-aware system.</p></div>
+<p><strong>Open problem for PhD students:</strong> Current whole-body controllers optimize for task success and energy efficiency independently, then compose them. No principled framework yet exists for jointly optimizing a contact-aware whole-body QP controller and a task-level diffusion policy end-to-end, such that the low-level controller can signal infeasibility back to the motion prior in real time and the prior adapts its sampling distribution accordingly. Solving this would eliminate the most common failure mode in deployed humanoids: a plausible high-level plan that the joint-level controller cannot safely execute within the real-time budget.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Research Is A Closed Loop</div>
+<p>A humanoid research program is only as strong as its failure replay loop: every hardware miss should become a simulation perturbation, a logging improvement, or a tighter safety condition.</p>
+</div>
+<h2>What A Leading Researcher Needs</h2>
+<p data-agent="01">This checklist is the curriculum this section actually delivers on: the earlier paragraphs and the algorithm walk through the closed loop end to end (task contract, simulation panel, RL training, whole-body control, deployment, failure clustering, panel expansion, retraining), so by the end of this section you should be able to run that loop yourself on a new task, not just recognize its name.</p>
+<ul>
+<li>Underactuated dynamics, hybrid contact systems, impacts, and contact mode transitions.</li>
+<li><span data-agent="21">Centroidal planning (planning the robot's whole-body momentum and center of mass as a single reduced model rather than every joint individually), footstep planning, spatial momentum, capture regions (the set of footstep locations from which a robot can still stop without falling), and push recovery.</span></li>
+<li><a data-agent="13" href="ch_0353_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Whole-body QP (Quadratic Programming) or MPC control</a> with equality and inequality constraints.</li>
+<li>Teleoperation, retargeting, motion priors, human demonstration pipelines, and data curation.</li>
+<li>Reinforcement learning with <a href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">domain randomization</a>, curriculum design, actuator models, and failure replay.</li>
+<li>Tactile and force-aware manipulation for rigid, deformable, articulated, heavy, and delicate objects.</li>
+<li>Runtime supervision, human-zone safety, fleet telemetry, reliability metrics, and task-level safety cases.</li>
+</ul>
+<h2>Pipeline Pattern</h2>
+<p><span data-agent="29">A robust research loop is simulation-first but not simulation-only. Simulation proposes behaviors, hardware reveals the missing dynamics, logs define the next perturbation set, and the training panel expands. Keep the scenario panel stable enough to compare methods, and add targeted disturbances that expose failure causes. One example shows why the loop matters. A policy trained on a fixed friction range of 0.5 to 1.0 in simulation reached 89% success in the simulator yet only 41% on polished concrete floors. That gap of 48 percentage points vanished after a single panel expansion to include friction 0.2 to 0.4. One targeted update closed what months of additional RL epochs had not.</span></p>
+<p>A policy that works in simulation but fails on real hardware is not a policy; it is a hypothesis waiting for the right floor friction to disprove it.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Boston Dynamics-Style Research Loop</div>
+<table>
+<thead><tr><th>Stage</th><th>Question</th><th>Representative Tools</th></tr></thead>
+<tbody>
+<tr><td>Task design</td><td>What useful work must the robot perform?</td><td>Workcell analysis, safety case templates, ROS 2 logs</td></tr>
+<tr><td>Simulation</td><td>Can the behavior survive dynamics and contact perturbations?</td><td>Isaac Lab, MuJoCo, MJX, Drake, Genesis</td></tr>
+<tr><td>Learning</td><td>Which skills improve through data?</td><td>RL, imitation learning, teleoperation, LeRobot-style data tools</td></tr>
+<tr><td>Controller integration</td><td>Can the policy respect real-time constraints?</td><td>Whole-body QP, MPC, ROS 2 control, safety filters</td></tr>
+<tr><td>Field evaluation</td><td>Does the robot recover and keep working?</td><td>Scenario panels, fleet telemetry, failure taxonomies</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Loco-Manipulation Research Loop</h4>
+<p><strong>Input:</strong> task specification $\tau$, initial policy parameters $\theta_0$, simulation scenario panel $\mathcal{S}$, hardware telemetry buffer $\mathcal{D}$, safety filter $\pi_\text{safe}$</p>
+<p><strong>Output:</strong> updated policy $\theta^*$, extended scenario panel $\mathcal{S}^*$, evaluation report with metrics $\{m_k\}$</p>
+<ol>
+<li>Define the task contract: specify useful work target, payload range $[m_\text{min}, m_\text{max}]$, terrain friction range $[\mu_\text{min}, \mu_\text{max}]$, and human-zone safety thresholds.</li>
+<li>Instantiate simulation scenario panel $\mathcal{S}$ covering static manipulation, dynamic manipulation, locomotion, bimanual coordination, and sensor dropout conditions.</li>
+<li>Train policy $\pi_\theta$ via reinforcement learning with domain randomization: sample perturbation $\delta \sim p(\mathcal{S})$, collect rollout, compute advantage $\hat{A}_t$, and update $\theta \leftarrow \theta + \alpha \nabla_\theta \mathcal{L}_\text{PPO}(\theta)$ (PPO: Proximal Policy Optimization).</li>
+<li>Compose the full behavior stack: wrap $\pi_\theta$ with whole-body QP or MPC controller and route every action through safety filter $\pi_\text{safe}$ to enforce torque limits and human-zone slowdowns.</li>
+<li>Deploy on hardware for $N$ evaluation episodes; log contact forces $f_c(t)$, foot slip events $s_i$, joint saturation incidents $j_k$, task success, recovery rate, and safety-intervention count.</li>
+<li>Cluster hardware failures by cause: run $k$-means ($k = 3{-}5$) over $\{(s_i, \mu_\text{est})\}$ to identify under-represented friction and contact regimes in $\mathcal{S}$.</li>
+<li>Expand scenario panel: add the top two failure clusters as new perturbation ranges to $\mathcal{S}$, extending $\mu_\text{min}$ and augmenting payload and terrain parameters.</li>
+<li>Convert each unrecovered failure into a simulation perturbation: replay contact trajectory in simulator, verify that the updated panel reproduces the failure mode.</li>
+<li>Retrain $\pi_\theta$ on expanded $\mathcal{S}$; compare success, recovery, and safety-intervention metrics against the previous checkpoint on the fixed baseline scenarios.</li>
+<li>Record all results in the evaluation grid (methods $\times$ scenarios $\times$ metrics); confirm no method was tested on fewer conditions than the others before reporting.</li>
+<li>Return $\theta^*$, $\mathcal{S}^*$, and the evaluation report; flag any metric that did not improve for targeted diagnosis in the next iteration.</li>
+</ol>
+</div>
+<h2>Evaluation Panel</h2>
+<p>A credible evaluation panel includes static manipulation, dynamic manipulation, locomotion under terrain variation, payload handling, bimanual coordination, human-zone slowdowns, sensor dropout, and recovery after contact surprises. Each result should include <a href="ch_0397_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">success, recovery, safety intervention, contact slip, energy, latency, and hardware stress metrics</a>.</p>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a factory tote-moving task, compare three policies on the same workcell: a scripted baseline, a motion-prior policy, and a foundation-model-guided behavior stack. Use the same tote poses, payloads, lighting, floor friction, and human-zone interruptions for all three.</p>
+<p>Consider a concrete case: a 12 kg tote must be lifted from a 0.4 m shelf, rotated 90 degrees, and placed on a conveyor 1.2 m away. The scripted baseline achieves 94% success at 0 kg payload uncertainty but drops to 61% when tote mass varies by plus or minus 3 kg because the joint torque limits in the wrist are hard-coded. The motion-prior policy, trained with <a href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">domain randomization</a> over payloads of 8 to 16 kg in Isaac Lab, achieves 88% success across the full range and recovers from 70% of contact slips autonomously. The foundation-model-guided stack matches the prior policy on nominal runs but adds 340 ms of replanning latency, which causes 12% of human-zone slowdowns to trigger a full stop rather than a graceful deceleration. That latency gap, not accuracy, is what the evaluation panel reveals and what the next training iteration must address.</p>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One Iteration of the Research Loop</h4>
+<p>Trace the friction-gap closure with concrete numbers. Start: the panel randomizes floor friction over $[\mu_\text{min}, \mu_\text{max}] = [0.5, 1.0]$. After 200 simulation epochs the policy reaches 0.89 success in sim. Deploy for $N = 50$ hardware episodes on polished concrete (true $\mu \approx 0.25$): success drops to 0.41, and the telemetry logs 31 foot-slip events with estimated friction $\hat\mu \in \{0.22, 0.24, 0.26, 0.27, 0.31\}$. Run k-means with $k = 3$ over those slip events; the largest cluster centers at $\hat\mu = 0.24$ with 19 of 31 events. Map that cluster to the simulator parameter: extend the panel lower bound from 0.5 down to 0.20, giving the new range $[0.20, 1.0]$. Replay one logged slip trajectory in sim with $\mu = 0.24$ and confirm the failure reproduces (the foot slips at the same gait phase). Retrain 200 epochs on the expanded panel; the next 50-episode hardware batch on the same floor now reaches 0.86 success, a 45 percentage-point gain from one targeted panel edit, not from more epochs on the old range.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Boston Dynamics Electric Atlas</h4>
+<p>Boston Dynamics and the Robotics and AI Institute apply exactly this hardware-to-simulation loop on the electric Atlas, training reinforcement learning policies in simulation for dynamic mobile manipulation and routing field telemetry back to expand the training distribution. Their publicly described Large Behavior Models layer a learned whole-body task policy over model-based control and runtime safety supervision, the same three-tier stack this section describes. The point is not a single end-to-end network but a closed loop where every hardware miss reshapes the next simulation panel.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use Isaac Lab, MuJoCo, MJX, Drake, ROS 2, LeRobot-style data tooling, and HumanoidBench-style task panels to separate simulation training, model-based control, robot data, and repeatable evaluation.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A foundation-model stack can choose a plausible task plan that the low-level controller cannot execute safely. Always verify the plan through contact, torque, timing, and <a href="ch_0411_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">safety filters</a> before execution.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">When the Research Loop Stalls: Sim-to-Real Gap</div>
+<p>The most common reason a Boston Dynamics-style research loop plateaus is that the simulation scenario panel diverges from the physical failure distribution. A policy trained in Isaac Lab with randomized floor friction (0.4 to 0.8) will still fail on polished concrete (friction 0.25) if that regime was never added to the panel. The symptom is a high simulator success rate alongside a flat or declining hardware success rate across consecutive training iterations. The fix is not more RL epochs; it is closing the measurement loop: log the contact forces, foot slip events, and joint saturation incidents from every hardware run, cluster them by failure cause, and add the top two clusters as new perturbation ranges in the next simulation batch. Without that specific feedback path, sim-to-real gap compounds rather than shrinks.</p>
+</div>
+<div class="callout key-insight"><p>Think of the simulation scenario panel like a recipe tested only in a sea-level kitchen. The dish comes out perfectly every time at home, but at high altitude the lower air pressure changes boiling points and leavening rates in ways that no amount of extra stirring can fix. The only repair is to cook at altitude, notice exactly which steps fail, and rewrite those specific lines to cover the new conditions. In the same way, no additional RL training on an existing simulator panel closes a gap caused by a missing physical regime: you must observe the real failure, identify the missing parameter range, and add it to the panel before retraining.</p></div>
+<div class="callout warning">
+<div class="callout-title">Misconception: One Policy Does Everything</div>
+<p>A common assumption is that Boston Dynamics-style robots execute a single end-to-end neural policy: raw sensor input in, motor torques out. That assumption is wrong. A layered stack produces the visible behavior. A learned or scripted task policy issues high-level commands. A whole-body QP or MPC controller converts those commands into physically feasible joint torques that respect contact constraints. A safety filter then intercepts any command that would violate torque limits or proximity thresholds before it reaches the hardware. <span data-agent="28">In practice, no single learned policy handles all three layers reliably in real deployment today, largely because the real-time torque and safety guarantees the lower layers must provide are easier to verify in a model-based controller than in an end-to-end network.</span> Think of it as a control hierarchy: each layer has a distinct job, defined interfaces, and its own failure modes, and the hardware-to-simulation feedback loop continuously patches the gaps between them.</p>
+</div>
+<div class="callout tip">
+<p>When configuring Isaac Lab domain randomization for floor contact, set the <code>friction_range</code> parameter in your <code>RigidBodyMaterialCfg</code> to span at least 0.2 to 1.0 to cover polished concrete alongside typical warehouse floors. The default Isaac Lab terrain randomizer uses 0.5 to 1.0, which silently excludes low-friction surfaces and is a frequent source of field failures that look unrelated to friction during debugging. After each hardware evaluation batch, run a k-means cluster (k=3 to 5) over foot-slip events grouped by estimated floor friction to identify which regimes your current panel is missing, then extend the lower bound of <code>friction_range</code> to cover the two most common slip clusters before the next training iteration.</p>
+</div>
+<p><strong>Expected output interpretation.</strong> The grid contains sixty logged cells because three methods are being compared over four scenarios and five metrics. That explicit panel size matters because it prevents selective reporting and makes it obvious when one method was tested on fewer disturbances or fewer metrics than the others.</p>
+<pre><code class="language-python"><span class="c1"># Enumerate a same-panel loco-manipulation evaluation grid and log per-cell results</span>
+<span class="c1"># for three policy types across four scenarios and five metrics, then flag any cell</span>
+<span class="c1"># that was not measured so selective reporting cannot hide missing conditions.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">METHODS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"scripted"</span><span class="p">,</span> <span class="s2">"motion_prior_rl"</span><span class="p">,</span> <span class="s2">"foundation_model"</span><span class="p">]</span>
+<span class="n">SCENARIOS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"static_manip"</span><span class="p">,</span> <span class="s2">"dynamic_manip"</span><span class="p">,</span> <span class="s2">"locomotion_terrain"</span><span class="p">,</span> <span class="s2">"bimanual_coord"</span><span class="p">]</span>
+<span class="n">METRICS</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"success_rate"</span><span class="p">,</span> <span class="s2">"recovery_rate"</span><span class="p">,</span> <span class="s2">"safety_interventions"</span><span class="p">,</span>
+<span class="s2">"contact_slip_events"</span><span class="p">,</span> <span class="s2">"task_latency_ms"</span><span class="p">]</span>
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="c1"># Simulate logged results: shape (methods, scenarios, metrics)</span>
+<span class="c1"># Values are illustrative; in a real pipeline these come from hardware telemetry.</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="n">low</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">high</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+<span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">METHODS</span><span class="p">),</span> <span class="nb">len</span><span class="p">(</span><span class="n">SCENARIOS</span><span class="p">),</span> <span class="nb">len</span><span class="p">(</span><span class="n">METRICS</span><span class="p">)))</span>
+<span class="c1"># Override latency column to realistic millisecond range</span>
+<span class="n">results</span><span class="p">[:,</span> <span class="p">:,</span> <span class="mi">4</span><span class="p">]</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="n">low</span><span class="o">=</span><span class="mf">80.0</span><span class="p">,</span> <span class="n">high</span><span class="o">=</span><span class="mf">450.0</span><span class="p">,</span>
+<span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">METHODS</span><span class="p">),</span> <span class="nb">len</span><span class="p">(</span><span class="n">SCENARIOS</span><span class="p">)))</span>
+<span class="c1"># Foundation model adds replanning latency (matches the 340 ms example in the text)</span>
+<span class="n">results</span><span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="p">:,</span> <span class="mi">4</span><span class="p">]</span> <span class="o">+=</span> <span class="mf">260.0</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">'Method'</span><span class="si">:</span><span class="s2">&lt;22</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'Scenario'</span><span class="si">:</span><span class="s2">&lt;22</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'Metric'</span><span class="si">:</span><span class="s2">&lt;26</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'Value'</span><span class="si">:</span><span class="s2">&gt;10</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"-"</span> <span class="o">*</span> <span class="mi">84</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">m_i</span><span class="p">,</span> <span class="n">method</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">METHODS</span><span class="p">):</span>
+<span class="k">for</span> <span class="n">s_i</span><span class="p">,</span> <span class="n">scenario</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">SCENARIOS</span><span class="p">):</span>
+<span class="k">for</span> <span class="n">k_i</span><span class="p">,</span> <span class="n">metric</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">METRICS</span><span class="p">):</span>
+<span class="n">val</span> <span class="o">=</span> <span class="n">results</span><span class="p">[</span><span class="n">m_i</span><span class="p">,</span> <span class="n">s_i</span><span class="p">,</span> <span class="n">k_i</span><span class="p">]</span>
+<span class="n">fmt</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">val</span><span class="si">:</span><span class="s2">10.1f</span><span class="si">}</span><span class="s2">"</span> <span class="k">if</span> <span class="n">metric</span> <span class="o">==</span> <span class="s2">"task_latency_ms"</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">val</span><span class="si">:</span><span class="s2">10.3f</span><span class="si">}</span><span class="s2">"</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">method</span><span class="si">:</span><span class="s2">&lt;22</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">scenario</span><span class="si">:</span><span class="s2">&lt;22</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">metric</span><span class="si">:</span><span class="s2">&lt;26</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">fmt</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="n">total_cells</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">METHODS</span><span class="p">)</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">SCENARIOS</span><span class="p">)</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">METRICS</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="se">\n</span><span class="s2">Total logged cells: </span><span class="si">{</span><span class="n">total_cells</span><span class="si">}</span><span class="s2">  "</span>
+<span class="sa">f</span><span class="s2">"(</span><span class="si">{</span><span class="s1">'complete'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">total_cells</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">60</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'INCOMPLETE'</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>Method                 Scenario               Metric                      Value
+------------------------------------------------------------------------------------
+scripted               static_manip           success_rate                 0.774
+scripted               static_manip           recovery_rate                0.950
+scripted               static_manip           safety_interventions         0.731
+scripted               static_manip           contact_slip_events          0.599
+scripted               static_manip           task_latency_ms            207.6
+scripted               dynamic_manip          success_rate                 0.156
+...
+foundation_model       bimanual_coord         task_latency_ms            634.3
+
+Total logged cells: 60  (complete)</pre></div>
+<div class="code-caption">Code Fragment 46.9.1: Enumerating a same-panel evaluation grid so every method is tested on the same scenarios and metrics, with a completeness check that flags any missing cell before results are reported.</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>The research bar is recoverable autonomy: useful work, physical feasibility, contact-aware control, reproducible evaluation, and visible safety margins in the same artifact.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you explain how a field failure becomes a new simulation perturbation, a policy update, and a safety-case artifact?</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Friction-gap visualizer in MuJoCo.</strong> Build a script that trains a simple bipedal walker in MuJoCo with a narrow friction range (0.5 to 1.0), then evaluates it across a swept range (0.1 to 1.2) and plots success rate versus friction coefficient. The key challenge is wiring the evaluation loop so each friction value gets a fixed number of rollouts and the resulting gap curve is reproducible from a single seed.</p><p><strong>Intermediate (1 to 2 weeks): Failure-replay panel expander in Isaac Lab.</strong> Implement the hardware-to-simulation feedback loop in simulation only: run a pick-and-place policy in Isaac Lab, log foot-slip and contact-force events, cluster them with k-means, automatically extend the domain randomization friction and payload ranges to cover the top two clusters, retrain, and compare success rates on a fixed held-out panel before and after each expansion. The key challenge is keeping the held-out evaluation panel frozen across iterations so improvements reflect real generalization rather than overfitting to the new perturbations.</p><p><strong>Intermediate (1 to 2 weeks): ROS 2 safety-filter harness for loco-manipulation.</strong> Using ROS 2 and a simulated robot in PyBullet or Gymnasium, implement a three-layer stack: a high-level task policy, a whole-body torque mapper, and a safety filter node that intercepts commands exceeding joint torque limits or human-zone proximity thresholds and substitutes a compliant slowdown command. The key challenge is designing the inter-node interface so the safety filter can veto a command within the real-time control cycle without introducing latency that causes the upstream policy to desynchronize.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measure and Close a Friction Sim-to-Real Gap</h4>
+<p><strong>Goal:</strong> Reproduce the central claim of this section empirically, that a missing physical regime cannot be fixed by more training, only by expanding the panel.</p>
+<p><strong>Tools:</strong> Python with <code>gymnasium</code> and <code>mujoco</code> (the <code>HalfCheetah-v4</code> or <code>Ant-v4</code> environment), <code>stable-baselines3</code> for a quick PPO policy, and <code>numpy</code> plus <code>matplotlib</code> for the gap curve.</p>
+<p><strong>Procedure (15 to 30 min):</strong> Train a PPO walking policy for a short budget while randomizing the ground friction coefficient only over a narrow band (0.8 to 1.0) by editing the geom friction in the MuJoCo model each reset. Then freeze the policy and evaluate it with 20 rollouts at each friction value swept from 0.2 to 1.2 in steps of 0.1, recording mean episode return.</p>
+<p><strong>What to vary:</strong> the training friction band (try a wide band 0.2 to 1.0 in a second run), the number of training steps, and the evaluation rollout count.</p>
+<p><strong>What to observe:</strong> a sharp return cliff below the training band that extra training steps do not remove, but that widening the training band does. Plot return versus friction for both runs on one axis to see the gap appear and then close, exactly mirroring the 89%-to-41% drop and its single-edit repair described above.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 46.9.1</div>
+<p>Design a Boston Dynamics-style evaluation panel for one material-handling task. Include scripted, learned, and foundation-model-guided stacks, then define the telemetry needed to compare them fairly.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Boston Dynamics Atlas. <a href="https://bostondynamics.com/products/atlas/" rel="noopener" target="_blank">https://bostondynamics.com/products/atlas/</a></p><p class="bib-annotation">Official product framing for industrial humanoid automation.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Boston Dynamics and RAI Institute humanoid RL partnership. <a href="https://bostondynamics.com/news/boston-dynamics-and-the-robotics-ai-institute-partner/" rel="noopener" target="_blank">https://bostondynamics.com/news/boston-dynamics-and-the-robotics-ai-institute-partner/</a></p><p class="bib-annotation">Official partnership announcement focused on reinforcement learning for dynamic mobile manipulation on electric Atlas.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Boston Dynamics Large Behavior Models. <a href="https://bostondynamics.com/blog/large-behavior-models-atlas-find-new-footing/" rel="noopener" target="_blank">https://bostondynamics.com/blog/large-behavior-models-atlas-find-new-footing/</a></p><p class="bib-annotation">Public technical framing for large behavior models, whole-body coordination, and humanoid manipulation.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">HumanoidBench. <a href="https://humanoid-bench.github.io/" rel="noopener" target="_blank">https://humanoid-bench.github.io/</a></p><p class="bib-annotation">Benchmark reference for humanoid locomotion and manipulation tasks.</p></div>
+</section>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue to <a href="ch_0356_part-9-manipulation-locomotion-and-embodied-skills-module-47-drones-and-.xhtml">Section 47.1: Why aerial agents are special</a>, where this contract becomes the input to the next embodied capability.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0353_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Section 46.8: Advanced humanoid dynamics and contact mechanics</a>
+<a class="up" href="ch_0345_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Chapter 46: Humanoid Robots and Whole-Body Control</a>
+<a class="next" href="ch_0356_part-9-manipulation-locomotion-and-embodied-skills-module-47-drones-and-.xhtml">Section 47.1: Why aerial agents are special</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>
