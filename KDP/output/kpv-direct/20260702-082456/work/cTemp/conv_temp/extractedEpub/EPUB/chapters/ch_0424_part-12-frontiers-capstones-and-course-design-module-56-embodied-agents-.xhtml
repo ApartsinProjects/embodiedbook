@@ -1,0 +1,177 @@
+﻿<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en" amzn-src-id="151205">
+  <head amzn-src-id="151206">
+    <title amzn-src-id="151207">Section 56.1: Why memory matters; short- vs. long-term</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" amzn-src-id="151208" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" amzn-src-id="151209" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" amzn-src-id="151210" />
+  <style type="text/css" amzn-src-id="151211">html,body{background:#ffffff;}</style><style type="text/css" amzn-src-id="151212">html,body{background:#ffffff;}</style></head>
+  <body amzn-src-id="151213">
+<h1 amzn-src-id="151214">Section 56.1: Why memory matters; short- vs. long-term</h1>
+
+<blockquote class="epigraph" amzn-src-id="151215"><p amzn-src-id="151216">"I remembered the last ten seconds perfectly, then promoted the wrong ten seconds forever."</p>
+<cite amzn-src-id="151217">A Short-Term Buffer Seeking Tenure</cite></blockquote>
+<figure class="illustration" amzn-src-id="151218">
+<img alt="Technical illustration for Section 56.1: Why memory matters; short- vs. long-term." loading="lazy" src="../img/7b6e2afd0e_chapter-56-illustration-01.jpg" amzn-src-id="151219" />
+<figcaption amzn-src-id="151220"><strong amzn-src-id="151221">Figure 56.1A</strong>: Memory matters only when stored information improves a later embodied decision.</figcaption>
+</figure>
+<div class="callout pathway" amzn-src-id="151222">
+<p amzn-src-id="151223">This section assumes familiarity with partial observability from section 2.7 and with latent state representations from section 38.2. The working/long-term split introduced here is formalized into spatial, episodic, and semantic stores in section 56.2. The question of what the agent should retain across tasks over a lifetime is taken up in section 57.1.</p>
+</div>
+<div class="callout big-picture" amzn-src-id="151224">
+<div class="callout-title" amzn-src-id="151225">Big Picture</div>
+<p amzn-src-id="151226">A warehouse robot turns a corner and the shelf it mapped three minutes ago is gone: a forklift moved it. A purely reactive policy has no record of that shelf and no way to notice the discrepancy. Memory is what turns a sensor-driven reflex machine into an agent that can say "something changed" and act on that judgment. As embodied systems move from controlled labs into unpredictable real-world deployments, the ability to remember selectively, and to know when past memory is stale, is now one of the sharpest dividing lines between useful robots and brittle ones. Here you will build the working/long-term split from first principles, see exactly where each type of memory enters the control loop, and finish with a design test you can apply to any memory architecture.</p>
+</div>
+<h2 amzn-src-id="151227">Why Memory Enters The Loop</h2>
+<p data-agent="22" amzn-src-id="151228">Close a cabinet door in front of a kitchen robot and its mug vanishes from every camera frame; a memoryless policy will now re-reach into empty air on each step, as if the mug had ceased to exist the instant it left view. This is the everyday cost of <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml" amzn-src-id="151229">partial observability</a>: objects leave the field of view, force signals lag behind <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml" amzn-src-id="151230">contact</a>, and goals often remain active far longer than a single observation window. A policy that depends only on the current frame is therefore often too myopic to act. As Figure 56.1A captures, memory earns its place only when stored information changes a later embodied decision; storage for its own sake is just overhead.</p>
+<p data-agent="17" amzn-src-id="151231">Physical robots face sharper partial observability than simulated agents, because the body occludes its own sensors: a closing gripper blocks the wrist camera, a mobile base shadows its rear lidar, and actuator noise corrupts state estimates with no reset button to restore ground truth. The robot cannot replay a missed observation. It must act on an incomplete picture or wait, and waiting burns energy and task time. A memoryless robot is not cautious but amnesiac, repeating the same wrong reach every time the object slips out of view.</p>
+<p amzn-src-id="151232">Mechanically, the agent maintains <strong amzn-src-id="151233">the belief state</strong>, a probability distribution over all world states consistent with the observation history. Each new observation updates this distribution via <a data-agent="13" href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml" amzn-src-id="151234">Bayes' rule</a>. Memory is the substrate that carries the distribution forward in time between observations, so that a single occluded frame does not collapse all prior information about object location or contact history.</p>
+<div class="callout key-insight" amzn-src-id="151235"><p amzn-src-id="151236">Think of the belief state like a chef keeping a mental model of a sauce left to simmer offscreen. The chef cannot see the pot every second, but combines the last temperature reading, how long the burner has been on, and past experience with that stove to maintain a running estimate of where things stand. Each new observation (a whiff of caramel, a sizzle) sharpens or shifts that estimate. Memory is simply what keeps that ongoing estimate alive between glances, so the chef does not have to start from scratch every time they look away.</p></div>
+<p amzn-src-id="151237">The important distinction is between memory that helps the next action and memory that should influence a later task, a gap that spans <strong amzn-src-id="151238">five orders of magnitude in time</strong>: working memory operates over tens of milliseconds while long-term memory must remain valid for minutes to months. A good design preserves only the information that meaningfully changes future control or planning.</p>
+<div class="callout key-insight" amzn-src-id="151239">
+<div class="callout-title" amzn-src-id="151240">Action Benefit Is The Admission Test</div>
+<p amzn-src-id="151241">If a stored item does not improve action selection, recovery quality, or task disambiguation, it belongs in a dataset or archive, not in the agent's memory system.</p>
+</div>
+<h2 amzn-src-id="151242">Theory</h2>
+<p data-agent="15" amzn-src-id="151243">The admission test becomes precise once you locate where each kind of memory enters the equations of control.</p>
+<h4 data-agent="30" amzn-src-id="151244">Where each memory tier sits in the control model</h4>
+<p amzn-src-id="151245">A compact memory-augmented control model is</p>
+<p amzn-src-id="151246"><img src="../math/m_612ada61a36f232b.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" amzn-src-id="151247" /></p>
+<p data-agent="09" amzn-src-id="151248">Figure 56.1B maps each symbol below onto a box in the loop: the latent state is the Working Memory box, the external store is the Long-Term Memory box, and the dashed arc is the promotion step that moves selected events from one to the other.</p>
+<p data-agent="29" amzn-src-id="151249">The latent state $h_t$ is working memory: a <a href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml" amzn-src-id="151250">compact representation of the recent past</a> tuned for immediate control. The external store $\mathcal M$ is long-term memory, tuned for persistence, indexing, and selective retrieval. The query $q_t$ depends on task and context. Long-term memory is therefore not merely "more history"; it is a searchable support for future decisions.</p>
+<div class="callout key-insight" data-agent="05" amzn-src-id="151251"><h4 amzn-src-id="151252">Checkpoint</h4><p amzn-src-id="151253">So far: the control model has three moving parts, $h_t$ (working memory, updated every step), $\mathcal M$ (long-term memory, queried selectively via $q_t$), and the retrieval $m_t$ that feeds both into the action $a_t$; the rest of this section is about deciding what earns a place in $\mathcal M$.</p></div>
+<div class="callout note" data-agent="25" amzn-src-id="151254">
+<div class="callout-title" amzn-src-id="151255">Mechanism</div>
+<p amzn-src-id="151256">Working memory compresses recency. Long-term memory preserves selected experiences, maps, or facts that remain useful after the immediate control horizon ends.</p>
+</div>
+<figure class="technical-figure" id="fig-56-1-memory-timescales" amzn-src-id="151257">
+<img src="../diagrams/d_afbe78d898ebd333.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" amzn-src-id="151258" />
+<figcaption amzn-src-id="151259"><strong amzn-src-id="151260">Figure 56.1B</strong>: Working memory serves immediate control, while long-term memory stores selected information that must remain useful after the short control horizon ends.</figcaption>
+</figure>
+<h2 amzn-src-id="151261">Worked Example</h2>
+<p data-agent="14" amzn-src-id="151262">The diagram's two tiers stop being abstract the moment a single grasp depends on both of them at once.</p>
+<p data-agent="29" amzn-src-id="151263">Suppose a kitchen robot loses sight of a mug when a cabinet door closes. Without working memory the grasp fails on every occluded frame. With a 2-second latent buffer, the same policy typically succeeds in over 90% of trials on the same hardware, though the exact figure depends on gripper speed and occlusion duration. <span data-agent="28" amzn-src-id="151264">In practice</span>, that buffer also tends to cut the training episodes needed to reach that success rate from roughly 50,000 to around 300, because the policy no longer has to memorize every occlusion pattern through brute repetition. Working memory preserves the mug pose estimate long enough to complete the grasp. Long-term episodic memory preserves the fact that the last handle grasp on that mug slipped, so the next attempt should favor a <a href="ch_0328_part-9-manipulation-locomotion-and-embodied-skills-module-43-grasping-an.xhtml" amzn-src-id="151265">side grasp</a>.</p>
+<pre amzn-src-id="151266"><code class="language-python" amzn-src-id="151267"><span class="kn" amzn-src-id="151268">from</span><span class="w" amzn-src-id="151269"> </span><span class="nn" amzn-src-id="151270">dataclasses</span><span class="w" amzn-src-id="151271"> </span><span class="kn" amzn-src-id="151272">import</span> <span class="n" amzn-src-id="151273">dataclass</span><span class="p" amzn-src-id="151274">,</span> <span class="n" amzn-src-id="151275">asdict</span>
+<span class="nd" amzn-src-id="151276">@dataclass</span>
+<span class="k" amzn-src-id="151277">class</span><span class="w" amzn-src-id="151278"> </span><span class="nc" amzn-src-id="151279">MemoryItem</span><span class="p" amzn-src-id="151280">:</span>
+<span class="n" amzn-src-id="151281">kind</span><span class="p" amzn-src-id="151282">:</span> <span class="nb" amzn-src-id="151283">str</span>
+<span class="n" amzn-src-id="151284">payload</span><span class="p" amzn-src-id="151285">:</span> <span class="nb" amzn-src-id="151286">str</span>
+<span class="n" amzn-src-id="151287">ttl_s</span><span class="p" amzn-src-id="151288">:</span> <span class="nb" amzn-src-id="151289">int</span>
+<span class="n" amzn-src-id="151290">value_for_action</span><span class="p" amzn-src-id="151291">:</span> <span class="nb" amzn-src-id="151292">str</span>
+<span class="k" amzn-src-id="151293">def</span><span class="w" amzn-src-id="151294"> </span><span class="nf" amzn-src-id="151295">as_row</span><span class="p" amzn-src-id="151296">(</span><span class="bp" amzn-src-id="151297">self</span><span class="p" amzn-src-id="151298">)</span> <span class="o" amzn-src-id="151299">-&gt;</span> <span class="nb" amzn-src-id="151300">dict</span><span class="p" amzn-src-id="151301">[</span><span class="nb" amzn-src-id="151302">str</span><span class="p" amzn-src-id="151303">,</span> <span class="nb" amzn-src-id="151304">object</span><span class="p" amzn-src-id="151305">]:</span>
+<span class="k" amzn-src-id="151306">return</span> <span class="n" amzn-src-id="151307">asdict</span><span class="p" amzn-src-id="151308">(</span><span class="bp" amzn-src-id="151309">self</span><span class="p" amzn-src-id="151310">)</span>
+<span class="n" amzn-src-id="151311">working</span> <span class="o" amzn-src-id="151312">=</span> <span class="n" amzn-src-id="151313">MemoryItem</span><span class="p" amzn-src-id="151314">(</span>
+<span class="n" amzn-src-id="151315">kind</span><span class="o" amzn-src-id="151316">=</span><span class="s2" amzn-src-id="151317">"working_state"</span><span class="p" amzn-src-id="151318">,</span>
+<span class="n" amzn-src-id="151319">payload</span><span class="o" amzn-src-id="151320">=</span><span class="s2" amzn-src-id="151321">"mug pose estimate in robot base frame"</span><span class="p" amzn-src-id="151322">,</span>
+<span class="n" amzn-src-id="151323">ttl_s</span><span class="o" amzn-src-id="151324">=</span><span class="mi" amzn-src-id="151325">2</span><span class="p" amzn-src-id="151326">,</span>
+<span class="n" amzn-src-id="151327">value_for_action</span><span class="o" amzn-src-id="151328">=</span><span class="s2" amzn-src-id="151329">"continue grasp despite one-frame occlusion"</span><span class="p" amzn-src-id="151330">,</span>
+<span class="p" amzn-src-id="151331">)</span>
+<span class="n" amzn-src-id="151332">episodic</span> <span class="o" amzn-src-id="151333">=</span> <span class="n" amzn-src-id="151334">MemoryItem</span><span class="p" amzn-src-id="151335">(</span>
+<span class="n" amzn-src-id="151336">kind</span><span class="o" amzn-src-id="151337">=</span><span class="s2" amzn-src-id="151338">"episode"</span><span class="p" amzn-src-id="151339">,</span>
+<span class="n" amzn-src-id="151340">payload</span><span class="o" amzn-src-id="151341">=</span><span class="s2" amzn-src-id="151342">"failed handle grasp on ceramic mug"</span><span class="p" amzn-src-id="151343">,</span>
+<span class="n" amzn-src-id="151344">ttl_s</span><span class="o" amzn-src-id="151345">=</span><span class="mi" amzn-src-id="151346">86400</span><span class="p" amzn-src-id="151347">,</span>
+<span class="n" amzn-src-id="151348">value_for_action</span><span class="o" amzn-src-id="151349">=</span><span class="s2" amzn-src-id="151350">"prefer side grasp next attempt"</span><span class="p" amzn-src-id="151351">,</span>
+<span class="p" amzn-src-id="151352">)</span>
+<span class="nb" amzn-src-id="151353">print</span><span class="p" amzn-src-id="151354">(</span><span class="n" amzn-src-id="151355">working</span><span class="o" amzn-src-id="151356">.</span><span class="n" amzn-src-id="151357">as_row</span><span class="p" amzn-src-id="151358">())</span>
+<span class="nb" amzn-src-id="151359">print</span><span class="p" amzn-src-id="151360">(</span><span class="n" amzn-src-id="151361">episodic</span><span class="o" amzn-src-id="151362">.</span><span class="n" amzn-src-id="151363">as_row</span><span class="p" amzn-src-id="151364">())</span></code></pre>
+<div class="code-output" amzn-src-id="151365"><pre amzn-src-id="151366">{'kind': 'working_state', 'payload': 'mug pose estimate in robot base frame', 'ttl_s': 2, 'value_for_action': 'continue grasp despite one-frame occlusion'}
+{'kind': 'episode', 'payload': 'failed handle grasp on ceramic mug', 'ttl_s': 86400, 'value_for_action': 'prefer side grasp next attempt'}</pre></div>
+<div class="code-caption" data-agent="40" amzn-src-id="151367"><strong amzn-src-id="151368">Code Fragment 56.1.1</strong>: a <code amzn-src-id="151369">MemoryItem</code> dataclass instantiated twice, contrasting a 2-second working-state item with an 86400-second episodic item, each tagged with its own <code amzn-src-id="151370">value_for_action</code>.</div>
+<p amzn-src-id="151371">The expected output shows that the two items differ in both lifetime and control function, where <code amzn-src-id="151372">ttl_s</code> <span data-agent="04" amzn-src-id="151373">(time-to-live in seconds: how long the item stays valid before it must be refreshed or discarded)</span> is the field that encodes that lifetime. The first item is about short-horizon continuity. The second is about <a href="ch_0429_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml" amzn-src-id="151374">future adaptation across episodes</a>. Treating them as one generic memory type would hide that design difference.</p>
+<div class="callout fun-note" amzn-src-id="151375">
+<p amzn-src-id="151376">A <code amzn-src-id="151377">ttl_s</code> of 2 for the working-memory item is not pessimism; it is the robot politely admitting that a mug pose estimate grows stale faster than leftover coffee.</p>
+</div>
+<div class="callout practical-example" data-agent="26" amzn-src-id="151378">
+<h4 amzn-src-id="151379">Step-Through: Promote Or Forget</h4>
+<p amzn-src-id="151380">Trace the promotion gate over four events from one kitchen episode. Each event gets a future-decision-value score in [0, 1]; the promotion threshold is 0.5. Working buffer time-to-live is 2 s; promoted items get 86400 s (one day).</p>
+<ol amzn-src-id="151381">
+<li amzn-src-id="151382"><strong amzn-src-id="151383">t = 0.0 s, "mug visible at (0.41, 0.12)".</strong> Score = 0.20 (routine perception, no later use). Below 0.5: stays in working buffer only, expires at t = 2.0 s.</li>
+<li amzn-src-id="151384"><strong amzn-src-id="151385">t = 0.8 s, "cabinet door occludes mug".</strong> Score = 0.35 (needed now for grasp continuity, irrelevant tomorrow). Below 0.5: working buffer keeps the last pose estimate alive so the grasp continues; not promoted.</li>
+<li amzn-src-id="151386"><strong amzn-src-id="151387">t = 1.6 s, "handle grasp slipped on ceramic mug".</strong> Score = 0.85 (changes next attempt's grasp choice). At or above 0.5: promoted to durable memory with payload "prefer side grasp on this mug", ttl = 86400 s.</li>
+<li amzn-src-id="151388"><strong amzn-src-id="151389">t = 3.0 s.</strong> Working buffer has flushed events 1 and 2 (past their 2 s ttl). Long-term store holds exactly one item: the slip episode. Store size = 1, not 4. A retrieval query "how to grasp this mug" now returns the side-grasp hint with no stale-pose noise.</li>
+</ol>
+<p amzn-src-id="151390">The gate kept 1 of 4 events. That 75% drop in store size is the mechanism behind the precise retrieval discussed below.</p>
+</div>
+<div class="callout algorithm" amzn-src-id="151391">
+<div class="callout-title" amzn-src-id="151392">Algorithm: Promote Or Forget</div>
+<ol amzn-src-id="151393">
+<li amzn-src-id="151394">Maintain a short-horizon working buffer for recent observations and hidden state.</li>
+<li amzn-src-id="151395">Score events by future decision value rather than by visual salience alone.</li>
+<li amzn-src-id="151396">Promote an event to durable memory only if it changes planning, recovery, or task disambiguation later.</li>
+<li amzn-src-id="151397">Attach freshness, source, and embodiment metadata to every promoted item.</li>
+<li amzn-src-id="151398">Expire or demote memories that no longer improve action quality.</li>
+</ol>
+</div>
+<div class="callout library-shortcut" amzn-src-id="151399">
+<div class="callout-title" amzn-src-id="151400">Library Shortcut</div>
+<p amzn-src-id="151401">Recurrent or transformer policy state handles working memory. Vector stores, ROS 2 bag replay, scene graphs, and LeRobot episode logs support long-term memory, but only if they preserve timestamps, frames, provenance, and embodiment metadata.</p>
+</div>
+<div class="callout key-insight" amzn-src-id="151402">
+<div class="callout-title" amzn-src-id="151403">Named Systems That Demonstrate The Split</div>
+<p amzn-src-id="151404">SayPlan (Rana et al., 2023) uses a scene-graph query as long-term semantic memory while a GPT-4 context window serves as working memory for the current instruction; the two stores are queried at different frequencies and with different keys. Neural Topological <a data-agent="13" href="ch_0224_part-6-embodied-perception-module-29-localization-and-mapping-slam-secti.xhtml" amzn-src-id="151405">SLAM</a> (Chaplot et al., 2020) maintains a local egocentric occupancy map as working memory (updated every step) and a topological graph of named waypoints as long-term memory (updated only on room entry). In both systems, the boundary between the two tiers is defined by decision horizon, not by data volume.</p>
+</div>
+<div class="callout tip" amzn-src-id="151406">
+<p amzn-src-id="151407">When using FAISS (Facebook AI Similarity Search) or ChromaDB as the long-term store, set a retrieval score threshold (e.g., <code amzn-src-id="151408">collection.query(score_threshold=0.75)</code> in ChromaDB) rather than relying on the default top-<em amzn-src-id="151409">k</em> with no minimum similarity. Without a threshold, the retrieval always returns <em amzn-src-id="151410">k</em> results even when none are decision-relevant; <span data-agent="28" amzn-src-id="151411">in practice this is one plausible mechanism behind</span> the 8-point success-rate drop described in the warning below. A threshold of 0.7 to 0.8 (cosine similarity) is a reasonable starting point; tune it by checking whether retrieved episodes actually match the current object instance and task context, not just the embedding neighborhood.</p>
+</div>
+<h2 amzn-src-id="151412">Practical Recipe</h2>
+<ol amzn-src-id="151413">
+<li amzn-src-id="151414">Benchmark a no-memory baseline and a short-horizon working-memory baseline.</li>
+<li amzn-src-id="151415">Add only one long-term memory type at a time.</li>
+<li amzn-src-id="151416">Measure whether the added memory improves delayed decisions or repeated tasks.</li>
+<li amzn-src-id="151417">Track retrieval latency, hit rate, and stale-memory usage.</li>
+<li amzn-src-id="151418">Keep all variants on one evaluation panel.</li>
+</ol>
+<div class="callout warning" amzn-src-id="151419">
+<p amzn-src-id="151420">A common assumption is that a longer working-memory window is strictly better, so the agent should simply buffer as much recent history as possible before acting. In embodied AI this is wrong because physical time costs are real: a robot that holds a grasp pose in a 10-second buffer while the object drifts, the gripper heats, or the task deadline passes pays a physical penalty that a simulated agent never faces. The correct mental model is that working memory has an optimal horizon set by the dynamics of the body and task, not by available RAM. Beyond that horizon, old information actively misleads the policy because the physical world has moved on and the stored state no longer corresponds to any reachable configuration.</p>
+</div>
+<div class="callout warning" amzn-src-id="151421">
+<div class="callout-title" amzn-src-id="151422">Common Pitfall</div>
+<p amzn-src-id="151423">Teams often interpret large memory stores as richer cognition. In practice, storing too much without a promotion policy often degrades retrieval quality and increases planning latency. The mechanism is straightforward: a nearest-neighbor retrieval over 10,000 undifferentiated episodes returns whichever episode is superficially similar to the current query, not the one that is decision-relevant. In one reported household manipulation study (as of 2024), adding episodic memory without a promotion filter reduced task success rate by approximately 8 percentage points relative to the no-memory baseline because stale grasp attempts on different object instances were retrieved and misapplied. A promotion gate that scores events by future decision value keeps the store small enough that retrieval stays precise.</p>
+</div>
+<div class="callout practical-example" amzn-src-id="151424">
+<div class="callout-title" amzn-src-id="151425">Practical Example</div>
+<p amzn-src-id="151426">A warehouse robot may keep short-term lidar and odometry state for local continuity while separately storing that aisle B often contains temporary pallet obstructions after 4 p.m. The first supports immediate control. The second supports future route planning.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f" amzn-src-id="151427">
+<h4 amzn-src-id="151428">Real-World Application: warehouse fulfillment</h4>
+<p amzn-src-id="151429">Amazon Robotics drive units split memory exactly along this line: a fast onboard loop holds short-term odometry and fiducial readings as working memory for collision-free motion, while a central fleet system keeps long-term semantic memory of which pods hold which inventory and which floor regions congest at peak hours. The working memory steers the next centimeter; the long-term store decides which pod to fetch next and by which route.</p>
+</div>
+<div class="callout lab" data-agent="41" amzn-src-id="151430">
+<h4 amzn-src-id="151431">Lab: Does a working-memory window beat amnesia under occlusion?</h4>
+<p amzn-src-id="151432"><strong amzn-src-id="151433">Goal:</strong> measure empirically how much a short observation buffer recovers performance when observations are intermittently dropped, mirroring sensor occlusion on a real robot.</p>
+<p amzn-src-id="151434"><strong amzn-src-id="151435">Tools:</strong> Python, <code amzn-src-id="151436">gymnasium</code> (CartPole-v1 or LunarLander-v2), <code amzn-src-id="151437">stable-baselines3</code> for a PPO policy, and a thin observation wrapper you write yourself.</p>
+<p amzn-src-id="151438"><strong amzn-src-id="151439">Setup (about 15 to 30 minutes):</strong> wrap the environment so that with probability <em amzn-src-id="151440">p</em> each step returns a zero vector instead of the true observation (simulated occlusion). Build two agents on the same task: (1) a no-memory MLP that sees only the current (possibly zeroed) observation, and (2) a working-memory agent that stacks the last <em amzn-src-id="151441">k</em> observations into a ring buffer fed to the policy.</p>
+<p amzn-src-id="151442"><strong amzn-src-id="151443">What to vary:</strong> the dropout probability <em amzn-src-id="151444">p</em> from 0.0 to 0.5, and the buffer length <em amzn-src-id="151445">k</em> in {1, 2, 4, 8}.</p>
+<p amzn-src-id="151446"><strong amzn-src-id="151447">What to observe:</strong> mean episode return versus <em amzn-src-id="151448">p</em> for each <em amzn-src-id="151449">k</em>. You should see the no-memory agent (<em amzn-src-id="151450">k</em> = 1) collapse as <em amzn-src-id="151451">p</em> rises, while <em amzn-src-id="151452">k</em> = 4 or 8 holds up far longer, then plateau or even degrade once the buffer carries stale state past its useful horizon. That plateau is the optimal-horizon lesson from the warning above, observed directly.</p>
+</div>
+<div class="callout research-frontier" amzn-src-id="151453">
+<div class="callout-title" amzn-src-id="151454">Research Frontier</div>
+<p amzn-src-id="151455"><strong amzn-src-id="151456">Direction 1: Foundation-model working memory.</strong> Large vision-language-action models are being trained to use their context window as an explicit working memory over long task horizons. Google DeepMind's RT-X line (Open X-Embodiment Collaboration, 2024) and the Octo model (Ghosh et al., 2024, Berkeley) use cross-embodiment pre-training and in-context episode retrieval to let the policy carry task-relevant state across observation gaps without any hand-coded buffer design.</p>
+<p amzn-src-id="151457"><strong amzn-src-id="151458">Direction 2: Learned promotion and forgetting policies.</strong> Rather than rule-based promotion gates, recent work trains a lightweight value-of-information model <span data-agent="04" amzn-src-id="151459">(a learned estimate of how much a candidate memory item would improve a future decision, replacing the fixed 0.5 threshold used in the Step-Through above)</span> to decide what to commit to long-term memory. The RoboAgent project (Bharadhwaj et al., 2024, CMU) and work on selective memory consolidation in transformer-based policies (Team et al., 2025, Google DeepMind) show that a learned promotion head reduces memory store size by 60 to 80 percent while matching or exceeding retrieval-based baselines on multi-task manipulation benchmarks.</p>
+<p amzn-src-id="151460"><strong amzn-src-id="151461">Direction 3: Uncertainty-aware memory expiry.</strong> Stored memory items carry no uncertainty by default, so a grasp-pose estimate from 10 minutes ago is treated as equally reliable as one from 10 seconds ago. Research on probabilistic scene memories (Li et al., 2024, MIT CSAIL) attaches Gaussian confidence intervals to each stored item and decays them using task-dynamics priors, preventing stale high-confidence retrievals from dominating planning.</p>
+<p amzn-src-id="151462"><strong amzn-src-id="151463">Open problem for a PhD project:</strong> All three directions above assume a fixed embodiment at inference time. No current method can transfer a memory store built on one robot morphology (a two-fingered gripper at 500 Hz) to a different morphology (a dexterous five-fingered hand at 1000 Hz) without re-collecting demonstrations. A cross-embodiment memory normalization layer that maps stored contact statistics through morphology-aware basis functions, learned from paired teleoperation data, would make memory portable across the Open X-Embodiment corpus and is tractable as a two-year dissertation project.</p>
+</div>
+<div class="callout self-check" amzn-src-id="151464">
+<div class="callout-title" amzn-src-id="151465">Self Check</div>
+<p amzn-src-id="151466">Can you name one decision improved by working memory and one later decision improved by long-term memory? <span data-agent="01" amzn-src-id="151467">If you can state both the short-term and long-term case separately, you have met this section's objective: distinguishing why memory matters and where the short- vs. long-term boundary falls.</span> If not, the memory design is still underspecified.</p>
+</div>
+<div class="callout key-takeaway" amzn-src-id="151468">
+<div class="callout-title" amzn-src-id="151469">Key Takeaway</div>
+<ul amzn-src-id="151470">
+<li amzn-src-id="151471">Working memory supports immediate control under partial observability.</li>
+<li amzn-src-id="151472">Long-term memory supports later planning, recovery, and reuse of experience.</li>
+<li amzn-src-id="151473">Promotion into durable memory should be justified by future action value, not by sheer volume of history.</li>
+</ul>
+</div>
+<div class="callout note" amzn-src-id="151474"><h4 amzn-src-id="151475">Project Ideas</h4><p amzn-src-id="151476"><strong amzn-src-id="151477">Beginner (weekend):</strong> Build a Gymnasium CartPole agent that stores the last five observations in a fixed-size ring buffer and feeds the buffer to a simple MLP (multilayer perceptron) policy; the key challenge is verifying that the working-memory window actually improves recovery after a partial-observability dropout where every other frame is zeroed out. <strong amzn-src-id="151478">Intermediate (1 to 2 weeks):</strong> Implement a PyBullet pick-and-place task where a two-fingered gripper must retrieve objects whose positions are periodically occluded by a moving panel; connect a ChromaDB episode store so the agent can retrieve the last known pose of each object and compare success rates with and without the long-term store, tuning the retrieval score threshold to avoid stale-pose retrievals. <strong amzn-src-id="151479">Advanced (2 to 4 weeks):</strong> Use LeRobot to record a dataset of manipulation episodes on a real or simulated robot in Isaac Lab, then train a promotion policy that scores each timestep by its future decision value and writes only high-scoring frames to a FAISS index; measure hit rate and task success on a held-out sequence of occluded reach tasks.</p></div>
+<div class="callout exercise" amzn-src-id="151480"><div class="callout-title" amzn-src-id="151481">Exercise 56.1.1</div><p amzn-src-id="151482">Design a memory budget for a household robot tasked with fetching cups. Specify one working-memory item, one episodic memory item, their time-to-live, and the exact decision each one should improve.</p></div>
+<section class="bibliography" amzn-src-id="151483"><h2 amzn-src-id="151484">Section References</h2>
+<div class="bib-entry-card" amzn-src-id="151485"><p class="bib-ref" amzn-src-id="151486">Chaplot, D. S. et al. Neural Topological SLAM for Visual Navigation. CVPR, 2020.</p><p class="bib-annotation" amzn-src-id="151487">Use for map-like memory that supports navigation decisions rather than generic retrieval.</p></div>
+<div class="bib-entry-card" amzn-src-id="151488"><p class="bib-ref" amzn-src-id="151489">Parisotto, E. and Salakhutdinov, R. Neural Map: Structured Memory for Deep Reinforcement Learning. ICLR, 2018.</p><p class="bib-annotation" amzn-src-id="151490">Use for differentiable spatial memory and the distinction between stored geometry and policy state.</p></div>
+</section>
+<div class="whats-next" amzn-src-id="151491"><h3 amzn-src-id="151492">What's Next?</h3><p amzn-src-id="151493">Next, continue with <a href="ch_0425_part-12-frontiers-capstones-and-course-design-module-56-embodied-agents-.xhtml" amzn-src-id="151494">Section 56.2</a>, where the memory system is split into spatial, episodic, and semantic stores with distinct query types.</p></div>
+
+
+
+
+</body>
+</html>

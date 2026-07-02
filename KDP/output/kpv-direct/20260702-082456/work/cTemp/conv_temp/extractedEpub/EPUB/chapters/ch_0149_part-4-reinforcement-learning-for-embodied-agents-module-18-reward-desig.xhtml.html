@@ -1,0 +1,232 @@
+﻿<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en" amzn-src-id="62551">
+  <head amzn-src-id="62552">
+    <title amzn-src-id="62553">Section 18.5: Human preferences and learned reward models (RLHF for control)</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" amzn-src-id="62554" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" amzn-src-id="62555" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" amzn-src-id="62556" />
+  <style type="text/css" amzn-src-id="62557">html,body{background:#ffffff;}</style><style type="text/css" amzn-src-id="62558">html,body{background:#ffffff;}</style></head>
+  <body amzn-src-id="62559">
+<h1 amzn-src-id="62560">Section 18.5: Human preferences and learned reward models (RLHF for control)</h1>
+
+<blockquote class="epigraph" amzn-src-id="62561"><p amzn-src-id="62562">"Human preferences are the reward signal. All the usual problems now apply to a model of a person."</p><cite amzn-src-id="62563">A Careful Control Loop</cite></blockquote>
+<figure class="illustration" data-agent="39" amzn-src-id="62564">
+<img alt="Technical illustration for Section 18.5: Human preferences and learned reward models (RLHF for control)." loading="lazy" src="../img/7403bc48a9_chapter-18-illustration-05.jpg" amzn-src-id="62565" />
+<figcaption amzn-src-id="62566">Figure 18.5A: Human preference learning for robot control: a human compares two short trajectory clips, their preference signal trains a reward model, and that reward model drives Proximal Policy Optimization (PPO) fine-tuning of the robot policy.</figcaption>
+</figure>
+<div class="callout pathway" amzn-src-id="62567">
+<p amzn-src-id="62568">This section assumes familiarity with policy gradient optimization and PPO from section 15.4, since the reward model's scores are fed directly into a PPO fine-tuning loop. It also builds on the reward hacking failure modes catalogued in section 18.4, because a learned reward model is subject to all of those failure modes plus exploitation by the optimizing policy. The safety constraints introduced here are extended in section 18.6, which formalizes how preference-based rewards interact with hard constraint terms.</p>
+</div>
+<div class="callout big-picture" amzn-src-id="62569">
+<div class="callout-title" amzn-src-id="62570">Big Picture</div>
+<p amzn-src-id="62571"><strong amzn-src-id="62572">A warehouse robot clears a shelf perfectly, then knocks over a fragile box on the way back, every time.</strong> No hand-written reward caught it because nobody thought to penalize the return path. Now a human watches two thirty-second clips and picks the less reckless one. That single comparison is a training signal. Multiply it by thousands of such comparisons and the robot learns what "careful" actually means to the people who work beside it. Reinforcement Learning from Human Feedback (RLHF) is the only scalable way to transfer that kind of tacit human judgment into a control policy, and embodied AI is where the stakes are highest: the robot shares physical space with people. By the end of this section you will be able to build, audit, and harden a preference-based reward model so the policy cannot quietly game it.</p>
+</div>
+<p amzn-src-id="62573"><span data-agent="29" amzn-src-id="62574">Picture a policy that has just earned its highest reward score ever. The gripper it controls leaves a fresh scratch across the table on every rollout. A learned preference reward reports success anyway, unless the builder exposes each force budget, clearance constraint, exploration bonus, and deployment risk as a separately auditable term. Bury those terms in one scalar return, and a MuJoCo or <a data-agent="13" href="ch_0098_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml" amzn-src-id="62575">Isaac Lab</a> rollout can quietly inflate them.</span></p>
+<p amzn-src-id="62576">This section develops the contract for reward models in embodied control. Figure 18.5A previews the whole loop: a human compares two short trajectory clips, that preference trains a reward model, and the reward model drives <a data-agent="13" href="ch_0128_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml" amzn-src-id="62577">PPO</a> fine-tuning of the policy. A learned reward model maps a trajectory segment $\tau$ to a scalar score $\hat R(\tau)$. The training data is not a numeric reward label for every state. It is usually a set of comparisons such as "clip A is safer, smoother, or more successful than clip B." In practice, a hand-written reward for a warehouse sorting task may require weeks of parameter tuning across hundreds of rollout hours, while <strong amzn-src-id="62578">preference labels from 500 clip comparisons</strong> can match or surpass that performance in a single overnight training run (Christiano et al., 2017; Lee et al., 2024).</p>
+<p amzn-src-id="62579">The key question is practical: when should the builder trust learned preferences more than a hand-written reward, and how can the builder detect when the policy starts exploiting the reward model? Figure 18.5B traces the three-stage pipeline that answers this: collect comparisons, train the reward model, and optimize the policy under a KL penalty<span data-agent="21" amzn-src-id="62580">, where KL (Kullback-Leibler) divergence measures how far the updated policy's action distribution has drifted from the reference policy, and penalizing it keeps updates close to familiar behavior</span>, with independent physical metrics auditing the model against exploitation.</p>
+<figure class="diagram-container" data-agent="09" data-agent-2="39" amzn-src-id="62581">
+<img src="../diagrams/d_44954f8e3adeb53a.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" amzn-src-id="62582" />
+<figcaption amzn-src-id="62583">Figure 18.5B: The RLHF pipeline for embodied control. Human raters compare trajectory clips (step 1), training a reward model via Bradley-Terry loss (step 2), which scores rollouts fed into PPO with a KL penalty against the reference policy (step 3). New rollouts cycle back for additional comparisons (purple dashed), while independent physical metrics (force, contact, intervention) audit the reward model against exploitation.</figcaption>
+</figure>
+<div class="callout key-insight" amzn-src-id="62584">
+<div class="callout-title" amzn-src-id="62585">The Judge Becomes The Reward</div>
+<p amzn-src-id="62586">Once a reward model is trained, the policy optimizes the model's scores, not the human raters directly. The model therefore needs the same audit discipline as any other reward: calibration, coverage, disagreement checks, and adversarial rollouts.</p>
+</div>
+<h2 amzn-src-id="62587">Theory</h2>
+<p amzn-src-id="62588">A common preference model uses a Bradley-Terry form<span data-agent="21" amzn-src-id="62589">, where the probability that one item is judged better than another is a logistic function of the difference between their underlying scores</span>. If a rater prefers trajectory $\tau_A$ over $\tau_B$, the model predicts</p>
+<p amzn-src-id="62590"><img src="../math/m_9adb813fcb357252.jpg" alt="math" style="height:3.408em;vertical-align:0.000em;" class="mathi" amzn-src-id="62591" /></p>
+<p amzn-src-id="62592">Training minimizes the negative log probability of the observed preference. In embodied control, the rater prompt must be precise: should the rater prioritize task completion, smoothness, speed, clearance from humans, object damage, or recovery behavior? A vague prompt trains a vague reward model.</p>
+<h4 data-agent="30" amzn-src-id="62593">Why ordinal judgment fits physical control</h4>
+<p amzn-src-id="62594"><strong amzn-src-id="62595">Why this matters for physical robots.</strong> A robot acting in the world cannot roll back a mistake: a knocked object stays fallen, a bruised joint accumulates wear, a startled co-worker loses trust. The Bradley-Terry form captures ordinal human judgment rather than asking raters to assign precise numeric scores, which is unreliable for physical behaviors where magnitude is hard to judge but relative preference is clear. This makes it the right tool when the cost of a bad reward is irreversible physical harm rather than a recoverable software error. A reward model that a policy can fool is not a reward model; it is a scoreboard waiting to be gamed.</p>
+<div class="callout warning" amzn-src-id="62596"><p amzn-src-id="62597">A common assumption is that human preference labels are reliable ground truth for physical safety because a rater is a real person making a judgment. That assumption is wrong. Raters compare short video clips. They cannot observe contact forces, internal joint torques, object deformation, or delayed wear. Those effects may appear seconds or minutes after the clip ends. A trajectory can look smooth and careful to every rater and still accumulate damage or create a safety hazard the camera never captures. Preference labels measure what is visually legible to a human observer, not what is physically safe. Always pair the reward model score with independent instrumented metrics: force sensors, collision logs, and intervention records. The preference signal is a starting point, not a safety certificate.</p></div>
+<p amzn-src-id="62598"><strong amzn-src-id="62599">How it works in practice.</strong> <span data-agent="29" amzn-src-id="62600">A neural network takes a trajectory segment (states, actions, optionally sensor readings) as input and outputs a scalar score. For each labeled pair, the network scores both clips, and the Bradley-Terry formula converts the score gap into a predicted preference probability. Backpropagation through the negative log-likelihood loss adjusts the weights, so clips the raters preferred reliably receive higher scores. After enough labeled pairs the network generalizes. It scores new clips it has never seen, providing a reward signal the PPO loop then maximizes. Consider the leverage. <span data-agent="28" amzn-src-id="62601">In the benchmark tasks reported by Christiano et al. (2017), learning a comparably expressive reward through random exploration alone demanded on the order of tens of thousands of rollout episodes, while roughly 500 carefully chosen human comparisons produced comparable signal quality in a single overnight run; the exact ratio depends heavily on the task and should not be assumed to transfer unchanged to a new embodiment.</span> Each labeled pair condenses substantially more environmental experience than the agent could stumble onto by itself.</span></p>
+<div class="callout note" data-agent="25" amzn-src-id="62602">
+<div class="callout-title" amzn-src-id="62603">Mechanism</div>
+<p amzn-src-id="62604">Preference learning moves reward design from equation writing to data design. The core artifacts are the rater protocol, the comparison dataset, the reward-model validation set, and the policy rollouts that test whether the model is being exploited.</p>
+</div>
+<div class="callout algorithm" amzn-src-id="62605">
+<h4 amzn-src-id="62606">Algorithm: RLHF Reward-Model Training and Policy Fine-Tuning</h4>
+<p amzn-src-id="62607"><strong amzn-src-id="62608">Input:</strong> reference policy $\pi_{\text{ref}}$, trajectory dataset $\mathcal{D}$, rater rubric $\rho$, KL coefficient $\beta$, learning rate $\alpha$, reward-model parameters $\theta$</p>
+<p amzn-src-id="62609"><strong amzn-src-id="62610">Output:</strong> fine-tuned policy $\pi_\theta$, audited reward model $\hat{R}_\theta$</p>
+<ol amzn-src-id="62611">
+<li amzn-src-id="62612">Write rater rubric $\rho$ with ranked criteria and a tie-breaking rule before any data collection begins.</li>
+<li amzn-src-id="62613">Sample trajectory pairs $(\tau_A, \tau_B)$ from $\mathcal{D}$, covering successes, failures, near-misses, and recoveries; collect human label $y \in \{A, B\}$ for each pair.</li>
+<li amzn-src-id="62614">Train $\hat{R}_\theta$ by minimizing the Bradley-Terry negative log-likelihood: $\mathcal{L}(\theta) = -\mathbb{E}\bigl[\log P_\theta(\tau_y \succ \tau_{\neg y})\bigr]$ where $P_\theta(\tau_A \succ \tau_B) = \sigma\!\left(\hat{R}_\theta(\tau_A) - \hat{R}_\theta(\tau_B)\right)$.</li>
+<li amzn-src-id="62615">Validate $\hat{R}_\theta$ on a held-out comparison set; record pair accuracy, calibration, and inter-rater agreement rate.</li>
+<li amzn-src-id="62616">Probe the reward model with adversarial rollouts: score visually smooth trajectories that contain hidden contact or force violations to detect blind spots.</li>
+<li amzn-src-id="62617">Initialize fine-tuning policy $\pi$ from $\pi_{\text{ref}}$ and run PPO with reward $r(s,a) = \hat{R}_\theta(\tau) - \beta\, \mathrm{KL}\!\left[\pi(\cdot|s) \,\|\, \pi_{\text{ref}}(\cdot|s)\right]$.</li>
+<li amzn-src-id="62618">At each PPO update, compute policy gradient $\nabla_\phi J(\phi) = \mathbb{E}_{\tau \sim \pi_\phi}\!\left[\nabla_\phi \log \pi_\phi(a|s)\, r(s,a)\right]$ and update $\phi \leftarrow \phi + \alpha\,\nabla_\phi J(\phi)$.</li>
+<li amzn-src-id="62619">Save high-reward rollouts after each PPO epoch and inspect them with independent physical metrics (contact cost, force proxy, intervention rate).</li>
+<li amzn-src-id="62620">If any high-reward rollout fails an independent metric, flag reward-model exploitation: add targeted comparison pairs covering that failure mode and retrain $\hat{R}_\theta$.</li>
+<li amzn-src-id="62621">Report final policy $\pi_\theta$ using task success, safety cost, and human intervention rate, not reward-model score alone.</li>
+</ol>
+</div>
+<h2 amzn-src-id="62622">Worked Example</h2>
+<p amzn-src-id="62623">Suppose raters prefer a slower grasp that avoids scraping the table over a faster grasp that succeeds but collides. Code Fragment 1 computes the probability assigned to the preferred clip and the corresponding loss.</p>
+<pre amzn-src-id="62624"><code class="language-python" amzn-src-id="62625"><span class="c1" amzn-src-id="62626"># Compute one preference-model loss for two trajectory clips.</span>
+<span class="c1" amzn-src-id="62627"># The preferred clip should receive the higher learned reward score.</span>
+<span class="kn" amzn-src-id="62628">from</span><span class="w" amzn-src-id="62629"> </span><span class="nn" amzn-src-id="62630">math</span><span class="w" amzn-src-id="62631"> </span><span class="kn" amzn-src-id="62632">import</span> <span class="n" amzn-src-id="62633">exp</span><span class="p" amzn-src-id="62634">,</span> <span class="n" amzn-src-id="62635">log</span>
+<span class="n" amzn-src-id="62636">reward_safe</span> <span class="o" amzn-src-id="62637">=</span> <span class="mf" amzn-src-id="62638">1.4</span>
+<span class="n" amzn-src-id="62639">reward_fast_collision</span> <span class="o" amzn-src-id="62640">=</span> <span class="mf" amzn-src-id="62641">0.2</span>
+<span class="n" amzn-src-id="62642">prob_safe_preferred</span> <span class="o" amzn-src-id="62643">=</span> <span class="n" amzn-src-id="62644">exp</span><span class="p" amzn-src-id="62645">(</span><span class="n" amzn-src-id="62646">reward_safe</span><span class="p" amzn-src-id="62647">)</span> <span class="o" amzn-src-id="62648">/</span> <span class="p" amzn-src-id="62649">(</span><span class="n" amzn-src-id="62650">exp</span><span class="p" amzn-src-id="62651">(</span><span class="n" amzn-src-id="62652">reward_safe</span><span class="p" amzn-src-id="62653">)</span> <span class="o" amzn-src-id="62654">+</span> <span class="n" amzn-src-id="62655">exp</span><span class="p" amzn-src-id="62656">(</span><span class="n" amzn-src-id="62657">reward_fast_collision</span><span class="p" amzn-src-id="62658">))</span>
+<span class="n" amzn-src-id="62659">loss</span> <span class="o" amzn-src-id="62660">=</span> <span class="o" amzn-src-id="62661">-</span><span class="n" amzn-src-id="62662">log</span><span class="p" amzn-src-id="62663">(</span><span class="n" amzn-src-id="62664">prob_safe_preferred</span><span class="p" amzn-src-id="62665">)</span>
+<span class="nb" amzn-src-id="62666">print</span><span class="p" amzn-src-id="62667">(</span><span class="s2" amzn-src-id="62668">"P(safe preferred)="</span><span class="p" amzn-src-id="62669">,</span> <span class="nb" amzn-src-id="62670">round</span><span class="p" amzn-src-id="62671">(</span><span class="n" amzn-src-id="62672">prob_safe_preferred</span><span class="p" amzn-src-id="62673">,</span> <span class="mi" amzn-src-id="62674">3</span><span class="p" amzn-src-id="62675">))</span>
+<span class="nb" amzn-src-id="62676">print</span><span class="p" amzn-src-id="62677">(</span><span class="s2" amzn-src-id="62678">"preference_loss="</span><span class="p" amzn-src-id="62679">,</span> <span class="nb" amzn-src-id="62680">round</span><span class="p" amzn-src-id="62681">(</span><span class="n" amzn-src-id="62682">loss</span><span class="p" amzn-src-id="62683">,</span> <span class="mi" amzn-src-id="62684">3</span><span class="p" amzn-src-id="62685">))</span></code></pre>
+<div class="code-output" amzn-src-id="62686">P(safe preferred)= 0.769
+preference_loss= 0.263</div>
+<div class="code-caption" data-agent="08" data-agent-2="40" amzn-src-id="62687"><strong amzn-src-id="62688">Code Fragment 1:</strong> The variables <code amzn-src-id="62689">reward_safe</code> and <code amzn-src-id="62690">reward_fast_collision</code> stand in for reward-model scores on two clips. The lower <code amzn-src-id="62691">preference_loss</code> shows that the model assigns higher probability to the rater's preferred safe trajectory.</div>
+<div class="callout practical-example" data-agent="26" amzn-src-id="62692">
+<h4 amzn-src-id="62693">Step-Through: Bradley-Terry preference loss and one gradient step</h4>
+<p amzn-src-id="62694">Trace the loss for two clips and watch one update push the scores apart. Start with reward-model scores $\hat R(\tau_A)=0.5$ (preferred safe clip) and $\hat R(\tau_B)=0.3$ (collision clip). The model predicts the probability that the safe clip is preferred:</p>
+<p amzn-src-id="62695"><img src="../math/m_37fec3b884b3117e.jpg" alt="math" style="height:2.391em;vertical-align:0.000em;" class="mathi" amzn-src-id="62696" /></p>
+<p amzn-src-id="62697">The loss is $-\log(0.5498)=0.5982$. The gradient of the Bradley-Terry loss with respect to the score gap is $-(1-P)=-(1-0.5498)=-0.4502$, so gradient descent raises $\hat R(\tau_A)$ and lowers $\hat R(\tau_B)$. With learning rate $\alpha=0.1$, the two scores move by $0.1 \times 0.4502 = 0.0450$ each: $\hat R(\tau_A)$ becomes $0.5450$ and $\hat R(\tau_B)$ becomes $0.2550$. Recompute: the new gap is $0.2900$ (was $0.2000$), so $P(\tau_A \succ \tau_B)=\frac{\exp(0.5450)}{\exp(0.5450)+\exp(0.2550)}=0.5720$ and the loss drops to $0.5586$. One step moved the predicted preference from 0.550 to 0.572, exactly as intended: every labeled pair nudges the preferred clip's score above its rival's.</p>
+</div>
+<p amzn-src-id="62698"><strong amzn-src-id="62699">Expected output:</strong> the probability should rise when the preferred clip receives a higher score. If the score gap grows on training data but fails on held-out clips, the reward model has memorized the comparison set rather than learned the rater's criterion.</p>
+<div class="callout library-shortcut" amzn-src-id="62700">
+<div class="callout-title" amzn-src-id="62701">Library Shortcut</div>
+<p amzn-src-id="62702">Use preference-learning or RLHF tooling for batching comparisons, training reward models, and logging rater agreement, but keep the embodied artifacts close: clips, state traces, collision logs, intervention flags, and final task metrics. The tool can train the scorer; it cannot decide what the rater should value.</p>
+</div>
+<h2 amzn-src-id="62703">Practical Recipe</h2>
+<ol amzn-src-id="62704">
+<li amzn-src-id="62705">Define the rater rubric before collecting comparisons.</li>
+<li amzn-src-id="62706">Sample diverse trajectory pairs, including failures, recoveries, near misses, and easy successes.</li>
+<li amzn-src-id="62707">Track rater disagreement and remove or investigate ambiguous pairs.</li>
+<li amzn-src-id="62708">Validate the reward model on held-out clips and adversarial high-score rollouts.</li>
+<li amzn-src-id="62709">Report policy performance using task success and safety costs, not reward-model score alone.</li>
+</ol>
+<div class="callout warning" amzn-src-id="62710">
+<div class="callout-title" amzn-src-id="62711">Common Failure Mode</div>
+<p amzn-src-id="62712">A learned reward model can be <a data-agent="13" href="ch_0148_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml" amzn-src-id="62713">hacked</a> by the policy that optimizes it. If the model learned that smooth-looking video implies safety, the policy may learn visually smooth motions that hide contact forces or damage. Always evaluate optimized policies with independent physical metrics.</p>
+</div>
+<div class="callout key-insight" amzn-src-id="62714"><p amzn-src-id="62715">Think of the KL penalty as a leash on a sports coach scouting new plays. The coach (reward model) was trained by watching footage of familiar game situations, so she gives reliable assessments only for plays that resemble what she has already seen. If a player ventures into completely novel territory, her scores become guesswork, however confident they sound. The KL penalty keeps the team's strategy close enough to the reference playbook that the coach is always judging situations within her experience, preventing the team from drifting into exotic formations she cannot honestly evaluate.</p></div>
+<div class="callout tip" amzn-src-id="62716">
+<p amzn-src-id="62717">When running PPO against a learned reward model, set the <code amzn-src-id="62718">kl_coef</code> parameter (typically 0.01 to 0.1) to penalize large KL divergence from the reference policy. Without this penalty, the optimizer quickly pushes the policy into out-of-distribution territory where the reward model's Bradley-Terry scores become unreliable extrapolations rather than calibrated preferences. A common symptom is a rapid spike in reward-model score followed by catastrophic policy collapse: the model is being queried on behavior it never saw during the comparison-collection phase. Start with <code amzn-src-id="62719">kl_coef=0.05</code> and tighten it if you observe high-score rollouts that fail independent task metrics.</p>
+</div>
+<div class="callout practical-example" amzn-src-id="62720">
+<div class="callout-title" amzn-src-id="62721">Practical Example</div>
+<p amzn-src-id="62722">For a home-assistance robot, raters might compare two clips of placing a cup on a table. The rubric should say whether a slow but careful placement beats a fast placement with a hard contact, and the logged artifact should include force or contact proxies so the reward model can be checked against physical evidence.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f" amzn-src-id="62723">
+<h4 amzn-src-id="62724">Real-World Application: warehouse and household manipulation policies</h4>
+<p amzn-src-id="62725">Google DeepMind's RT-2 and the broader Open X-Embodiment effort use human-preference signals to rank manipulation behaviors that no hand-written reward captured cleanly, such as gentle placement and human-aware clearance. The same preference-then-PPO recipe trains assistive-robot policies at companies like 1X and Figure, where raters compare clips of a robot handing an object to a person and the reward model encodes "smooth and unthreatening" far better than any contact-force formula alone.</p>
+</div>
+<div class="callout lab" data-agent="41" amzn-src-id="62726">
+<h4 amzn-src-id="62727">Lab: Watch a policy game its own reward model</h4>
+<p amzn-src-id="62728"><strong amzn-src-id="62729">Goal:</strong> empirically observe reward-model exploitation and confirm that a KL penalty suppresses it. In 20-30 minutes you will train a tiny preference reward model and see PPO scores diverge from true task success.</p>
+<p amzn-src-id="62730"><strong amzn-src-id="62731">Tools needed:</strong> Python with <code amzn-src-id="62732">gymnasium</code>, <code amzn-src-id="62733">stable-baselines3</code>, and <code amzn-src-id="62734">torch</code>. Use the <code amzn-src-id="62735">Pendulum-v1</code> or <code amzn-src-id="62736">Reacher-v4</code> environment so a run finishes in minutes on CPU.</p>
+<p amzn-src-id="62737"><strong amzn-src-id="62738">Steps:</strong> (1) Collect 200 trajectory pairs from a random and a partially trained policy; label each pair automatically using the true environment reward as a stand-in rater. (2) Train a small two-layer MLP reward model with the Bradley-Terry loss until held-out pair accuracy exceeds 0.8. (3) Run PPO against the frozen reward model, logging both the reward-model score and the true environment return at every evaluation.</p>
+<p amzn-src-id="62739"><strong amzn-src-id="62740">What to vary:</strong> the KL coefficient (<code amzn-src-id="62741">kl_coef</code> in {0.0, 0.01, 0.05, 0.2}) and the size of the comparison set (50 vs 500 pairs).</p>
+<p amzn-src-id="62742"><strong amzn-src-id="62743">What to observe:</strong> with <code amzn-src-id="62744">kl_coef=0.0</code> the reward-model score keeps climbing while true return plateaus or collapses, the signature of exploitation. As you raise the KL coefficient, the two curves track each other more closely. Smaller comparison sets exploit faster because the model has more uncovered blind spots. Plot reward-model score and true return on the same axis to make the gap visible.</p>
+</div>
+<div class="callout fun-note" amzn-src-id="62745">
+<div class="callout-title" amzn-src-id="62746">Memory Hook</div>
+<p amzn-src-id="62747">A reward model is a judge with a very large clipboard. The policy will eventually learn which boxes on the clipboard matter and which real-world details the judge forgot to ask about.</p>
+</div>
+<div class="callout research-frontier" amzn-src-id="62748">
+<div class="callout-title" amzn-src-id="62749">Research Frontier</div>
+<p amzn-src-id="62750"><strong amzn-src-id="62751">1. VLM-as-reward-model for physical manipulation (2024-2025).</strong> Vision-language models are being used as zero-shot or few-shot reward functions in place of human comparison labels. Rocamonde et al. (2024, "VLAD: Vision-Language Alignment via Distillation") and the EUREKA system (Ma et al., 2024, ICLR) from NVIDIA demonstrate that GPT-4 and similar models can generate reward code from task descriptions and iterate using environment feedback, reducing human labeling to high-level specification. The key challenge is preventing the VLM from scoring perceptually plausible but physically unsafe motions.</p>
+<p amzn-src-id="62752"><strong amzn-src-id="62753">2. Scalable reward model training from large robot datasets (2024-2025).</strong> The Open X-Embodiment Collaboration (2024, ICRA) collected over 1 million robot trajectories across 22 platforms; subsequent work from Google DeepMind (RT-2-X and successors) uses this breadth to pretrain reward models that transfer across embodiments without re-collecting pairwise comparisons on each hardware platform. Direct Preference Optimization (DPO) variants adapted for robot trajectories (such as Robot DPO, Lee et al., 2024) replace the explicit reward-model training step with a contrastive policy update, cutting the pipeline from three stages to two.</p>
+<p amzn-src-id="62754"><strong amzn-src-id="62755">3. Active and efficient preference elicitation (2024-2026).</strong> Work from the Berkeley AI Research lab and CMU (including PREF-RLHF benchmarks, 2024) shows that Bayesian active learning over the comparison pool can match 1,000-label baselines with 200-300 carefully chosen pairs in dexterous manipulation tasks. Uncertainty-aware reward models, where the network outputs a distribution over reward values rather than a point score, allow the training loop to automatically request comparisons only for trajectory pairs where the model is genuinely uncertain, cutting annotation cost without sacrificing policy quality.</p>
+<p amzn-src-id="62756"><strong amzn-src-id="62757">Open problem for PhD students.</strong> All three directions above assume that the rater's preferences are stationary across the training run. In practice, rater calibration shifts as the policy improves: behaviors that looked impressive early in training become baseline expectations later, compressing the signal at the top of the reward distribution. Designing a preference-elicitation protocol that explicitly tracks and compensates for rater drift over multi-week robot training campaigns is an open research problem with direct deployment consequences.</p>
+</div>
+<div class="callout self-check" amzn-src-id="62758">
+<div class="callout-title" amzn-src-id="62759">Self Check</div>
+<p amzn-src-id="62760">Can you state the rater rubric, the disagreement rate, the held-out validation result, and the independent deployment metric? If not, the learned reward model is under-audited.</p>
+</div>
+<p amzn-src-id="62761">Learned rewards are most useful when the desired behavior is hard to write as a formula but easy for trained raters to compare. Smooth recovery, respectful distance, gentle contact, and task style often fit this pattern. They are least useful when the rater cannot observe the relevant evidence, such as hidden force, internal wear, or a delayed safety consequence.</p>
+<p data-agent="17" amzn-src-id="62762">Treat reward-model optimization as a distribution shift. The model learns from comparison clips; the policy then searches for actions that maximize it, drifting away from that training distribution. So high reward-model scores should trigger adversarial review, uncertainty checks, and independent embodied metrics.</p>
+<div class="comparison-table" amzn-src-id="62763">
+<div class="comparison-table-title" amzn-src-id="62764">Practical Tool Choices For This Section</div>
+<table amzn-src-id="62765">
+<thead amzn-src-id="62766"><tr amzn-src-id="62767"><th amzn-src-id="62768">Tool or Library</th><th amzn-src-id="62769">Role in the Topic</th><th amzn-src-id="62770">Builder Advice</th></tr></thead>
+<tbody amzn-src-id="62771">
+<tr amzn-src-id="62772"><td amzn-src-id="62773">Preference data tool</td><td amzn-src-id="62774">Comparison collection</td><td amzn-src-id="62775">Use it to present clips consistently and store rater IDs, rubric version, and disagreement.</td></tr><tr amzn-src-id="62776"><td amzn-src-id="62777">Gymnasium</td><td amzn-src-id="62778">Policy optimization</td><td amzn-src-id="62779">Use consistent environments so reward-model scores and task metrics come from the same rollouts.</td></tr><tr amzn-src-id="62780"><td amzn-src-id="62781">MuJoCo</td><td amzn-src-id="62782">Hidden physical checks</td><td amzn-src-id="62783">Log contact, force proxies, and object state so visual preferences can be audited.</td></tr><tr amzn-src-id="62784"><td amzn-src-id="62785">LeRobot</td><td amzn-src-id="62786">Clip and dataset management</td><td amzn-src-id="62787">Connect comparison labels to demonstrations, replay videos, and policy rollouts.</td></tr><tr amzn-src-id="62788"><td amzn-src-id="62789">ROS 2</td><td amzn-src-id="62790">Hardware validation</td><td amzn-src-id="62791">Record real controller and safety topics when reward-model policies move beyond simulation.</td></tr>
+</tbody>
+</table>
+</div>
+<p data-agent="14" amzn-src-id="62792">Choosing those tools well only pays off if the surrounding record is disciplined, because the tool captures the scores but not the human process that gave them meaning.</p>
+<p amzn-src-id="62793">A robust implementation records the human-labeling process as carefully as the RL run. Without the rater protocol and comparison distribution, a learned reward score is not interpretable.</p>
+<ol amzn-src-id="62794">
+<li amzn-src-id="62795">Write a rater rubric with ranked criteria and tie rules.</li>
+<li amzn-src-id="62796">Collect comparison pairs across easy, hard, unsafe, and ambiguous cases.</li>
+<li amzn-src-id="62797">Train the reward model and report held-out pair accuracy plus calibration.</li>
+<li amzn-src-id="62798">Optimize the policy under the reward model while saving high-score rollouts.</li>
+<li amzn-src-id="62799">Evaluate with independent success, safety, and intervention metrics.</li>
+</ol>
+<p amzn-src-id="62800">Code Fragment 2 records the minimum audit fields for a learned reward used in control.</p>
+<pre amzn-src-id="62801"><code class="language-python" amzn-src-id="62802"><span class="c1" amzn-src-id="62803"># Build one preference-reward audit record for control.</span>
+<span class="c1" amzn-src-id="62804"># The fields connect human labels, model validation, and policy evaluation.</span>
+<span class="kn" amzn-src-id="62805">from</span><span class="w" amzn-src-id="62806"> </span><span class="nn" amzn-src-id="62807">dataclasses</span><span class="w" amzn-src-id="62808"> </span><span class="kn" amzn-src-id="62809">import</span> <span class="n" amzn-src-id="62810">dataclass</span><span class="p" amzn-src-id="62811">,</span> <span class="n" amzn-src-id="62812">asdict</span>
+<span class="nd" amzn-src-id="62813">@dataclass</span>
+<span class="k" amzn-src-id="62814">class</span><span class="w" amzn-src-id="62815"> </span><span class="nc" amzn-src-id="62816">PreferenceRewardAudit</span><span class="p" amzn-src-id="62817">:</span>
+<span class="n" amzn-src-id="62818">section</span><span class="p" amzn-src-id="62819">:</span> <span class="nb" amzn-src-id="62820">str</span>
+<span class="n" amzn-src-id="62821">rater_rubric</span><span class="p" amzn-src-id="62822">:</span> <span class="nb" amzn-src-id="62823">str</span>
+<span class="n" amzn-src-id="62824">validation_check</span><span class="p" amzn-src-id="62825">:</span> <span class="nb" amzn-src-id="62826">str</span>
+<span class="n" amzn-src-id="62827">exploitation_probe</span><span class="p" amzn-src-id="62828">:</span> <span class="nb" amzn-src-id="62829">str</span>
+<span class="n" amzn-src-id="62830">deployment_metrics</span><span class="p" amzn-src-id="62831">:</span> <span class="nb" amzn-src-id="62832">list</span><span class="p" amzn-src-id="62833">[</span><span class="nb" amzn-src-id="62834">str</span><span class="p" amzn-src-id="62835">]</span>
+<span class="k" amzn-src-id="62836">def</span><span class="w" amzn-src-id="62837"> </span><span class="nf" amzn-src-id="62838">as_row</span><span class="p" amzn-src-id="62839">(</span><span class="bp" amzn-src-id="62840">self</span><span class="p" amzn-src-id="62841">)</span> <span class="o" amzn-src-id="62842">-&gt;</span> <span class="nb" amzn-src-id="62843">dict</span><span class="p" amzn-src-id="62844">[</span><span class="nb" amzn-src-id="62845">str</span><span class="p" amzn-src-id="62846">,</span> <span class="nb" amzn-src-id="62847">object</span><span class="p" amzn-src-id="62848">]:</span>
+<span class="k" amzn-src-id="62849">return</span> <span class="n" amzn-src-id="62850">asdict</span><span class="p" amzn-src-id="62851">(</span><span class="bp" amzn-src-id="62852">self</span><span class="p" amzn-src-id="62853">)</span>
+<span class="n" amzn-src-id="62854">record</span> <span class="o" amzn-src-id="62855">=</span> <span class="n" amzn-src-id="62856">PreferenceRewardAudit</span><span class="p" amzn-src-id="62857">(</span>
+<span class="n" amzn-src-id="62858">section</span><span class="o" amzn-src-id="62859">=</span><span class="s2" amzn-src-id="62860">"18.5"</span><span class="p" amzn-src-id="62861">,</span>
+<span class="n" amzn-src-id="62862">rater_rubric</span><span class="o" amzn-src-id="62863">=</span><span class="s2" amzn-src-id="62864">"prefer task success, then gentle contact, then smooth recovery"</span><span class="p" amzn-src-id="62865">,</span>
+<span class="n" amzn-src-id="62866">validation_check</span><span class="o" amzn-src-id="62867">=</span><span class="s2" amzn-src-id="62868">"held-out pair accuracy plus disagreement review"</span><span class="p" amzn-src-id="62869">,</span>
+<span class="n" amzn-src-id="62870">exploitation_probe</span><span class="o" amzn-src-id="62871">=</span><span class="s2" amzn-src-id="62872">"top reward-model rollouts inspected for hidden contact"</span><span class="p" amzn-src-id="62873">,</span>
+<span class="n" amzn-src-id="62874">deployment_metrics</span><span class="o" amzn-src-id="62875">=</span><span class="p" amzn-src-id="62876">[</span><span class="s2" amzn-src-id="62877">"task_success"</span><span class="p" amzn-src-id="62878">,</span> <span class="s2" amzn-src-id="62879">"contact_cost"</span><span class="p" amzn-src-id="62880">,</span> <span class="s2" amzn-src-id="62881">"human_intervention_rate"</span><span class="p" amzn-src-id="62882">],</span>
+<span class="p" amzn-src-id="62883">)</span>
+<span class="nb" amzn-src-id="62884">print</span><span class="p" amzn-src-id="62885">(</span><span class="n" amzn-src-id="62886">record</span><span class="o" amzn-src-id="62887">.</span><span class="n" amzn-src-id="62888">as_row</span><span class="p" amzn-src-id="62889">())</span></code></pre>
+<div class="code-output" amzn-src-id="62890">{'section': '18.5', 'rater_rubric': 'prefer task success, then gentle contact, then smooth recovery', 'validation_check': 'held-out pair accuracy plus disagreement review', 'exploitation_probe': 'top reward-model rollouts inspected for hidden contact', 'deployment_metrics': ['task_success', 'contact_cost', 'human_intervention_rate']}</div>
+<div class="code-caption" data-agent="08" data-agent-2="40" amzn-src-id="62891"><strong amzn-src-id="62892">Code Fragment 2:</strong> The <code amzn-src-id="62893">PreferenceRewardAudit</code> record ties the rater rubric to validation, exploitation probes, and deployment metrics. The <code amzn-src-id="62894">exploitation_probe</code> field is essential because optimizing a reward model creates new behaviors the raters may never have labeled.</div>
+<p data-agent="14" amzn-src-id="62895">That audit record is also what makes failures diagnosable rather than mysterious: once the rater protocol, probes, and metrics are logged, a failure can be traced to a specific stage instead of guessed at. When a learned reward policy fails, assign the failure to rater ambiguity, dataset coverage, reward-model overfitting, optimization exploit, or missing physical evidence. Then add comparison pairs that target that failure and rerun the policy evaluation on the same seed panel.</p>
+<div class="callout note" data-agent="25" amzn-src-id="62896">
+<div class="callout-title" amzn-src-id="62897">Evaluation Recipe</div>
+<p amzn-src-id="62898">For learned reward models, compare reward-model score, task success, safety cost, rater-agreement diagnostics, and intervention rate only when they are co-computed in one pass on one configuration. Save comparison data, rubric version, reward-model checkpoint, policy checkpoint, traces, and failure labels in one artifact.</p>
+</div>
+<div class="callout key-takeaway" amzn-src-id="62899">
+<div class="callout-title" amzn-src-id="62900">Key Takeaway</div>
+<p amzn-src-id="62901">A learned reward model is useful when it captures human judgment that a formula missed, and safe enough only when optimized policies still pass independent embodied metrics.</p>
+</div>
+<div class="callout exercise" amzn-src-id="62902"><div class="callout-title" amzn-src-id="62903">Exercise 18.5.1</div><p amzn-src-id="62904">Design a rater rubric for a robot pouring task. Include three comparison criteria, one tie rule, one hidden physical metric the rater cannot see, and one exploitation probe for the trained reward model.</p></div>
+<div class="callout note" amzn-src-id="62905"><h4 amzn-src-id="62906">Project Ideas</h4><p amzn-src-id="62907"><strong amzn-src-id="62908">Beginner (weekend): Preference-trained gripper reward in Gymnasium.</strong> Build a tabletop pick-and-place environment in Gymnasium with a MuJoCo backend, collect 200 pairwise trajectory comparisons by hand (rating clips for contact gentleness), train a small MLP reward model using Bradley-Terry loss, and fine-tune a PPO policy against it. The key challenge is writing a rater rubric tight enough that 200 labels produce a consistent reward signal rather than noise. <strong amzn-src-id="62909">Intermediate (1-2 weeks): RLHF reward audit pipeline for a MuJoCo manipulation task.</strong> Using MuJoCo's contact-force API and a LeRobot dataset of robot arm trajectories, build a full audit loop: collect 1,000 preference pairs, train a reward model, run PPO fine-tuning, then automatically flag any high-reward rollout whose contact cost exceeds a logged threshold. The key challenge is closing the loop between the reward-model score and independent physical metrics so exploitation is caught before deployment. <strong amzn-src-id="62910">Intermediate-to-advanced (2 weeks): Cross-embodiment reward transfer with ROS 2 validation.</strong> Train a preference reward model on simulation rollouts from Isaac Lab, then transfer the frozen reward model to a physical robot publishing sensor data over ROS 2 topics, and measure whether the policy's contact and intervention metrics hold up on hardware. The key challenge is the sim-to-real gap in proprioceptive features: the reward model was trained on simulated joint torques that differ systematically from real hardware sensor readings.</p></div>
+<div class="whats-next" amzn-src-id="62911">
+<h3 amzn-src-id="62912">What's Next?</h3>
+<p amzn-src-id="62913">This section showed how preferences can become a learned reward while introducing new audit requirements. Next, <a href="ch_0150_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml" amzn-src-id="62914">Section 18.6</a> separates reward maximization from hard safety constraints and cost budgets.</p>
+</div>
+<section class="bibliography" amzn-src-id="62915">
+<div class="bibliography-title" amzn-src-id="62916">References &amp; Further Reading</div>
+<div class="bib-category" amzn-src-id="62917">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card" amzn-src-id="62918">
+<p class="bib-ref" amzn-src-id="62919"><a href="https://cdn.openai.com/safexp-short.pdf" amzn-src-id="62920">Ray, A., Achiam, J., and Amodei, D. (2019). Benchmarking Safe Exploration in Deep Reinforcement Learning. OpenAI.</a></p>
+<p class="bib-annotation" amzn-src-id="62921">Safety Gym is relevant because human raters may not observe every safety cost. Explicit cost channels give an independent check on policies optimized against learned rewards.</p>
+<span class="bib-meta" amzn-src-id="62922">Paper</span>
+</div>
+<div class="bib-entry-card" amzn-src-id="62923">
+<p class="bib-ref" amzn-src-id="62924"><a href="https://arxiv.org/abs/1707.01495" amzn-src-id="62925">Andrychowicz, M. et al. (2017). Hindsight Experience Replay. NeurIPS.</a></p>
+<p class="bib-annotation" amzn-src-id="62926">HER is a useful comparison point because it changes labels in replay, while preference learning changes the reward estimator. Both require clear separation between training signal and final evaluation.</p>
+<span class="bib-meta" amzn-src-id="62927">Paper</span>
+</div>
+<div class="bib-entry-card" amzn-src-id="62928">
+<p class="bib-ref" amzn-src-id="62929"><a href="https://arxiv.org/abs/1706.03741" amzn-src-id="62930">Christiano, P. F. et al. (2017). Deep reinforcement learning from human preferences. NeurIPS.</a></p>
+<p class="bib-annotation" amzn-src-id="62931">This is the central paper for learning rewards from human preferences. It motivates the comparison-loss formulation and the audit need for held-out clips, rater agreement, and optimized-policy review.</p>
+<span class="bib-meta" amzn-src-id="62932">Paper</span>
+</div>
+<div class="bib-entry-card" amzn-src-id="62933">
+<p class="bib-ref" amzn-src-id="62934"><a href="https://arxiv.org/abs/1606.06565" amzn-src-id="62935">Amodei, D. et al. (2016). Concrete Problems in AI Safety. arXiv.</a></p>
+<p class="bib-annotation" amzn-src-id="62936">The reward-hacking categories apply directly to learned reward models. A policy can exploit the model's blind spots even when the original labels came from humans.</p>
+<span class="bib-meta" amzn-src-id="62937">Paper</span>
+</div>
+<div class="bib-entry-card" amzn-src-id="62938">
+<p class="bib-ref" amzn-src-id="62939"><a href="https://people.eecs.berkeley.edu/~russell/papers/icml99-shaping.pdf" amzn-src-id="62940">Ng, A. Y., Harada, D., and Russell, S. (1999). Policy invariance under reward transformations. ICML.</a></p>
+<p class="bib-annotation" amzn-src-id="62941">Potential-based shaping is a formal contrast to learned reward models. It shows a case where reward changes have a policy-invariance guarantee, while preference rewards require empirical validation.</p>
+<span class="bib-meta" amzn-src-id="62942">Paper</span>
+</div>
+<div class="bib-entry-card" amzn-src-id="62943">
+<p class="bib-ref" amzn-src-id="62944"><a href="https://safety-gymnasium.farama.org/" amzn-src-id="62945">Farama Foundation Safety Gymnasium documentation.</a></p>
+<p class="bib-annotation" amzn-src-id="62946">Safety Gymnasium helps evaluate learned-reward policies with separate safety costs. It is a practical way to catch reward-model exploitation that looks acceptable in video comparisons.</p>
+<span class="bib-meta" amzn-src-id="62947">Tool</span>
+</div>
+</section>
+
+
+
+
+</body>
+</html>

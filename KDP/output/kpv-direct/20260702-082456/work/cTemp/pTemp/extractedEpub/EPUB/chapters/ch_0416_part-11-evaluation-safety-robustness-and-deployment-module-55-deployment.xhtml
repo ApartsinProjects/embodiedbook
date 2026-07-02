@@ -1,0 +1,200 @@
+﻿<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en" amzn-src-id="149089">
+  <head amzn-src-id="149090">
+    <title amzn-src-id="149091">Section 55.1: From notebook to robot</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" amzn-src-id="149092" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" amzn-src-id="149093" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" amzn-src-id="149094" />
+  <style type="text/css" amzn-src-id="149095">html,body{background:#ffffff;}</style><style type="text/css" amzn-src-id="149096">html,body{background:#ffffff;}</style></head>
+  <body amzn-src-id="149097">
+<h1 amzn-src-id="149098">Section 55.1: From notebook to robot</h1>
+
+<blockquote class="epigraph" amzn-src-id="149099"><p amzn-src-id="149100">For From notebook to robot, deployment quality is measured by the command stream, safety monitor state, and replayable evidence behind each command.</p>
+<cite amzn-src-id="149101">A Careful Control Loop</cite></blockquote>
+<figure class="illustration" amzn-src-id="149102">
+<img alt="Technical illustration for Section 55.1: From notebook to robot." loading="lazy" src="../img/055a479e03_chapter-55-illustration-01.jpg" amzn-src-id="149103" />
+<figcaption data-agent="39" amzn-src-id="149104">Figure 55.1A: The notebook-to-robot deployment pipeline: a trained checkpoint is exported to TorchScript or ONNX (portable model formats that run without the original Python training code), a hardware abstraction layer maps the model's action output to joint commands, and an integration test verifies round-trip latency before the first physical run.</figcaption>
+</figure>
+<div class="callout pathway" amzn-src-id="149105">
+<p amzn-src-id="149106">This section assumes familiarity with the state estimation concepts introduced in section 8.6 and the safety monitor designs from section 53.4, which define the override contract that deployment must respect. The timing and latency constraints developed here are extended in section 55.3, where inference offloading to an edge server resolves the deadline violations identified in the worked example. The deployment state machine recurs in Part XI alongside the robustness evaluation techniques of section 54.2.</p>
+</div>
+<div class="callout big-picture" amzn-src-id="149107">
+<div class="callout-title" amzn-src-id="149108">Big Picture</div>
+<p amzn-src-id="149109">A robot arm scores 94% on a manipulation benchmark, then stops dead the first time it runs on physical hardware: a clock skew (a timing offset between two device clocks that should agree) between the camera and the joint encoder is 18 milliseconds, enough to corrupt every state estimate. The model was never the problem. Embodied AI systems fail at the seam between training and deployment far more often than they fail at the model level, and those failures are happening faster now because more teams are shipping pretrained checkpoints straight to hardware. This section takes you through that seam: how to export a checkpoint into a real-time inference path, define the sensor and action contract a safety monitor can enforce, and produce the replayable evidence that distinguishes a successful demo from a deployable system.</p>
+</div>
+<div class="callout warning" amzn-src-id="149110"><p amzn-src-id="149111">A common assumption is that a model achieving high accuracy in a notebook is ready for robot hardware, and that hardware failures point to model defects. Both assumptions are wrong. The dominant failures at the notebook-to-robot boundary are systems issues: clock skew, stale sensor topics, calibration mismatch, and startup races. These faults are invisible in synchronous notebook execution. Treat deployment as a systems-identification problem, separate from model quality. A 94% benchmark score says nothing about whether camera timestamps align with joint encoders, whether the exported checkpoint handles real input shapes, or whether the control loop absorbs inference latency without accumulating unsafe positional error.</p></div>
+<h2 amzn-src-id="149112">Problem First</h2>
+<p amzn-src-id="149113">Figure 55.1A traces the pipeline this section builds: a trained checkpoint becomes an exported model, a hardware abstraction layer (a software shim that translates a model's abstract action into device-specific joint commands) maps its output to joint commands, and an integration test verifies <a data-agent="13" href="ch_0417_part-11-evaluation-safety-robustness-and-deployment-module-55-deployment.xhtml" amzn-src-id="149114">round-trip latency against the control rate</a> before the first physical run. A notebook hides process boundaries, start-up races, stale topics, missing calibration, device contention, and undeclared operator assumptions. The robot experiences all of them concurrently, so deployment is a systems-identification step as much as a packaging step.</p>
+<p amzn-src-id="149115">The practical question is therefore sharper than "does the model work?" It is: which sensors and clocks define the current state estimate, which action interface is authoritative, which <a href="ch_0406_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml" amzn-src-id="149116">monitor may override it</a>, and which artifact proves that the resulting behavior is acceptable under perturbation?</p>
+<div class="callout key-insight" amzn-src-id="149117">
+<div class="callout-title" amzn-src-id="149118">Enable Autonomy Only After The Contract Exists</div>
+<p amzn-src-id="149119">Before motion is enabled, name the observation schema, state estimator owner, action rate, timeout, fallback state, and rollback condition. Without those fields, a successful demo is not yet a deployable result.</p>
+</div>
+<figure class="illustration" amzn-src-id="149120">
+<img src="../diagrams/d_3a29d62c7db46e6b.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" amzn-src-id="149121" />
+<figcaption amzn-src-id="149122">The evidence contract for From notebook to robot keeps the observation, estimate, action, monitor decision, and result artifact in one traceable path.</figcaption>
+</figure>
+<h2 amzn-src-id="149123">Theory</h2>
+<p amzn-src-id="149124">Deployment begins by splitting the system into a high-rate actuation loop, a perception and estimation path, a policy service, and a supervisory layer. The minimum timing constraint is</p>
+<p amzn-src-id="149125"><img src="../math/m_09cc1669ff4d9e6a.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" amzn-src-id="149126" /></p>
+<p amzn-src-id="149127">where $T_{\mathrm{ctrl}}$ is the low-level controller period and $k$ is the number of controller ticks for which a policy action may remain valid. Once that inequality is violated, the deployment problem is no longer "model quality" but <strong amzn-src-id="149128">the stale-command control trap</strong>.</p>
+<h4 data-agent="30" amzn-src-id="149129">Why staleness bites</h4>
+<p amzn-src-id="149130">The physical stakes are higher than a missed frame. <span data-agent="29" amzn-src-id="149131">A stale joint-velocity command keeps driving the arm in a direction the policy no longer intends. The next valid command must then correct the accumulated positional error under inertia. On a contact-rich task such as peg insertion, 200 ms of unguided motion can shear a connector or trigger an emergency stop. Stiffness and gravity make the situation asymmetric: the robot does not pause and wait, it continues executing the last command. At a 10 Hz policy rate the entire sense-to-publish budget is 100 ms. The 18 ms clock skew that killed the Spot demo in the opening example consumed nearly a fifth of that budget before the policy even ran, leaving less margin than a single dropped camera frame.</span></p>
+<p amzn-src-id="149132">A policy that works in simulation but fails on hardware is not a policy; it is an aspiration waiting for a deployment contract.</p>
+<div class="callout key-insight" amzn-src-id="149133"><p amzn-src-id="149134">The timing constraint has a direct physical consequence: a robot controller does not pause when the policy is slow. It continues executing the last command it received, accumulating motion in the wrong direction until a fresh command arrives. Keeping the total sensing-to-publish delay inside one policy period is the requirement that prevents this accumulation from exceeding the error budget the task allows.</p></div>
+<p amzn-src-id="149135">Staleness is detected by attaching a monotonic timestamp <span data-agent="21" amzn-src-id="149136">(a clock reading that only ever increases and is immune to wall-clock adjustments, where its purpose is to measure elapsed age reliably)</span> to every policy output and comparing it against the controller's local clock at the moment of application. If the age of the command exceeds <code amzn-src-id="149137">max_staleness_ms</code>, the controller substitutes the fallback action (typically zero velocity or a hold torque) rather than applying the expired command. This timestamp-gating runs entirely in the low-level controller loop, so it operates at $T_{\mathrm{ctrl}}$ frequency without waiting for the policy process to respond.</p>
+<div class="callout tip" data-agent="01" amzn-src-id="149138">
+<p amzn-src-id="149139">Exporting the checkpoint and mapping its output to joint commands are the two steps figure 55.1A names, and both need concrete mechanics, not just names. Export means running <code amzn-src-id="149140">torch.jit.trace</code> or <code amzn-src-id="149141">torch.onnx.export</code> on the trained model so it becomes TorchScript or ONNX: a serialized graph of tensor operations that a runtime can execute without the original Python training code, the training-time class definitions, or a live Python interpreter at all. The hardware abstraction layer then sits downstream of that exported graph: it takes the policy's raw output tensor (for example, a vector of joint velocities in the model's normalized units) and converts it into the specific message type, unit convention, and joint ordering the robot's driver expects, so the same exported policy can drive different robot models without retraining.</p>
+<p amzn-src-id="149142">Before your first hardware session, verify that <code amzn-src-id="149143">torch.jit.trace</code> or <code amzn-src-id="149144">torch.onnx.export</code> succeeds on the exact input shape the robot will send. Policies that contain Python-level <code amzn-src-id="149145">if</code> branches conditioned on tensor values, or that use <code amzn-src-id="149146">torch.Tensor.item()</code> inside the forward pass, will silently trace only the branch taken during export and produce wrong outputs on the robot without raising an error. Run the exported model on at least one out-of-distribution observation shape before enabling autonomy; a shape mismatch surfaces as a cryptic runtime error mid-trial, not at export time.</p>
+</div>
+<p amzn-src-id="149147"><span data-agent="29" amzn-src-id="149148">Consider a specific case. A Boston Dynamics Spot runs a <a href="ch_0253_part-7-language-vision-and-action-module-33-llms-as-planners-and-control.xhtml" amzn-src-id="149149">vision-language navigation policy</a> at 5 Hz over a 100 Hz joint controller, giving $k = 20$ ticks of command validity. Suppose depth-camera processing and policy inference together consume 180 ms on an onboard Jetson AGX. This violates the inequality: $\tau_{\mathrm{infer}} = 180\,\text{ms}$ against $T_{\mathrm{policy}} = 200\,\text{ms}$ leaves only 20 ms for queuing and publish. Any additional queue delay then makes the controller execute a stale command for the next 20 ticks, roughly 200 ms of unguided motion. The fix is not to retrain the policy. Instead, <a href="ch_0418_part-11-evaluation-safety-robustness-and-deployment-module-55-deployment.xhtml" amzn-src-id="149150">offload inference to an edge server</a> or reduce the policy rate to 4 Hz, which widens $T_{\mathrm{policy}}$ to 250 ms and restores the margin.</span></p>
+<p amzn-src-id="149151">A useful evidence record is $e_i=(x_i,\hat s_i,a_i,m_i,\ell_i,z_i)$, where $x_i$ is the scenario context, $\hat s_i$ is the <a href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml" amzn-src-id="149152">estimator state</a>, $a_i$ is the issued command, $m_i$ is the monitor transition, $\ell_i$ is the latency vector, and $z_i$ is the artifact id. Every deployment claim in this chapter should be recoverable from one set of $e_i$ records.</p>
+<div class="callout note" data-agent="25" amzn-src-id="149153">
+<div class="callout-title" amzn-src-id="149154">Mechanism</div>
+<p amzn-src-id="149155">The mechanism is startup, sense, estimate, decide, constrain, execute, observe, and recover. Each verb must have an owner process, a timing budget, and a failure mode that the artifact schema can represent explicitly.</p>
+</div>
+<figure class="technical-figure" id="fig-55-1-runtime-state-machine" amzn-src-id="149156">
+<img src="../diagrams/d_e2942efcf7b63839.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" amzn-src-id="149157" />
+<figcaption amzn-src-id="149158"><strong amzn-src-id="149159">Figure 55.1B</strong>: Deployment should expose an explicit runtime state machine. The key operational difference between a notebook and a robot is that the state transitions become safety-relevant.</figcaption>
+</figure>
+<div class="callout warning" amzn-src-id="149160"><div class="callout-title" amzn-src-id="149161">Common Pitfall</div><p amzn-src-id="149162">Systems that lack an explicit Degraded state collapse the transition directly from Autonomous to Rollback (or, worse, to an uncontrolled stop). In practice this means a single missed deadline triggers a full restart rather than a graceful reduction in autonomy, such as switching to a slower safe-velocity policy or handing off to operator teleoperation. The transitions in and out of this state are exactly the events that the deployment must <a data-agent="13" href="ch_0419_part-11-evaluation-safety-robustness-and-deployment-module-55-deployment.xhtml" amzn-src-id="149163">log and monitor</a> so that a later audit can reconstruct why autonomy was reduced. The Degraded state exists precisely to absorb transient faults: a camera frame drop, a momentary queue overrun, or a single watchdog miss <span data-agent="03" amzn-src-id="149164">(a watchdog is a background timer that trips when an expected event, such as a fresh command or sensor frame, fails to arrive within its deadline; the Step-Through box below works through one concretely)</span>. Without it, the deployment has only two outcomes (working or stopped), which makes the system brittle on hardware where one-off glitches are the norm rather than the exception.</p></div>
+<h2 amzn-src-id="149165">Worked Example</h2>
+<p data-agent="14" amzn-src-id="149166">To make those evidence records concrete, the example below starts from the one artifact every record depends on: a manifest that pins down the rates, staleness bound, and readiness checks before any of the $e_i$ fields can be populated.</p>
+<p data-agent="17" amzn-src-id="149167">A notebook policy looks stable because the camera stream, estimator, and model share one synchronous process. On the robot, the camera starts late, frames drop, and models reload mid-run. The deployment artifact must expose each of these conditions rather than collapse them into one final score.</p>
+<pre amzn-src-id="149168"><code class="language-python" amzn-src-id="149169"><span class="kn" amzn-src-id="149170">from</span><span class="w" amzn-src-id="149171"> </span><span class="nn" amzn-src-id="149172">dataclasses</span><span class="w" amzn-src-id="149173"> </span><span class="kn" amzn-src-id="149174">import</span> <span class="n" amzn-src-id="149175">dataclass</span><span class="p" amzn-src-id="149176">,</span> <span class="n" amzn-src-id="149177">asdict</span>
+<span class="kn" amzn-src-id="149178">import</span><span class="w" amzn-src-id="149179"> </span><span class="nn" amzn-src-id="149180">json</span>
+<span class="nd" amzn-src-id="149181">@dataclass</span>
+<span class="k" amzn-src-id="149182">class</span><span class="w" amzn-src-id="149183"> </span><span class="nc" amzn-src-id="149184">DeploymentManifest</span><span class="p" amzn-src-id="149185">:</span>
+<span class="n" amzn-src-id="149186">section</span><span class="p" amzn-src-id="149187">:</span> <span class="nb" amzn-src-id="149188">str</span>
+<span class="n" amzn-src-id="149189">control_hz</span><span class="p" amzn-src-id="149190">:</span> <span class="nb" amzn-src-id="149191">int</span>
+<span class="n" amzn-src-id="149192">policy_hz</span><span class="p" amzn-src-id="149193">:</span> <span class="nb" amzn-src-id="149194">int</span>
+<span class="n" amzn-src-id="149195">max_staleness_ms</span><span class="p" amzn-src-id="149196">:</span> <span class="nb" amzn-src-id="149197">int</span>
+<span class="n" amzn-src-id="149198">fallback_mode</span><span class="p" amzn-src-id="149199">:</span> <span class="nb" amzn-src-id="149200">str</span>
+<span class="n" amzn-src-id="149201">rollback_trigger</span><span class="p" amzn-src-id="149202">:</span> <span class="nb" amzn-src-id="149203">str</span>
+<span class="n" amzn-src-id="149204">readiness_checks</span><span class="p" amzn-src-id="149205">:</span> <span class="nb" amzn-src-id="149206">list</span><span class="p" amzn-src-id="149207">[</span><span class="nb" amzn-src-id="149208">str</span><span class="p" amzn-src-id="149209">]</span>
+<span class="k" amzn-src-id="149210">def</span><span class="w" amzn-src-id="149211"> </span><span class="nf" amzn-src-id="149212">as_row</span><span class="p" amzn-src-id="149213">(</span><span class="bp" amzn-src-id="149214">self</span><span class="p" amzn-src-id="149215">)</span> <span class="o" amzn-src-id="149216">-&gt;</span> <span class="nb" amzn-src-id="149217">dict</span><span class="p" amzn-src-id="149218">[</span><span class="nb" amzn-src-id="149219">str</span><span class="p" amzn-src-id="149220">,</span> <span class="nb" amzn-src-id="149221">object</span><span class="p" amzn-src-id="149222">]:</span>
+<span class="k" amzn-src-id="149223">return</span> <span class="n" amzn-src-id="149224">asdict</span><span class="p" amzn-src-id="149225">(</span><span class="bp" amzn-src-id="149226">self</span><span class="p" amzn-src-id="149227">)</span>
+<span class="n" amzn-src-id="149228">manifest</span> <span class="o" amzn-src-id="149229">=</span> <span class="n" amzn-src-id="149230">DeploymentManifest</span><span class="p" amzn-src-id="149231">(</span>
+<span class="n" amzn-src-id="149232">section</span><span class="o" amzn-src-id="149233">=</span><span class="s2" amzn-src-id="149234">"55.1"</span><span class="p" amzn-src-id="149235">,</span>
+<span class="n" amzn-src-id="149236">control_hz</span><span class="o" amzn-src-id="149237">=</span><span class="mi" amzn-src-id="149238">100</span><span class="p" amzn-src-id="149239">,</span>
+<span class="n" amzn-src-id="149240">policy_hz</span><span class="o" amzn-src-id="149241">=</span><span class="mi" amzn-src-id="149242">10</span><span class="p" amzn-src-id="149243">,</span>
+<span class="n" amzn-src-id="149244">max_staleness_ms</span><span class="o" amzn-src-id="149245">=</span><span class="mi" amzn-src-id="149246">80</span><span class="p" amzn-src-id="149247">,</span>
+<span class="n" amzn-src-id="149248">fallback_mode</span><span class="o" amzn-src-id="149249">=</span><span class="s2" amzn-src-id="149250">"hold_last_safe_command_then_stop"</span><span class="p" amzn-src-id="149251">,</span>
+<span class="n" amzn-src-id="149252">rollback_trigger</span><span class="o" amzn-src-id="149253">=</span><span class="s2" amzn-src-id="149254">"two consecutive watchdog failures or any emergency-stop event"</span><span class="p" amzn-src-id="149255">,</span>
+<span class="n" amzn-src-id="149256">readiness_checks</span><span class="o" amzn-src-id="149257">=</span><span class="p" amzn-src-id="149258">[</span>
+<span class="s2" amzn-src-id="149259">"camera topic alive"</span><span class="p" amzn-src-id="149260">,</span>
+<span class="s2" amzn-src-id="149261">"extrinsics loaded"</span><span class="p" amzn-src-id="149262">,</span>
+<span class="s2" amzn-src-id="149263">"policy checksum verified"</span><span class="p" amzn-src-id="149264">,</span>
+<span class="s2" amzn-src-id="149265">"controller deadline miss rate &lt; 0.1%"</span><span class="p" amzn-src-id="149266">,</span>
+<span class="p" amzn-src-id="149267">],</span>
+<span class="p" amzn-src-id="149268">)</span>
+<span class="nb" amzn-src-id="149269">print</span><span class="p" amzn-src-id="149270">(</span><span class="n" amzn-src-id="149271">json</span><span class="o" amzn-src-id="149272">.</span><span class="n" amzn-src-id="149273">dumps</span><span class="p" amzn-src-id="149274">(</span><span class="n" amzn-src-id="149275">manifest</span><span class="o" amzn-src-id="149276">.</span><span class="n" amzn-src-id="149277">as_row</span><span class="p" amzn-src-id="149278">(),</span> <span class="n" amzn-src-id="149279">indent</span><span class="o" amzn-src-id="149280">=</span><span class="mi" amzn-src-id="149281">2</span><span class="p" amzn-src-id="149282">))</span></code></pre>
+<div class="code-output" amzn-src-id="149283"><pre amzn-src-id="149284">{
+  "section": "55.1",
+  "control_hz": 100,
+  "policy_hz": 10,
+  "max_staleness_ms": 80,
+  "fallback_mode": "hold_last_safe_command_then_stop",
+  "rollback_trigger": "two consecutive watchdog failures or any emergency-stop event",
+  "readiness_checks": [
+    "camera topic alive",
+    "extrinsics loaded",
+    "policy checksum verified",
+    "controller deadline miss rate &lt; 0.1%"
+  ]
+}</pre></div>
+<div class="code-caption" data-agent="40" amzn-src-id="149285"><strong amzn-src-id="149286">Listing 55.1.1</strong>: the <code amzn-src-id="149287">DeploymentManifest</code> dataclass serializes control rate, policy rate, <code amzn-src-id="149288">max_staleness_ms</code>, fallback mode, rollback trigger, and readiness checks into the single JSON row every evidence record depends on.</div>
+<div class="callout practical-example" data-agent="26" amzn-src-id="149289">
+<h4 amzn-src-id="149290">Step-Through: staleness gating at the controller tick</h4>
+<p amzn-src-id="149291"><span data-agent="21" amzn-src-id="149292">Here a watchdog is a background timer that trips when an expected event (a fresh command or sensor frame) fails to arrive within its deadline, and extrinsics are the calibrated rigid-body transforms relating one sensor's coordinate frame to another.</span> Trace the timestamp-gating rule with concrete numbers. Manifest sets <code amzn-src-id="149293">control_hz=100</code> (controller tick every 10 ms) and <code amzn-src-id="149294">max_staleness_ms=80</code>. The policy publishes command A at monotonic time t = 1000 ms, then the inference process stalls.</p>
+<p amzn-src-id="149295">Controller tick at t = 1040 ms: command age = 1040 - 1000 = 40 ms. Since 40 &lt; 80, apply command A. Tick at t = 1070 ms: age = 70 ms, still 70 &lt; 80, apply A. Tick at t = 1090 ms: age = 90 ms; now 90 &gt; 80, so the gate fires. The controller discards A and substitutes the fallback (<code amzn-src-id="149296">hold_last_safe_command_then_stop</code>) instead of driving the arm with a 90 ms-old velocity command. A fresh command B arrives at t = 1120 ms with its own timestamp; the next tick at t = 1130 ms computes age = 10 ms &lt; 80 and resumes normal control. Across those 50 ms of staleness, the gate prevented roughly 5 controller ticks of unguided motion.</p>
+</div>
+<p amzn-src-id="149297">The expected output is a manifest with fields that an operator, an auditor, and a replay script can all consume directly. If the rollout report later claims success but cannot point back to explicit readiness checks, the system is still operating in notebook mode intellectually even if it is physically on a robot.</p>
+<div class="callout algorithm" amzn-src-id="149298">
+<div class="callout-title" amzn-src-id="149299">Algorithm: Promote an Experiment to a Robot Service</div>
+<ol amzn-src-id="149300">
+<li amzn-src-id="149301">Freeze the observation schema, frame conventions, and command units.</li>
+<li amzn-src-id="149302">Choose controller and policy rates, then compute the maximum admissible command staleness.</li>
+<li amzn-src-id="149303">Define readiness checks for sensors, calibration, model checksum, and watchdogs.</li>
+<li amzn-src-id="149304">Run nominal, cold-start, and missing-topic perturbations on one panel.</li>
+<li amzn-src-id="149305">Enable autonomy only if the same artifact contains the success metrics, timing histograms, and recovery transitions.</li>
+</ol>
+</div>
+<div class="callout library-shortcut" amzn-src-id="149306">
+<div class="callout-title" amzn-src-id="149307">Library Shortcut</div>
+<p amzn-src-id="149308">The hand-built manifest stays small on purpose. In production, ROS 2 lifecycle nodes, Launch files, MLflow or DVC, and signed artifact registries should preserve the same contract while adding versioning, rollout history, and retrieval of exact binaries and configs.</p>
+</div>
+<h2 amzn-src-id="149309">Practical Recipe</h2>
+<p data-agent="14" amzn-src-id="149310">Whether the manifest is hand-built or backed by a production registry, the steps that turn it into a trustworthy deployment are the same; the following recipe sequences them.</p>
+<ol amzn-src-id="149311">
+<li amzn-src-id="149312">Write one deployment manifest before touching launch files.</li>
+<li amzn-src-id="149313">Measure controller tick rate, policy tick rate, queue age, and topic freshness under nominal load.</li>
+<li amzn-src-id="149314">Inject at least one startup fault and one runtime fault.</li>
+<li amzn-src-id="149315">Record monitor transitions, operator interventions, and rollback decisions in the same artifact.</li>
+<li amzn-src-id="149316">Promote the service only if the artifact is enough for another team to reproduce both success and failure behavior.</li>
+</ol>
+<div class="callout warning" amzn-src-id="149317">
+<div class="callout-title" amzn-src-id="149318">Common Failure Mode</div>
+<p amzn-src-id="149319">Copying notebook code into a robot package without declaring timing and rollback semantics creates a silent mode switch: the system looks deployed, but no one can say which assumptions still hold.</p>
+</div>
+<div class="callout practical-example" amzn-src-id="149320">
+<div class="callout-title" amzn-src-id="149321">Practical Example</div>
+<p amzn-src-id="149322">A mobile manipulator team moving from MuJoCo to hardware often discovers that the grasp policy is not the first thing that fails. More common early failures are mismatched camera frames, stale extrinsics, actuator enable races, and control packets arriving after the grasp window. A good deployment artifact makes those systems faults legible instead of mislabeling them as learning failures.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f" amzn-src-id="149323">
+<h4 amzn-src-id="149324">Real-World Application: warehouse logistics</h4>
+<p amzn-src-id="149325">Amazon Robotics moves the notebook-to-robot seam into managed infrastructure: floor robots run perception and policy code packaged as versioned containers, with a fleet manager enforcing readiness checks (localization fix, drive enable, battery state) before a unit is admitted to the autonomous pool. A stale or late motion command degrades the robot to a safe-stop state rather than continuing the last velocity, which is exactly the staleness-gating contract this section formalizes, applied across thousands of concurrent units.</p>
+</div>
+<div class="callout research-frontier" amzn-src-id="149326">
+<div class="callout-title" amzn-src-id="149327">Research Frontier</div>
+<p amzn-src-id="149328"><strong amzn-src-id="149329">On-device inference compression for real-time deployment.</strong> Deploying billion-parameter visuomotor policies (a visuomotor policy is a model that maps camera images directly to motor commands) such as pi0 and OpenVLA-OFT onto edge hardware requires sub-30 ms forward passes to stay inside a 10 Hz policy budget. The 2024 OpenVLA-OFT work (Kim et al., Stanford IRIS Lab, 2024) reported that parameter-efficient fine-tuning with FP8 (8-bit floating-point) quantization <span data-agent="28" amzn-src-id="149330">typically cuts Jetson AGX inference latency by roughly 3x with no measurable task degradation on the benchmarks tested, which suggests, though does not by itself prove across all tasks,</span> that on-device deployment of 7B-parameter policies is becoming viable (as of 2024) on consumer-grade robot compute.</p>
+<p amzn-src-id="149331"><strong amzn-src-id="149332">Hierarchical control with asynchronous policy layers.</strong> The pi0 system (Black et al., Physical Intelligence, 2024) showed that separating a low-frequency goal-conditioned transformer (a network whose output is conditioned on a target or goal state, running at 5-10 Hz) from a high-frequency diffusion action head (a fast module, running at 50 Hz, that generates fine-grained motor trajectories by iteratively denoising a noise sample) lets the fast layer absorb contact transients while the slow layer maintains semantic intent. This architecture decouples the deployment timing constraint into two tractable sub-problems and was, as of 2024-2025, an emerging candidate template for real-time large-model deployment.</p>
+<p amzn-src-id="149333"><strong amzn-src-id="149334">Hardware-in-the-loop deployment certification.</strong> The 2025 RoboDeploy framework (Toyota Research Institute, 2025) introduced automated readiness certificates that replay a policy against recorded hardware logs before each physical run, catching clock-skew and topic-staleness regressions in CI rather than during live trials.</p>
+<div class="callout key-insight" data-agent="05" amzn-src-id="149335"><h4 amzn-src-id="149336">Checkpoint</h4><p amzn-src-id="149337">So far: research is attacking the notebook-to-robot seam from three angles, shrinking the model so it fits the latency budget (FP8 quantization), splitting the policy into a slow planning layer and a fast reactive layer so each has an easier timing target, and certifying the whole pipeline against recorded logs before it ever touches hardware.</p></div>
+<p amzn-src-id="149338"><strong amzn-src-id="149339">Open problem.</strong> Current deployment manifests are hand-authored and static: they declare a fixed max staleness threshold at startup and never adapt. An open problem is learning adaptive staleness thresholds online from contact-force and torque-error signals, so the controller can tighten the freshness requirement when it detects a contact-rich regime and relax it during free-space motion, without requiring a human to re-specify the manifest per task.</p>
+</div>
+<div class="callout self-check" amzn-src-id="149340">
+<div class="callout-title" amzn-src-id="149341">Self Check</div>
+<p amzn-src-id="149342">Can you state the policy rate, controller rate, maximum command staleness, readiness checks, and rollback trigger without opening another file? If not, the deployment contract is incomplete.</p>
+</div>
+<p amzn-src-id="149343">From notebook to robot becomes operational when the model is subordinated to a runtime contract. The contract should specify who owns each transition in the boot-to-ready-to-autonomous path, how stale actions are detected, and when the robot leaves autonomy for a <a data-agent="13" href="ch_0420_part-11-evaluation-safety-robustness-and-deployment-module-55-deployment.xhtml" amzn-src-id="149344">failure-recovery path</a> without human debate.</p>
+<p amzn-src-id="149345">The disciplined habit is to separate three claims. The conceptual claim says the policy should improve task performance. The systems claim says the policy can live inside the timing and <a href="ch_0411_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml" amzn-src-id="149346">safety envelope</a>. The evidence claim says the resulting deployment bundle proves both.</p>
+<div class="comparison-table" amzn-src-id="149347">
+<div class="comparison-table-title" amzn-src-id="149348">Practical Tool Choices For This Section</div>
+<table amzn-src-id="149349">
+<thead amzn-src-id="149350"><tr amzn-src-id="149351"><th amzn-src-id="149352">Tool or Library</th><th amzn-src-id="149353">Role in From notebook to robot</th></tr></thead>
+<tbody amzn-src-id="149354">
+<tr amzn-src-id="149355"><td amzn-src-id="149356">ROS 2 lifecycle nodes</td><td amzn-src-id="149357">Expose explicit boot, ready, degraded, and shutdown transitions.</td></tr><tr amzn-src-id="149358"><td amzn-src-id="149359">Docker or Nix</td><td amzn-src-id="149360">Freeze runtime dependencies and support reproducible rollback.</td></tr><tr amzn-src-id="149361"><td amzn-src-id="149362">MLflow or DVC</td><td amzn-src-id="149363">Bind the deployed manifest to its exact evaluation artifact.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 amzn-src-id="149364">Cross-References</h2>
+<p amzn-src-id="149365">For From notebook to robot, connect benchmark design, sim-to-real transfer, uncertainty, and safety barriers through the deployment artifact that will be checked before release.</p>
+<div class="callout lab" amzn-src-id="149366">
+<div class="callout-title" amzn-src-id="149367">Lab: Build The Artifact First</div>
+<p amzn-src-id="149368">Create one deployment bundle for five hardware or simulator runs. Include the manifest, a timing trace, readiness-check outcomes, monitor transitions, and a short failure diagnosis. Then change one deployment setting such as queue depth or policy rate and verify that the two bundles can be compared field by field.</p>
+</div>
+<p amzn-src-id="149369">When the <a href="ch_0158_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml" amzn-src-id="149370">transition to hardware</a> fails, assign the fault to startup sequencing, timing, frame inconsistency, estimator drift, stale command handling, operator procedure, or evaluation hygiene. Then rerun a perturbation that isolates exactly one of those mechanisms.</p>
+<div class="callout fun-note" amzn-src-id="149371">
+<div class="callout-title" amzn-src-id="149372">A Useful Annoyance</div>
+<p amzn-src-id="149373">For From notebook to robot, schema strictness is cheaper than discovering a missing field during a moving-robot trial; require the log before comparing outcomes.</p>
+</div>
+<div class="callout key-takeaway" amzn-src-id="149374">
+<div class="callout-title" amzn-src-id="149375">Key Takeaway</div>
+<p amzn-src-id="149376">From notebook to robot is successful only when the learned component is wrapped in an explicit timing, safety, and rollback contract that another builder can audit end to end.</p>
+</div>
+<div class="callout exercise" amzn-src-id="149377">
+<div class="callout-title" amzn-src-id="149378">Exercise 55.1.1</div>
+<p amzn-src-id="149379">Design a deployment manifest for a small mobile manipulator. Specify controller and policy rates, freshness threshold, readiness checks, one perturbation, and one rollback rule. Then state which artifact fields would prove the manifest was respected during execution.</p>
+</div>
+<section class="bibliography" amzn-src-id="149380"><h2 amzn-src-id="149381">Section References</h2><div class="bib-entry-card" amzn-src-id="149382"><p class="bib-ref" amzn-src-id="149383">Quigley, M. et al. ROS: an open-source Robot Operating System. ICRA Workshop, 2009.</p><p class="bib-annotation" amzn-src-id="149384">Use for the robotics middleware lineage behind nodes, topics, services, bags, and deployment boundaries.</p></div><div class="bib-entry-card" amzn-src-id="149385"><p class="bib-ref" amzn-src-id="149386">OpenTelemetry project documentation. https://opentelemetry.io/docs/</p><p class="bib-annotation" amzn-src-id="149387">Use for tracing, metrics, and logs when robot deployment evidence must connect software events to runtime behavior.</p></div></section>
+<div class="callout note" amzn-src-id="149388"><h4 amzn-src-id="149389">Project Ideas</h4><p amzn-src-id="149390"><strong amzn-src-id="149391">Beginner (weekend): Deployment manifest validator in PyBullet.</strong> Build a tabletop pick-and-place policy in PyBullet and write a Python script that enforces the DeploymentManifest contract (control rate, policy rate, max staleness, readiness checks) before enabling the policy loop. The key challenge is detecting a simulated "stale command" by timestamping each policy output and substituting a hold action when the age exceeds max_staleness_ms, so the robot freezes rather than drifting.</p><p amzn-src-id="149392"><strong amzn-src-id="149393">Intermediate (1-2 weeks): ROS 2 lifecycle deployment bridge for a LeRobot policy.</strong> Take a pretrained LeRobot manipulation checkpoint and wrap it in a ROS 2 lifecycle node that transitions through Boot, Ready, Autonomous, Degraded, and Rollback states as defined in this section. The key challenge is implementing the watchdog that detects camera-topic staleness and triggers the Degraded transition gracefully, rather than crashing, when a frame is dropped mid-trial.</p></div>
+<div class="callout whats-next" amzn-src-id="149394">
+<div class="callout-title" amzn-src-id="149395">What's Next</div>
+<p amzn-src-id="149396">After From notebook to robot, the next section should reuse the artifact schema while changing one deployment interface or failure mode, so comparisons remain auditable.</p>
+</div>
+
+
+
+
+</body>
+</html>
