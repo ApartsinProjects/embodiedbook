@@ -1,0 +1,232 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 48.1: Driving as perception, prediction, planning, control</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a></div>
+<h1>Section 48.1: Driving as perception, prediction, planning, control</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>The hardest part of driving is not seeing the world or steering the wheel; it is the handoff in between, where one subsystem's confident output becomes another's silent assumption.</p>
+<cite>On the architecture of the modern driving stack</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 48.1: Driving as perception, prediction, planning, control." loading="lazy" src="../img/96f28dec5e_chapter-48-illustration-01.jpg"/>
+<figcaption><strong>Figure 48.1A</strong>: The driving stack as a pipeline of named stages, where every arrow between perception, prediction, planning, and control is also an interface that can fail.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the agent-environment loop from section 2.7 and with system architectures from section 3.8; those sections establish the vocabulary of state, observation, and action that the four-stage stack inherits. The perception and control mechanics introduced here are developed in depth in sections 48.2 and 48.7, the prediction and planning stages are treated in sections 48.3 and 48.4, and the safety and closed-loop evaluation lens recurs in Part XI alongside robustness methods in section 53.4.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A cyclist cuts across an intersection at 25 km/h. In the next 100 milliseconds, a rooftop lidar must detect the bike, a tracker must hold the detection across frames, a prediction model must decide where the cyclist is heading, a planner must find a trajectory that avoids every likely path, and a controller must translate that trajectory into a precise brake command. Miss any handoff and the safety gain from the other three stages disappears entirely. Autonomous driving has become the canonical stress test for embodied AI precisely because it chains <strong>perception</strong>, <strong>prediction</strong>, <strong>planning</strong>, and <strong>control</strong> into one real-time loop where every interface can fail. Here you will map that loop end to end, understand what each stage guarantees to the next, and see why the hardest engineering problems live at the arrows between boxes, not inside them.</p>
+</div>
+<p data-agent="22">A self-driving car makes a life-or-death decision roughly every 70 to 100 milliseconds at a typical control rate, and no single stage of its software owns that decision: the label "autonomous driving" hides a closed loop that must ingest sensor streams, a map, and a route intent; estimate the state of the <span data-agent="04">ego vehicle (the term the AV literature uses for "the car whose software is running this loop," to distinguish it from every other tracked vehicle)</span> and of every relevant actor; commit to a trajectory; and convert that trajectory into <a href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">steering, throttle, and brake commands</a> at a fixed cycle rate. The loop is typically judged by route completion, collision rate, and safety margin, measured on the same scenarios for every candidate stack. As Figure 48.1A emphasizes, every arrow between those stages is itself an interface that can fail, which is where most of the engineering difficulty lives.</p>
+<p>Real deployments run this loop at 10 to 20 Hz. A perception frame that arrives 150 ms late is not a slow frame; it is a wrong frame, because the planner will act on a world that has already moved. Treating the stack as a timed pipeline, not a static dataflow diagram, is the central discipline of the chapter. Figure 48.1.1 lays out these four stages and the loop they close through the world; keep it in view as the rest of the section walks each interface in turn.</p>
+<div class="callout key-insight">
+<div class="callout-title">The Decisive Question Is The Handoff</div>
+<p>The most instructive AV failures are not "the detector missed a pedestrian" but "the detector saw the pedestrian, the tracker dropped the track for two frames, and the planner therefore replanned through the gap." A perception improvement that never changes the planner's input does not reduce collisions. Always check whether an upstream win actually propagates to a downstream action.</p>
+</div>
+<figure class="illustration" id="fig-48-1-stack">
+<svg aria-labelledby="fig-48-1-title" height="240" role="img" viewbox="0 0 760 240" width="100%" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-48-1-title">The perception, prediction, planning, control loop</title>
+<rect fill="#e8f3ff" height="84" rx="8" stroke="#1f5f99" width="158" x="16" y="40"/>
+<text font-size="15" font-weight="700" text-anchor="middle" x="95" y="74">Perception</text>
+<text font-size="11" text-anchor="middle" x="95" y="96">tracked objects,</text>
+<text font-size="11" text-anchor="middle" x="95" y="110">drivable surface</text>
+<rect fill="#eef9f0" height="84" rx="8" stroke="#2e7d32" width="158" x="206" y="40"/>
+<text font-size="15" font-weight="700" text-anchor="middle" x="285" y="74">Prediction</text>
+<text font-size="11" text-anchor="middle" x="285" y="96">future trajectories</text>
+<text font-size="11" text-anchor="middle" x="285" y="110">of each agent</text>
+<rect fill="#fff5e5" height="84" rx="8" stroke="#a85d00" width="158" x="396" y="40"/>
+<text font-size="15" font-weight="700" text-anchor="middle" x="475" y="74">Planning</text>
+<text font-size="11" text-anchor="middle" x="475" y="96">safe, comfortable</text>
+<text font-size="11" text-anchor="middle" x="475" y="110">trajectory</text>
+<rect fill="#f8ecff" height="84" rx="8" stroke="#6a1b9a" width="158" x="586" y="40"/>
+<text font-size="15" font-weight="700" text-anchor="middle" x="665" y="74">Control</text>
+<text font-size="11" text-anchor="middle" x="665" y="96">steer, throttle,</text>
+<text font-size="11" text-anchor="middle" x="665" y="110">brake</text>
+<path d="M176 82 L204 82" marker-end="url(#arrow-48-1)" stroke="#333" stroke-width="2"/>
+<path d="M366 82 L394 82" marker-end="url(#arrow-48-1)" stroke="#333" stroke-width="2"/>
+<path d="M556 82 L584 82" marker-end="url(#arrow-48-1)" stroke="#333" stroke-width="2"/>
+<path d="M665 126 C665 196 95 196 95 128" fill="none" marker-end="url(#arrow-48-1)" stroke="#555" stroke-dasharray="5 4" stroke-width="2"/>
+<text fill="#555" font-size="11" text-anchor="middle" x="380" y="216">vehicle moves, sensors observe the new world (next cycle)</text>
+<defs><marker id="arrow-48-1" markerheight="8" markerwidth="10" orient="auto" refx="9" refy="4"><path d="M0,0 L10,4 L0,8 Z" fill="#333"/></marker></defs>
+</svg>
+<figcaption>Figure 48.1.1: The four-stage stack closes into a loop through the world. Each box is a separate audit point with its own inputs, latency budget, and failure label.</figcaption>
+</figure>
+<h2>Theory</h2>
+<p>Formally, driving is a <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">partially observed Markov decision process</a> run under hard real-time constraints. At cycle $t$ the vehicle receives an observation $o_t$ (<a href="ch_0072_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">camera frames, LiDAR sweeps, radar returns</a>, <span data-agent="04">GNSS (satellite positioning, e.g. GPS) or IMU (inertial measurement unit, an onboard accelerometer/gyroscope package)</span>), estimates a state $\hat s_t$ (ego pose and velocity plus a set of tracked actors with positions, velocities, and classes), commits to an action $a_t$ (a trajectory or a direct control command), and transitions to $o_{t+1}$. The decomposition into perception, prediction, planning, and control is an engineering factorization of this single MDP that makes each piece testable in isolation.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: driving is modeled as a POMDP because the vehicle never observes the true world state directly, only sensor readings; perception's job is to turn those readings into a belief (a probability distribution over what the world's state actually is, not just one guess) that the rest of the loop can act on.</p></div>
+<p>Partial observability matters in a physical vehicle because <a data-agent="13" href="ch_0071_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">sensors have blind spots, occlusions, and range limits that computation alone cannot recover</a>. A pedestrian hidden behind a parked truck is absent from $o_t$ regardless of algorithm quality. <span data-agent="29">The planner must therefore act under genuine uncertainty about the true world state $s_t$, not just noisy measurement of a fully visible scene. Physical inertia makes this consequential. A 1 800 kg vehicle at 50 km/h needs roughly 20 m to stop, so decisions made on incomplete observations carry irreversible real-world consequences that differ fundamentally from replanning in simulation. To see the gap, note that the hidden pedestrian needs only three steps into the road before the vehicle is already inside its own braking distance. The planner must account for that pedestrian before any sensor ever sees them.</span></p>
+<p>The POMDP (Partially Observable Markov Decision Process) machinery separates state estimation from decision-making. <span data-agent="29">The perception stage maintains a <a data-agent="13" href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">belief over $s_t$ from the sensor model</a> $p(o_t \mid s_t)$ and the motion model $p(s_t \mid s_{t-1}, a_{t-1})$. It then collapses that belief into a point estimate $\hat{s}_t$ with an associated uncertainty $\Sigma_t$. The planner optimizes expected cost over the whole distribution rather than a single assumed state. This is why prediction produces a set of weighted trajectories rather than one deterministic forecast: the weights are the residual probability mass the planner must hedge against.</span></p>
+<p/><div class="callout key-insight"><p>Think of the belief update like a chef tasting a sauce that is partially hidden behind a cloud of steam. The chef cannot see the full pot, so they form a running guess about the sauce's saltiness based on the smell, the sound of the simmer, and what they added two minutes ago. When they finally dip a spoon, they do not discard all prior knowledge: they blend the new taste with their existing guess, weighted by how reliable each source is. <span data-agent="03">Prediction handing the planner multiple weighted trajectories instead of one works the same way</span>: each "mode" is one hypothesis about where the other driver might go, and the weight is how much of the chef's confidence rests on that hypothesis. The vehicle cannot act on one committed guess when uncertainty is genuine; it must hold all plausible futures simultaneously and choose a path that stays safe across all of them.</p></div>
+<p data-agent="17">If each stage handles its piece so well, why do AV systems still surprise their engineers with failures? The factorization buys modularity at the cost of <a href="ch_0036_part-1-foundations-of-embodied-ai-module-03-embodied-system-architecture.xhtml"><strong>compounding error at every interface</strong></a>. A perception error (a false negative, an identity switch, localization drift) corrupts prediction's input; a prediction error (an unforecast lane change) corrupts planning's. So every interface needs its own metric, and the stack needs a closed-loop metric on top: passing each component benchmark does not guarantee a safe drive.</p>
+<table>
+<thead><tr><th>Stage</th><th>Input</th><th>Output</th><th>Typical metric</th></tr></thead>
+<tbody>
+<tr><td>Perception</td><td>raw sensor streams</td><td>tracked 3D objects, occupancy</td><td>mAP, MOTA (Multiple Object Tracking Accuracy), false-negative rate</td></tr>
+<tr><td>Prediction</td><td>tracks plus map</td><td>multi-modal future trajectories</td><td data-agent="21">minADE (minimum average displacement error), minFDE (minimum final displacement error), miss rate</td></tr>
+<tr><td>Planning</td><td>predictions plus route</td><td>ego trajectory</td><td>collision rate, comfort, progress</td></tr>
+<tr><td>Control</td><td>ego trajectory</td><td>steer, throttle, brake</td><td>tracking error, jerk</td></tr>
+</tbody>
+</table>
+<div class="callout algorithm">
+<h4>Algorithm: Autonomous Driving Stack Execution Cycle</h4>
+<p><strong>Input:</strong> sensor bundle $o_t$ (camera frames, LiDAR sweep, radar returns, GNSS/IMU); HD map $\mathcal{M}$; route intent $\rho$; previous ego state $\hat{s}_{t-1}$; set of tracked actors $\mathcal{A}_{t-1}$</p>
+<p><strong>Output:</strong> actuator command $a_t = (\delta_t, \tau_t, \beta_t)$ (steer angle, throttle, brake); updated state $\hat{s}_t$; safety margin $\sigma_t$</p>
+<ol>
+<li><strong>Perception.</strong> Run detection and tracking on $o_t$: produce 3D object set $\mathcal{A}_t$ with class, position, velocity, and uncertainty $\Sigma_i$ for each actor $i$. Update ego localization to obtain $\hat{s}_t = (\mathbf{p}_t, v_t, \theta_t)$ (position, speed, heading) with timestamp $\tau_\text{perc}$.</li>
+<li><strong>Latency check.</strong> Assert $\tau_\text{perc} - \tau_\text{start} \leq B_\text{perc}$ (perception budget). If the budget is exceeded, flag the frame as stale and propagate the flag downstream so the planner can apply a larger safety margin.</li>
+<li><strong>Prediction.</strong> For each actor $i \in \mathcal{A}_t$, compute a multi-modal forecast $\{\pi_{i,k}, \mathbf{T}_{i,k}\}_{k=1}^{K}$ of $K$ candidate trajectories over horizon $H$, where $\pi_{i,k}$ is the probability of mode $k$ and $\mathbf{T}_{i,k}$ is the waypoint sequence. Use map context $\mathcal{M}$ (lanes, yield zones) to score modes via $\pi_{i,k} \propto \exp(\alpha \cdot \text{lane\_fit}(\mathbf{T}_{i,k}, \mathcal{M}))$.</li>
+<li><strong>Occupancy construction.</strong> Build a spatio-temporal occupancy field $O(x,y,t)$ from the $K$ forecast modes, weighting each mode by $\pi_{i,k}$ and inflating by $3\sigma$ of the positional uncertainty $\Sigma_i$. <span data-agent="04">This field is the sole channel through which prediction reaches planning: the planner never sees individual actor trajectories, only the occupancy $O$ that step 5's collision cost is computed against.</span></li>
+<li><strong>Planning.</strong> Search for an ego trajectory $\mathbf{T}^*$ over horizon $H$ that minimizes the cost $J(\mathbf{T}) = w_c C_\text{collision}(\mathbf{T}, O) + w_p C_\text{progress}(\mathbf{T}, \rho) + w_j C_\text{jerk}(\mathbf{T})$ subject to actuator limits $|\delta| \leq \delta_\text{max}$, $|\nabla v| \leq a_\text{max}$.</li>
+<li><strong>Safety gate.</strong> Verify that $\mathbf{T}^*$ maintains a minimum <span data-agent="21">time-to-collision (TTC, the time until ego and an actor would collide if both held their current velocity)</span> $\text{TTC} \geq \text{TTC}_\text{min}$ and a gap $\sigma_t \geq \sigma_\text{min}$ with respect to every actor. If neither threshold is met, replace $\mathbf{T}^*$ with the minimal-risk maneuver (controlled stop).</li>
+<li><strong>Control.</strong> Track the first segment of $\mathbf{T}^*$ with a feedback law: compute heading error $e_\theta = \theta^* - \hat\theta_t$ and speed error $e_v = v^* - \hat v_t$, then set $\delta_t = k_\theta e_\theta + k_\kappa \kappa^*$ and $\tau_t - \beta_t = k_v e_v$ (throttle minus brake apportioned by sign).</li>
+<li><strong>Command dispatch.</strong> Send $(\delta_t, \tau_t, \beta_t)$ to the actuator bus and record the command with timestamp $\tau_\text{cmd}$.</li>
+<li><strong>Log artifact.</strong> Append one record to the cycle log: $(\tau_t, \hat{s}_t, |\mathcal{A}_t|, J(\mathbf{T}^*), \sigma_t, a_t)$. Stale-frame flags and safety-gate activations must also appear in the log so any closed-loop replay can reproduce the decision.</li>
+<li><strong>Advance.</strong> Set $t \leftarrow t+1$, receive $o_{t+1}$ from the sensors, and return to step 1. The world has moved; $\hat{s}_{t-1} \leftarrow \hat{s}_t$ and $\mathcal{A}_{t-1} \leftarrow \mathcal{A}_t$ become the new priors.</li>
+</ol>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One Execution Cycle Of The Driving Stack</h4>
+<p>Trace the algorithm box with concrete numbers for a single 10 Hz cycle (budget 100 ms). Ego at position $s=0$ m, speed $v=12$ m/s; one lead actor at $s=30$ m, $v=8$ m/s. <strong>Step 1 (Perception):</strong> detection returns the lead with gap $=30-0=30$ m and a positional uncertainty $\sigma_i=0.4$ m; ego state $\hat s = (0,\,12,\,0)$, timestamp $\tau_\text{perc}=78$ ms. <strong>Step 2 (Latency check):</strong> $78 \le B_\text{perc}=80$ ms, so the frame is fresh, no stale flag. <strong>Step 3 (Prediction):</strong> constant-velocity forecast over horizon $H=2$ s gives the lead at $30 + 8\times 2 = 46$ m absolute, while ego at constant speed would reach $24$ m, so predicted future gap $= 46 - 24 = 22$ m. <strong>Step 4 (Occupancy):</strong> inflate the lead's predicted band by $3\sigma_i = 1.2$ m, marking $[44.8,\,47.2]$ m as occupied at $t+2$ s. <strong>Step 5 (Planning):</strong> desired gap $=1.5\times 12 = 18$ m; the cost-minimizing acceleration is $a = 1.0(8-12) + 0.5(30-18) = -4 + 6 = +2.0$ m/s$^2$ before clipping, but the actuator cap $a_\text{max}=2.0$ leaves it at $+2.0$ m/s$^2$. <strong>Step 6 (Safety gate):</strong> closing speed is $12-8=4$ m/s into a $30$ m gap, so $\text{TTC}=7.5$ s $\ge \text{TTC}_\text{min}=3$ s; the trajectory passes, no minimal-risk maneuver. <strong>Step 7 (Control):</strong> with $e_v = v^\ast - 12$ and gain $k_v$, the loop emits $\tau_t=+2.0$ m/s$^2$ worth of throttle, $\beta_t=0$. <strong>Step 8 to 10:</strong> dispatch the command at $\tau_\text{cmd}=84$ ms (inside budget), log the record $(\,t,\hat s,1,J,\sigma_t{=}30,a_t)$, advance: ego becomes $v=12.2$ m/s, $s=1.22$ m for the next cycle.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that autonomous driving is purely a perception or AI problem: get the detector accurate enough, validate it in simulation, and safe real-world driving follows. That assumption is wrong. A physical vehicle has irreversible dynamics. A 1 800 kg car at highway speed cannot undo a wrong decision the way a simulator rewinds a frame. Each cycle commits the vehicle to a trajectory whose consequences outlast the software loop. System safety therefore depends on the timing contract and the handoff interfaces, not only on the accuracy of any single learned module.</p></div>
+<p>A model that works in simulation but fails on the road is not a model; it is a liability, because the road does not offer a reset button.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The loop is timed, not just connected. A common architecture runs perception and localization on a high-rate thread, prediction and planning on a slower deliberative thread, and a fast control thread that tracks the last committed trajectory until a new one arrives. <span data-agent="01">Control runs faster than planning because the feedback law that converts a trajectory into steering, throttle, and brake commands is cheap to evaluate (it is closed-form, not a search), so it can correct small tracking error every few milliseconds even while the next planned trajectory is still being computed; this is why a stale plan is still safely trackable for a short window, and why the control stage in this section's title is treated as its own audit point rather than folded into planning.</span> A <a href="ch_0406_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">safety monitor</a> watches the whole chain and triggers a minimal-risk maneuver (a controlled stop in lane or on the shoulder) when any subsystem stalls or disagrees beyond a threshold.</p>
+</div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Latency accumulation breaks the loop in ways that component benchmarks cannot expose. Consider a stack running at 10 Hz (100 ms budget per cycle): if perception takes 80 ms and prediction takes 40 ms, the planner receives a world estimate that is already 120 ms stale before it begins. At highway speed (30 m/s) the ego vehicle has traveled 3.6 m during that gap, and a pedestrian stepping off a curb at 1.5 m/s has moved 18 cm, enough to shift a near-miss into a collision zone. The fix is not to speed up individual modules in isolation but to audit the cumulative latency across the chain and assign explicit budgets that sum to less than one cycle period.</p></div>
+<div class="callout tip">
+<p>In ROS 2, use <code>message_filters.ApproximateTimeSynchronizer</code> with a <code>slop</code> value set to half your cycle period (for example, <code>slop=0.05</code> at 10 Hz) to gate the planner so it never receives a perception and prediction pair whose timestamps differ by more than that threshold. If the synchronizer drops messages during replay, that is a diagnostic signal: the producing module exceeded its budget. Tighten <code>slop</code> incrementally until no frames are dropped on your golden scenario set, then lock that value in your launch file as the latency contract. Leaving <code>slop</code> at its default of 0.1 s on a 10 Hz stack silently allows full-cycle-stale inputs without triggering any warning.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="14"><span data-agent="15">The fastest way to find where the timing contract and the four-stage handoffs break is to run the smallest loop that still contains all of them.</span> The example below is a minimal closed-loop simulation that exercises all four stages on a single car-following scenario. It exposes the interface fields a real stack must log: the estimated state, the prediction, the planned trajectory, and the control command, plus the safety margin that turns the run into evidence.</p>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># Ego and a lead vehicle on a straight road (1D for clarity).</span>
+<span class="n">ego</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"s"</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">,</span> <span class="s2">"v"</span><span class="p">:</span> <span class="mf">12.0</span><span class="p">}</span> <span class="c1"># position (m), speed (m/s)</span>
+<span class="n">lead</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"s"</span><span class="p">:</span> <span class="mf">30.0</span><span class="p">,</span> <span class="s2">"v"</span><span class="p">:</span> <span class="mf">8.0</span><span class="p">}</span> <span class="c1"># slower lead vehicle ahead</span>
+<span class="n">dt</span> <span class="o">=</span> <span class="mf">0.1</span> <span class="c1"># 10 Hz control loop</span>
+<span class="n">T_HORIZON</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="c1"># prediction/planning horizon (s)</span>
+<span class="n">TIME_GAP</span> <span class="o">=</span> <span class="mf">1.5</span> <span class="c1"># desired time gap (s)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">perceive</span><span class="p">(</span><span class="n">ego</span><span class="p">,</span> <span class="n">lead</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Return measured gap and lead speed (noisy in reality)."""</span>
+<span class="k">return</span> <span class="n">lead</span><span class="p">[</span><span class="s2">"s"</span><span class="p">]</span> <span class="o">-</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"s"</span><span class="p">],</span> <span class="n">lead</span><span class="p">[</span><span class="s2">"v"</span><span class="p">]</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">predict</span><span class="p">(</span><span class="n">gap</span><span class="p">,</span> <span class="n">lead_v</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Constant-velocity forecast of the lead over the horizon."""</span>
+<span class="k">return</span> <span class="n">gap</span> <span class="o">+</span> <span class="p">(</span><span class="n">lead_v</span> <span class="o">-</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">])</span> <span class="o">*</span> <span class="n">T_HORIZON</span> <span class="c1"># predicted future gap</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">plan</span><span class="p">(</span><span class="n">gap</span><span class="p">,</span> <span class="n">lead_v</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Choose target speed to hold a safe time gap, in the style of the</span>
+<span class="sd">    Intelligent Driver Model (IDM), a car-following rule that balances a</span>
+<span class="sd">    desired time gap against the current closing speed."""</span>
+<span class="n">desired_gap</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="n">TIME_GAP</span> <span class="o">*</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">])</span>
+<span class="n">accel</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">*</span> <span class="p">(</span><span class="n">lead_v</span> <span class="o">-</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">])</span> <span class="o">+</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">gap</span> <span class="o">-</span> <span class="n">desired_gap</span><span class="p">)</span>
+<span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">accel</span><span class="p">,</span> <span class="o">-</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span> <span class="c1"># m/s^2, bounded actuator</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">control</span><span class="p">(</span><span class="n">accel</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Convert planned acceleration into a (bounded) command."""</span>
+<span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">accel</span><span class="p">,</span> <span class="o">-</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">))</span>
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">30</span><span class="p">):</span>
+<span class="n">gap</span><span class="p">,</span> <span class="n">lead_v</span> <span class="o">=</span> <span class="n">perceive</span><span class="p">(</span><span class="n">ego</span><span class="p">,</span> <span class="n">lead</span><span class="p">)</span>
+<span class="n">future_gap</span> <span class="o">=</span> <span class="n">predict</span><span class="p">(</span><span class="n">gap</span><span class="p">,</span> <span class="n">lead_v</span><span class="p">)</span>
+<span class="n">accel</span> <span class="o">=</span> <span class="n">plan</span><span class="p">(</span><span class="n">gap</span><span class="p">,</span> <span class="n">lead_v</span><span class="p">)</span>
+<span class="n">cmd</span> <span class="o">=</span> <span class="n">control</span><span class="p">(</span><span class="n">accel</span><span class="p">)</span>
+<span class="c1"># Apply control, advance the world one cycle.</span>
+<span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">]</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">]</span> <span class="o">+</span> <span class="n">cmd</span> <span class="o">*</span> <span class="n">dt</span><span class="p">)</span>
+<span class="n">ego</span><span class="p">[</span><span class="s2">"s"</span><span class="p">]</span> <span class="o">+=</span> <span class="n">ego</span><span class="p">[</span><span class="s2">"v"</span><span class="p">]</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="n">lead</span><span class="p">[</span><span class="s2">"s"</span><span class="p">]</span> <span class="o">+=</span> <span class="n">lead</span><span class="p">[</span><span class="s2">"v"</span><span class="p">]</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="k">if</span> <span class="n">step</span> <span class="o">%</span> <span class="mi">10</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"t=</span><span class="si">{</span><span class="n">step</span><span class="o">*</span><span class="n">dt</span><span class="si">:</span><span class="s2">4.1f</span><span class="si">}</span><span class="s2">s gap=</span><span class="si">{</span><span class="n">gap</span><span class="si">:</span><span class="s2">5.1f</span><span class="si">}</span><span class="s2">m future_gap=</span><span class="si">{</span><span class="n">future_gap</span><span class="si">:</span><span class="s2">5.1f</span><span class="si">}</span><span class="s2">m "</span>
+<span class="sa">f</span><span class="s2">"v=</span><span class="si">{</span><span class="n">ego</span><span class="p">[</span><span class="s1">'v'</span><span class="p">]</span><span class="si">:</span><span class="s2">4.1f</span><span class="si">}</span><span class="s2"> cmd=</span><span class="si">{</span><span class="n">cmd</span><span class="si">:</span><span class="s2">+.2f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"min safety margin (gap) held:"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">lead</span><span class="p">[</span><span class="s1">'s'</span><span class="p">]</span> <span class="o">-</span> <span class="n">ego</span><span class="p">[</span><span class="s1">'s'</span><span class="p">],</span> <span class="mi">2</span><span class="p">),</span> <span class="s2">"m"</span><span class="p">)</span></code></pre>
+<div class="code-caption" data-agent="08" data-agent-2="40">A 10 Hz car-following loop that calls <code>perceive</code>, <code>predict</code>, <code>plan</code>, and <code>control</code> in sequence, then advances the ego and lead positions and prints the closing gap each second.</div>
+<p><strong>Expected output:</strong> the gap shrinks from 30 m toward the desired time-gap distance and then stabilizes; the command saturates at the actuator limit during the initial deceleration and the final safety margin stays positive. The run is only useful as evidence because it logs the per-stage fields and the safety margin, not just "did not crash."</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>This hand-built loop shows the interfaces. For full experiments use a real simulator and middleware: <strong>CARLA</strong> and <strong>ROS 2</strong> for closed-loop sensorimotor testing, <strong>nuScenes</strong> and the <strong>Waymo Open Dataset</strong> for logged perception and prediction, and a scenario runner for reproducible events. Keep the same artifact schema (per-stage logs plus a safety metric) whether you simulate by hand or in CARLA.</p>
+</div>
+<h2>Practical Recipe</h2>
+<p data-agent="14">The worked example gives you one loop that runs; the steps below turn that single run into a repeatable discipline for building and stress-testing any stack.</p>
+<ol>
+<li>Write the stack contract: the observation, the state estimate, the action interface, the cycle rate, and the safety metric.</li>
+<li>Build the smallest closed loop that can fail interpretably (the car-following example above).</li>
+<li>Add latency to one stage and measure how the safety margin degrades; this localizes timing brittleness.</li>
+<li>Replace one stage with the library version (for example a learned detector) and re-run on identical scenarios.</li>
+<li>Save one artifact: config, seeds, per-stage logs, summary metrics, and two representative traces (one nominal, one near-miss).</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The classic mistake is to celebrate a component score before checking the handoff. A detector that improves mAP by feeding a richer object representation helps nothing if the prediction module only consumes bounding-box centers. Verify that each upstream improvement is actually read by the downstream consumer.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A robotics team integrating a new tracker should log intermediate tracks, predicted trajectories, the chosen plan, and every minimal-risk-maneuver trigger. When collision rate rises after the upgrade, those logs reveal whether the cause is more identity switches (perception), worse forecasts (prediction), or an over-conservative planner reacting to noisier tracks.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Perceive, predict, plan, control: four verbs, three interfaces, one loop. The bugs almost always live in the interfaces, not the verbs.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Waymo Driver</h4>
+<p>Waymo's production stack runs exactly this perception, prediction, planning, control loop on its rider-only robotaxis in Phoenix and San Francisco, dispatching control commands at roughly 10 Hz while a separate safety monitor watches every interface. Its published safety reports attribute most intervention-worthy events not to a single blind detector but to handoff and prediction edge cases, which is why the system logs per-stage outputs and triggers a minimal-risk pullover when any subsystem disagrees beyond threshold.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Vision-language models as driving planners (2024-2026).</strong> Large vision-language models are being adapted as the reasoning backbone of the planning stage, replacing hand-coded cost functions with natural-language scene descriptions and chain-of-thought justifications before issuing trajectory commands. Wayve's LINGO-2 (2024) and DriveVLM (Tian et al., ECCV 2024, Waymo Research) both demonstrate closed-loop improvements on long-tail scenarios where rule-based planners historically fail, by conditioning trajectory search on free-text scene summaries. The interface challenge is latency: a 7B-parameter VLM inference pass takes 300-600 ms on automotive-grade hardware, which must be amortized across multiple control cycles without letting the vehicle coast on a stale plan.</p>
+<p><strong>Generative world models for closed-loop training data (2024-2026).</strong> Rather than collecting more real miles, several labs now synthesize photorealistic sensor data by conditioning a video diffusion model on a scenario description and a <span data-agent="21">bird's-eye-view (BEV) layout, a top-down map of lane geometry and actor positions</span>. NVIDIA's DriveDreamer-2 (2024) and Waymo's GAIA-1 successor work generate controllable camera sequences that respect lane geometry and actor kinematics, enabling safety-critical scenario augmentation at scale without on-road risk. The open question is whether detectors and planners trained on generated data maintain calibrated uncertainty when deployed on real sensor noise distributions that the generative model did not perfectly capture.</p>
+<p><strong>Occupancy flow as a unified perception-prediction interface (2024-2025).</strong> Tesla's occupancy network and the academic OccWorld (Zheng et al., ECCV 2024) predict a dense 4D voxel flow field, replacing the sparse object-track representation at the perception-prediction boundary. Because every voxel carries a velocity vector, the planner can reason about cyclists, debris, and unclassified obstacles without committing to a semantic class, which eliminates a class of false-negative tracker failures described in the key-insight box above.</p>
+<p><strong>Open problem for a PhD student.</strong> All three directions above produce learned intermediate representations (VLM reasoning traces, synthetic sensor frames, occupancy flow fields) that are not directly auditable under <span data-agent="21">ISO 26262 Part 6 (the automotive functional-safety standard's software-unit verification requirements)</span>. A tractable thesis contribution is a formal evidence framework that maps each learned representation to an existing safety argument template (safety case, hazard-and-operability study) and defines a quantitative sufficiency criterion, tested on a public AV dataset such as nuScenes or the Waymo Open Dataset, so that a stack using any of these representations can produce a safety artifact that an automotive OEM's safety team can accept in place of per-stage deterministic logs.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for each of the four stages? If any cell is blank, the system boundary is still too vague to test.</p>
+</div>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>CARLA and ROS 2</td><td>Closed-loop sensorimotor testing of the full stack</td><td>Adopt after the contract is explicit; keep one artifact schema across runs.</td></tr>
+<tr><td>nuScenes, Waymo Open Dataset</td><td>Logged perception and prediction evaluation</td><td>Use for offline component metrics before closing the loop.</td></tr>
+<tr><td>Same-panel evaluation script</td><td>Construct-matched stack comparison</td><td>Compare stacks only when collision rate and margin are co-computed on one scenario panel.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout pathway" data-agent="25"><div class="callout-title">Cross-References</div><p>Section 48.2 expands perception and sensor fusion, 48.3 covers detection and prediction, 48.4 and 48.8 cover planning, 48.7 covers control, and 48.6 and 48.9 close the loop with safety cases and closed-loop evaluation.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Take the car-following example, inject a one-cycle perception dropout (return the previous gap), and measure how much the minimum safety margin shrinks. Then label the failure as perception, state, planning, control, or timing.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Dosovitskiy et al., "CARLA: An Open Urban Driving Simulator," CoRL 2017. Caesar et al., "nuScenes: A Multimodal Dataset for Autonomous Driving," CVPR 2020. Sun et al., "Scalability in Perception for Autonomous Driving: Waymo Open Dataset," CVPR 2020.</p><p class="bib-annotation">These provide the simulator and benchmark datasets used to evaluate each stage and the closed loop.</p></div></section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Driving is one timed closed loop factored into four testable stages. The stack is only as reliable as its weakest interface, so every per-stage win must be verified to propagate all the way to the control command and the safety margin.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 48.1.1</div>
+<p>Design a same-panel experiment that swaps a constant-velocity predictor for a constant-acceleration predictor in the car-following loop. Specify the scenario set, the metric (minimum safety margin and collision rate), and the perturbation (a lead vehicle that brakes hard) that would reveal which predictor actually changes the control command.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Latency-injection car-following simulator.</strong> Extend the car-following loop above in plain Python and Gymnasium to inject configurable per-stage delays and plot how minimum safety margin degrades as latency grows. The key challenge is keeping a faithful cycle-timestep model so the injected delay actually shifts the world state rather than just slowing the printout.<br/><br/><strong>Intermediate (1-2 weeks): Four-stage AV stack in CARLA with ROS 2 logging.</strong> Wire a minimal perception-prediction-planning-control stack in CARLA using ROS 2 nodes, one node per stage, with <code>message_filters.ApproximateTimeSynchronizer</code> enforcing the latency contract between stages. The key challenge is designing the shared artifact schema so that per-stage logs and safety-margin traces can be replayed deterministically and compared across two predictor variants on the same scenario panel.<br/><br/><strong>Intermediate (1-2 weeks): Prediction-module swap benchmark on nuScenes.</strong> Use the nuScenes devkit and the LeRobot data-loading utilities to replace a constant-velocity predictor with a learned social-force or transformer predictor, evaluate both on minADE and minFDE on the same split, then close the loop by feeding each predictor's output into the planning cost function from the algorithm box and measuring collision rate on a fixed scenario panel. The key challenge is ensuring the two predictors share the same input representation so the metric difference is attributable to the model and not to preprocessing.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a>
+<a class="up" href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a>
+<a class="next" href="ch_0366_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Section 48.2: Sensors and sensor fusion in AVs</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

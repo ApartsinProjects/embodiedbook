@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 5.5: Forward kinematics</title>
+    <title>Section 5.4: Robot arms, joints, the kinematic chain</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,48 +14,137 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0036_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a></div>
-<div class="chapter-label"><a href="ch_0045_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Chapter 5: Kinematics and Robot Motion</a></div>
-<h1>Section 5.5: Forward kinematics</h1>
+<div class="page-breadcrumb"><a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a><span class="bc-sep">›</span><a href="ch_0046_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Chapter 5: Kinematics and Robot Motion</a></div>
+<h1>Section 5.4: Robot arms, joints, the kinematic chain</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Each joint buys you one freedom and sells you one responsibility. The chain collects both debts."</p><cite>An Arm Assembler</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 5.5: Forward kinematics, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/2ace20b4dc_chapter-05-illustration-05.jpg"/>
-<figcaption><strong>Figure 5.5A</strong>: Section 5.5: Forward kinematics is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 5.4: Robot arms, joints, the kinematic chain." loading="lazy" src="../img/58249d1635_chapter-05-illustration-04.jpg"/>
+<figcaption>Figure 5.4A: A 6-DOF (degrees of freedom) robot arm with each joint labeled by its type (revolute vs. prismatic, <span data-agent="03">defined below under "Why joint type shapes the workspace"</span>), the Denavit-Hartenberg (DH) parameter table, and the resulting kinematic chain from base link to end-effector.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with homogeneous transforms and frame composition from section 4.4, and with URDF frame trees from section 4.5. The kinematic chain model introduced here feeds directly into the Jacobian formulation in section 5.6, which extends it to velocity-level analysis and singularity detection. The same chain abstraction recurs throughout Part 9 alongside contact-rich manipulation planning, particularly in section 42.3.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Forward kinematics</strong> is one lens on kinematics and robot motion. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A warehouse robot reaches for a bin at 2 a.m. Its gripper misses by four centimeters, knocking the part to the floor. The fault is not in the motor or the vision model: a single joint index is off by one, and every downstream frame has been wrong from the start. This is the problem the kinematic chain was invented to prevent. As embodied AI moves from structured factories into kitchens, clinics, and construction sites, robots must reason reliably about their own geometry across thousands of configurations they have never seen before. Here you will build that reasoning from the ground up: rigid links, joint types, composed transforms, and the invariant that ties them together.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Forward kinematics into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22"><span data-agent="29">Six revolute joints, each free to swing a few hundred degrees, multiply into a configuration space so vast that a robot arm can reach the same point three ways: elbow up, elbow down, or wrist flipped through the middle. One thing stands between that freedom and a crashed gripper: a strict accounting of how each joint feeds the next.</span> This section builds that accounting into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<p>The key question in Robot arms, joints, the kinematic chain is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In Forward kinematics, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In Robot arms, joints, the kinematic chain, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>Figure 5.4A shows the full picture this section builds toward: a 6-DOF arm with each joint labeled by type, its DH parameter table (<span data-agent="04">a standard four-number-per-joint convention, link length, link twist, link offset, and joint angle, that fixes each joint's transform without ambiguity</span>), and the resulting chain from base link to end-effector. <span data-agent="15">The kinematic chain abstraction exists to solve a concrete mapping problem.</span> A robot arm must map a high-level task goal, such as "place the gripper 30 cm above the conveyor," into specific motor commands for each of its joints. Without a systematic way to track how each joint rotation propagates through the structure, a planner would need to re-derive geometry from scratch for every configuration. The kinematic chain gives the agent a single composable model: <a href="ch_0042_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">multiply the transforms in order</a> and you immediately know where every link and the end-effector sit in the world frame. This composability is what makes motion planning, workspace analysis, and closed-loop control tractable.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a robot arm's kinematic chain is the ordered product of per-joint transforms (each defined by DH parameters), it exists because re-deriving geometry from scratch for every configuration would be intractable, and its composability is what makes planning and control tractable in the first place.</p></div>
+<p><span data-agent="29">A six-joint arm needs 6 transform multiplications to reach any configuration. Without the chain, each query recomputes up to 36 frame relationships from scratch. A motion planner that samples 10,000 candidate configurations then runs that recomputation 360,000 times instead of 60,000 multiplications. The chain abstraction is therefore not a convenience but a prerequisite for real-time planning.</span> Without the chain, embodied systems cannot reliably reason about reachability, avoid collisions, or hand off a grasp target to a controller.</p>
+<p>For Robot arms, joints, the kinematic chain, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<figure class="diagram-container">
+<svg aria-label="Kinematic chain showing base frame, three links connected by revolute joints, and end-effector" role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Base frame -->
+<rect fill="#cfd8dc" height="60" rx="6" stroke="#455a64" stroke-width="2" width="50" x="20" y="120"/>
+<text fill="#263238" font-family="monospace" font-size="11" text-anchor="middle" x="45" y="145">BASE</text>
+<text fill="#455a64" font-family="monospace" font-size="10" text-anchor="middle" x="45" y="163">frame 0</text>
+<!-- Joint 1 circle -->
+<circle cx="110" cy="150" fill="#b3e5fc" r="16" stroke="#0277bd" stroke-width="2"/>
+<text fill="#01579b" font-family="monospace" font-size="11" text-anchor="middle" x="110" y="155">J1</text>
+<text fill="#0277bd" font-family="monospace" font-size="10" text-anchor="middle" x="110" y="195">revolute</text>
+<!-- connector base to J1 -->
+<line stroke="#455a64" stroke-width="3" x1="70" x2="94" y1="150" y2="150"/>
+<!-- Link 1 -->
+<rect fill="#e8f5e9" height="20" rx="4" stroke="#2e7d32" stroke-width="1.5" width="90" x="126" y="140"/>
+<text fill="#2e7d32" font-family="monospace" font-size="10" text-anchor="middle" x="171" y="154">link 1</text>
+<!-- Joint 2 circle -->
+<circle cx="252" cy="150" fill="#b3e5fc" r="16" stroke="#0277bd" stroke-width="2"/>
+<text fill="#01579b" font-family="monospace" font-size="11" text-anchor="middle" x="252" y="155">J2</text>
+<text fill="#0277bd" font-family="monospace" font-size="10" text-anchor="middle" x="252" y="195">revolute</text>
+<!-- connector link1 to J2 -->
+<line stroke="#455a64" stroke-width="3" x1="216" x2="236" y1="150" y2="150"/>
+<!-- Link 2 (angled upward to show arm posture) -->
+<line stroke="#2e7d32" stroke-linecap="round" stroke-width="8" x1="268" x2="358" y1="150" y2="100"/>
+<text fill="#2e7d32" font-family="monospace" font-size="10" text-anchor="middle" x="313" y="118">link 2</text>
+<!-- Joint 3 circle -->
+<circle cx="368" cy="95" fill="#b3e5fc" r="16" stroke="#0277bd" stroke-width="2"/>
+<text fill="#01579b" font-family="monospace" font-size="11" text-anchor="middle" x="368" y="100">J3</text>
+<text fill="#0277bd" font-family="monospace" font-size="10" text-anchor="middle" x="368" y="140">prismatic</text>
+<!-- Link 3 (angled down-right) -->
+<line stroke="#2e7d32" stroke-linecap="round" stroke-width="8" x1="384" x2="464" y1="95" y2="130"/>
+<text fill="#2e7d32" font-family="monospace" font-size="10" text-anchor="middle" x="430" y="108">link 3</text>
+<!-- End-effector -->
+<polygon fill="#fff9c4" points="480,110 510,130 480,150" stroke="#f57f17" stroke-width="2"/>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="540" y="128">EE</text>
+<text fill="#e65100" font-family="monospace" font-size="10" text-anchor="middle" x="540" y="145">frame n</text>
+<!-- Transform chain label -->
+<text fill="#37474f" font-family="monospace" font-size="12" text-anchor="middle" x="300" y="255">T_0e = T_01(q1) * T_12(q2) * T_23(q3) * T_3e</text>
+<!-- Upstream/downstream annotation -->
+<text fill="#78909c" font-family="monospace" font-size="9" text-anchor="middle" x="45" y="215">upstream</text>
+<text fill="#78909c" font-family="monospace" font-size="9" text-anchor="middle" x="510" y="175">downstream</text>
+<line stroke="#b0bec5" stroke-dasharray="4,3" stroke-width="1" x1="90" x2="460" y1="212" y2="212"/>
+<polygon fill="#b0bec5" points="460,208 470,212 460,216"/>
+</svg>
+<figcaption>The kinematic chain: each joint (J1 revolute, J2 revolute, J3 prismatic) adds one controlled degree of freedom and one transform. The end-effector pose T_0e is the ordered product of all per-joint transforms from base frame 0 to tool frame n. Perturbing any joint displaces it and every downstream frame; upstream frames are unaffected.</figcaption>
+</figure>
+<p>The diagram above traces this structure concretely: a base frame, three links joined by two revolute joints and one prismatic joint, and an end-effector whose pose is the ordered product of every per-joint transform. A robot arm is a sequence of rigid links connected by joints. Each joint contributes one controlled motion, usually a rotation for a revolute joint or a translation for a prismatic joint. The kinematic chain is the ordered product of those link transforms, so a small upstream joint change moves every downstream frame. <span data-agent="01">Counting joints tells you what the chain can reach at all: a full 6-DOF pose in 3D space (position plus orientation) typically needs at least six independent joints, which is why most industrial arms carry six or seven revolute joints rather than three or four.</span></p>
+<h4 data-agent="30">Why joint type shapes the workspace</h4>
+<p data-agent="14">That ordered product is identical in form for every joint, but the shape of the reachable space it carves out depends entirely on what kind of motion each joint contributes. Joint type matters for embodied AI because it determines the workspace geometry and the actuator hardware. A revolute joint sweeps a circular arc, so its reach depends on the arm's posture; stacking multiple revolute joints produces the curved, dexterous workspaces seen in industrial arms. A prismatic joint translates linearly, offering direct, predictable reach extension but limited angular coverage. Choosing the wrong joint type for a task (for example, a prismatic wrist trying to reorient a screwdriver) forces awkward compensations across the entire chain, often pushing the arm toward singularities (<span data-agent="04">configurations where the arm loses a degree of freedom in task space, covered fully in section 5.7</span>) or joint-limit boundaries in real operation.</p>
+<p>Before reading on, consider this: if you swap the order of just two joints in the kinematic chain description while leaving the physical arm unchanged, where does the end-effector end up, and does any error get raised?</p>
+<p data-agent="17">Mechanically, a revolute joint pivots two links about a shared axis on a bearing, and its encoder (<span data-agent="04">the sensor that reports the joint's current angle or position back to the controller</span>) reads the swept angle. A prismatic joint slides one link along another on a rail, and its encoder reads linear displacement. The chain model abstracts both as a single bounded degree of freedom and treats them identically in the transform product; only the column of the homogeneous matrix that the joint variable updates differs.</p>
+<p>This is why <strong>joint order is load-bearing geometry</strong>, not an administrative detail. If the <a href="ch_0043_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">URDF frame tree</a>, the controller's joint vector, and the planner's joint vector disagree by one index, the end-effector pose can look plausible while the physical arm moves the wrong link. A kinematic chain that reaches the right pose for the wrong reason is not a solution: it is a failure waiting for a different target.</p>
+<div class="callout warning">
+<p>A common assumption is that the kinematic chain provides a unique, invertible mapping: one end-effector pose maps to exactly one set of joint angles. This is wrong in nearly every real embodied system. A 7-DOF arm placing an object in 6-DOF space has infinitely many joint configurations that reach the same pose. These form a continuous null space of redundant solutions, <span data-agent="21">where the null space is the set of joint motions that leave the end-effector pose unchanged</span>. A robot with fewer joints than task dimensions simply cannot reach all poses, and no planning recovers the missing freedom. Treat the kinematic chain as a many-to-one function from joint space to task space. <a data-agent="13" href="ch_0051_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Forward kinematics</a> is always computable. <a data-agent="13" href="ch_0052_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Inverse kinematics</a> requires choosing among multiple solutions (or acknowledging infeasibility), and that choice carries real consequences for collision avoidance, joint-limit margins, and dexterity near the target.</p>
+</div>
+<div class="callout key-insight"><p>Think of a chef reaching to place a single cherry on the exact center of a cake. There are countless ways to position and angle the shoulder, elbow, and wrist to get the fingertip to that spot: the destination is unique but the arm posture is not. Forward kinematics is like watching the fingertip land and recording only where it ended up. Inverse kinematics is the reverse question: given where the cherry needs to go, which of the infinite arm postures should you choose? The answer depends on what else is in the way, how tired each joint is, and how quickly you need to move next.</p></div>
+<div class="callout tip">
+<p>When loading a URDF into Pinocchio, call <code>pin.buildModelFromUrdf()</code> and immediately print <code>model.names</code> to compare the library's joint ordering against your controller's joint-state topic. A one-index offset is the single most common source of a kinematic chain that computes a plausible end-effector pose while commanding the wrong physical joint. Cross-checking <code>model.names</code> against <code>/joint_states</code> at load time costs two lines and eliminates an entire class of silent correctness failures.</p>
+</div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism in Robot arms, joints, the kinematic chain is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Forward kinematics: keep the section idea tied to observable evidence.</span>
-<span class="c1"># Run this diagnostic probe before trusting the maintained library path.</span>
-<span class="n">instruction</span> <span class="o">=</span> <span class="s2">"run the Forward kinematics diagnostic and save the evidence trace"</span>
-<span class="n">skills</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"find_object"</span><span class="p">,</span> <span class="s2">"estimate_pose"</span><span class="p">,</span> <span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"move_to_tray"</span><span class="p">,</span> <span class="s2">"release"</span><span class="p">]</span>
-<span class="n">plan</span> <span class="o">=</span> <span class="p">[</span><span class="n">skill</span> <span class="k">for</span> <span class="n">skill</span> <span class="ow">in</span> <span class="n">skills</span><span class="p">]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">instruction</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 5.5.1 names instruction, skills, and plan so the reader can inspect where a kinematic primitive enters a larger motion plan.</div>
+<p>The example builds a 3-link planar chain as an ordered product of per-joint transforms, records every intermediate link frame, then perturbs one joint and verifies the topology invariant: moving joint $k$ must displace link $k$ and all its descendants, and nothing upstream.</p>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">Tz</span><span class="p">(</span><span class="n">theta</span><span class="p">,</span> <span class="n">length</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Revolute joint about z, then translate 'length' along local x."""</span>
+<span class="n">c</span><span class="p">,</span> <span class="n">s</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">theta</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">theta</span><span class="p">)</span>
+<span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="n">c</span><span class="p">,</span> <span class="o">-</span><span class="n">s</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">length</span><span class="o">*</span><span class="n">c</span><span class="p">],</span>
+<span class="p">[</span><span class="n">s</span><span class="p">,</span> <span class="n">c</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">length</span><span class="o">*</span><span class="n">s</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">]])</span>
+<span class="n">lengths</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.30</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">,</span> <span class="mf">0.15</span><span class="p">]</span> <span class="c1"># link lengths, base -&gt; tool</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">chain_frames</span><span class="p">(</span><span class="n">q</span><span class="p">):</span>
+<span class="n">T</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">frames</span> <span class="o">=</span> <span class="p">[</span><span class="n">T</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span><span class="o">.</span><span class="n">copy</span><span class="p">()]</span> <span class="c1"># base origin</span>
+<span class="k">for</span> <span class="n">qi</span><span class="p">,</span> <span class="n">Li</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">lengths</span><span class="p">):</span>
+<span class="n">T</span> <span class="o">=</span> <span class="n">T</span> <span class="o">@</span> <span class="n">Tz</span><span class="p">(</span><span class="n">qi</span><span class="p">,</span> <span class="n">Li</span><span class="p">)</span>
+<span class="n">frames</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">T</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span> <span class="c1"># each downstream link origin</span>
+<span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">frames</span><span class="p">)</span>
+<span class="n">q0</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">deg2rad</span><span class="p">([</span><span class="mi">20</span><span class="p">,</span> <span class="o">-</span><span class="mi">35</span><span class="p">,</span> <span class="mi">50</span><span class="p">])</span>
+<span class="n">F0</span> <span class="o">=</span> <span class="n">chain_frames</span><span class="p">(</span><span class="n">q0</span><span class="p">)</span>
+<span class="c1"># Perturb ONLY joint index 1 (the middle joint)</span>
+<span class="n">q1</span> <span class="o">=</span> <span class="n">q0</span><span class="o">.</span><span class="n">copy</span><span class="p">();</span> <span class="n">q1</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">deg2rad</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span>
+<span class="n">F1</span> <span class="o">=</span> <span class="n">chain_frames</span><span class="p">(</span><span class="n">q1</span><span class="p">)</span>
+<span class="n">moved</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">F1</span> <span class="o">-</span> <span class="n">F0</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">1e-9</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"frame moved? (base, link0, link1, link2):"</span><span class="p">,</span> <span class="n">moved</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"tool pose:"</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">F0</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="mi">4</span><span class="p">))</span>
+<span class="k">assert</span> <span class="ow">not</span> <span class="n">moved</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">moved</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="s2">"upstream frame moved: joint order bug"</span>
+<span class="k">assert</span> <span class="n">moved</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="ow">and</span> <span class="n">moved</span><span class="p">[</span><span class="mi">3</span><span class="p">],</span> <span class="s2">"downstream frame frozen: chain broken"</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"topology invariant holds: only joint-1 descendants moved."</span><span class="p">)</span></code></pre>
+<div class="code-caption" data-agent="40">A 3-link planar chain built as an ordered product of <code>Tz</code> transforms: perturbing only the middle joint (index 1) and asserting that the base and link-0 frames stay fixed while link-1 and the tool frame move, proving the joint-order topology invariant.</div>
+<p>The assertions are the cheap diagnostic that catches a one-index mismatch between the URDF, the controller joint vector, and the planner: when an upstream frame moves under a downstream perturbation, the chain ordering is wrong even if the tool pose looks plausible.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: forward kinematics of a 2-link planar arm</h4>
+<p>Trace the transform product by hand for a 2-link planar arm with link lengths $L_1 = 1.0$ and $L_2 = 0.5$, at joint angles $q_1 = 90^\circ$ and $q_2 = -90^\circ$. Each joint rotates about $z$, then translates $L$ along the local $x$.</p>
+<p><strong>Step 0 (base):</strong> start at $T = I$, so the base origin sits at $(0, 0)$.</p>
+<p><strong>Step 1 (apply joint 1):</strong> rotate by $90^\circ$ ($\cos 90^\circ = 0$, $\sin 90^\circ = 1$) and translate $L_1 = 1.0$ along the rotated $x$. The translation column becomes $(L_1 \cos 90^\circ,\ L_1 \sin 90^\circ) = (0,\ 1.0)$. The frame-1 origin lands at $(0,\ 1.0)$. The arm now points straight up.</p>
+<p><strong>Step 2 (apply joint 2):</strong> the accumulated rotation is $90^\circ + (-90^\circ) = 0^\circ$, so link 2 points back along $+x$. Add $L_2 = 0.5$ in the world $+x$ direction to the frame-1 origin: $(0 + 0.5,\ 1.0 + 0) = (0.5,\ 1.0)$.</p>
+<p><strong>Result:</strong> the end-effector sits at $(0.5,\ 1.0)$ with net orientation $0^\circ$. Now perturb only $q_1$ by $+10^\circ$: both the frame-1 origin and the end-effector move, but the base origin at $(0,0)$ does not. Perturbing only $q_2$ moves the end-effector while the frame-1 origin stays put. That asymmetry is the topology invariant the code asserts.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built fragment keeps the motion contract visible. Pinocchio and Drake compute kinematics and derivatives for articulated models, Robotics Toolbox for Python is useful for teaching and quick inspection, MoveIt 2 supplies motion-planning workflows, and ROS 2 control connects commands to controller interfaces. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
+<p>The fragment should expose joint order, axis, link frame, tool frame, and joint limits. Pinocchio, Drake, and MoveIt 2 provide maintained kinematic trees once the chain convention is audited.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
@@ -65,83 +154,71 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
 <li>Run at least one perturbation test before trusting the result.</li>
 </ol>
+<div class="callout key-insight">
+<div class="callout-title">When the Chain Model Breaks Down</div>
+<p>The rigid kinematic chain is accurate when links are stiff, joints are well-actuated, and the physical structure matches the URDF. It breaks down in four common situations: (1) cable-driven or tendon-actuated arms, where compliance in the transmission means joint encoder readings do not reflect true link angles; (2) long, slender links under load, where link flex shifts the actual end-effector pose away from the rigid-body prediction; (3) parallel mechanisms such as the Delta robot or Stewart platform, where the single serial chain formula does not apply and closed-loop kinematic constraints must be solved instead; (4) <a href="ch_0322_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">contact-rich manipulation</a>, where external forces deform the configuration in ways the kinematic model ignores entirely. Recognizing which regime applies before choosing a solver prevents a class of plausible-looking failures that only reveal themselves at deployment.</p>
+</div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The most common kinematic chain failure in deployed systems is a silent index mismatch between software layers. On the Franka Panda (7-DOF), MoveIt 2 reports joint names as <code>panda_joint1</code> through <code>panda_joint7</code>; if a custom controller reads the <code>/joint_states</code> topic and assumes zero-indexed integers, joint 0 maps to <code>panda_joint1</code> but joint 6 maps to the hand, not the wrist. The arm completes its motion, the forward kinematics look plausible, and the gripper arrives 8 to 12 cm from the target. No exception is raised. The identical failure appears in simulation-to-real transfer when a MuJoCo model trained on a re-ordered joint vector is deployed to the physical arm: the policy was correct for the simulator's ordering, wrong for the hardware. Catching this before deployment costs one call to <code>model.names</code> in Pinocchio or one print of <code>robot.joint_names</code> in Robotics Toolbox for Python, compared against the live <code>/joint_states</code> message.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Forward kinematics should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A robotics team using Robot arms, joints, the kinematic chain should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: surgical robotics</h4>
+<p>The da Vinci Surgical System models each instrument arm as a serial kinematic chain whose end-effector is a wristed instrument inside the patient. The chain composition lets the controller pivot every motion about a fixed remote-center-of-motion (<span data-agent="21">a stationary pivot point in space that the tool shaft always passes through</span>) at the incision port, so surgeon hand movements at the console map to scaled, tremor-filtered tool motion deep in the body. A single joint-order or frame error in that chain would translate the surgeon's intent into the wrong tissue location, which is why the convention is audited against the robot model before every procedure.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat robot arms, joints, the kinematic chain like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Neural-implicit kinematics for deformable and soft-bodied arms (2024-2026).</strong> Classical DH-parameter chains assume rigid links, but tendon-driven and soft pneumatic arms deform under load in ways a fixed transform product cannot capture. Recent work trains implicit neural representations directly from proprioceptive and visual data to model the continuous deformation field of each link. The DeepMind Robotics group and collaborators reported results in 2024 suggesting that, <span data-agent="28">on the specific soft manipulators tested</span>, a learned kinematic field can generalize across payloads in cases where the corresponding analytic model typically breaks down. The open problem for a PhD student is defining a data-efficient training protocol that can adapt an implicit kinematic model online from fewer than 200 calibration poses, matching analytic accuracy on a rigid arm while retaining flexibility for soft morphologies.</p>
+<p><strong>Geometry-aware foundation models for universal inverse kinematics (2024-2026).</strong> Rather than solving IK per robot with per-robot solvers, several 2024 papers train a single transformer on large catalogs of robot URDFs so that the model performs IK zero-shot on unseen kinematic chains by reading the chain topology as a graph input. Chi et al. (2024, "Universal Manipulation Interface," Columbia) and work from Berkeley on robot-agnostic policy representations both use this paradigm. A key open problem is handling kinematic chains with mixed joint types and variable DOF counts in one unified model architecture, particularly when the chain includes passive or underactuated joints that are not directly observable.</p>
+<p><strong>Whole-body kinematic chains for humanoid locomotion and manipulation (2025-2026).</strong> As humanoid platforms such as Unitree H1 and Figure 01 move into unstructured environments, the kinematic chain must extend from a single arm to the full body, coupling leg DOFs with arm DOFs under a shared balance constraint. Work from Stanford and ETH Zurich in 2025 frames this as a single high-dimensional chain problem where the floating base is treated as six additional prismatic-revolute joints and the null space is used to decouple manipulation tasks from balance recovery. The open problem is computing the null-space projection in real time (under 1 ms) on a 30-plus DOF humanoid without sacrificing task-space accuracy, which current GPU-accelerated Pinocchio solvers approach but do not yet achieve reliably on hardware.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Forward kinematics? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Robot arms, joints, the kinematic chain? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
 <h2>Production Pattern</h2>
-<p>Forward kinematics sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
-<p>Use forward kinematics as the baseline oracle for every inverse-kinematics or control experiment. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>Kinematics maps joint or body motion into task-space motion without pretending to know forces. Preserve joint limits, frame conventions, velocity units, and singularity margins.</p></div>
+<p>Robot arms, joints, the kinematic chain sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
+<p>Separate joint topology, joint limits, link frames, and end-effector task frames before solving motion. This makes the treatment useful to practitioners, builders, and researchers alike: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Robot arms, joints, the kinematic chain, kinematics maps joint or body motion into task-space motion without explaining forces. Preserve joint limits, frame conventions, velocity units, and singularity margins in the artifact.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>What It Handles</th><th>Verification Check</th></tr></thead>
 <tbody>
 <tr><td>Pinocchio</td><td>computes articulated-body kinematics, dynamics, and derivatives</td><td>Verify model frames, joint ordering, and derivative convention against the URDF.</td></tr>
-<tr><td>Robotics Toolbox for Python</td><td>supports practical work on Forward kinematics</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
-<tr><td>MoveIt 2</td><td>supports practical work on Forward kinematics</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>Robotics Toolbox for Python (Corke)</td><td>builds serial-link chains from DH tables and runs forward/inverse kinematics interactively</td><td>Print <code>robot.joint_names</code> and compare DH-derived poses against your hand-built baseline on the neutral posture.</td></tr>
+<tr><td>MoveIt 2</td><td>plans collision-free arm motion using the chain defined in the SRDF/URDF kinematic groups</td><td>Confirm the planning group's joint list matches <code>/joint_states</code>; on a Franka Panda check that <code>panda_joint1..7</code> map to the wrist, not the hand.</td></tr>
 <tr><td>Drake</td><td>models dynamical systems, multibody plants, optimization, and controllers</td><td>Verify scalar type, plant finalization, frame convention, and solver status.</td></tr>
-<tr><td>ROS 2 control</td><td>supports practical work on Forward kinematics</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>ROS 2 control</td><td>maps controller command interfaces onto the URDF joints driving the physical actuators</td><td>Verify the <code>command_interfaces</code> joint order in the controller YAML against the hardware joint indexing before sending trajectories.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>Use this recipe when turning Forward kinematics into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
+<p>Use this recipe when turning Robot arms, joints, the kinematic chain into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
 <ol>
 <li>Write the joint vector, frame target, velocity convention, and constraint set before solving.</li>
 <li>Check forward kinematics on a known posture, then perturb one joint and inspect the end-effector delta.</li>
-<li>Compare an analytic or numerical Jacobian with Pinocchio, Robotics Toolbox, or Drake on the same robot model.</li>
-<li>Log residual error, joint-limit distance, manipulability, and solver iteration count in one artifact.</li>
-<li>Treat singularities and infeasible targets as design signals, not as solver annoyances.</li>
+<li>Compare an analytic or <a href="ch_0052_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">numerical Jacobian</a> with Pinocchio, Robotics Toolbox, or Drake on the same robot model.</li>
+<li>Log residual error, joint-limit distance, manipulability (<span data-agent="21">a scalar measure of how easily the end-effector can move in every direction from the current posture, near zero at a singularity</span>), and solver iteration count in one artifact.</li>
+<li>Treat <a href="ch_0053_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">singularities</a> and infeasible targets as design signals, not as solver annoyances.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
-<pre><code class="language-python"><span class="c1"># Evidence record for Forward kinematics.</span>
-<span class="c1"># Fill the fields before comparing a hand-built baseline with a library run.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">units_check</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">latency_ms</span><span class="p">:</span> <span class="nb">float</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"5.5"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"Forward kinematics"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Pinocchio"</span><span class="p">,</span>
-<span class="n">units_check</span><span class="o">=</span><span class="s2">"frames, units, and timestamps verified"</span><span class="p">,</span>
-<span class="n">latency_ms</span><span class="o">=</span><span class="mf">20.0</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched success metric"</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"filled after the named perturbation test"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 5.5.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Forward kinematics can be compared across the hand-built baseline and the maintained-library path.</div>
-<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Forward kinematics and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>Kinematic failures often arrive as a plausible pose with an impossible motion. Inspect joint limits, Jacobian rank, constraint assumptions, and frame choice before blaming the planner. For this section, first reproduce one tiny case by hand, then rerun it through Pinocchio, Robotics Toolbox for Python, MoveIt 2, Drake, ROS 2 control. If the two disagree, inspect conventions and timing
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Robot arms, joints, the kinematic chain, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Robot arms, joints, the kinematic chain and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
+<p>Kinematic failures often arrive as a plausible pose with an impossible motion. Inspect joint order, parent-child frames, link lengths, joint limits, and mimic joints before blaming the planner. For this section, first reproduce one two-link chain by hand, then rerun it through Pinocchio, Robotics Toolbox for Python, MoveIt 2, Drake, or ROS 2 tf2. If the two disagree, inspect conventions and timing before changing the model.</p>
 <section class="technical-core-expansion">
 <h2>Technical Core</h2>
-<p><strong>Forward kinematics</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 5.5.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
-<figure class="technical-figure" id="fig-5-5-technical-core">
-<svg aria-labelledby="fig-5-5-technical-core-title fig-5-5-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
-<title id="fig-5-5-technical-core-title">Technical core for Forward kinematics</title>
-<desc id="fig-5-5-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Forward kinematics.</desc>
+<p><strong>Robot arms, joints, the kinematic chain</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 5.4.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" id="fig-5-4-technical-core">
+<svg aria-labelledby="fig-5-4-technical-core-title fig-5-4-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-5-4-technical-core-title">Technical core for Robot arms, joints, the kinematic chain</title>
+<desc id="fig-5-4-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Robot arms, joints, the kinematic chain.</desc>
 <rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
 <text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
 <text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
@@ -162,51 +239,46 @@ Building Embodied AI: From Perception to Autonomous Action
 <text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
 <text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
 </svg>
-<figcaption><strong>Figure 5.5.T</strong>: The technical core for Forward kinematics connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
+<figcaption><strong>Figure 5.4.T</strong>: A kinematic chain is only trustworthy when every link in this pipeline is explicit. Skip the assumptions block (frames, units, limits) and a plausible end-effector pose can still be geometrically wrong; skip the failure-diagnosis block and that error stays silent until the arm misses on hardware.</figcaption>
 </figure>
-<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$T_{0e}(q)=\prod_i \exp(\hat\xi_i q_i)M,\quad \dot x = J(q)\dot q,\quad \Delta q = J^\top(JJ^\top+\lambda^2 I)^{-1}\Delta x$</p></div>
-<div class="callout algorithm"><div class="callout-title">Damped least-squares inverse kinematics</div><ol>
-<li>Represent the desired end-effector task as a pose error in the same frame as the Jacobian.</li>
-<li>Compute the geometric or analytic Jacobian at the current joint vector.</li>
-<li>Solve the damped least-squares update, clamp joint increments, and enforce joint limits.</li>
-<li>Forward-propagate the new configuration and log residual task error, condition number, and saturation events.</li>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>$q=[q_1,\ldots,q_n]^\top,\quad T_{0e}(q)=T_{01}(q_1)T_{12}(q_2)\cdots T_{n e}(q_n)$</p><p>Each transform carries a parent frame to a child frame. A revolute joint changes a rotation about its axis, while a prismatic joint changes a translation along its axis. The chain convention must match the robot description file and the controller interface.</p></div>
+<div class="callout algorithm"><div class="callout-title">Kinematic-chain build recipe</div><ol>
+<li>List joints in the exact order used by the controller and robot model.</li>
+<li>For each joint, record parent frame, child frame, joint type, axis, origin transform, and limits.</li>
+<li>Multiply transforms from base to tool and inspect every intermediate frame on a known posture.</li>
+<li>Validate one joint at a time by perturbing it and checking that only downstream frames move.</li>
 </ol></div>
-<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Forward kinematics</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Robot arms, joints, the kinematic chain</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
 <tr><td>State and observation</td><td>Variables, units, timestamps, frames, and uncertainty.</td><td>Prevents a model score from being mistaken for robot capability.</td></tr>
 <tr><td>Action interface</td><td>Command type, limits, update rate, and safety fallback.</td><td>Makes the learned or planned output executable.</td></tr>
 <tr><td>Evidence artifact</td><td>Trace, metric, configuration, seed, and failure label.</td><td>Allows baseline and library path to be compared in one pass.</td></tr>
 <tr><td>Tool path</td><td>Modern Robotics, Pinocchio, Drake, ROS 2 tf2, MoveIt, NumPy</td><td>Shows the practical library route after the mechanism is understood.</td></tr>
 </tbody></table></div>
-<pre><code class="language-python"><span class="c1"># Technical-core evidence record for Forward kinematics.</span>
-<span class="c1"># Expected: a method-specific trace with assumptions, metric, and failure label.</span>
-<span class="n">record</span> <span class="o">=</span> <span class="p">{</span>
-<span class="s2">"section"</span><span class="p">:</span> <span class="s2">"5.5"</span><span class="p">,</span>
-<span class="s2">"technical_core"</span><span class="p">:</span> <span class="s2">"kinematics and robot motion"</span><span class="p">,</span>
-<span class="s2">"method"</span><span class="p">:</span> <span class="s2">"Damped least-squares inverse kinematics"</span><span class="p">,</span>
-<span class="s2">"evidence"</span><span class="p">:</span> <span class="s2">"same-config trace with expected output and failure label"</span><span class="p">,</span>
-<span class="s2">"tools"</span><span class="p">:</span> <span class="s2">"Modern Robotics, Pinocchio, Drake, ROS 2 tf2, MoveIt, NumPy"</span><span class="p">,</span>
-<span class="p">}</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">record</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 5.5.T records the expected technical evidence for Forward kinematics: method, tool path, artifact, and failure label.</div>
-<p>Expected output is a decreasing pose residual, a bounded joint update, and a finite Jacobian condition number. A residual that grows after damping usually means the error vector and Jacobian use different frames.</p>
-<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A kinematic result fails when frames are mixed, singular values collapse, a redundant joint drifts into a limit, or the solver reduces position error while making orientation impossible.</p></div>
+<p>Expected output is a base-to-tool transform and a list of intermediate link frames that match the robot model on a neutral posture. A single-joint perturbation should move the perturbed link and all children, never its ancestors.</p>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A kinematic chain fails when joint order differs between software layers, frame origins are copied from CAD without checking axes, joint limits are missing, or a fixed tool transform is omitted from the end of the chain.</p></div>
 </section>
-
- before changing the model.</p>
-</section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Forward kinematics: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Robot arms, joints, the kinematic chain: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Forward kinematics is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Robot arms, joints, the kinematic chain is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 5.5.1</div><p>Design a method-matched experiment for Forward kinematics. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 5.4.1</div><p>Design a method-matched experiment for Robot arms, joints, the kinematic chain. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: build and probe a kinematic chain with Robotics Toolbox for Python</h4>
+<p><strong>Goal:</strong> confirm that forward kinematics is composable and that joint order is load-bearing, by computing end-effector poses two ways and forcing them to agree.</p>
+<p><strong>Tools needed:</strong> Python with <code>pip install roboticstoolbox-python spatialmath-python numpy</code> (about 15 to 30 minutes total).</p>
+<p><strong>Procedure:</strong> load a stock model with <code>robot = rtb.models.DH.Puma560()</code> and print <code>robot.q</code> plus the joint count. Pick a neutral configuration <code>q = robot.qz</code> and compute the end-effector pose with <code>robot.fkine(q)</code>. Then build the same pose yourself by multiplying the per-link transforms from <code>robot.links</code> in order, and compare the two $4\times4$ matrices.</p>
+<p><strong>What to vary:</strong> (1) perturb a single joint by 10 degrees and note which way the tool moves; (2) swap two entries of the joint vector before calling <code>fkine</code> and observe the resulting pose error; (3) push one joint past its limit and check whether the toolbox flags it.</p>
+<p><strong>What to observe:</strong> your hand-built product should match <code>fkine</code> to numerical precision (about $10^{-9}$). The swapped-joint case should produce a plausible but wrong pose with no exception raised, the exact silent failure the section warns about. Record the largest position error from the swap to feel how a one-index slip turns into centimeters at the gripper.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): 3-DOF planar arm visualizer in PyBullet.</strong> Load a simple 3-joint URDF into PyBullet and write a slider-driven GUI that moves each joint independently while printing the end-effector position from your own matrix chain alongside PyBullet's computed pose. The key challenge is reconciling your manual transform product with PyBullet's internal frame convention so the two positions agree to millimeter precision. <strong>Intermediate (1-2 weeks): kinematic chain audit tool for ROS2 and MuJoCo.</strong> Build a ROS2 node that loads a robot URDF via Pinocchio, subscribes to the live <code>/joint_states</code> topic, and streams the end-effector pose to a MuJoCo simulation running the same model, flagging any configuration where the two disagreed by more than 1 mm. The key challenge is keeping the joint-name ordering consistent across Pinocchio, ROS2, and MuJoCo because each tool has its own internal indexing convention. <strong>Advanced (3-4 weeks): redundancy resolver for a 7-DOF arm with Isaac Lab.</strong> Use Isaac Lab to train a null-space policy on a 7-DOF arm that reaches target poses while minimizing a secondary cost such as joint-limit proximity or manipulability, then evaluate it against a classic damped-least-squares baseline across 500 randomized goals. The key challenge is defining a reward that balances task-space accuracy against null-space objectives without destabilizing the primary constraint.</p></div>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0049_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Section 5.4: Robot arms, joints, the kinematic chain</a>
-<a class="up" href="ch_0045_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Chapter 5: Kinematics and Robot Motion</a>
-<a class="next" href="ch_0051_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Section 5.6: Inverse kinematics: analytic, numerical...</a>
+<a class="prev" href="ch_0049_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Section 5.3: Differential-drive and car-like robots</a>
+<a class="up" href="ch_0046_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Chapter 5: Kinematics and Robot Motion</a>
+<a class="next" href="ch_0051_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Section 5.5: Forward kinematics</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

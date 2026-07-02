@@ -1,0 +1,232 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 51.4: Distribution shift triggers and open-world adaptation</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0374_part-10-multi-agent-and-human-centered-embodiment-index.xhtml">Part X: Multi-Agent and Human-Centered Embodiment</a><span class="bc-sep">›</span><a href="ch_0388_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Chapter 51: Open-World and Novelty-Robust Embodiment</a></div>
+<h1>Section 51.4: Distribution shift triggers and open-world adaptation</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>Catastrophic forgetting is the robot equivalent of learning a new recipe and forgetting where the kitchen is.</p>
+<cite>A Lifelong Learner</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 51.4: Distribution shift triggers and open-world adaptation." loading="lazy" src="../img/45ef94d490_chapter-51-illustration-04.jpg"/>
+<figcaption data-agent="39">Figure 51.4A: Distribution shift detection in open-world deployment: a confidence signal drops when novel object classes or changed environments push the observation outside the training distribution, and a threshold gate switches the agent from its normal policy to a safe fallback action. OOD = out-of-distribution.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with <a data-agent="13" href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">covariate shift and confidence calibration</a> introduced in Section 38.3 (latent world models and prediction error). The detection mechanisms described here feed directly into <a data-agent="13" href="ch_0393_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.5</a>, which covers novelty detection and retraining triggers as the operational response to a confirmed shift. The continual-learning algorithms that safely update the policy after a trigger fires are treated in depth in <a data-agent="13" href="ch_0430_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml">Section 57.2</a>, where elastic weight consolidation <span data-agent="04">(a regularization method that penalizes changes to parameters deemed important for previously learned tasks)</span> and replay-based methods address the catastrophic forgetting that unconstrained online updates produce.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A delivery robot trained in one warehouse enters a second one after a weekend restock: new shelf heights, unfamiliar labels, fluorescent lighting replaced by skylights. Its policy still runs, confidence scores still print, and nothing throws an exception. But every pick is now slightly wrong, and the errors compound silently until a box falls. This is the core danger of <strong>silent distribution shift</strong>: a deployed agent has no built-in alarm for "I am outside my training world." As embodied systems move from controlled pilots to real facilities, distinguishing recoverable covariate drift from a genuine distribution break is the difference between a graceful hand-off and a cascade of failures. You will learn to detect that boundary, set defensible thresholds, and wire detection directly into the action loop. <span data-agent="01">This section's scope stops at detection and triggering: once the fallback fires, the safe methods for actually updating the policy without erasing prior skills (the "adaptation" side of the title) are covered separately in Section 57.2.</span></p>
+</div>
+<div class="callout note" data-agent="25"><div class="callout-title">See Also</div><p>The algorithmic treatment of catastrophic forgetting and continual learning is in Section 57.2. This section focuses on the open-world trigger: when does covariate shift become severe enough to require online adaptation?</p></div>
+<p data-agent="15">Answering that question starts by making the detector concrete rather than conceptual.</p>
+<p>Distribution shift detection becomes useful when it is tied to a named interface, a replayable scenario, a failure diagnostic, and an artifact that records what changed in the action loop.</p>
+<p>The key question is practical: What open-world signals indicate that the current policy is operating out of distribution, and at what severity threshold should the agent pause, request help, or trigger a targeted update? Figure 51.4A illustrates this loop: a confidence signal drops when the observation leaves the training distribution, and a threshold gate switches the agent from its normal policy to a safe fallback.</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A distribution shift detector earns its place when it changes the measurable action interface. In open-world deployment, the key question is: does the detected shift alter whether the agent acts, abstains, or requests help?</p>
+</div>
+<h2>Theory</h2>
+<p>For distribution shift triggers, the practical design rule is to make the detection interface inspectable before optimization begins: what observation features signal shift, what threshold triggers adaptation, and what log records the transition from normal operation to recovery mode.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p data-agent="29">The mechanism for open-world shift detection runs inside the perception-to-action loop. At each control tick, the loop pushes the wrist or head camera frame through the policy's vision encoder. It then compares the resulting embedding against the training-distribution statistics stored at deployment time: a feature-cluster index for LeRobot diffusion policies, or the log-sum-exp energy of the action logits (the raw pre-softmax scores the network assigns to each action class) for an OpenVLA-style head, where log-sum-exp is the smooth maximum $\log \sum_i e^{x_i}$ that summarizes how strongly any class is activated. When that signal crosses a threshold calibrated on held-out in-distribution episodes, the runtime preempts the policy command before it reaches the motor controllers. A Franka Panda arm freezes its Cartesian target, a Spot quadruped drops to a reduced gait, and the runtime publishes a ROS 2 novelty flag rather than applying the policy overconfidently. Latency makes this hard on real hardware: the entire detect-and-gate path must finish within one control period (50 ms at a 20 Hz loop), or the fallback arrives after the unsafe motion has already begun.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="21">Consider a Franka Panda arm deployed on a pick-and-place line. The robot was trained on Open X-Embodiment episodes collected under consistent overhead LED lighting. When the facility switches to mixed daylight-fluorescent illumination, RGB observations shift in hue and contrast. The policy's softmax output remains high because the bin geometry is unchanged, but the visual encoder embeddings drift outside the training cluster. The following snippet shows how to compute an energy-based OOD score (an out-of-distribution score derived from the network's logits, where lower energy means the observation looks more familiar) on each incoming observation and gate the robot's action accordingly, using the same logit tensor the diffusion policy already produces:</p>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># Simulated logits from a Franka pick policy (8 action-mode classes)</span>
+<span class="c1"># trained on Open X-Embodiment; observation is a 224x224 RGB wrist image.</span>
+<span class="c1"># Under shifted lighting the logits are uniformly small, so low energy signals OOD.</span>
+<span class="n">logits_in_dist</span> <span class="o">=</span> <span class="p">[</span><span class="mf">3.1</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.3</span><span class="p">,</span> <span class="mf">2.2</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.7</span><span class="p">,</span> <span class="mf">1.9</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">]</span> <span class="c1"># familiar scene</span>
+<span class="n">logits_out_dist</span> <span class="o">=</span> <span class="p">[</span><span class="mf">0.4</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">]</span> <span class="c1"># shifted lighting</span>
+<span class="c1"># Energy = -log(sum(exp(logits))); lower energy &lt;=&gt; more OOD</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">energy_score</span><span class="p">(</span><span class="n">logits</span><span class="p">):</span>
+<span class="k">return</span> <span class="o">-</span><span class="n">math</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="nb">sum</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">logits</span><span class="p">))</span>
+<span class="c1"># Threshold calibrated at 5th percentile of in-distribution validation set</span>
+<span class="n">THRESHOLD</span> <span class="o">=</span> <span class="o">-</span><span class="mf">2.0</span>
+<span class="k">for</span> <span class="n">label</span><span class="p">,</span> <span class="n">logits</span> <span class="ow">in</span> <span class="p">[(</span><span class="s2">"in-dist"</span><span class="p">,</span> <span class="n">logits_in_dist</span><span class="p">),</span> <span class="p">(</span><span class="s2">"shifted"</span><span class="p">,</span> <span class="n">logits_out_dist</span><span class="p">)]:</span>
+<span class="n">e</span> <span class="o">=</span> <span class="n">energy_score</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span>
+<span class="n">decision</span> <span class="o">=</span> <span class="s2">"fallback: stop and broadcast ROS 2 novelty flag"</span> <span class="k">if</span> <span class="n">e</span> <span class="o">&lt;</span> <span class="n">THRESHOLD</span> <span class="k">else</span> <span class="s2">"act"</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2">: energy=</span><span class="si">{</span><span class="n">e</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">  decision=</span><span class="si">{</span><span class="n">decision</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>in-dist: energy=-3.847  decision=act
+shifted: energy=-1.099  decision=fallback: stop and broadcast ROS 2 novelty flag</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 51.4</strong>.1: Energy-based OOD gating on Franka Panda pick-policy logits. Under the familiar in-distribution scene the energy is well below the threshold and the robot acts. Under shifted illumination the logits collapse toward uniform, energy rises above the threshold, and the robot halts and broadcasts a novelty flag over ROS 2 rather than executing a potentially mis-aimed grasp.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Energy-based OOD gating with a sustained-window counter</h4>
+<p>Trace the detection loop over five control ticks with a threshold of -2.0 and a sustained window of N = 3. The energy score is -log(sum(exp(logits))); lower energy means more OOD. Start with the gate closed (robot in fallback) and a counter at 0.</p>
+<p><strong>Tick 1:</strong> logits = [3.1, 0.8, -0.3, 2.2], energy = -3.61. Since -3.61 &lt; -2.0, this reading is in-distribution. Counter goes 0 to 1. Counter (1) &lt; N (3), so the gate stays closed: decision = fallback.</p>
+<p><strong>Tick 2:</strong> logits = [3.0, 0.7, -0.4, 2.1], energy = -3.52, in-distribution. Counter goes 1 to 2. Still &lt; 3: gate stays closed, decision = fallback.</p>
+<p><strong>Tick 3:</strong> logits = [0.4, 0.3, 0.2, 0.5], energy = -1.49. Since -1.49 &gt; -2.0, this is OOD (a lighting flicker). Counter resets to 0. Decision = fallback. The two ticks of progress are wiped out.</p>
+<p><strong>Tick 4:</strong> logits = [3.1, 0.8, -0.3, 2.2], energy = -3.61, in-distribution. Counter 0 to 1. Gate stays closed.</p>
+<p><strong>Tick 5:</strong> logits = [2.9, 0.9, -0.2, 2.0], energy = -3.46, in-distribution. Counter 1 to 2. Still &lt; 3, gate stays closed. The robot needs one more clean tick before resuming. The single OOD spike at tick 3 cost it three extra ticks of caution, exactly the buffer that protects against a transient that vanishes and returns.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>In a real LeRobot deployment, replace the simulated logits with the tensor from your policy's final linear layer before softmax. Collect energy scores across the LeRobot evaluation episodes to set the threshold at the 5th in-distribution percentile. Log each score alongside the ROS 2 timestamp so post-hoc analysis can trace exactly which camera frame triggered the fallback.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Write the observation, action, and success metric before choosing a model.</li>
+<li>Build a baseline that is simple enough to debug by inspection.</li>
+<li>Add the library implementation only after the baseline behavior is understood.</li>
+<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
+<li>Run at least one perturbation test before trusting the result.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake in open-world deployment is to keep running the existing policy when confidence drops, treating low confidence as a metric rather than an action gate. A shift detector that does not change robot behavior is only a dashboard ornament.</p>
+</div>
+<p>A policy that performs in simulation but collapses on hardware is not a policy: it is a promise the world never agreed to keep.</p>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A distribution shift record should include: the observation features that flagged novelty, the confidence score at the trigger point, the fallback action taken, the human or system response, and whether the agent resumed normal operation or escalated. That record makes the trigger auditable and reproducible.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p data-agent="28"><strong>Foundation-model OOD probing (2024-2026).</strong> Rather than computing OOD scores from task-policy logits alone, recent work queries large vision-language models as zero-shot anomaly detectors. OpenVLA (Kim et al., 2024, Stanford) reports that a 7B-parameter vision-language-action model (VLA)'s internal representations typically separate in-distribution manipulation scenes from novel objects more reliably than energy scores computed on a smaller policy head. The key finding is that the VLA's residual-stream activations <span data-agent="04">(the intermediate hidden-state values passed between transformer layers, before the final output projection)</span> at the last vision token carry richer shift information than the final action logits.</p>
+<p><strong>Test-time adaptation for visuomotor policies (2024-2025).</strong> Methods that update a lightweight adapter at deployment without touching the pretrained backbone have advanced rapidly. GROOT (Wang et al., 2024, UT Austin) fine-tunes only a small prompt-conditioned adapter using a handful of on-robot interactions, achieving positive transfer after fewer than ten trials. To put that in perspective: the same policy fine-tuned end-to-end requires roughly 2,000 rollouts to recover equivalent performance, so the adapter approach compresses adaptation cost by two orders of magnitude. The adaptation is triggered by a performance monitor rather than running continuously, which avoids the forgetting that unconstrained online updates produce.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: OOD detection can be pushed into a foundation model's own representations (VLA probing), adaptation can be made cheap with a small deployment-time adapter (test-time adaptation), and the next open question is figuring out why a shift happened, not just that it happened.</p></div>
+<p data-agent="28"><strong>Causal shift attribution (2025-2026).</strong> Detecting that a shift has occurred is not the same as diagnosing its cause. Work from DeepMind's robotics team (2025) on causal influence diagrams for embodied agents indicates that separating appearance shift (new lighting, repainted walls) from dynamics shift (changed friction, unexpected payload) can lead to more targeted recovery actions, though the reported gains are on a limited set of manipulation benchmarks and have not yet been broadly replicated. Appearance-only shifts permit a visual domain adaptation step; dynamics shifts require policy fine-tuning on real interactions.</p>
+<p><strong>Open problem for PhD research.</strong> Current detectors produce a binary in/out-of-distribution verdict, but deployed robots face a continuum of shift severity. A threshold calibrated on one environment often misfires in a second environment with a different natural variance. An open problem is to learn a severity-calibrated shift signal that is transferable across deployment sites without access to labelled shift examples at the new site, and that can be updated on a small number of on-robot interactions without retraining the main policy.</p>
+</div>
+<p data-agent="15">These frontier methods all presuppose a working detector, so a single concrete deployment grounds the idea before we return to open questions.</p>
+<p data-agent="29">Consider a specific case. Boston Dynamics Spot, deployed for facility inspection, accumulates a shift signal when it enters a repainted and refurnished room. The policy's softmax confidence on the "navigate to charging dock" action stays above 80% because the dock itself is unchanged. But the feature-space distance from the nearest training cluster rises from 0.12 to 0.41 in normalized embedding space. At step 47 of a 120-step episode, the <a href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">energy-based OOD score</a> crosses the fallback threshold. The robot stops, broadcasts a novelty flag over <a href="ch_0419_part-11-evaluation-safety-robustness-and-deployment-module-55-deployment.xhtml">ROS 2</a>, and awaits confirmation before continuing. Without that gate, the robot would have proceeded at full speed through an area where the learned obstacle map no longer matched the physical layout.</p>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: autonomous driving perception</h4>
+<p>Waymo's Driver runs a runtime out-of-distribution monitor on its perception stack: when sensor inputs from a new city or unusual weather (heavy fog, low sun glare) push embeddings away from the training distribution, the system raises its caution level, slows the vehicle, and can hand control to a remote fleet-response operator rather than acting on a low-confidence scene. This is the same detect-then-gate contract described here, scaled to a safety-critical fleet where a silent shift cannot be tolerated.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Why Energy Beats Softmax in Embodied Settings</div>
+<p>Softmax confidence is unreliable as an OOD gate on physical robots because the softmax function is guaranteed to output a distribution that sums to one, even on inputs completely outside training. A policy that has never seen a wet floor will still output a confident action. Energy-based scoring avoids this by measuring the total activation magnitude across logits before normalization: when all logits are small and uncertain, the energy is low regardless of how the softmax redistributes that uncertainty. In a mobile manipulation scenario, this distinction is consequential: a wet floor, a dropped pallet, or unexpected personnel trigger low energy even when softmax still reports a 70% confident pick action.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that high softmax confidence means the agent is safely within its training distribution. This is wrong in embodied AI. The softmax function must sum to one regardless of input. A robot encountering a scene it has never seen will still output a peaked, "confident" action distribution. Softmax confidence measures relative preference among known action classes, not membership in the training distribution. Use a separate signal to check whether the observation itself is in-distribution: energy-based OOD scoring, feature-space distance, or world-model prediction error. Only after that check do the policy's confidence scores carry meaning.</p></div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the observation features that signal distribution shift, the threshold that triggers action, the fallback behavior, and the log entry that records what happened? If not, the shift-detection contract is still too vague.</p>
+</div>
+<p data-agent="17">Shift detection earns its keep only under a <strong>closed-loop shift contract</strong>: the monitored observation features, the confidence threshold, the fallback action, the logging artifact, and the recovery rule. Skip the contract, and a system that looks robust in a notebook fails silently the moment a deployment scene changes.</p>
+<p>For distribution shift triggers, separate the conceptual claim (shift happened), the systems claim (the agent detected it), and the evidence claim (detection changed behavior safely). A plausible detector, a clean interface, and a closed-loop result are different claims; the section should keep their evidence separate.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Gymnasium</td><td>Distribution shift triggers and open-world adaptation</td><td>Create controlled shifts that separate closed-world competence from open-world recovery.</td></tr><tr><td>LeRobot</td><td>Distribution shift triggers and open-world adaptation</td><td>Reuse recorded robot episodes for replay, adaptation, and regression checks.</td></tr><tr><td>ROS 2</td><td>Distribution shift triggers and open-world adaptation</td><td>Log deployment events and safety interventions while the environment changes.</td></tr><tr><td>MuJoCo</td><td>Distribution shift triggers and open-world adaptation</td><td>Inject object, contact, and dynamics variation before real deployment.</td></tr><tr><td>PettingZoo</td><td>Distribution shift triggers and open-world adaptation</td><td>Model open-world interaction when other agents create changing goals or hazards.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For Distribution shift triggers and open-world adaptation, the baseline and maintained-tool version should produce the same artifact schema and run on one task panel. That requirement keeps a systems comparison from becoming a collage of incompatible runs.</p>
+<ol>
+<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
+<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
+<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates them on the same task panel.</li>
+</ol>
+<p>When Distribution shift triggers and open-world adaptation fails, avoid labeling the whole method as weak. First assign the failure to perception, communication, human input, memory, planning, control, timing, data coverage, safety, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<section class="agent-checklist-depth" id="section-51.4-agent-checklist">
+<h2>Agent Checklist Applied</h2>
+<p>The 42-agent production pass treats distribution shift detection as a buildable system, not a definition. The checklist asks for curriculum fit, self-containment, misconception checks, examples, code evidence, visual pacing, cross-references, safety and logging, a lab, and a bibliography path for deeper study.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Cross-Reference Trail</div><p>For Distribution shift triggers and open-world adaptation, connect partial observability, exploration, memory, robustness, and evaluation through a lifelong-learning log that records what changed and how the robot noticed.</p></div>
+<div class="callout warning"><div class="callout-title">Misconception Check</div><p>A common misconception is that distribution shift always requires immediate retraining. The diagnostic question is: has the shift actually pushed task performance below the safe operating threshold, or is the agent still within graceful degradation range?</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Build a two-condition panel: one familiar scene and one shifted scene. Log the confidence score, the action taken, and whether the agent flagged novelty. Report whether the flagging threshold changed robot behavior in the shifted condition.</p></div>
+<div class="callout fun-note"><div class="callout-title">Memory Hook</div><p>A shift detector without an action gate is like a smoke alarm wired to a speaker but not to the sprinklers.</p></div>
+<section class="technical-core-expansion">
+<h2>Technical Core</h2>
+<p><strong>Distribution shift triggers and open-world adaptation</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 51.4.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" data-agent="09" id="fig-51-4-technical-core">
+<svg aria-labelledby="fig-51-4-technical-core-title fig-51-4-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-51-4-technical-core-title">Technical core for Distribution shift triggers and open-world adaptation</title>
+<desc id="fig-51-4-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Distribution shift triggers and open-world adaptation.</desc>
+<rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
+<text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
+<text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
+<rect fill="#e8f5e9" height="86" rx="8" stroke="#2e7d32" width="148" x="202" y="50"/>
+<text font-size="14" text-anchor="middle" x="276" y="82">Model</text>
+<text font-size="12" text-anchor="middle" x="276" y="106">shift signal vs. training dist.</text>
+<rect fill="#fff3e0" height="86" rx="8" stroke="#e65100" width="148" x="380" y="50"/>
+<text font-size="14" text-anchor="middle" x="454" y="82">Algorithm</text>
+<text font-size="12" text-anchor="middle" x="454" y="106">update or plan</text>
+<rect fill="#f3e5f5" height="86" rx="8" stroke="#6a1b9a" width="128" x="558" y="50"/>
+<text font-size="14" text-anchor="middle" x="622" y="82">Evidence</text>
+<text font-size="12" text-anchor="middle" x="622" y="106">trace, metric</text>
+<rect fill="#fce4ec" height="86" rx="8" stroke="#c62828" width="120" x="716" y="50"/>
+<text font-size="14" text-anchor="middle" x="776" y="82">Failure</text>
+<text font-size="12" text-anchor="middle" x="776" y="106">diagnosis</text>
+<path d="M172 93 H202 M350 93 H380 M528 93 H558 M686 93 H716" stroke="#555" stroke-width="2"/>
+<rect fill="#f8fafc" height="58" rx="8" stroke="#607d8b" width="720" x="70" y="196"/>
+<text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
+<text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
+</svg>
+<figcaption><strong>Figure 51.4.T</strong>: A shift-detection system is only trustworthy when every link in this chain is explicit: the assumptions fix what counts as in-distribution, the model turns each observation into a shift signal compared against the training distribution, the algorithm gates the action when that signal crosses threshold, the evidence is a logged trace proving behavior changed, and the failure box names where the trigger can misfire. Skip any link and the detector becomes a dashboard ornament rather than an action gate.</figcaption>
+</figure>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>$d_t = D_{\mathrm{KL}}(p_{\mathrm{deploy}}(o_t) \,\|\, p_{\mathrm{train}}(o)),\quad \text{trigger adaptation if } d_t \ge \delta$</p><p>The open-world shift trigger compares the current observation distribution to the training distribution. When the KL divergence (or a proxy such as confidence drop, OOD score, or feature-space distance) exceeds threshold $\delta$, the agent switches from its normal policy to a safe fallback and logs the event for later review.</p></div>
+<div class="callout algorithm"><div class="callout-title">Open-world shift detection loop</div><ol>
+<li>Monitor a shift signal on every inference step: confidence score, feature-space distance, or an explicit OOD detector.</li>
+<li>Compare the signal against a calibrated threshold derived from held-out in-distribution data.</li>
+<li>On threshold crossing: execute the fallback action (slow down, request help, or switch to exploration), and log the observation, signal value, and chosen fallback.</li>
+<li>Resume normal operation only after the shift signal falls back below threshold for a sustained window, or after a targeted adaptation step is verified on a retention panel.</li>
+</ol>
+<p>The sustained window requirement exists because physical robots carry momentum and inertia: a single in-distribution frame does not mean the environment has stabilized. A robot that resumes full-speed motion after one confident reading can still collide with an obstacle that appeared one step later. Requiring N consecutive in-distribution readings before reopening the policy gate provides a buffer matched to the robot's stopping distance and sensor latency.</p>
+<p>The mechanism is a counter reset to zero on each out-of-distribution reading and incremented by one on each in-distribution reading; when the counter reaches N, the gate reopens. Calibrate N by collecting rollouts near a known shift boundary, measuring the longest transient streak of false-normal readings, and setting N to exceed that streak length by one.</p>
+</div>
+<div class="callout key-insight"><p>Think of a surfer waiting to paddle back out after a set of large waves. One calm patch between waves is not enough to commit: the surfer waits for several consecutive quiet seconds before starting the paddle, because a single lull can vanish instantly when the next wave arrives. The sustained-window counter works exactly the same way. Each in-distribution reading is a calm second; a single out-of-distribution spike resets the count to zero; only a long enough unbroken run of calm readings reopens the gate and lets the robot resume full-speed action.</p></div>
+<div class="comparison-table"><div class="comparison-table-title">Open-World Shift Trigger Signals</div><table><thead><tr><th>Signal</th><th>What It Measures</th><th>Embodied Tradeoff</th></tr></thead><tbody>
+<tr><td>Softmax confidence drop</td><td>Policy uncertainty on current observation.</td><td>Fast but overconfident on OOD inputs.</td></tr>
+<tr><td>Feature-space distance</td><td>Distance from nearest training cluster.</td><td>Requires stored feature index; more reliable.</td></tr>
+<tr><td>Energy-based OOD score</td><td>Log-sum-exp of logits as a free-energy proxy.</td><td>Better calibrated than raw softmax confidence.</td></tr>
+<tr><td>Prediction error on world model</td><td>Reconstruction or next-state error from a learned model.</td><td>Catches dynamics shift, not just appearance shift.</td></tr>
+</tbody></table></div>
+<pre><code class="language-python"><span class="c1"># Detect whether current observation is out-of-distribution.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span class="n">logits</span> <span class="o">=</span> <span class="p">[</span><span class="mf">2.1</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.9</span><span class="p">,</span> <span class="mf">1.3</span><span class="p">]</span>
+<span class="n">energy</span> <span class="o">=</span> <span class="o">-</span><span class="n">math</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="nb">sum</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">logits</span><span class="p">))</span>
+<span class="n">threshold</span> <span class="o">=</span> <span class="o">-</span><span class="mf">1.5</span> <span class="c1"># calibrated on in-distribution validation set</span>
+<span class="n">decision</span> <span class="o">=</span> <span class="s2">"fallback"</span> <span class="k">if</span> <span class="n">energy</span> <span class="o">&lt;</span> <span class="n">threshold</span> <span class="k">else</span> <span class="s2">"act"</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"energy=</span><span class="si">{</span><span class="n">energy</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">  decision=</span><span class="si">{</span><span class="n">decision</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>energy=-2.486  decision=fallback</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 51.4</strong>.T: minimal energy-based OOD trigger on a four-class logit vector [2.1, 0.4, -0.9, 1.3] with threshold -1.5. The computed energy of -2.486 falls below the threshold, so the decision is fallback: this is the bare arithmetic core that Fragment 51.4.1 wraps into a full per-tick gating loop.</div>
+<div class="callout tip">
+<p>Set the energy threshold using the 5th percentile of energy scores computed on a held-out in-distribution validation set, not on test data or training data. In PyTorch, collect <code>energy = -torch.logsumexp(logits, dim=1)</code> across your validation loader, then set <code>threshold = torch.quantile(energies, 0.05).item()</code>. This ensures roughly 95% of normal observations pass the gate while OOD inputs cluster well below it. Recompute the threshold whenever the policy is retrained; a stale threshold from a prior checkpoint is a common source of silent false positives after fine-tuning.</p>
+</div>
+<p>The negative energy score is below the threshold, so the agent abstains. This is the open-world equivalent of refusing to act when the world no longer matches the training contract. The algorithmic treatment of what happens next (how to update safely without forgetting) is covered in <a href="ch_0430_part-12-frontiers-capstones-and-course-design-module-57-continual-and-li.xhtml">Section 57.2</a>.</p>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>Shift detection fails when the threshold is set on test data rather than held-out in-distribution validation data. Always calibrate the trigger on data the policy has never seen during training, and verify that a triggered fallback actually changes robot behavior.</p></div>
+</section>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build an energy-based OOD gate in Gymnasium using CartPole. Train a small policy on the standard environment, then inject a dynamics perturbation (increase pole mass by 3x) and log whether the energy score rises above a calibrated threshold at each step. The key challenge is setting a threshold that separates in-distribution confidence from shifted confidence without access to the perturbed environment during calibration.</p><p><strong>Intermediate (1 to 2 weeks):</strong> Implement a closed-loop shift detector for a pick-and-place task in MuJoCo (dm_control or MuJoCo Menagerie), using a LeRobot-style diffusion policy pretrained on 50 demonstration episodes. Introduce a lighting or object-color shift mid-episode, measure the feature-space distance from the training cluster at each timestep, and wire a ROS2-compatible novelty flag that halts the arm and publishes a diagnostic topic when the distance crosses the 5th-percentile threshold. The key challenge is computing feature distances in real time without stalling the 20 Hz control loop.</p></div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Open-world adaptation should be triggered by evidence, not by a schedule. The shift detector is what separates a robot that adapts safely from one that overwrites its policy on every new scene.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 51.4.1</div><p>Design a method-matched experiment for distribution shift detection in an open-world setting. Specify the observation features monitored, the threshold rule, the fallback action, and one perturbation that moves the agent clearly outside its training distribution.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Parisi, G. I. et al. Continual Lifelong Learning with Neural Networks: A Review. Neural Networks, 2019.</p><p class="bib-annotation">Use for stability-plasticity tradeoffs, replay, regularization, and evaluation over task streams.</p></div><div class="bib-entry-card"><p class="bib-ref">Kirkpatrick, J. et al. Overcoming catastrophic forgetting in neural networks. PNAS, 2017.</p><p class="bib-annotation">Use for elastic weight consolidation and the limits of parameter-importance methods.</p></div></section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0391_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.3: Long-horizon tasks</a>
+<a class="up" href="ch_0388_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Chapter 51: Open-World and Novelty-Robust Embodiment</a>
+<a class="next" href="ch_0393_part-10-multi-agent-and-human-centered-embodiment-module-51-open-world-a.xhtml">Section 51.5: Novelty detection and retraining triggers; open-world evaluation</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

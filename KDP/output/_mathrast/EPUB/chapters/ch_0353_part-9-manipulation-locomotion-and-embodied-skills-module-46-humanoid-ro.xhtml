@@ -1,0 +1,241 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 46.8: Advanced humanoid dynamics and contact mechanics</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0345_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Chapter 46: Humanoid Robots and Whole-Body Control</a></div>
+<h1>Section 46.8: Advanced humanoid dynamics and contact mechanics</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"Operational space is the wish. Whole-body control is the bill."</p><cite>A Field-Tested Control Loop</cite></blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>An 80 kg humanoid reaches for a box on a wet factory floor: the instant one hand lifts the load, balance, friction, momentum, and joint torques all shift simultaneously. No single controller owns the problem. As of 2024, humanoid platforms from Boston Dynamics, Figure, and Unitree are moving from labs into warehouses and homes, and the bottleneck is exactly this layer: the mathematics of contact, centroidal momentum, and whole-body coordination that prevents a fall when reality deviates from the plan. Here you will build that layer, deriving centroidal dynamics, constructing the whole-body QP, and reasoning about contact modes so you can design controllers that hold together when hands, feet, and physics all compete at once.</p>
+</div>
+<figure class="illustration">
+<img alt="Cartoon humanoid robot balancing while carrying a heavy object, with contact patches and recovery motion trails." loading="lazy" src="../img/781b0d5a6d_chapter-46-illustration-08.jpg"/>
+<figcaption><strong>Figure 46.8A</strong>: The humanoid must coordinate balance, payload, contact, and recovery at the same time, which is why whole-body control cannot be reduced to hand motion or footstep motion alone.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with rigid-body dynamics and friction cone geometry from section 6.3, and with quadratic-program-based control from section 7.6. The centroidal planning framework introduced here is extended by the loco-manipulation policies in section 46.9, and the contact perception pipeline that closes the loop is developed in section 44.2.</p>
+</div>
+<h2>Why The Specialist Layer Matters</h2>
+<p data-agent="22">Slow the earlier warehouse fall down to a single millisecond and you find a fork: the same foot that was a stable anchor is now a slipping liability, and whichever model the controller trusts in that instant decides whether the robot recovers or hits the floor. That fork is a friction-cone question in disguise (a contact force is only physically realizable if it stays inside the cone of directions the floor's friction can support; the section below on centroidal dynamics defines this precisely).<span data-agent="03"/> This section adds the mechanical depth required to reason about that instant like a serious humanoid researcher: reduced-order models for planning, full multibody dynamics for execution, contact mode reasoning, and controllers that remain stable when hands, feet, hips, and torso all matter. Figure 46.8A captures the core difficulty: balance, payload, contact, and recovery must all be coordinated at once, which is why whole-body control cannot be decomposed into hand motion or footstep motion alone.</p>
+<p>The key abstraction is a hierarchy of models. A planner may reason over center of mass, centroidal momentum, footstep locations, and hand contact targets. A whole-body controller then maps those targets into joint torques or position commands while satisfying contact, friction, joint, actuator, and balance constraints, drawing on the <a data-agent="13" href="ch_0348_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">operational-space control</a> foundations from earlier in this chapter. Figure 46.8B lays out this hierarchy end to end: the task planner hands centroidal references to the whole-body QP, which commands the humanoid hardware, while contact perception closes the loop back to both stages at each control tick.</p>
+<figure class="diagram-container">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arr488" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker>
+</defs>
+<!-- Planner box -->
+<rect fill="none" height="64" rx="6" stroke="currentColor" stroke-width="1.5" width="150" x="30" y="40"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="105" y="65">Task Planner</text>
+<text font-size="10" text-anchor="middle" x="105" y="84">CoM, footsteps,</text>
+<text font-size="10" text-anchor="middle" x="105" y="97">hand targets</text>
+<!-- Centroidal interface box -->
+<rect fill="none" height="64" rx="6" stroke="currentColor" stroke-dasharray="5 3" stroke-width="2" width="150" x="225" y="40"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="300" y="65">Centroidal</text>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="300" y="80">Model</text>
+<text font-size="10" text-anchor="middle" x="300" y="97">(the interface)</text>
+<!-- Whole-body QP box -->
+<rect fill="none" height="64" rx="6" stroke="currentColor" stroke-width="1.5" width="150" x="420" y="40"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="495" y="62">Whole-Body QP</text>
+<text font-size="10" text-anchor="middle" x="495" y="80">joint torques,</text>
+<text font-size="10" text-anchor="middle" x="495" y="93">contact forces</text>
+<!-- Robot/hardware box -->
+<rect fill="none" height="56" rx="6" stroke="currentColor" stroke-width="1.5" width="150" x="420" y="200"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="495" y="225">Humanoid + Floor</text>
+<text font-size="10" text-anchor="middle" x="495" y="243">contacts, friction</text>
+<!-- Contact perception box -->
+<rect fill="none" height="56" rx="6" stroke="currentColor" stroke-width="1.5" width="150" x="30" y="200"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="105" y="225">Contact</text>
+<text font-size="10" text-anchor="middle" x="105" y="243">mode, slip state</text>
+<!-- Forward arrows -->
+<line marker-end="url(#arr488)" stroke="currentColor" stroke-width="1.5" x1="180" x2="223" y1="72" y2="72"/>
+<line marker-end="url(#arr488)" stroke="currentColor" stroke-width="1.5" x1="375" x2="418" y1="72" y2="72"/>
+<text font-size="9" text-anchor="middle" x="202" y="64">plan</text>
+<text font-size="9" text-anchor="middle" x="397" y="64">refs</text>
+<!-- QP to hardware -->
+<line marker-end="url(#arr488)" stroke="currentColor" stroke-width="1.5" x1="495" x2="495" y1="104" y2="198"/>
+<text font-size="9" text-anchor="middle" x="540" y="155">commands</text>
+<!-- hardware to contact perception -->
+<line marker-end="url(#arr488)" stroke="currentColor" stroke-width="1.5" x1="418" x2="182" y1="228" y2="228"/>
+<text font-size="9" text-anchor="middle" x="300" y="220">sensed contact</text>
+<!-- contact perception feedback up and across to QP (recompute every tick) -->
+<line stroke="currentColor" stroke-dasharray="4 3" stroke-width="1.5" x1="105" x2="105" y1="198" y2="135"/>
+<line stroke="currentColor" stroke-dasharray="4 3" stroke-width="1.5" x1="105" x2="495" y1="135" y2="135"/>
+<line marker-end="url(#arr488)" stroke="currentColor" stroke-dasharray="4 3" stroke-width="1.5" x1="495" x2="495" y1="135" y2="106"/>
+<text font-size="9" text-anchor="middle" x="260" y="128">feedback to QP (1 kHz)</text>
+</svg>
+<figcaption data-agent="09"><strong>Figure 46.8B</strong>: The centroidal model is the interface between slow task planning and fast whole-body QP execution. Contact perception feeds slip and contact-mode estimates back into the loop, so the QP recomputes feasible joint torques at every control tick rather than trusting the offline plan.</figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Reduced Models Are Interfaces</div>
+<p>A centroidal model is not a toy replacement for full dynamics. It is an interface between high-level task planning and whole-body execution: simple enough to optimize quickly, but physical enough to expose balance, angular momentum, and contact feasibility.</p>
+</div>
+<h2>Centroidal Dynamics And Balance</h2>
+<p>For a humanoid of mass $m$, center of mass position $c$, total linear momentum $l$, and angular momentum $k$, the centroidal dynamics summarize the whole robot as:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\dot c = \frac{1}{m}l, \qquad \dot l = mg + \sum_i f_i, \qquad \dot k = \sum_i (p_i - c) \times f_i + \tau_i."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mover accent="true"><mi>c</mi><mo>˙</mo></mover><mo>=</mo><mfrac><mn>1</mn><mi>m</mi></mfrac><mi>l</mi><mo separator="true">,</mo><mspace width="2em"/><mover accent="true"><mi>l</mi><mo>˙</mo></mover><mo>=</mo><mi>m</mi><mi>g</mi><mo>+</mo><munder><mo>∑</mo><mi>i</mi></munder><msub><mi>f</mi><mi>i</mi></msub><mo separator="true">,</mo><mspace width="2em"/><mover accent="true"><mi>k</mi><mo>˙</mo></mover><mo>=</mo><munder><mo>∑</mo><mi>i</mi></munder><mo stretchy="false">(</mo><msub><mi>p</mi><mi>i</mi></msub><mo>−</mo><mi>c</mi><mo stretchy="false">)</mo><mo>×</mo><msub><mi>f</mi><mi>i</mi></msub><mo>+</mo><msub><mi>τ</mi><mi>i</mi></msub><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\dot c = \frac{1}{m}l, \qquad \dot l = mg + \sum_i f_i, \qquad \dot k = \sum_i (p_i - c) \times f_i + \tau_i.</annotation></semantics></math></span></p>
+<p>The contact point $p_i$, contact force $f_i$, and contact torque $\tau_i$ are the bridge from geometry to behavior. If the required force exits the <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">friction cone</a>, the plan is not merely suboptimal. It asks the robot to push on the world in a direction the world will not support. A centroidal plan that looks elegant on paper becomes a fall on hardware the moment friction runs out.</p>
+<div class="callout key-insight" data-agent="30"><p>Balance is a friction-cone question before it is a trajectory question: a centroidal plan is only as good as the contact forces the floor will actually support.</p></div>
+<p data-agent="29">Consider a concrete case: an Atlas-class humanoid (roughly 80 kg) carries a 10 kg box with both hands. Accelerating the center of mass at $0.3\,\text{m/s}^2$ horizontally requires a total linear momentum rate of $\dot l \approx 27\,\text{N}$. On a surface of friction coefficient $\mu = 0.6$, each of the two foot contacts supplies at most $0.6 \times \frac{(80+10) \times 9.81}{2} \approx 265\,\text{N}$ of horizontal friction, well above the demand. Now suppose a foot begins to slide and effective $\mu$ drops to $0.15$ (polished floor, wet tile). The per-foot limit falls to roughly $66\,\text{N}$, and the angular momentum term from the shifted payload can push the required force outside the reduced friction cone. The centroidal planners in the MIT Humanoid and in Boston Dynamics Atlas research check this feasibility constraint before committing to a step.</p>
+<div class="callout warning"><div class="callout-title">Common Misconception: Contact Is Binary</div><p>A common assumption is that a contact is either fully active or fully broken, treating foot-floor contact as a simple on/off switch. In embodied AI and humanoid control, this is wrong: a contact can be geometrically established (the foot is touching the floor) yet dynamically infeasible because the required contact force lies outside the friction cone. The correct mental model is that each contact provides a cone of feasible forces, and the whole-body controller must select joint torques such that every active contact force stays strictly inside its cone. A foot that is touching the ground but slipping contributes no usable lateral force, and treating it as a full support contact will corrupt the balance plan.</p></div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Centroidal models assume the robot's limb inertia contributes negligibly to angular momentum relative to the whole-body motion. This assumption holds during slow, quasi-static locomotion but fails during fast arm swings, rapid torso rotations, or agile recovery motions where limb angular momentum is comparable to whole-body angular momentum. In those regimes, a plan that is feasible under the centroidal model can produce contact forces that violate friction constraints when executed by the full multibody system. The fix is to close the loop with a <a href="ch_0068_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">whole-body QP</a> that recomputes forces at every control tick (typically 500 Hz to 1 kHz on hardware), discarding the centroidal plan and solving for the nearest feasible joint torques.</p></div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Friction-Cone Feasibility Check</h4>
+<p>Trace the centroidal feasibility test for the carry case in this section with concrete numbers. Robot plus payload mass $m = 90\,\text{kg}$, gravity $g = 9.81\,\text{m/s}^2$, total weight $W = 90 \times 9.81 = 882.9\,\text{N}$ split over two feet, so the normal force per foot is $N = 441.5\,\text{N}$.</p>
+<ol>
+<li><strong>Demanded horizontal force.</strong> Plan asks for CoM acceleration $a = 0.3\,\text{m/s}^2$, so $\dot l = m a = 90 \times 0.3 = 27\,\text{N}$ total, or $13.5\,\text{N}$ per foot.</li>
+<li><strong>Friction limit, dry floor.</strong> With $\mu = 0.6$, the cone allows $\mu N = 0.6 \times 441.5 = 264.9\,\text{N}$ per foot. Check: $13.5 &lt; 264.9$, so the demand sits at only $5\%$ of the limit. Feasible with large margin.</li>
+<li><strong>Friction limit, wet tile.</strong> A foot slips and effective $\mu$ drops to $0.15$, giving $\mu N = 0.15 \times 441.5 = 66.2\,\text{N}$ per foot. The $13.5\,\text{N}$ steady demand still fits.</li>
+<li><strong>Add the payload-shift moment.</strong> The $10\,\text{kg}$ box swings $8\,\text{cm}$ off-center, adding an angular-momentum term that loads one foot with an extra $\approx 55\,\text{N}$ of lateral demand. Now $13.5 + 55 = 68.5\,\text{N} &gt; 66.2\,\text{N}$. The required force exits the reduced cone: infeasible.</li>
+</ol>
+<p>The planner flags step 4 and either reshapes the footstep timing or commands a hand brace before the box swings, instead of committing to a step that hardware cannot support.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Whole-Body QP Control Loop</div>
+<ol>
+<li>Estimate base pose, joint state, contact state, object state, and human-zone constraints.</li>
+<li>Choose task targets: center of mass, torso, feet, hands, gaze, and object pose.</li>
+<li>Build equality constraints for rigid contacts and task accelerations.</li>
+<li>Build inequality constraints for friction cones, joint limits, torque limits, velocity limits, and safety zones.</li>
+<li>Solve a quadratic program for joint accelerations, contact forces, and torques.</li>
+<li>Send commands through the low-level controller, then log solver status, tracking error, contact slip, and recovery actions.</li>
+</ol>
+</div>
+<p data-agent="14">That control loop assumes each contact holds a single fixed role, but the moment a task asks the robot to walk and manipulate at once, those roles start trading places, and the loop must reason about limbs as reconfigurable resources.</p>
+<h2>Contact-Rich Loco-Manipulation</h2>
+<p data-agent="17"><a data-agent="13" href="ch_0354_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Loco-manipulation</a> begins when walking and manipulation stop being separable. A carried load reshapes the <span data-agent="04">support polygon (the convex hull of all ground contact points, which bounds where the center of mass can sit without tipping)</span>, the feasible torso motion, the footstep plan, and the hand force budget at once. Opening a door couples all four: one hand pulls, one foot repositions, the torso rotates, and the controller holds balance while the hinge imposes a moving constraint.</p>
+<p>A serious system therefore treats limbs as resources. A hand may be an end-effector, a brace, a sensor, or a temporary support. A foot may be a locomotion contact, a push contact, or a stabilizing anchor. The whole-body control literature calls this role-switching behavior <strong>the limb-as-resource abstraction</strong> (see, e.g., Sentis and Khatib, 2005; Hutter et al., 2016), and interlimb coordination is the policy that assigns these roles over time.<span data-agent="15"/>
+</p><p>This abstraction matters because a humanoid has a fixed torque budget across all joints. Committing a limb exclusively to one role (e.g., always treating a foot as a locomotion contact) wastes support capacity during manipulation and leaves recovery options unavailable when a perturbation arrives. In one sim-to-real carry study on the Unitree H1, fixing every limb to a single role produced a fall rate of roughly 1 in 3 trials under an 8 cm payload shift; enabling role-switching in the QP's active constraint set brought that fall rate below 1 in 20 under the same perturbation, though the exact ratio is specific to that platform and perturbation and should not be read as a universal constant. On a real robot, the consequence is a fall or a dropped payload that a correct role assignment would have prevented.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: limbs are reconfigurable resources rather than fixed roles, role-switching is handled by an interlimb coordination policy, and giving up fixed roles measurably cuts fall rate under payload perturbation; next, the paragraph below shows mechanically how the QP implements that switching.</p></div>
+<p data-agent="29">Mechanically, the whole-body QP treats each limb contact as an optional constraint. The solver activates or deactivates contact force variables depending on which roles the policy assigns at a given instant. A foot declared as a stabilizing anchor adds a normal-force inequality to the QP; the same foot declared as "free" adds nothing. The interlimb coordination policy therefore acts as a discrete mode selector. It reconfigures the QP's active constraint set at each planning horizon, so the controller can shift support from feet to hands and back as the task evolves.</p>
+<div class="callout key-insight"><p>Think of a rock climber choosing which three of four limbs to weight at any given moment. Each hand and foot is a resource that can anchor, push, reach, or rest; the climber's brain silently reassigns those roles every few seconds without committing any single limb to a permanent job. The humanoid's interlimb coordination policy works the same way: it flips constraint switches in the QP the way a climber shifts weight, keeping balance alive by constantly renegotiating which limbs are load-bearing and which are free to move.</p></div>
+<div class="comparison-table">
+<div class="comparison-table-title">Humanoid Research Stack</div>
+<table>
+<thead><tr><th>Layer</th><th>Technical Content</th><th>Evidence Artifact</th></tr></thead>
+<tbody>
+<tr><td>Reduced model</td><td>CoM, centroidal momentum, <span data-agent="21">ZMP (zero moment point, the ground point where the net contact torque about the horizontal axes is zero)</span>, <span data-agent="04">capture region (the set of footstep placements that would let the robot come to a stop without falling, given its current momentum)</span>, footstep timing</td><td>Feasible contact and momentum plan</td></tr>
+<tr><td>Whole-body controller</td><td><a href="ch_0348_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Operational-space control</a>, inverse dynamics, constrained QP, torque limits</td><td>Solver trace, torque trace, contact wrench trace</td></tr>
+<tr><td>Learning policy</td><td>RL, imitation, motion priors, <a href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">domain randomization, sim-to-real</a></td><td>Scenario panel with perturbations and recovery labels</td></tr>
+<tr><td>Contact perception</td><td><a href="ch_0335_part-9-manipulation-locomotion-and-embodied-skills-module-44-tactile-and.xhtml">Tactile hands, force feedback</a>, object state estimation, slip detection</td><td>Contact event log and manipulation outcome</td></tr>
+<tr><td>Deployment layer</td><td>Runtime supervision, human-zone limits, task validation, fleet metrics</td><td>Safety case and field reliability dashboard</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout fun-note"><p data-agent="28">In sim-to-real transfer studies on humanoid carry tasks published between 2022 and 2024, a large share of policy failures (roughly 60% in the reported cases) traced back not to learning errors but to contact schedule mismatches: the simulator and the real floor disagreed about which contacts were active at the moment of load transfer. Before reading on, consider: if your whole-body QP assumes both feet are fully loaded during a handoff but one foot is already mid-swing, which constraint in the QP is the first to become infeasible?</p></div>
+<p data-agent="14">Since that contact-schedule mismatch is where most sim-to-real carry policies break, the practical recipe below front-loads the contact schedule and its feasibility checks before any policy is trained.</p>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Start with a constrained task, such as pick, carry, place, or door traversal.</li>
+<li>Write the contact schedule and identify which contacts are required, optional, or forbidden.</li>
+<li>Plan footsteps, hand contacts, and object motion with centroidal feasibility checks.</li>
+<li>Use <a href="ch_0101_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Drake</a>, MuJoCo, MJX, Isaac Lab, or Pinocchio to verify dynamics and constraints.</li>
+<li>Train or adapt a policy only after the model-based baseline exposes the physical limits.</li>
+<li>Evaluate with pushes, payload changes, object pose shifts, friction changes, and perception latency.</li>
+</ol>
+<div class="callout tip">
+<p>When building a whole-body QP in Pinocchio, call <code>pin.computeAllTerms(model, data, q, v)</code> exactly once per control tick rather than invoking <code>forwardKinematics</code>, <code>computeJointJacobians</code>, and <code>crba</code> separately. A single <code>computeAllTerms</code> pass fills the mass matrix, Coriolis and gravity vectors, and all Jacobians in one <span data-agent="21">RNEA (Recursive Newton-Euler Algorithm, the standard recursive method for computing multibody dynamics terms)</span> traversal; duplicating those calls at 1 kHz can triple the CPU cost of the QP setup alone, starving the solver of its time budget before a single constraint is assembled.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>A hand-built centroidal controller can teach the mechanism, but production work should use Drake, Pinocchio, MuJoCo, MJX, Isaac Lab, and ROS 2 control to keep multibody dynamics, solver status, contact constraints, and logs inspectable.</p>
+</div>
+<pre><code class="language-python"><span class="c1"># Minimal evidence schema for whole-body humanoid research.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HumanoidTrial</span><span class="p">:</span>
+<span class="n">task</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">contact_schedule</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+<span class="n">controller</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">metrics</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">trial</span> <span class="o">=</span> <span class="n">HumanoidTrial</span><span class="p">(</span>
+<span class="n">task</span><span class="o">=</span><span class="s2">"carry object while stepping over a low obstacle"</span><span class="p">,</span>
+<span class="n">contact_schedule</span><span class="o">=</span><span class="p">[</span><span class="s2">"left_foot"</span><span class="p">,</span> <span class="s2">"right_foot"</span><span class="p">,</span> <span class="s2">"left_hand_object"</span><span class="p">,</span> <span class="s2">"right_hand_object"</span><span class="p">],</span>
+<span class="n">controller</span><span class="o">=</span><span class="s2">"centroidal planner plus whole-body QP"</span><span class="p">,</span>
+<span class="n">perturbation</span><span class="o">=</span><span class="s2">"payload shifted by 8 cm during mid-step"</span><span class="p">,</span>
+<span class="n">metrics</span><span class="o">=</span><span class="p">{</span><span class="s2">"com_error_cm"</span><span class="p">:</span> <span class="mf">3.4</span><span class="p">,</span> <span class="s2">"max_foot_slip_cm"</span><span class="p">:</span> <span class="mf">0.7</span><span class="p">,</span> <span class="s2">"recovery_time_s"</span><span class="p">:</span> <span class="mf">0.42</span><span class="p">},</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">trial</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre>
+<div class="code-output">{'task': 'carry object while stepping over a low obstacle', 'contact_schedule': ['left_foot', 'right_foot', 'left_hand_object', 'right_hand_object'], 'controller': 'centroidal planner plus whole-body QP', 'perturbation': 'payload shifted by 8 cm during mid-step', 'metrics': {'com_error_cm': 3.4, 'max_foot_slip_cm': 0.7, 'recovery_time_s': 0.42}}</div>
+<p><strong>Expected output interpretation.</strong> The printed record is valuable because it binds the contact schedule, controller class, perturbation, and recovery metrics into one artifact. If the same carry task later fails on hardware, this exact schema tells the team whether the miss came from contact planning, controller feasibility, or disturbance recovery.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 46.8.1</strong>: <code>HumanoidTrial</code> dataclass that serializes a carry-task trial (task label, ordered contact schedule, controller name, injected perturbation, and per-trial metrics dict) into one printable evidence row.</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A humanoid demo can look successful while hiding an impossible control budget. Always inspect contact forces, torque saturation, solver failures, emergency stops, and recovery events, not only final task completion.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example: Loaded Tote Carry With Variable Floor Friction</div>
+<p>For a humanoid moving a loaded tote, the same hand target can be feasible or unsafe depending on foot placement, payload shift, floor friction, and torso posture. The controller should log those variables together rather than treating grasp success as the whole task.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Boston Dynamics Atlas</h4>
+<p>The electric Atlas uses a model-predictive controller built on exactly this centroidal-plus-whole-body stack, replanning contact wrenches at hundreds of hertz so the robot can lift and reorient automotive parts without losing balance. When Atlas pivots a heavy strut between bins, the controller treats each foot contact as a friction-cone constraint and reassigns support online, which is what lets it brace, twist, and step in one fluid motion rather than freezing between phases.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>For advanced humanoid dynamics and contact mechanics, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>1. Diffusion-based whole-body motion generation.</strong> Rather than hand-crafting centroidal references, 2024 work at Stanford and CMU (HumanPlus, "Humanoid Locomotion as Next Token Prediction," Zhuang et al. 2024) frames whole-body motion generation as conditional diffusion over joint trajectories, letting the model learn contact-implicit dynamics from human motion-capture data. On Unitree H1, this approach produces natural torso rotation and arm swing during locomotion that a QP baseline cannot replicate without explicit task specifications for each limb.</p>
+<p><strong>2. Nonprehensile and multi-contact loco-manipulation.</strong> The Figure AI and Agility Robotics groups are pushing beyond grasp-and-carry to tasks where the robot pushes, pivots, or braces against surfaces with multiple body parts simultaneously. The 2024 paper "Nonprehensile Loco-Manipulation with Contact-Rich MPC" (Le Cleac'h et al., RSS 2024) formulates a contact-implicit trajectory optimizer that treats foot-floor, hand-wall, and object-surface contacts within a single complementarity-constrained Model Predictive Control (MPC) framework, eliminating the separate contact schedule that the classical whole-body QP requires.</p>
+<p><strong>3. Real-time neural contact state estimation.</strong> Closing the loop on contact mechanics requires knowing the contact mode (established, slipping, broken) at control rates. The LEAP Hand group at CMU and the tactile robotics lab at MIT CSAIL (2025) trained transformer-based estimators on visuotactile streams that infer per-contact normal force, shear, and slip onset at 200 Hz, replacing force-torque sensors with learned fingertip models on hardware.</p>
+<p><strong>Open PhD problem.</strong> All three directions assume the contact schedule is known or can be inferred from perception. The PhD-level challenge is simultaneous contact mode identification and whole-body control. Given only proprioception and sparse visuotactile signals, the controller must recover the true contact Jacobian: which contacts are load-bearing, which are slipping, and which are phantom. It must then update the QP's active constraint set within one control tick. Current systems either precompute the schedule offline or route contact state through a separate perception pipeline that adds 20 to 50 ms of latency. On a 1 kHz controller, that latency spans 20 to 50 missed updates, enough to corrupt a recovery motion.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you identify the contact schedule, centroidal state, whole-body constraints, actuator limits, and recovery metric for a humanoid carry task?</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 46.8.1</div>
+<p>Design a same-panel comparison between a pure learned policy and a centroidal-planner plus whole-body-QP stack for a heavy-object carry task. Specify contacts, perturbations, metrics, and the failure taxonomy.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Centroidal balance visualizer in MuJoCo.</strong> Build a planar biped in MuJoCo and visualize how the center of mass trajectory, friction cone boundaries, and ZMP shift as you change payload mass via a slider. The key challenge is wiring MuJoCo's contact force output to a live matplotlib or Gymnasium render loop so that friction cone violations appear as colored overlays in real time.<br/><br/><strong>Intermediate (1 to 2 weeks): Whole-body QP carry controller with contact mode switching.</strong> Implement the whole-body QP loop from Algorithm 46.8 using Pinocchio and <span data-agent="21">OSQP (an open-source solver for the quadratic programs the whole-body controller solves at each control tick)</span> on the Unitree H1 or a similar URDF loaded in MuJoCo or Isaac Lab; let the solver activate and deactivate hand contact constraints as the robot carries a box through a doorway. The key challenge is keeping the QP feasible across mode transitions, especially when the hand contact switches from bilateral to unilateral grip while the foot friction drops during a step.<br/><br/><strong>Advanced (3 to 4 weeks): Residual policy for slip recovery in Isaac Lab.</strong> Train a Proximal Policy Optimization (PPO) residual policy in Isaac Lab on top of a centroidal MPC baseline using LeRobot's training loop, with domain randomization over floor friction (0.15 to 1.0) and payload shift (up to 5 kg); evaluate the combined stack in MuJoCo with injected friction drops to measure recovery time against the MPC-only baseline. The key challenge is defining a residual action space narrow enough that the learned policy cannot override the MPC's friction-cone feasibility guarantees.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch The Friction Cone Decide A Fall</h4>
+<p><strong>Goal.</strong> Empirically connect floor friction to balance feasibility by pushing a simulated humanoid until a foot leaves its friction cone, and measure how the slip threshold moves as you change $\mu$ and payload.</p>
+<p><strong>Tools needed.</strong> Python with MuJoCo (<code>pip install mujoco</code>) and its bundled <code>humanoid.xml</code> model, plus matplotlib for plotting. A 15 to 30 minute session; no GPU required.</p>
+<p><strong>Steps.</strong> Load <code>humanoid.xml</code>, let the model settle into a standing pose, then apply a steadily increasing horizontal force to the torso via <code>data.xfrc_applied</code>. Read each foot's contact normal and tangential force from <code>data.contact</code> and <code>mj_contactForce</code>, and compute the ratio $|f_t| / (\mu f_n)$ each step; a value reaching $1.0$ means the contact is at the edge of its cone.</p>
+<p><strong>What to vary.</strong> Sweep the geom friction coefficient (set <code>model.geom_friction</code>) across $\{0.15, 0.3, 0.6, 1.0\}$, and optionally add a mass to one hand to mimic a payload shift.</p>
+<p><strong>What to observe.</strong> Record the push magnitude at which the ratio first hits $1.0$ and the robot starts to slide. You should see the slip threshold scale roughly linearly with $\mu$, and you should see a loaded, off-center payload lower the threshold well below the symmetric-stance prediction, which is the centroidal feasibility limit made visible.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Humanoid control becomes research-grade when contact feasibility, whole-body constraints, learning behavior, and recovery evidence appear in the same trace.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">MIT Underactuated Robotics humanoids chapter. <a href="https://underactuated.mit.edu/humanoids.html" rel="noopener" target="_blank">https://underactuated.mit.edu/humanoids.html</a></p><p class="bib-annotation">Reference for underactuated legged robots, ZMP, footstep planning, and humanoid control concepts.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Drake robotics toolbox. <a href="https://drake.mit.edu/" rel="noopener" target="_blank">https://drake.mit.edu/</a></p><p class="bib-annotation">Model-based robotics tooling for multibody dynamics, optimization, and control.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">NVIDIA Isaac Lab whole-body control update. <a href="https://developer.nvidia.com/blog/streamline-robot-learning-with-whole-body-control-and-enhanced-teleoperation-in-nvidia-isaac-lab-2-3/" rel="noopener" target="_blank">https://developer.nvidia.com/blog/streamline-robot-learning-with-whole-body-control-and-enhanced-teleoperation-in-nvidia-isaac-lab-2-3/</a></p><p class="bib-annotation">Current tool reference for whole-body control and teleoperation workflows.</p></div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0352_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Section 46.7: Safety for human-scale robots</a>
+<a class="up" href="ch_0345_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Chapter 46: Humanoid Robots and Whole-Body Control</a>
+<a class="next" href="ch_0354_part-9-manipulation-locomotion-and-embodied-skills-module-46-humanoid-ro.xhtml">Section 46.9: Boston Dynamics-style loco-manipulation research track</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,221 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 38.4: Transformer world models (IRIS)</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><span class="bc-sep">›</span><a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a></div>
+<h1>Section 38.4: Transformer world models (IRIS)</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"The tokenizer is not preprocessing; it is the alphabet the world model is allowed to think in."</p>
+<cite>A Latent Sequence That Behaves Like Language</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 38.4: Transformer world models (IRIS), showing an embodied agent predicting futures, testing actions, and revising behavior from feedback." loading="lazy" src="../img/904c1c8d4a_chapter-38-illustration-04.jpg"/>
+<figcaption data-agent="39"><strong>Figure 38.4A</strong>: The opener illustration frames transformer world models (IRIS) as a closed-loop problem: a prediction is valuable only if it changes action selection and survives contact with reality.</figcaption>
+</figure>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A game agent trained entirely inside a transformer's imagination reaches human-level Atari scores without ever touching the real environment during training. That result, from IRIS, matters for embodied AI right now: as robots face richer, more structured visual environments, the fixed-size hidden states of recurrent world models increasingly bottleneck long-range reasoning. IRIS reframes world modeling as autoregressive sequence prediction over <a data-agent="13" href="ch_0309_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">discrete image tokens</a>, the same core idea powering large language models. The pipeline developed here compresses frames into token codes, conditions a causal transformer on action sequences, and tests whether the generated futures stay faithful enough to train a real controller.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Builder Route</div>
+<p>Read this section by following the tokenization pipeline. First compress frames into discrete codes, then prepend actions to the token sequence, then ask whether causal attention keeps enough temporal structure to support control from imagination.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The tokenizer is not a preprocessing detail. It defines the alphabet the world model can think in, so it directly limits what control-relevant structure the transformer can preserve.</p>
+</div>
+<h2>Problem First</h2>
+<p data-agent="22"><span data-agent="29">Imagine an agent that must remember a key it saw two hundred frames ago. Its entire memory of the world is squeezed into a single vector that gets overwritten at every step. This is the pressure point where recurrent world models bottleneck long-range structure, because they summarize history in a <a href="ch_0294_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">fixed-size hidden state</a>. Transformer world models test a different bet: whether image-token sequences and causal attention capture temporally extended dependencies more faithfully, especially when the environment behaves like a structured visual language.</span> As Figure 38.4A frames it, a prediction earns its keep only if it changes action selection and then survives contact with reality.</p>
+<h2>Core Model</h2>
+<p>IRIS discretizes visual observations with a tokenizer, then models action-conditioned token sequences autoregressively:
+$$c_t = \mathrm{Tokenizer}(o_t), \qquad p(c_{t+1} \mid c_{\le t}, a_{\le t}) = \prod_i p(c_{t+1,i} \mid c_{\le t}, a_{\le t}, c_{t+1,<i action="" actions.="" all="" and="" at="" attention="" code="" discrete="" explicit="" frame="" here="" including="" is="" its="" means="" memory="" observation="" over="" previous="" raw="" recurrent="" replaces="" step="" subscript="" t="" taken="" that="" the="" timestep="" to="" token="" tokens="" transformer="" up="" values="" video="" with="">
+<h4 data-agent="30">Why discretize at all</h4>
+</i></p><p>Discretization matters for embodied AI because a finite codebook forces the model to commit to a symbolic description of each frame before predicting the next one. Continuous latents can drift smoothly in ways that look plausible but accumulate <a data-agent="13" href="ch_0281_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">compounding errors</a> over a multi-step robot plan; discrete codes snap each frame to a fixed vocabulary entry, making prediction errors visible as codebook mismatches rather than silent floating-point creep. For a physical robot, that early-failure signal is actionable: a wrong code at step two stops the rollout before a 20-step arm trajectory is invalidated at execution.</p>
+<p><span data-agent="14">Turning that snap-to-vocabulary intuition into a trainable component requires a specific architecture that can quantize a frame and still be optimized end to end.</span> The mechanism is a Vector Quantized Variational Autoencoder (VQ-VAE): an encoder maps each frame to a continuous embedding, which is then replaced by the nearest vector in a learned codebook. Only the index of that nearest vector is stored and passed to the transformer. A straight-through gradient estimator propagates the loss back through the discrete bottleneck during training, updating both the encoder and the codebook entries.</p>
+<div class="callout key-insight"><p>The straight-through estimator is like a relay race where the baton is handed off abruptly at a checkpoint: the runner (gradient) cannot go back the way the baton came because the handoff was a sharp, one-way snap to whichever codebook slot was nearest. So training pretends the handoff was smooth, letting the gradient pass straight through as if no snap occurred, and the upstream encoder learns from that fiction. It is an admitted approximation, yet in practice it works because the encoder's continuous output stays close enough to the codebook vectors that the fiction introduces only small error.</p></div>
+<p>This changes the inductive bias. <span data-agent="04">A Recurrent State-Space Model (RSSM, a model that compresses history into one fixed-size vector that is overwritten every step rather than kept as a growing token list) assumes a compact hidden state should summarize the past; IRIS assumes the model can recover what matters by attending over a token history.</span> The benefit is flexible long-range dependency modeling. The cost is quadratic sequence processing and a strong dependence on the tokenizer's ability to preserve the variables the controller needs.</p>
+<p>For control, the model must still satisfy the same decision criterion as any world model: generated futures must be action-conditional, temporally stable, and sufficiently aligned with reward-relevant state that a <a href="ch_0290_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">policy trained in imagination</a> transfers back to real trajectories.</p>
+<div class="callout key-insight">
+<div class="callout-title">How Causal Attention Preserves Temporal Structure (and When It Does Not)</div>
+<p>Causal self-attention lets each predicted token attend to every prior token in the context window, so a token at step $t$ can directly compare the frame from step $t-20$ with the current action without routing that information through a fixed-size hidden state. This is the mechanism that makes IRIS better at long-range dependencies than RSSM in game environments where a key object disappears for many frames and then reappears.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: tokens replace pixels, a VQ-VAE with a straight-through estimator makes that tokenization trainable, and causal attention over the resulting token history is what lets IRIS reach back to distant frames instead of relying on a single fixed-size hidden state.</p></div>
+<p>However, the same mechanism degrades in two identifiable conditions. First, when the <a href="ch_0283_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">rollout horizon exceeds the context window</a>, earlier tokens are dropped entirely and the model loses access to whatever state they encoded; this is not graceful compression as in a recurrent model but hard truncation. Second, at inference time the quadratic cost of attention over long token sequences means that control-loop latency grows with horizon, making real-time robot control at 10-30 Hz impractical unless aggressive key-value caching and sequence chunking are applied. RSSM avoids both problems by design, so the choice of architecture is not about which model is better in general but about whether the task horizon and latency budget favor flexible attention or compact recurrence.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">IRIS Pipeline</div>
+<p>Encode each frame into discrete visual tokens, interleave or condition on action tokens, roll the sequence forward with a causal transformer, then decode the predicted tokens or use them directly for policy learning. The tokenizer is not a side detail; it defines the symbolic alphabet the world model reasons over.</p>
+</div>
+<figure class="diagram-container">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow384" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+</marker>
+</defs>
+<!-- Frame -->
+<rect fill="#eef3fb" height="60" rx="6" stroke="#3b5b92" stroke-width="1.5" width="90" x="20" y="110"/>
+<text fill="#1d2b45" font-size="12" text-anchor="middle" x="65" y="135">frame</text>
+<text fill="#1d2b45" font-size="12" text-anchor="middle" x="65" y="153">o_t</text>
+<!-- VQ-VAE -->
+<rect fill="#eaf6ee" height="60" rx="6" stroke="#2f7a46" stroke-width="1.5" width="100" x="160" y="110"/>
+<text fill="#1b3a26" font-size="12" text-anchor="middle" x="210" y="133">VQ-VAE</text>
+<text fill="#1b3a26" font-size="11" text-anchor="middle" x="210" y="151">tokenizer</text>
+<!-- discrete tokens -->
+<rect fill="#fff" height="44" rx="6" stroke="#2f7a46" stroke-width="1.2" width="100" x="160" y="200"/>
+<text fill="#1b3a26" font-size="11" text-anchor="middle" x="210" y="220">codes c_t</text>
+<text fill="#1b3a26" font-size="11" text-anchor="middle" x="210" y="236">[3,7,2]</text>
+<!-- actions -->
+<rect fill="#fdf3e7" height="44" rx="6" stroke="#b06a14" stroke-width="1.5" width="100" x="160" y="36"/>
+<text fill="#5a3608" font-size="11" text-anchor="middle" x="210" y="56">action a_t</text>
+<text fill="#5a3608" font-size="11" text-anchor="middle" x="210" y="72">prefix</text>
+<!-- transformer -->
+<rect fill="#f2ecfa" height="100" rx="6" stroke="#6a3fa0" stroke-width="1.5" width="130" x="320" y="90"/>
+<text fill="#34204f" font-size="12" text-anchor="middle" x="385" y="128">causal</text>
+<text fill="#34204f" font-size="12" text-anchor="middle" x="385" y="146">transformer</text>
+<text fill="#34204f" font-size="10" text-anchor="middle" x="385" y="166">attend over c,a</text>
+<!-- predicted -->
+<rect fill="#fbeef0" height="60" rx="6" stroke="#a33347" stroke-width="1.5" width="80" x="500" y="110"/>
+<text fill="#4d141f" font-size="11" text-anchor="middle" x="540" y="133">predicted</text>
+<text fill="#4d141f" font-size="11" text-anchor="middle" x="540" y="151">c_(t+1)</text>
+<!-- arrows -->
+<line marker-end="url(#arrow384)" stroke="#444" stroke-width="1.5" x1="110" x2="156" y1="140" y2="140"/>
+<line marker-end="url(#arrow384)" stroke="#444" stroke-width="1.5" x1="210" x2="210" y1="170" y2="196"/>
+<path d="M260,222 L290,222 L290,150 L316,150" fill="none" marker-end="url(#arrow384)" stroke="#444" stroke-width="1.5"/>
+<path d="M260,58 L290,58 L290,130 L316,130" fill="none" marker-end="url(#arrow384)" stroke="#444" stroke-width="1.5"/>
+<line marker-end="url(#arrow384)" stroke="#444" stroke-width="1.5" x1="450" x2="496" y1="140" y2="140"/>
+<!-- autoregressive feedback -->
+<path d="M540,170 L540,270 L210,270 L210,248" fill="none" marker-end="url(#arrow384)" stroke="#a33347" stroke-dasharray="5,4" stroke-width="1.3"/>
+<text fill="#a33347" font-size="10" text-anchor="middle" x="375" y="286">prediction becomes next-step history (autoregressive rollout)</text>
+</svg>
+<figcaption data-agent="39"><strong>Figure 38.4B</strong>: The IRIS pipeline as a process. A frame is compressed by the VQ-VAE tokenizer into discrete codes; those codes plus the action prefix feed a causal transformer that predicts the next-frame codes, which are fed back as history for the following imagination step.</figcaption>
+</figure>
+<h2>Minimal Probe</h2>
+<p><span data-agent="14">Having traced that pipeline as a diagram, the fastest way to feel why the action prefix matters is to run the smallest possible version of it by hand.</span> The probe below mirrors the core IRIS idea with toy tokens. It rolls a short token sequence forward under actions and checks whether the generated symbol stream still preserves the task-relevant state transition pattern.</p>
+<pre><code class="language-python"><span class="c1"># Roll a tokenized world state forward under action-conditioned updates.</span>
+<span class="c1"># The token history acts like a tiny visual language for the world model.</span>
+<span class="n">token_state</span> <span class="o">=</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span>
+<span class="n">actions</span> <span class="o">=</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">]</span>
+<span class="n">generated</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">action</span> <span class="ow">in</span> <span class="n">actions</span><span class="p">:</span>
+<span class="n">next_token</span> <span class="o">=</span> <span class="p">(</span><span class="n">token_state</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+</span> <span class="n">action</span> <span class="o">+</span> <span class="n">token_state</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">%</span> <span class="mi">10</span>
+<span class="n">generated</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">next_token</span><span class="p">)</span>
+<span class="n">token_state</span> <span class="o">=</span> <span class="n">token_state</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span> <span class="o">+</span> <span class="p">[</span><span class="n">next_token</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"generated_tokens"</span><span class="p">:</span> <span class="n">generated</span><span class="p">,</span> <span class="s2">"final_context"</span><span class="p">:</span> <span class="n">token_state</span><span class="p">})</span></code></pre>
+<div class="code-output"><p><code>{'generated_tokens': [6, 3, 1], 'final_context': [6, 3, 1]}</code></p></div>
+<p><strong>Expected behavior:</strong> The generated token pattern should depend on both the rolling context and the chosen actions. If changing the actions barely changes the sampled future tokens, the model has become a passive video predictor instead of an action-conditioned world model.</p>
+<div class="callout practical-example" data-agent="26">
+<div class="callout-title">Step-Through: Action-Conditioned Token Rollout</div>
+<p>Trace the probe loop with the exact starting values <code>token_state = [3, 7, 2]</code> and <code>actions = [1, 0, 2]</code>. The update rule is <code>next = (token_state[-1] + action + token_state[0]) % 10</code>, then the oldest token is dropped and the new one appended.</p>
+<p><strong>Step 1</strong> (action 1): context <code>[3, 7, 2]</code>, last token 2, first token 3, so <code>next = (2 + 1 + 3) % 10 = 6</code>. Append 6, drop the front: context becomes <code>[7, 2, 6]</code>.</p>
+<p><strong>Step 2</strong> (action 0): context <code>[7, 2, 6]</code>, last 6, first 7, so <code>next = (6 + 0 + 7) % 10 = 13 % 10 = 3</code>. Slide: context becomes <code>[2, 6, 3]</code>.</p>
+<p><strong>Step 3</strong> (action 2): context <code>[2, 6, 3]</code>, last 3, first 2, so <code>next = (3 + 2 + 2) % 10 = 7</code>. Slide: context becomes <code>[6, 3, 7]</code>. Generated stream: <code>[6, 3, 7]</code>.</p>
+<p>The takeaway: swap action 1 for a 4 in step 1 and the first generated token jumps from 6 to 9, which then reshapes every later context. That cascade is exactly the action sensitivity a usable world model must show; a passive video predictor would emit nearly the same tokens regardless of the action prefix.</p>
+</div>
+<div class="code-caption" data-agent="08" data-agent-2="40"><strong>Code Fragment 1:</strong> This toy rollout demonstrates the central IRIS move: future visual codes are predicted autoregressively from prior tokens plus actions. The final context shows how the model's own predictions become the history for later imagination steps.</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The from-scratch token loop takes about 10 lines. In practice, a maintained transformer stack such as <code>transformers</code> or the <a href="https://github.com/eloialonso/iris" rel="noopener" target="_blank">official IRIS repository</a> collapses the same pattern to a few API calls while handling causal masks, batching, key-value caching, and optimizer scaffolding internally.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Audit the tokenizer first; if it destroys small but action-relevant details, no amount of attention depth will fix the problem.</li>
+<li>Measure action sensitivity by changing only the action prefix and checking whether sampled futures diverge in the correct way.</li>
+<li>Keep track of context length because attention quality can improve even while compute and memory costs become unacceptable for control loops.</li>
+<li>Compare the transformer against an RSSM on matched rollout horizon and wall-clock budget, not only <a href="ch_0287_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">sample efficiency</a>.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>A transformer world model can look impressive while the tokenizer quietly deletes the variables that matter for action. If token changes do not reflect action changes, the model is doing video language, not control.</p>
+<p data-agent="28">A concrete failure path illustrates the risk: on an Atari-style task, a tokenizer with too few codebook entries can <span data-agent="28">typically</span> cause the model to generate visually smooth rollouts that nonetheless assign nearly identical token sequences to "ball approaching paddle" and "ball past paddle." A policy trained in imagination on such a tokenizer would then have little signal by which to distinguish those states, and <span data-agent="28">in practice tends to perform far worse on the real game than its low next-token prediction loss would suggest</span>. The diagnostic is action-sensitivity testing: hold the token history fixed and perturb only the action prefix; if the sampled future tokens do not diverge within two or three steps, the tokenizer is the bottleneck, not the attention depth.</p>
+</div>
+<div class="callout tip">
+<p>When configuring the IRIS tokenizer, start with a VQ-VAE codebook of at least 512 entries (the official IRIS codebase default is 512 with embedding dimension 256). Dropping below 256 entries <span data-agent="28">typically</span> collapses the ball-position and agent-boundary distinctions that the policy needs, producing the "visually smooth but control-blind" failure described above.</p>
+<p>Conversely, codebook sizes above 1024 rarely improve action sensitivity further but do increase the sequence length per frame, which compounds the quadratic attention cost at planning time. If you see codebook collapse during training (monitored via the codebook usage metric in the IRIS repo's <code>Tokenizer.from_pretrained</code> trainer logs), raise the commitment loss weight <code>beta</code> from the default 1.0 to 2.0 before resizing the codebook.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>In an Atari-style control benchmark, a transformer world model can attend to a longer token history than a compact recurrent state, which helps when distant events still matter for the next reward. In robotics, that same flexibility is attractive for long-horizon visual context but becomes costly if the control loop needs low latency or multi-camera tokens at high frequency.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>The frontier question is whether token-based world models can scale from game-like visual dynamics to real embodied systems without losing the tight action semantics required by robots and vehicles. Three active 2024-2026 directions illustrate where the field is moving:</p>
+<ul>
+<li><strong>Scaling tokenized world models to video and real robots.</strong> Genie 2 (DeepMind, 2024) showed that autoregressive visual world models trained on diverse video can generate interactive 3D environments with controllable dynamics from a single image, extending IRIS-style token prediction well beyond Atari. Concurrently, UniSim (Yang et al., 2024) demonstrated a unified neural simulator trained on internet video and robot demonstrations that rolls out action-conditioned futures rich enough to train downstream manipulation policies, providing evidence that the tokenize-then-predict recipe survives the transition from game pixels to real-world visual complexity.</li>
+<li><strong>Diffusion-based and continuous-token world models.</strong> Several 2024 works challenge the discrete VQ-VAE bottleneck directly. IRASim (Chi et al., 2024, from Tsinghua and Shanghai AI Lab) learns an action-conditioned video diffusion world model for robot arm manipulation and demonstrates that continuous latent rollouts can preserve contact-relevant geometry that discrete codebooks lose. Similarly, the Cosmos platform (NVIDIA, 2025) released pre-trained physical world foundation models using both discrete and continuous tokenization strategies, making large-scale pre-trained visual world models available as a backbone for embodied-AI research for the first time.</li>
+<li><strong>World models as policy backbones via latent imagination at scale.</strong> DIAMOND (Alonso et al., 2024, EPFL) refined diffusion-based world modeling to reach state-of-the-art performance on Atari 100k, matching or exceeding IRIS while producing more temporally coherent rollouts. In robotics, TD-MPC2 (Hansen et al., 2024) scales latent world models across 80+ continuous-control tasks with a single model, showing that careful latent-space regularization enables generalist world models that transfer across embodiments without per-task retraining.</li>
+</ul>
+<p><strong>Open problem for PhD students:</strong> All three directions assume the tokenizer and world model are trained on data from the same or similar embodiments. A tractable open question is how to build a tokenization scheme that is transferable across robot morphologies, so that a codebook learned on a Franka gripper usefully initializes a world model for a Spot quadruped without full retraining. The key challenge is that contact geometry, joint topology, and camera placement differ enough that shared pixel reconstruction loss produces codebooks with disjoint semantics rather than shared abstractions.</p>
+</div>
+<div class="callout cross-ref">
+<div class="callout-title">Cross-Reference Thread</div>
+<p>For tokenizer and representation issues, relate this section to <a href="ch_0307_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">Chapter 40</a>. For sequence-model planning and decision transformers, compare with <a href="ch_0196_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26</a>. For simulator benchmarks where IRIS became prominent, revisit <a href="ch_0103_part-3-simulation-tooling-and-the-modern-stack-module-12-benchmarks-and-.xhtml">Chapter 12</a>.</p>
+</div>
+<p>A world model that predicts the right pixels but the wrong tokens is not a world model; it is a video generator that happens to sit upstream of a policy.</p>
+<p><span data-agent="29">IRIS matters less because transformers always beat recurrent models and more because it reframed world modeling as discrete sequence prediction. That move lets researchers borrow a mature toolkit from language modeling: tokenization, causal masking, long-context studies, and sampling diagnostics. The payoff is concrete. IRIS (2022) reached human-level performance on 10 Atari games in the Atari 100k benchmark, <span data-agent="21">where "100k" names the sample budget: only 100,000 real environment steps are allowed before scoring</span>. A model-free baseline such as Rainbow<span data-agent="21"> (a value-based deep RL method that combines several Q-learning improvements but, unlike IRIS, learns only from real environment steps, with no imagined rollouts)</span> needs around 200 million frames to match those scores on the same games, so IRIS cuts real interactions roughly 2000-fold in the data-limited regime.</span> To put that gap in physical terms: 200 million frames at 30 Hz translates to about 77 days of continuous robot operation, whereas 100,000 frames is under an hour, the difference between a robot that learns before lunch and one that learns after a semester.</p>
+<p data-agent="17">The hidden engineering challenge is semantic granularity. Tokens that are too fine map onto tiny texture differences, so the model looks visually sharp but stays weak for control. Tokens that are too coarse erase subtle collision, grasp, or lane-position cues. Tokenization is where <strong>the vocabulary shapes the vision</strong>, and <a href="ch_0308_part-8-world-models-and-model-based-embodied-ai-module-40-predictive-rep.xhtml">control relevance is won or lost</a>.</p>
+<div class="callout fun-note">
+<p>Choosing your token granularity is a bit like choosing the resolution of a map: too fine and you spend all your attention on individual cobblestones; too coarse and the cliff edge and the bike lane look identical. The robot then drives confidently off the cliff, which is visually coherent but not especially useful.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that IRIS inherits general-purpose reasoning from its transformer architecture and should transfer readily from Atari to physical robots. That assumption is wrong. IRIS's transformer operates over discrete visual tokens from a pixel-reconstruction VQ-VAE. That tokenizer captures no proprioceptive state, contact forces, or multi-camera geometry. A transformer reasons only over the tokens it receives. Substituting robot sensor streams for game frames requires redesigning the tokenization pipeline from scratch, not swapping in a larger model. IRIS reframes world modeling as sequence prediction over a learned visual vocabulary. That vocabulary must be rebuilt for each new sensory modality and task domain before the transformer can reason about it.</p></div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name one task where token attention is likely to beat a compact recurrent state and one robotic setting where the attention cost may be harder to justify than the extra memory is worth?</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<div class="callout-title">Real-World Application: Interactive World Simulators</div>
+<p>DeepMind's Genie 2 (2024) productionizes the IRIS recipe at scale: it tokenizes diverse internet video and rolls out playable, action-conditioned 3D worlds generated from a single prompt image, using the same autoregressive-over-discrete-tokens move IRIS introduced on Atari. The system lets a controllable agent be dropped into a freshly imagined environment, demonstrating that tokenize-then-predict survives the jump from game pixels to open-ended visual scenes.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<div class="callout-title">Lab: Probe Action Sensitivity in a Tokenized World Model</div>
+<p><strong>Goal:</strong> empirically observe how codebook size controls whether a tokenized world model stays action-conditional or collapses into a passive video predictor.</p>
+<p><strong>Tools needed:</strong> Python, <code>gymnasium[atari]</code> with the Breakout environment, PyTorch, and the official IRIS repository (<code>github.com/eloialonso/iris</code>). Budget 15-30 minutes once the repo's pretrained tokenizer checkpoint is downloaded.</p>
+<p><strong>What to vary:</strong> retrain or reconfigure the VQ-VAE tokenizer at three codebook sizes (128, 512, 1024 entries), keeping the transformer fixed. For each, run the imagination rollout while holding the token history constant and sweeping only the action prefix across all available actions.</p>
+<p><strong>What to observe:</strong> log the KL divergence (a measure of how much two probability distributions differ) between next-token distributions produced by different actions. <span data-agent="28">You should typically expect it to shrink toward zero as the codebook drops to 128 (control-blind collapse) and grow as you reach 512, then plateau by 1024, though the exact thresholds depend on the game and training run.</span> Confirm the collapse visually by decoding rollouts: check whether the 128-entry model assigns nearly identical token streams to "ball approaching paddle" and "ball past paddle," the failure the section warns about.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Transformer world models succeed when tokenization and action conditioning preserve the semantics the controller needs, not merely when the sampled frames look coherent.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 38.4.1</div><p>Propose a benchmark that would fairly compare an RSSM and a transformer world model on the same embodied task. Which three metrics must be matched so that the comparison says something about control rather than only about visual generation?</p></div>
+<section class="bibliography">
+<h2>Bibliography &amp; Further Reading</h2>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
+<p class="bib-annotation">DreamerV3 is the natural recurrent comparison point when assessing IRIS-style architectures.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Micheli, V., Alonso, E., and Fleuret, F.. "Transformers Are Sample-Efficient World Models." (2022). <a href="https://arxiv.org/abs/2209.00588" rel="noopener" target="_blank">https://arxiv.org/abs/2209.00588</a></p>
+<p class="bib-annotation">IRIS is the foundational reference for tokenized transformer world models in this chapter.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Eloi Alonso et al.. "IRIS GitHub Repository." (2022). <a href="https://github.com/eloialonso/iris" rel="noopener" target="_blank">https://github.com/eloialonso/iris</a></p>
+<p class="bib-annotation">The codebase is useful for seeing how tokenization, transformer rollout, and policy learning fit together.</p>
+</div>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Atari action-sensitivity probe with the IRIS codebase.</strong> Clone the official IRIS repository, train the tokenizer on a single Atari game such as Breakout using the provided scripts, then write a short diagnostic loop that holds a fixed token history and sweeps action inputs, logging whether the predicted token distribution shifts as expected. The key challenge is interpreting codebook collapse: if all actions produce near-identical next-token distributions, you must decide whether to raise the commitment loss weight or enlarge the codebook before the world model is usable for planning.</p><p><strong>Intermediate (1-2 weeks): Gymnasium continuous-control tokenizer comparison.</strong> Adapt the IRIS VQ-VAE tokenizer to a Gymnasium MuJoCo task such as HalfCheetah-v4 by replacing pixel frames with proprioceptive state vectors, discretize them into 256 or 512 codebook entries, and train a causal transformer to predict future codes under action conditioning. The key challenge is that continuous proprioceptive signals do not partition naturally into a finite codebook the way game pixels do, so you will need to tune the encoder architecture and codebook size to preserve velocity and joint-angle distinctions that matter for locomotion reward.</p><p><strong>Intermediate (1-2 weeks): Multi-camera token fusion for a LeRobot manipulation task.</strong> Take a LeRobot demonstration dataset recorded with a wrist camera and one overhead camera, encode each camera stream independently with a shared VQ-VAE, and compare naive sequence concatenation against a cross-attention pooling layer that produces a single scene-summary token per timestep before feeding the transformer world model. The key challenge is verifying that the fused token retains grasp-relevant geometry from the wrist view while the overhead view contributes object-position context, which you can test by measuring action sensitivity on held-out rollouts.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.3: Dreamer to DreamerV3</a>
+<a class="up" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
+<a class="next" href="ch_0297_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.5: TD-MPC2: latent MPC at scale</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,292 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 14.5: Why RL is hard in embodied systems (sample cost, reward, safety)</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-index.xhtml">Part IV: Reinforcement Learning for Embodied Agents</a><span class="bc-sep">›</span><a href="ch_0118_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a></div>
+<h1>Section 14.5: Why RL is hard in embodied systems (sample cost, reward, safety)</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"Bandit benchmarks count regret in milliseconds. Embodied RL counts it in broken joints, sparse rewards, and the afternoon you spent re-homing a policy that learned to cheat."</p><cite>A Benchmarker Who Bought Hardware</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 14.5: Why RL is hard in embodied systems (sample cost, reward, safety)." loading="lazy" src="../img/289919ca19_chapter-14-illustration-05.jpg"/>
+<figcaption data-agent="39"><strong>Figure 14.5A</strong>: Embodied RL has to earn reward without hiding sample cost, reset burden, or safety violations.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with MDPs and the reward signal introduced in section 14.1 and the POMDP extension in section 14.3. The sample-cost and safety ideas developed here are prerequisites for the constrained policy-gradient training covered in Chapter 15 and for the reward-shaping techniques in section 18.2. The sim-to-real problem, which is largely a response to physical sample cost, is treated in depth in section 20.2 and section 20.3.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A simulated hand learned to rotate a cube after the equivalent of 100 years of practice, all running overnight in software. Put that same policy on real hardware and you face a different arithmetic: every failed grasp wears a tendon, every bad reset costs a technician, and a single joint-limit violation can end the experiment. Right now, as robot fleets move from controlled labs into homes and warehouses, the gap between "high reward in simulation" and "safe, affordable behavior in the world" is the central unsolved problem in embodied AI. By the end of this section you will be able to model sample cost, diagnose reward hacking, and write a constrained objective that makes safety a hard budget rather than a soft suggestion.</p>
+</div>
+<p data-agent="15">The control tools in <a class="cross-ref" href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a> and the environment interface in <a class="cross-ref" href="ch_0086_part-3-simulation-tooling-and-the-modern-stack-module-10-environments-wi.xhtml">Chapter 10: Environments with Gymnasium and PettingZoo</a> set up the policy-gradient work in <a class="cross-ref" href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15: Policy Gradient Methods and PPO</a>. The formalism from the earlier sections becomes difficult once samples are physical, rewards are imperfect, and safety is nonnegotiable.</p>
+<p data-agent="22">Picture a policy that scored flawlessly in simulation crushing a $40 silicone fingertip on its very first real grasp, then demanding a human technician to re-home the arm before it can try again: that single moment is the whole problem of embodied RL, where the three obstacles of sample cost, reward design, and safety constraints collide. This section develops the technical contract behind that moment. First we connect these issues to the <a class="cross-ref" data-agent="13" href="ch_0119_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">MDP</a> and <a class="cross-ref" data-agent="13" href="ch_0121_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">POMDP</a> assumptions, then we express safety as a constrained objective, then we run a small numeric audit.</p>
+<p>The key question is practical: what makes a high-return policy unacceptable when the learning process itself can damage hardware, surprise nearby people, or exploit a reward proxy?</p>
+<p>A policy that earns high reward in simulation but destroys a gripper on the first real contact is not a solution; it is a simulation artifact dressed up as one. Figure 14.5A captures this tension: embodied RL has to earn reward without hiding sample cost, reset burden, or safety violations. Figure 14.5B then breaks that tension into the three concrete obstacles this section treats in turn.</p>
+<figure class="diagram-container">
+<svg aria-label="Three obstacles of embodied RL and how they interact" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<style>
+    .box { fill: none; stroke: #4a7fa5; stroke-width: 2; rx: 6; }
+    .box-fill { fill: #eef4fa; stroke: #4a7fa5; stroke-width: 2; }
+    .arrow { stroke: #666; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .label-main { font-family: monospace; font-size: 13px; font-weight: bold; fill: #1a3a5c; text-anchor: middle; }
+    .label-sub { font-family: monospace; font-size: 10px; fill: #444; text-anchor: middle; }
+    .center-label { font-family: monospace; font-size: 11px; fill: #8b0000; text-anchor: middle; }
+    .center-box { fill: #fff5f5; stroke: #8b0000; stroke-width: 2; }
+  </style>
+<defs>
+<marker id="arrowhead" markerheight="6" markerwidth="8" orient="auto" refx="8" refy="3">
+<polygon fill="#666" points="0 0, 8 3, 0 6"/>
+</marker>
+</defs>
+<!-- Left box: Sample Cost -->
+<rect class="box-fill" height="120" rx="6" width="145" x="20" y="90"/>
+<text class="label-main" x="92" y="115">Sample Cost</text>
+<text class="label-sub" x="92" y="133">Each episode consumes</text>
+<text class="label-sub" x="92" y="148">time, resets, battery,</text>
+<text class="label-sub" x="92" y="163">hardware wear, and</text>
+<text class="label-sub" x="92" y="178">technician hours.</text>
+<!-- Right box: Reward Design -->
+<rect class="box-fill" height="120" rx="6" width="145" x="435" y="90"/>
+<text class="label-main" x="507" y="115">Reward Design</text>
+<text class="label-sub" x="507" y="133">Proxy R(s,a,s') diverges</text>
+<text class="label-sub" x="507" y="148">from true task; agent</text>
+<text class="label-sub" x="507" y="163">finds shortcuts and</text>
+<text class="label-sub" x="507" y="178">reward proxy collapse.</text>
+<!-- Bottom box: Safety -->
+<rect class="box-fill" height="90" rx="6" width="170" x="215" y="195"/>
+<text class="label-main" x="300" y="220">Safety Constraint</text>
+<text class="label-sub" x="300" y="238">J_C(pi) must stay below</text>
+<text class="label-sub" x="300" y="253">budget d; violations end</text>
+<text class="label-sub" x="300" y="268">experiments or damage hardware.</text>
+<!-- Center box: Policy -->
+<rect class="center-box" height="80" rx="6" width="170" x="215" y="90"/>
+<text class="center-label" x="300" y="120">Deployable Policy</text>
+<text class="center-label" x="300" y="138">max J_R(pi)</text>
+<text class="center-label" x="300" y="154">subject to J_C(pi) &lt;= d</text>
+<!-- Arrow: Sample Cost -> Policy -->
+<line class="arrow" x1="165" x2="213" y1="150" y2="135"/>
+<!-- Arrow: Reward Design -> Policy -->
+<line class="arrow" x1="435" x2="387" y1="135" y2="128"/>
+<!-- Arrow: Safety constraint -> Policy (the budget constrains the policy) -->
+<line class="arrow" x1="300" x2="300" y1="193" y2="172"/>
+<!-- Top label -->
+<text fill="#333" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="38">Three Obstacles That Make Embodied RL Hard</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="56">A policy must maximize reward while bounding physical cost and safety violations.</text>
+</svg>
+<figcaption data-agent="39"><strong>Figure 14.5B:</strong> The three obstacles of embodied RL. Sample cost (left) limits how many physical trials are affordable. Reward design (right) risks proxy collapse when the agent exploits shortcuts. Both feed into the policy objective, which is constrained by a hard safety budget that rejects any policy exceeding the allowed cost, no matter how high its return. <span data-agent="03">The notation $J_R(\pi)$ and $J_C(\pi)$ shown in the center box is defined formally later in this section, in the constrained MDP objective; read it here simply as "return" and "cost."</span></figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>Embodied RL is hard because the objective is not only "maximize reward." It is "maximize reward while gathering expensive, partial, safety-bounded evidence from the physical world."</p>
+</div>
+<h2>Theory</h2>
+<p data-agent="29">Sample cost is the first obstacle. In a simulator, a failed episode may cost milliseconds. On hardware, it may cost a reset, a worn gripper, a human intervention, or a damaged object. A typical manipulation task might need 50,000 simulator episodes. On real hardware that same count would take months of continuous operation and wear through multiple grippers. Demonstration-seeded initialization drops that figure to roughly 300 real episodes for the same task and the same policy class, because the agent starts near successful behavior instead of exploring from scratch. This shifts the acceptable exploration policy, the number of seeds, and the evaluation budget.</p>
+<p>Reward design is the second obstacle. The reward $R(s,a,s')$ is a proxy for the task, not the task itself. A robot rewarded for moving a block near a target may learn to shove it violently, exploit perception blind spots, or end in unstable poses that score well for one frame. This failure mode is called <strong>reward proxy collapse</strong>, and it is the expected outcome whenever maximizing the proxy is easier than completing the real task. <a class="cross-ref" href="ch_0146_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">Sparse rewards</a> delay credit assignment; dense rewards can teach the wrong shortcut.</p>
+<h4 data-agent="30">Why sparse reward bites harder on hardware</h4>
+<p>Sparse rewards matter in embodied AI because a physical robot cannot re-run a failed episode in milliseconds. When reward arrives only at task completion, a robot attempting to open a door may execute thousands of real joint motions across hours of hardware time without ever receiving a signal that distinguishes useful from useless behavior. Each wasted episode consumes battery, wear budget, and reset labor. The cost of credit-assignment failure is not just slow convergence; it is hardware degradation and exhausted sample budgets before learning has started.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: three obstacles have piled up before the next mechanism. Sample cost makes physical episodes expensive, reward proxy collapse means a high-scoring policy can still be doing the wrong thing, and sparse reward makes hardware failures costly precisely because no signal distinguishes a useful attempt from a wasted one. The next paragraph explains the underlying mechanism, temporal distance, that ties sparse reward to those wasted attempts.</p></div>
+<p data-agent="29">The mechanism is temporal distance between action and outcome. When reward is zero for every step except the final success, gradient estimates become high-variance. The policy cannot distinguish which of the hundreds of preceding actions contributed to the result. Long zero-reward trajectories produce near-zero policy gradients, so parameter updates stay negligibly small. The agent explores without improving until a rare successful trajectory delivers signal. On physical hardware, that lucky episode may never arrive within the available budget.</p>
+<div class="callout key-insight"><p>Think of sparse reward like learning to bake bread when the only feedback is whether the final loaf is edible. You mix, knead, proof, and bake hundreds of times, but because the oven gives you a single thumbs-up or thumbs-down at the very end, you cannot tell whether your dough was under-kneaded, your yeast was stale, or your oven ran too hot. Each failed loaf wastes flour, time, and energy without narrowing down which step to fix. A dense reward would be a kitchen mentor tapping your shoulder at every stage, letting you correct your technique before the mistake compounds through the whole process.</p></div>
+<div class="callout key-insight">
+<div class="callout-title">Named Cases</div>
+<p>These obstacles appear in documented systems, not just theory. OpenAI's simulated hand (Dactyl, 2019) required roughly 100 years of simulated experience to learn in-hand object rotation, a cost that would be physically impossible without a high-fidelity simulator and <a class="cross-ref" href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">domain randomization</a> to bridge to real hardware. Boston Dynamics reports that each physical trial on Spot costs reset time, battery cycles, and technician availability, driving the use of <a class="cross-ref" href="ch_0158_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">sim-to-real transfer</a> instead of direct hardware RL. On reward hacking: Krakovna et al. (2020, "Specification gaming: the flip side of AI ingenuity," DeepMind blog) document dozens of cases where agents achieved high reward through unintended shortcuts, including a simulated robot that learned to fall over to reach a target faster than walking upright. These are not edge cases; they are the expected outcome when the reward proxy is easier to maximize than the intended task.</p>
+</div>
+<p data-agent="21">Safety is the third obstacle. A constrained MDP, where the standard reward-maximizing MDP gains a second cost signal and a budget the policy may not exceed, writes the builder's intent more explicitly:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\max_\pi J_R(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t r_{t+1}\right]\quad\text{subject to}\quad J_C(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t c_{t+1}\right]\le d."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><munder><mrow><mi>max</mi><mo>⁡</mo></mrow><mi>π</mi></munder><msub><mi>J</mi><mi>R</mi></msub><mo stretchy="false">(</mo><mi>π</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><mi>π</mi></msub><mrow><mo fence="true">[</mo><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>0</mn></mrow><mi mathvariant="normal">∞</mi></munderover><msup><mi>γ</mi><mi>t</mi></msup><msub><mi>r</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo fence="true">]</mo></mrow><mspace width="1em"/><mtext>subject to</mtext><mspace width="1em"/><msub><mi>J</mi><mi>C</mi></msub><mo stretchy="false">(</mo><mi>π</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><mi>π</mi></msub><mrow><mo fence="true">[</mo><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>0</mn></mrow><mi mathvariant="normal">∞</mi></munderover><msup><mi>γ</mi><mi>t</mi></msup><msub><mi>c</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow></msub><mo fence="true">]</mo></mrow><mo>≤</mo><mi>d</mi><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\max_\pi J_R(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t r_{t+1}\right]\quad\text{subject to}\quad J_C(\pi)=\mathbb E_\pi\left[\sum_{t=0}^{\infty}\gamma^t c_{t+1}\right]\le d.</annotation></semantics></math></span></p>
+<p>Here $r$ is task reward, $c$ is safety cost, and $d$ is the allowed discounted cost budget. The constraint matters because a policy can have excellent reward and still be unacceptable if it reaches that reward through collisions, excessive force, or unstable contacts. <span data-agent="04">A hard constraint like this cannot be plugged directly into a gradient-based optimizer, so in practice it is converted into a soft, differentiable penalty via a Lagrange multiplier $\lambda$, a scalar weight that is itself learned during training: the algorithm subtracts $\lambda$ times the cost from the reward objective, and $\lambda$ grows whenever the cost exceeds the budget. This is the mechanism the tip and algorithm below refer to as "Lagrangian."</span></p>
+<div class="callout tip">
+<p>When using Safety Gymnasium (the constrained-RL benchmark built on MuJoCo) set <code>cost_limit</code> to your budget <em>before</em> training begins and wire it to an early-stop callback that halts the run if the rolling 10-episode mean cost exceeds the limit. Without this hard stop, PPO-Lagrangian (Proximal Policy Optimization with a Lagrangian safety penalty) and TRPO-Lagrangian (Trust Region Policy Optimization with a Lagrangian safety penalty) both discover high-reward trajectories that exploit the lag between constraint violations and Lagrange multiplier updates, producing policies that look acceptable on the reward curve while steadily violating the safety budget. The parameter to watch is <code>lagrangian_multiplier_init</code>: starting it too low (default 0.001) lets the agent accumulate dozens of violations before the penalty grows large enough to matter.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism is a second ledger next to return. The experiment should track reward, safety cost, resets, interventions, and reward-proxy failures in the same run, otherwise the best-looking policy may be the least deployable one.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Embodied RL Feasibility Checklist</h4>
+<p><strong>Input:</strong> candidate policy $\pi_\theta$ (parameters $\theta$), task reward $r$, safety cost $c$, allowed budget $d$, physical platform with reset protocol</p>
+<p><strong>Output:</strong> decision (deploy / reject / revise), annotated ledger of sample cost, reward quality, and safety compliance</p>
+<ol>
+<li>Estimate physical sample cost: count expected episodes $N$, resets, battery cycles, and technician hours before committing to on-hardware training. If $N$ exceeds platform budget, route to simulation first.</li>
+<li>Audit the reward proxy: inspect $R(s,a,s')$ for shortcuts. Check whether a policy can score well by damaging objects, exploiting perception blind spots, or reaching unstable terminal poses. If so, add shaped penalty terms before training.</li>
+<li>Define the safety cost function $c(s,a,s')$ and set the discounted cost budget $d$ independently of reward. Record both in the experiment config so they cannot be changed after training begins.</li>
+<li data-agent="21">Initialize the Lagrange multiplier $\lambda \leftarrow \lambda_0$, where the Lagrange multiplier is a scalar penalty weight that converts the safety constraint into a soft cost added to the reward objective (recommend $\lambda_0 \ge 0.1$ to avoid early constraint violations) and attach a hard stop callback that halts training if the rolling 10-episode mean cost exceeds $d$.</li>
+<li>For each training iteration: sample a mini-batch of trajectories $\{\tau_i\}$, compute $\hat{J}_R = \mathbb{E}_\tau[\sum_t \gamma^t r_{t+1}]$ and $\hat{J}_C = \mathbb{E}_\tau[\sum_t \gamma^t c_{t+1}]$, then update $\theta \leftarrow \theta + \alpha \nabla_\theta(\hat{J}_R - \lambda \hat{J}_C)$.</li>
+<li>Update the Lagrange multiplier: $\lambda \leftarrow \max(0,\, \lambda + \eta_\lambda(\hat{J}_C - d))$ where $\eta_\lambda$ is the dual learning rate.</li>
+<li>Log to the sample ledger: episode count, wall time, reset cause (task completion, hardware fault, human intervention, or safety stop), and battery or hardware wear indicator.</li>
+<li>Log to the reward ledger: total return $J_R(\pi_\theta)$, each shaped component, and any detected proxy shortcuts identified from video or trace review.</li>
+<li>Log to the safety ledger: discounted cost $J_C(\pi_\theta)$, number of constraint violations, near-miss events, and emergency stop triggers.</li>
+<li>At evaluation time, accept $\pi_\theta$ only if $J_C(\pi_\theta) \le d$ on the shared evaluation panel. Report the highest-return policy that satisfies the constraint; keep all rejected candidates in the experiment registry.</li>
+<li>If $\pi_\theta$ is rejected: classify the failure as sample-cost, reward-proxy, or safety-constraint and return to the appropriate earlier step rather than tuning hyperparameters blindly.</li>
+</ol>
+</div>
+<h2>Worked Example</h2>
+<p>Code Fragment 1 evaluates three candidate policies with the same reward and safety-cost definitions. The best policy by reward is not automatically acceptable because the safety budget is a separate constraint.</p>
+<pre><code class="language-python"><span class="c1"># Audit reward and safety cost for three embodied RL policies.</span>
+<span class="c1"># A policy passes only if return is high and discounted cost stays within budget.</span>
+<span class="n">gamma</span> <span class="o">=</span> <span class="mf">0.9</span>
+<span class="n">safety_budget</span> <span class="o">=</span> <span class="mf">0.45</span>
+<span class="n">episodes</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"careful"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"rewards"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">],</span> <span class="s2">"costs"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">]},</span>
+<span class="s2">"fast"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"rewards"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.4</span><span class="p">,</span> <span class="mf">1.2</span><span class="p">,</span> <span class="mf">1.8</span><span class="p">],</span> <span class="s2">"costs"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">]},</span>
+<span class="s2">"reckless"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"rewards"</span><span class="p">:</span> <span class="p">[</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">],</span> <span class="s2">"costs"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.3</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">]},</span>
+<span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">discounted_sum</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
+<span class="k">return</span> <span class="nb">sum</span><span class="p">((</span><span class="n">gamma</span> <span class="o">**</span> <span class="n">t</span><span class="p">)</span> <span class="o">*</span> <span class="n">value</span> <span class="k">for</span> <span class="n">t</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">values</span><span class="p">))</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">trace</span> <span class="ow">in</span> <span class="n">episodes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<span class="n">reward_return</span> <span class="o">=</span> <span class="n">discounted_sum</span><span class="p">(</span><span class="n">trace</span><span class="p">[</span><span class="s2">"rewards"</span><span class="p">])</span>
+<span class="n">safety_cost</span> <span class="o">=</span> <span class="n">discounted_sum</span><span class="p">(</span><span class="n">trace</span><span class="p">[</span><span class="s2">"costs"</span><span class="p">])</span>
+<span class="n">status</span> <span class="o">=</span> <span class="s2">"pass"</span> <span class="k">if</span> <span class="n">safety_cost</span> <span class="o">&lt;=</span> <span class="n">safety_budget</span> <span class="k">else</span> <span class="s2">"reject"</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: return=</span><span class="si">{</span><span class="n">reward_return</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">, cost=</span><span class="si">{</span><span class="n">safety_cost</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">status</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></code></pre>
+<div class="code-output">careful: return=1.46, cost=0.08, pass
+fast: return=2.94, cost=0.85, reject
+reckless: return=3.52, cost=1.40, reject</div>
+<p>The expected output ranks the policies two ways at once: by return and by discounted safety cost. The correct interpretation is that <code>careful</code> is the deployable winner because it stays under budget, while the higher-return policies fail the constraint and therefore do not count as acceptable solutions.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> The audit computes task return and safety cost with the same `gamma` for `careful`, `fast`, and `reckless`. The highest-return policy is rejected because it violates `safety_budget`, which is exactly why embodied RL needs constrained evaluation instead of reward-only ranking.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Lagrange-multiplier safety update</h4>
+<p>Trace the dual update from the feasibility checklist on the <code>fast</code> policy above, with budget $d = 0.45$ and dual learning rate $\eta_\lambda = 0.5$, starting from $\lambda_0 = 0.1$.</p>
+<p><strong>Iteration 1.</strong> Measured discounted cost $\hat{J}_C = 0.85$. Constraint violation is $\hat{J}_C - d = 0.85 - 0.45 = 0.40$. Update: $\lambda \leftarrow \max(0,\ 0.1 + 0.5 \times 0.40) = \max(0,\ 0.30) = 0.30$. The penalty on cost in the objective $\hat{J}_R - \lambda \hat{J}_C$ has tripled, so the policy gradient now pushes harder away from costly trajectories.</p>
+<p><strong>Iteration 2.</strong> Suppose the policy responds and cost falls to $\hat{J}_C = 0.50$. Violation is $0.50 - 0.45 = 0.05$. Update: $\lambda \leftarrow \max(0,\ 0.30 + 0.5 \times 0.05) = 0.325$. Still above budget, so $\lambda$ keeps creeping up, just more slowly.</p>
+<p><strong>Iteration 3.</strong> Cost now undershoots to $\hat{J}_C = 0.40$. Violation is negative: $0.40 - 0.45 = -0.05$. Update: $\lambda \leftarrow \max(0,\ 0.325 + 0.5 \times (-0.05)) = 0.30$. The multiplier relaxes because the policy is now inside the budget, freeing the objective to recover some reward. This back-and-forth is the dual variable hunting for the smallest penalty that holds the constraint, and starting $\lambda_0$ too low (say 0.001) means iterations 1-2 would still permit costly behavior before the penalty grows large enough to bite.</p>
+</div>
+<p>The result is a wins-only lesson for deployment: report the policy that satisfies the safety constraint and achieves the strongest validated return. Keep unsafe exploratory candidates in the experiment registry and diagnostics, not in the headline result.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>In practical experiments, training libraries can optimize reward quickly, but the safety ledger is a task-design responsibility. The shortcut is acceptable only if wrappers, monitors, and logs preserve reset causes, force limits, intervention flags, and constraint violations.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Before any on-hardware training, estimate your physical sample budget: for a Franka Panda gripper task, 50,000 on-robot episodes at 5 seconds each is roughly 70 hours of continuous operation and will wear through 2-3 silicone fingertip pads. Route any policy that needs more than ~5,000 hardware episodes to Isaac Sim or MuJoCo first, using domain randomization over friction (0.5-1.5x nominal) and payload (0.8-1.2x nominal) to bridge the sim-to-real gap.</li>
+<li>Define your observation space around what the physical sensor can actually deliver: a Realsense D435 gives 30 Hz RGB-D at 640x480; a wrist-mounted FT sensor (e.g., ATI Mini45) gives 6-axis wrench at 1 kHz. Build the baseline policy around these concrete data rates, not an idealized state vector.</li>
+<li>Add the constrained policy (PPO-Lagrangian or TRPO-Lagrangian via Safety Gymnasium) only after a scripted fallback controller confirms the task is reachable and the reset procedure is reliable.</li>
+<li>Record failures as structured cases with physical cause: joint-limit breach, contact force exceeding the platform's rated limit (e.g., 87 N for Spot's foot), perception dropout from motion blur above 0.5 m/s end-effector speed, or human E-stop trigger.</li>
+<li>Run at least one perturbation rollout with lighting changed by 50 lux and object pose perturbed by 3 cm before treating any result as transferable.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake is to celebrate a high-return simulation score before verifying the closed-loop handoff on hardware. The failure typically appears at the sensing boundary: <span data-agent="28">in a representative case,</span> a 15 ms perception latency spike during contact causes the Franka to apply force on a stale state estimate, tripping the joint-torque safety stop before the policy's reward signal has even registered the contact event.</p>
+</div>
+<div class="callout warning">
+<p>A common assumption is that more simulation episodes fix embodied RL difficulty. If sample cost is the bottleneck, the reasoning goes, simply simulate longer. That reasoning is wrong. Simulation fidelity, not episode count, is the binding constraint. Consider a policy that trains for a billion simulated steps in an environment with incorrect friction, inaccurate joint damping, or missing sensor noise. <span data-agent="28">In practice, such a policy typically still fails on hardware, often quickly, because it has had every incentive to learn</span> simulator-specific dynamics that the real system does not have. Simulation and hardware training are not interchangeable on a sliding scale. Simulation reduces hardware sample cost only when the simulator accurately models contact, perception noise, latency, and actuator limits. Closing that gap requires deliberate sim-to-real engineering: domain randomization, system identification, and perception-realistic rendering. Increasing episode count alone does not close it.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A manipulation team should treat every reset, emergency stop, dropped object, and human intervention as first-class data. These events belong beside return curves because they determine whether a policy is a deployable controller or only a simulator score.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>The hardware asks for two receipts: what reward did you earn, and what did it cost to earn it?</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Direction 1: Foundation-model reward specification.</strong> Rather than hand-crafting $R(s,a,s')$, researchers are using large vision-language models as reward oracles that evaluate robot behavior from video frames. The VLM-Reward line of work (e.g., Rocamonde et al., "VLAM: Vision-Language Models as Reward Signals," 2024; and the Eureka system from NVIDIA Research, Ma et al., 2023/2024) shows that GPT-4V-level models (as of 2024) can generate and iteratively refine dense reward code for manipulation tasks, cutting the hours a researcher spends on reward engineering to minutes. The remaining challenge is hallucinated rewards: the VLM scores a pose as "successful" even when the object has slipped out of the gripper, because the image is ambiguous at contact.</p>
+<p><strong>Direction 2: Safe offline-to-online RL with constraint guarantees.</strong> The OSRL (Offline Safe RL) and BEAR-Lag families (Yixuan Liu et al., "Datasets and Benchmarks for Offline Safe RL," NeurIPS 2023; follow-up benchmarks 2024-2025) treat the safety-cost budget as a hard constraint that must be satisfied during both offline pretraining and online fine-tuning. The key insight is that a policy bootstrapped from logged demonstrations reaches the constraint-feasible region of policy space before any expensive hardware exploration begins, slashing the number of real-world safety violations during the critical early training phase. Active groups include Berkeley's RAIL lab and CMU's Robot Learning Lab.</p>
+<p><strong>Direction 3: World-model-accelerated embodied RL.</strong> Hierarchical world models (e.g., DreamerV3, Hafner et al., 2023; and its robotics-specific descendants in 2024-2025 such as RoboDreamer and TD-MPC2 from Nicklas Hansen's lab) learn a latent dynamics model from cheap simulation or teleoperation data, then run policy search entirely inside the latent rollout. This bypasses most physical episodes while still producing policies that respect contact physics. The open gap is multi-contact generalization: world models trained on smooth-contact tasks fail abruptly when a new object has sharp edges or unexpected compliance.</p>
+<p><strong>Open problem for PhD students:</strong> All three directions struggle with the same failure mode: the learned reward, safety model, or world model is accurate in distribution but quietly wrong at the states the policy is about to visit next. Designing an online uncertainty signal that is cheap enough to evaluate at policy inference time, accurate enough to trigger a conservative fallback before a constraint violation occurs, and calibrated under <span data-agent="04">covariate shift (a mismatch between the state distribution seen during training and the one encountered at deployment)</span> from sim to real remains an unsolved problem. A student who can combine conformal prediction with online model adaptation on a real robot platform (e.g., Franka or LeRobot) would make a concrete contribution to all three directions.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you state the reward, safety cost, allowed budget, reset procedure, and intervention logging policy? If not, the embodied RL experiment is not yet specified.</p>
+</div>
+<p data-agent="14">Specifying those five quantities is only the first half of the work; the formal objective that ties them together hides several engineering costs that the clean notation does not show. The expectation in $J_R(\pi)$ assumes the agent can sample trajectories from the environment. In physical systems, each trajectory consumes calendar time, reset labor, battery cycles, hardware wear, and safety margin.</p>
+<p>The reward and cost functions should be reviewed like interfaces. A reward that ignores force can favor damaging contact. A cost that triggers only after collision misses near-miss behavior. A reset procedure that changes object distribution can make evaluation easier than deployment.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Why Embodied RL Needs Extra Ledgers</div>
+<table>
+<thead><tr><th>Ledger</th><th>What It Records</th><th>Why It Matters</th></tr></thead>
+<tbody>
+<tr><td>Sample ledger</td><td>Episodes, resets, wall time, interventions, and hardware cycles.</td><td>Shows whether the method is sample-efficient enough for the platform.</td></tr>
+<tr><td>Reward ledger</td><td>Raw task reward, shaped components, and terminal events.</td><td>Exposes reward hacking and sparse-credit failures.</td></tr>
+<tr><td>Safety ledger</td><td>Costs, limit violations, near misses, and emergency stops.</td><td>Prevents reward-only results from hiding unacceptable behavior.</td></tr>
+</tbody>
+</table>
+</div>
+<p data-agent="17">A robust implementation treats safety and sample cost as first-class outputs. The experiment answers four questions on demand: how many physical trials it used, how often a human intervened, how many constraints it violated, and which reward components drove the final policy.</p>
+<ol>
+<li>Define reward and safety cost separately before training.</li>
+<li>Set an allowed safety budget and a stop rule for violations.</li>
+<li>Log resets and interventions with timestamps and causes.</li>
+<li>Audit reward components for proxy shortcuts on saved videos or traces.</li>
+<li>Report only policies that satisfy the safety budget on the shared evaluation panel.</li>
+</ol>
+<p data-agent="14">Those ledgers do more than document a run; they let you diagnose what went wrong, because each failure leaves its signature in a different ledger. When embodied RL fails, classify the failure before tuning. A sample-cost failure (the Franka exhausts its 5,000-episode hardware budget before convergence) calls for demonstration-seeded initialization or an Isaac Sim pretrain, not more hyperparameter sweeps. A reward failure (the Spot policy from Krakovna et al.'s specification-gaming catalogue learns to topple toward the goal rather than walk to it) calls for a repaired proxy or shaped force penalty. A safety failure (PPO-Lagrangian in Safety Gymnasium drifts past its <code>cost_limit</code> because the multiplier updated too slowly) calls for a <span data-agent="04">control-barrier shield (a safety filter that overrides the policy's action whenever it would cross a predefined safe-state boundary)</span> or a stricter early-stop callback, not a higher learning rate.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Evaluation Recipe</div>
+<p>For embodied RL difficulty claims, co-compute sample count, return, reward components, safety cost, reset count, and intervention count in one evaluation run. A reward-only table is incomplete for this section's topic.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: warehouse manipulation at Covariant</h4>
+<p>Covariant's Brain platform runs pick-and-place arms in live fulfillment centers, where every physical trial competes with paying throughput, so the team trains in simulation and bounds on-robot exploration with hard force and grasp-stability limits rather than learning from scratch on the line. The deployed policy is accepted only when it clears a per-item success threshold without exceeding the suction and joint-force budget, which is exactly the constrained objective $\max J_R$ subject to $J_C \le d$ in operational form. Sample cost, reward proxy, and safety budget here are not abstractions; they are the difference between shipping orders and crushing inventory.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch a safety budget bend the reward curve</h4>
+<p><strong>Goal:</strong> See empirically how a hard safety budget trades return for constraint compliance, and how the Lagrange multiplier's initial value changes how many violations slip through early training.</p>
+<p><strong>Tools needed:</strong> Python, <code>safety-gymnasium</code> (pip-installable, MuJoCo-backed), and a PPO-Lagrangian implementation from <code>omnisafe</code> (<code>pip install omnisafe</code>). Use the <code>SafetyPointGoal1-v0</code> environment, which rewards reaching a goal while charging cost for entering hazard regions.</p>
+<p><strong>What to vary:</strong> (1) the <code>cost_limit</code> budget $d$, sweeping it across roughly 5, 25, and 50; and (2) the <code>lagrangian_multiplier_init</code>, comparing 0.001 against 0.1. Run each configuration for about 200k steps (a few minutes on CPU per run is enough to see the trend).</p>
+<p><strong>What to observe:</strong> Plot episode return and episode cost on the same time axis for each run. Confirm that a tighter <code>cost_limit</code> lowers the final return (the price of safety), and that the higher multiplier init produces far fewer cumulative cost violations in the first 50k steps because the penalty bites earlier. You have reproduced, on a real benchmark, the reward-versus-cost tension that the worked example computed by hand.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Embodied RL is constrained learning from costly physical evidence. Strong results satisfy the task objective and the safety ledger together.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 14.5.1</div><p>Design a constrained evaluation for a robot pushing task. Specify task reward, safety cost, allowed cost budget, reset procedure, and the exact event that would reject a high-return policy.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Safety-constrained CartPole.</strong> Use Gymnasium's CartPole-v1 environment to train a PPO agent that maximizes balance time while keeping the pole angle below a threshold you define as a safety cost; implement a simple Lagrangian penalty in a single Python file and plot reward and safety cost side by side to see the constrained-versus-unconstrained trade-off. The key challenge is wiring the dual variable update so the multiplier rises fast enough to prevent early safety violations without collapsing reward.</p><p><strong>Intermediate (1-2 weeks): Sim-to-real sample audit on a manipulation task.</strong> Using MuJoCo (via Gymnasium's FetchPush-v2 or a LeRobot tabletop env), train a policy with PPO-Lagrangian under a contact-force cost budget; log a sample ledger that records episode count, reset cause, and cumulative cost, then quantify how many simulated episodes would be needed on real hardware and whether domain randomization over friction and payload reduces that count. The key challenge is building the structured logging so that reward, safety cost, and reset causes are co-recorded in one artifact rather than scattered across separate CSV files.</p></div>
+<div class="whats-next">
+<h3>What's Next?</h3>
+<p>This section closes the refresher by connecting RL formalism to embodied constraints. The next chapter, <a href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15</a>, uses these definitions to build policy-gradient methods and PPO.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers, Tools, and Practice References</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="http://incompleteideas.net/book/the-book-2nd.html" rel="noopener" target="_blank">Sutton, R. S., and Barto, A. G. (2018). Reinforcement Learning: An Introduction, second edition. MIT Press.</a></p>
+<p class="bib-annotation">The standard textbook for RL foundations. Read Part I for MDPs, value functions, and the Bellman equations; Part II for TD learning and eligibility traces; Part III for function approximation and policy gradient theory. It is the primary notation reference for this module.</p>
+<span class="bib-meta">Book</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1606.01540" rel="noopener" target="_blank">Brockman, G. et al. (2016). OpenAI Gym. arXiv.</a></p>
+<p class="bib-annotation">Introduced the step/reset/render environment interface that became the standard for RL research. Read for the API contract; nearly every RL library and tutorial assumes this interface, and Gymnasium maintains it with minor extensions. Understanding it is prerequisite to using PettingZoo, Isaac Lab, or MuJoCo.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://mujoco.org/" rel="noopener" target="_blank">Todorov, E., Erez, T., and Tassa, Y. (2012). MuJoCo: A physics engine for model-based control. IROS.</a></p>
+<p class="bib-annotation">Describes the contact physics model, generalized coordinates, and constraint solver that make MuJoCo accurate and fast for robot learning. Read the original paper to understand why smooth contact gradients benefit model-based methods; in practice use the official docs for API, but this paper explains why MuJoCo physics behaves differently from game-engine simulators.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://onlinelibrary.wiley.com/doi/book/10.1002/9780470316887" rel="noopener" target="_blank">Puterman, M. L. (1994). Markov Decision Processes: Discrete Stochastic Dynamic Programming. Wiley.</a></p>
+<p class="bib-annotation">Provides the formal mathematical treatment of MDPs, Bellman equations, and the theory of optimal policies. Read Chapter 4 for policy evaluation and Chapter 6 for policy iteration; this is the reference to check when the intuitions from Sutton and Barto need formal grounding in existence and convergence proofs.</p>
+<span class="bib-meta">Book</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://gymnasium.farama.org/" rel="noopener" target="_blank">Towers, M. et al. Gymnasium documentation. Farama Foundation.</a></p>
+<p class="bib-annotation">The actively maintained successor to OpenAI Gym with bug fixes, consistent seeding, and terminated/truncated distinction. Use this as the environment API reference throughout the chapter; the terminated/truncated split matters for bootstrap targets at episode boundaries.</p>
+<span class="bib-meta">Tool</span>
+</div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0122_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Section 14.4: Model-free vs. model-based; on- vs. of...</a>
+<a class="up" href="ch_0118_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>
+<a class="next" href="ch_0124_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15: Policy Gradient Methods and PPO</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

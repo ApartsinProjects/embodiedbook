@@ -1,0 +1,210 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 38.2: Autoencoders and recurrent state-space models (RSSM)</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0279_part-8-world-models-and-model-based-embodied-ai-index.xhtml">Part VIII: World Models and Model-Based Embodied AI</a><span class="bc-sep">›</span><a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a></div>
+<h1>Section 38.2: Autoencoders and recurrent state-space models (RSSM)</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"DreamerV3 learns more from one real hour than a random policy learns from one simulated year."</p>
+<cite>A World Model With Memory</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 38.2: Autoencoders and recurrent state-space models (RSSM), showing an embodied agent predicting futures, testing actions, and revising behavior from feedback." loading="lazy" src="../img/c59bd65f87_chapter-38-illustration-02.jpg"/>
+<figcaption><strong>Figure 38.2A</strong>: The opener illustration frames autoencoders and recurrent state-space models (rssm) as a closed-loop problem: a prediction is valuable only if it changes action selection and survives contact with reality.</figcaption>
+</figure>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A robot arm reaches for a cup, but the cup slides behind an occluder for two frames. A snapshot encoder sees nothing useful; the arm stalls. This is the failure that recurrent state-space models were built to fix. RSSMs arrived at exactly the moment embodied agents moved from curated tabletop setups to cluttered, partially observable real environments where a single missed frame can cascade into a wrong grasp. Here you will build the prior-posterior loop from scratch, trace the KL gap that signals model drift, and connect the latent rollout directly to a planning step that never needs another real observation.</p>
+</div>
+<div class="callout pathway">
+<div class="callout-title">Builder Route</div>
+<p>Follow the information flow: observation to encoder, encoder to posterior latent, posterior to recurrent memory, memory to prior, and prior to imagined future. Each hop exists because partial observability forces the agent to remember what the current frame does not show.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The prior predicts what should happen next, the posterior corrects that belief with evidence, and the gap between them is one of the most useful debugging signals in the whole world-model stack, especially when traced in PyTorch or JAX rollouts against MuJoCo replay.</p>
+</div>
+<h2>Autoencoders in the RSSM Stack</h2>
+<p data-agent="22"><span data-agent="29">A robot running at 20 Hz has 50 milliseconds to decide its next move. A single raw camera frame is a 64x64x3 tensor of 12,288 numbers. Plan directly over that stream and the arm freezes mid-reach before it ever chooses.</span> The escape is an autoencoder, which compresses each high-dimensional observation into a compact latent vector and then reconstructs the observation from that vector. In embodied AI this matters because raw sensor streams (RGB images, depth maps, tactile grids) are far too large for a planner to reason over in real time. Compressing to a 32- or 64-dimensional latent <span data-agent="28">typically</span> cuts planning cost by orders of magnitude while retaining the task-relevant structure the planner actually needs.</p>
+<p>Mechanically, a convolutional encoder maps each observation $o_t$ to a fixed-size embedding. The RSSM posterior then samples the stochastic latent $z_t$ conditioned on that embedding. A mirrored decoder reconstructs $o_t$ from $(h_t, z_t)$, supplying a pixel-reconstruction loss that forces the latent to preserve perceptual detail. Without this reconstruction signal the encoder can collapse to a trivial constant embedding, so the decoder acts as a training scaffold even when the planner itself never calls it at inference time. <span data-agent="01">Once training finishes, the decoder is typically discarded entirely: the deployed policy consumes only $(h_t, z_t)$, and the decoder is kept around solely so an engineer can spot-check reconstructions during debugging.</span></p>
+<div class="callout warning"><p>A common assumption is that a lower reconstruction loss on the autoencoder decoder means the world model will produce better robot behavior. This is wrong in embodied AI contexts because the decoder is a training scaffold, not a performance metric: it forces the latent to retain perceptual detail, but perceptual detail and task-relevant structure are not the same thing. A latent that reconstructs pixel textures faithfully can still discard the contact geometry, object velocity, or occlusion state that a planner actually needs to select actions. The correct mental model is to treat reconstruction quality as a sanity check that the encoder has not collapsed, while measuring policy performance, belief-state accuracy during occlusion, and posterior correction magnitude as the real indicators of whether the world model supports good control.</p></div>
+<h2>Problem First</h2>
+<p><span data-agent="14">Compression solves the size problem, but it leaves a deeper one untouched: even a perfect latent built from a single frame is blind to everything that happened before it.</span> A one-frame encoder cannot tell whether a mug is moving behind the robot arm, whether the car is skidding, or whether a human is about to step into the scene. The missing information lives in time. RSSMs were introduced because control from pixels needs a representation that fuses the latest observation with a persistent memory of what probably happened before.</p>
+<h2>Core Model</h2>
+<p>An RSSM couples a deterministic memory state $h_t$ with a stochastic latent state $z_t$:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="h_t = f_\theta(h_{t-1}, z_{t-1}, a_{t-1}), \qquad z_t \sim p_\theta(z_t \mid h_t)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>h</mi><mi>t</mi></msub><mo>=</mo><msub><mi>f</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>h</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><msub><mi>z</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><msub><mi>a</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mi>z</mi><mi>t</mi></msub><mo>∼</mo><msub><mi>p</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">h_t = f_\theta(h_{t-1}, z_{t-1}, a_{t-1}), \qquad z_t \sim p_\theta(z_t \mid h_t).</annotation></semantics></math></span>
+After observing the next frame, the posterior refines that prediction:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="z_t \sim q_\phi(z_t \mid h_t, o_t)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>z</mi><mi>t</mi></msub><mo>∼</mo><msub><mi>q</mi><mi>ϕ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>o</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">z_t \sim q_\phi(z_t \mid h_t, o_t).</annotation></semantics></math></span>
+The prior says what the dynamics expected before seeing the frame; the posterior says what the model believes after seeing it. Figure 38.2B below traces this predict-then-correct loop end to end, including the KL gap that measures how far the posterior had to move away from the prior's guess.</p>
+<figure class="diagram-container" data-agent="09">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="9" markerunits="strokeWidth" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 z" fill="#444"/>
+</marker>
+</defs>
+<!-- deterministic memory -->
+<rect fill="#eef4ff" height="60" rx="6" stroke="#3a66c4" stroke-width="2" width="120" x="40" y="120"/>
+<text fill="#1a2b50" font-size="13" text-anchor="middle" x="100" y="145">memory h_t</text>
+<text fill="#566" font-size="11" text-anchor="middle" x="100" y="165">f(h,z,a)</text>
+<!-- prior -->
+<rect fill="#fff4e6" height="60" rx="6" stroke="#c47a1a" stroke-width="2" width="130" x="230" y="40"/>
+<text fill="#5a3a05" font-size="13" text-anchor="middle" x="295" y="65">prior  p(z|h)</text>
+<text fill="#766" font-size="11" text-anchor="middle" x="295" y="85">expected z_t</text>
+<!-- posterior -->
+<rect fill="#eafaef" height="60" rx="6" stroke="#2e8b57" stroke-width="2" width="130" x="230" y="200"/>
+<text fill="#10421f" font-size="13" text-anchor="middle" x="295" y="225">posterior q(z|h,o)</text>
+<text fill="#467" font-size="11" text-anchor="middle" x="295" y="245">corrected z_t</text>
+<!-- observation -->
+<rect fill="#f2eaff" height="60" rx="6" stroke="#7a4ac4" stroke-width="2" width="120" x="40" y="200"/>
+<text fill="#341a55" font-size="13" text-anchor="middle" x="100" y="232">obs o_t</text>
+<!-- arrows -->
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="2" x1="160" x2="228" y1="140" y2="80"/>
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="2" x1="160" x2="228" y1="160" y2="220"/>
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="2" x1="160" x2="228" y1="230" y2="230"/>
+<!-- KL gap between prior and posterior -->
+<line marker-end="url(#arrow)" stroke="#c0392b" stroke-dasharray="5,4" stroke-width="2" x1="295" x2="295" y1="100" y2="198"/>
+<text fill="#c0392b" font-size="11" text-anchor="start" x="305" y="155">KL gap</text>
+<!-- posterior feeds back to memory -->
+<path d="M360 230 H 470 V 150 H 100 V 182" fill="none" marker-end="url(#arrow)" stroke="#2e8b57" stroke-width="2"/>
+<text fill="#2e8b57" font-size="11" text-anchor="middle" x="430" y="143">z_t to next h</text>
+</svg>
+<figcaption><strong>Figure 38.2B</strong>: The RSSM predict-then-correct loop. The deterministic memory rolls forward to produce the prior expectation; the current observation refines it into the posterior. The dashed red KL gap between prior and posterior is the drift signal, and the corrected latent feeds back into memory for the next step.</figcaption>
+</figure>
+<p>Training usually balances prediction quality with information bottleneck pressure:
+<span class="katex katex-rendered" data-mathdisplay="1" data-tex="\mathcal{L} = -\sum_t \mathbb{E}_{q_\phi}[\log p_\theta(o_t, r_t, c_t \mid h_t, z_t)] + \beta \sum_t \mathrm{KL}(q_\phi(z_t \mid h_t, o_t) \Vert p_\theta(z_t \mid h_t))."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="script">L</mi><mo>=</mo><mo>−</mo><munder><mo>∑</mo><mi>t</mi></munder><msub><mi mathvariant="double-struck">E</mi><msub><mi>q</mi><mi>ϕ</mi></msub></msub><mo stretchy="false">[</mo><mi>log</mi><mo>⁡</mo><msub><mi>p</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>o</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>r</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>c</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>z</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo stretchy="false">]</mo><mo>+</mo><mi>β</mi><munder><mo>∑</mo><mi>t</mi></munder><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow><mo stretchy="false">(</mo><msub><mi>q</mi><mi>ϕ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>o</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">∥</mi><msub><mi>p</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>z</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>h</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\mathcal{L} = -\sum_t \mathbb{E}_{q_\phi}[\log p_\theta(o_t, r_t, c_t \mid h_t, z_t)] + \beta \sum_t \mathrm{KL}(q_\phi(z_t \mid h_t, o_t) \Vert p_\theta(z_t \mid h_t)).</annotation></semantics></math></span>
+Reconstruction or reward heads force the latent to stay informative, while the KL term (Kullback-Leibler divergence, a measure of how far one probability distribution sits from another) prevents the posterior from inventing arbitrary state that the prior cannot roll forward.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the RSSM keeps two coupled states, a deterministic memory $h_t$ that carries forward what is probably still true and a stochastic latent $z_t$ that the prior guesses and the posterior corrects once a new observation arrives, with the whole thing trained by combining a reconstruction or reward loss with a KL penalty that keeps the posterior from drifting arbitrarily far from what the prior can actually roll forward.</p></div>
+<p><span data-agent="29">The recurrent structure matters for action. During planning the agent lacks future observations, so it relies on the prior dynamics. During filtering it has observations, so it updates with the posterior.</span> RSSM therefore serves as both a forecasting model and a <a data-agent="13" href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">learned Bayesian filter</a>. The practical payoff is stark. <span data-agent="29">Hafner et al. (2020) showed on DMControl benchmarks that a flat convolutional encoder needs roughly 500,000 environment steps to match one number: the return an RSSM-based agent reaches in 50,000. At 20 Hz on a real robot, 500,000 steps is roughly 7 hours of continuous interaction. 50,000 steps is 42 minutes, the difference between an overnight rig run and a coffee break.</span> <span data-agent="28">In practice the exact sample-efficiency ratio varies by task and hyperparameters, but the general pattern holds: imagined rollouts in latent space substitute for a large share of the real interactions a flat encoder would otherwise need.</span></p>
+<div class="callout algorithm">
+<div class="callout-title">RSSM Update Cycle</div>
+<p>Predict with the recurrent prior using the last latent and action; correct that prediction with the current observation; decode or score the new latent; then repeat. If the prior and posterior disagree sharply for many steps, the world model is drifting or the encoder is underpowered.</p>
+</div>
+<h2>Minimal Probe</h2>
+<p>The mini-example below mimics an RSSM correction step. A predicted latent state is combined with an observation-derived estimate, and the code prints how much the posterior correction changed the prior belief. <span data-agent="04">Here <code>fusion_gain</code> stands in for the learned weighting a real posterior network would compute; a real RSSM does not use a fixed constant, but a fixed gain keeps this toy example easy to trace by hand.</span></p>
+<pre><code class="language-python"><span class="c1"># Mimic one RSSM prediction-correction cycle.</span>
+<span class="c1"># A large correction means the prior dynamics missed something important.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">prior_mean</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.45</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.30</span><span class="p">])</span>
+<span class="n">obs_embed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.62</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.06</span><span class="p">,</span> <span class="mf">0.28</span><span class="p">])</span>
+<span class="n">fusion_gain</span> <span class="o">=</span> <span class="mf">0.35</span>
+<span class="n">posterior_mean</span> <span class="o">=</span> <span class="n">prior_mean</span> <span class="o">+</span> <span class="n">fusion_gain</span> <span class="o">*</span> <span class="p">(</span><span class="n">obs_embed</span> <span class="o">-</span> <span class="n">prior_mean</span><span class="p">)</span>
+<span class="n">correction</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">posterior_mean</span> <span class="o">-</span> <span class="n">prior_mean</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span>
+<span class="p">{</span>
+<span class="s2">"posterior_mean"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">posterior_mean</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span>
+<span class="s2">"total_correction"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">correction</span><span class="p">),</span> <span class="mi">3</span><span class="p">),</span>
+<span class="p">}</span>
+<span class="p">)</span></code></pre>
+<div class="code-output"><p><code>{'posterior_mean': [0.509, -0.086, 0.293], 'total_correction': 0.08}</code></p></div>
+<p><strong>Expected behavior:</strong> The posterior should stay close to the prior when dynamics are already accurate, but it should still move enough to absorb new evidence. If the correction is always near zero, the encoder is being ignored. If it is always huge, the recurrent dynamics are not carrying useful memory.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> This fragment acts like a one-step posterior update in an RSSM: it fuses a 3-D <code>prior_mean</code> with an observation embedding via a fixed fusion gain, then prints the resulting <code>posterior_mean</code> and <code>total_correction</code>. The total correction is the quantity to watch: it measures how much fresh evidence changed the model's predicted latent state.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: RSSM predict-correct cycle</h4>
+<p>Trace one full update with a 1-D latent so the numbers stay readable. Start with memory $h_0 = 0.20$, last latent $z_0 = 0.50$, last action $a_0 = 1.0$.</p>
+<p><strong>Step 1, recurrent memory.</strong> Let $f$ be a simple weighted sum followed by a clip: $h_1 = 0.5 h_0 + 0.3 z_0 + 0.2 a_0 = 0.5(0.20) + 0.3(0.50) + 0.2(1.0) = 0.10 + 0.15 + 0.20 = 0.45$.</p>
+<p><strong>Step 2, prior.</strong> The prior predicts the latent from memory alone: $\mu_{\text{prior}} = \tanh(h_1) = \tanh(0.45) \approx 0.422$. The dynamics expected $z_1 \approx 0.42$ before seeing any frame.</p>
+<p><strong>Step 3, observation.</strong> The encoder turns the real frame into an estimate $\mu_{\text{obs}} = 0.70$. The mug moved farther than the prior guessed.</p>
+<p><strong>Step 4, posterior.</strong> Fuse prior and observation with gain $0.35$: $\mu_{\text{post}} = 0.422 + 0.35(0.70 - 0.422) = 0.422 + 0.35(0.278) = 0.422 + 0.097 = 0.519$.</p>
+<p><strong>Step 5, drift signal.</strong> The correction magnitude is $|0.519 - 0.422| = 0.097$, a moderate, healthy update: the encoder was heard but the memory was not overruled. Feed $z_1 = 0.519$ back into Step 1 and the cycle repeats. A correction near $0$ every step means the encoder is ignored; a correction near $0.28$ (the full gap) every step means memory is carrying nothing.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>A handwritten correction step is useful for intuition, but production code usually drops to about 6 lines by using <code>torch.nn.GRUCell</code> (Gated Recurrent Unit) for the deterministic memory and <code>torch.distributions</code> heads for the prior and posterior. In practice, teams often pair these with TensorDict, TorchRL, PyTorch logging, Weights &amp; Biases dashboards, and TensorBoard traces, while the official DreamerV3 code handles recurrent unrolling, batch masking, and latent sampling details that are noisy to reproduce by hand.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Inspect the prior and posterior separately; never log only the final latent.</li>
+<li>Track posterior correction magnitude over time, because rising correction often appears before reward collapse.</li>
+<li>Train the representation against reward, continuation, or task heads, not only image reconstruction.</li>
+<li>Test whether the latent still works when observations are delayed or partially dropped.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>If posterior corrections stay large for long stretches, the recurrent dynamics are not carrying the information the planner needs. In hardware, that usually appears as brittle behavior after occlusion or delay. A second common failure is the opposite: posterior corrections collapse toward zero early in training because the KL term dominates and forces the posterior to stay near the prior, which means the encoder stops receiving a useful gradient. The model reconstructs images acceptably but the latent encodes almost no task-relevant information, so reward prediction remains near the untrained baseline even after many steps. Diagnosing this requires logging posterior entropy and KL magnitude separately, not just the total loss.</p>
+</div>
+<div class="callout key-insight"><p>KL collapse is like a head chef who enforces a house spice rule so strictly that cooks stop tasting the actual dish. The prior is the house recipe; the posterior is what the cook decides after tasting the real ingredients. When the penalty for deviating from the recipe is too harsh, every cook just copies the recipe exactly and stops tasting altogether. The dish then looks consistent but loses all connection to the real ingredients in front of them. The free-bits fix is simply telling the chef: "small deviations from the recipe are fine, stop penalising those." Once the punishment for a little personal judgment is removed, the cooks start tasting again and the final dish actually reflects what is in the kitchen.</p></div>
+<div class="callout tip">
+<p>To prevent KL collapse early in training, use the <code>free_bits</code> (also called <em>free nats</em>) technique: set a minimum allowed KL per latent dimension, typically 1.0 nat, so the term contributes zero loss until the posterior already diverges from the prior by at least that amount. In DreamerV3 this is the <code>kl_free</code> hyperparameter; in a custom PyTorch implementation, replace <code>kl.mean()</code> with <code>torch.maximum(kl, torch.full_like(kl, 1.0)).mean()</code>. This single change keeps the encoder gradient alive during the first few thousand steps when the recurrent dynamics are still nearly random and would otherwise dominate the posterior.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A mobile manipulator sorting packages uses cameras plus wheel odometry. When a box disappears behind the arm, the RSSM prior keeps its likely pose alive for a few steps; when the box reappears, the posterior snaps the belief back to the measured location. Teams often inspect that loop with OpenCV frame overlays plus <a data-agent="13" href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">MuJoCo</a> replay, because without the two-stage update the planner either forgets the box too early or treats every frame as independent evidence.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p data-agent="21"><strong>Discrete tokenized world models.</strong> IRIS (Micheli et al., 2024) and its successor DIAMOND (Alonso et al., 2024, NeurIPS) replace the continuous RSSM latent with a VQ-VAE (Vector-Quantized Variational Autoencoder, an autoencoder whose latent space is a fixed codebook of discrete tokens rather than a continuous vector) token grid and model dynamics autoregressively over those tokens using a <a data-agent="13" href="ch_0296_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">transformer</a>. This makes world-model rollouts composable with language and vision-language models. DeepMind's Genie 2 (2024) scales the same architecture to generate interactive 3-D environments from a single image, using an RSSM-like recurrent backbone under the hood. The active research question is whether discrete tokens can support the gradient-through-imagination trick <span data-agent="04">(backpropagating a policy gradient through the differentiable latent rollout itself, rather than through a separately estimated return)</span> that makes DreamerV3 data-efficient, or whether token worlds require a separate actor trained on model samples without backpropagating through the tokenizer.</p>
+<p><strong>Foundation world models for manipulation.</strong> UniSim (Yang et al., 2024, ICLR) and RoboDreamer (Zhou et al., 2024) train a single latent dynamics model across dozens of robot morphologies and tasks, treating the RSSM as a universal physics prior rather than a task-specific model. The Google DeepMind Robotics team demonstrated in 2024 that pretraining an RSSM on internet video with a joint encoder, then fine-tuning on 10 minutes of real robot data, matches a policy trained from scratch on 8 hours of real data. The key open issue is catastrophic forgetting: fine-tuning the recurrent state tends to overwrite cross-task structure learned in pretraining, and standard continual-learning fixes (EWC, Elastic Weight Consolidation, which penalizes changes to weights that were important for earlier tasks; and LoRA adapters, small trainable low-rank layers inserted alongside frozen pretrained weights) have not yet been benchmarked systematically on RSSM recurrent cores.</p>
+<p>What happens when the world model is confidently wrong and the robot does not know it? That is the problem the next line of work addresses.</p>
+<p><strong>Uncertainty-aware latent planning for safety.</strong> SafeDreamer (Zheng et al., 2024) augments the RSSM posterior with an epistemic-uncertainty head (a small network that estimates the model's own confidence, as opposed to noise inherent in the environment) that flags latent regions where the prior and posterior systematically disagree, then biases the planner away from those regions at deployment. This is distinct from the KL diagnostic described above: the signal is used online to constrain action selection, not just for offline debugging. Related work from the Berkeley Robot Learning Lab (2025) applies the same principle to surgical robot teleoperation, where a large posterior correction triggers a haptic alert rather than a policy override.</p>
+<p><strong>Open problem for PhD students.</strong> Current RSSM recurrent cores use a single GRU or LSTM (Long Short-Term Memory) to carry memory across steps, which forces all task-relevant state through a fixed-width bottleneck. An open architectural question is how to give the recurrent core selective write access, analogous to a differentiable memory tape, so that slow-changing state (object identity, scene layout) and fast-changing state (contact forces, velocity) are stored at different timescales without requiring a manually tuned hierarchy of recurrent modules. No published work has demonstrated a single differentiable mechanism that learns this separation from reward signal alone across both manipulation and locomotion domains.</p>
+</div>
+<div class="callout cross-ref">
+<div class="callout-title">Cross-Reference Thread</div>
+<p>For the sensor-fusion perspective behind learned filtering, revisit <a href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8</a>. For sequence models that replace recurrence with token attention, see <a href="ch_0296_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.4</a>. For the simulation stacks often used to train RSSM-based policies, connect this section to <a href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11</a>.</p>
+</div>
+<h4 data-agent="30">Why the two-part split earns its keep</h4>
+<p>A latent that cannot remember what happened one second ago is not a world model: it is a snapshot viewer. RSSMs are powerful because they cleanly separate two jobs. The deterministic core stores what the world model is confident will persist, such as robot pose or object identity across a short occlusion. The stochastic latent captures ambiguity, such as whether a hidden object slipped left or right. That division, which practitioners call <strong>the predict-then-correct loop</strong>, makes imagined rollouts possible without pretending uncertainty has vanished.</p>
+<div class="callout fun-note">
+<p>The deterministic state is the robot equivalent of "I am pretty sure I left my keys on the table," while the stochastic latent is "but there is a non-trivial probability they slid behind the toaster." Only one of those beliefs needs Bayesian updating when you find them in the freezer.</p>
+</div>
+<p data-agent="17">The failure cases are instructive. Beautiful pixel reconstruction paired with brittle control means the latent is wasting capacity on appearance. Good reward fit paired with poor continuation or contact prediction means the planner overestimates long-horizon stability. RSSM debugging is therefore belief-state forensics, not image inspection: log prior and posterior disagreement explicitly with PyTorch recurrent cells, JAX scan rollouts, MuJoCo replay, and Weights &amp; Biases or TensorBoard panels.</p>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a minimal RSSM in PyTorch trained on a CartPole-v1 environment from Gymnasium. Encode observations with a two-layer MLP, run a GRUCell for the deterministic state, and log the KL divergence and posterior correction magnitude to TensorBoard after each episode. The key challenge is verifying that the posterior actually diverges from the prior when the pole approaches the tipping angle, rather than collapsing to a near-zero correction from the start.</p><p><strong>Intermediate (1-2 weeks):</strong> Train a pixel-based RSSM on a MuJoCo HalfCheetah task where 30% of frames are randomly blacked out during rollout. Use a convolutional encoder and compare policy returns with and without the recurrent memory state to confirm the RSSM recovers gracefully from missed observations. The key challenge is tuning the free-bits threshold so the encoder does not collapse during the many occlusion steps where the posterior has no useful observation to integrate.</p></div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you say which part of the RSSM is responsible for memory, which part represents uncertainty, and what an unusually large posterior correction would tell you about the training setup?</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>An RSSM is best understood as a learned filter plus learned dynamics model: it predicts, then corrects, and both steps are necessary for control under partial observability.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 38.2.1</div><p>Design an RSSM logging panel for a robot camera stream. Which prior and posterior statistics would you save every step, and which threshold would trigger a manual replay review?</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch the posterior correction spike under occlusion</h4>
+<p><strong>Goal:</strong> See empirically that the posterior correction magnitude rises when observations are degraded, the single signal this whole section argues you should monitor.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> (CartPole-v1) and <code>torch</code>. No GPU required; this runs on a laptop CPU in under 30 minutes.</p>
+<p><strong>Build (about 10 minutes):</strong> Encode each observation with a two-layer MLP, carry a deterministic state with a single <code>torch.nn.GRUCell</code>, and add two small linear heads that output the prior mean (from the GRU state only) and the posterior mean (from the GRU state plus the encoded observation). Train for a few thousand steps with a reconstruction loss plus a KL term using <code>free_bits = 1.0</code>.</p>
+<p><strong>What to vary:</strong> After training, replay episodes while randomly zeroing out the observation vector with probability $p$, sweeping $p$ across $0.0, 0.2, 0.5, 0.8$.</p>
+<p><strong>What to observe:</strong> Log the per-step posterior correction $\lvert \mu_{\text{post}} - \mu_{\text{prior}} \rvert$ and plot its mean against $p$. You should see correction stay low at $p = 0$ (the prior already predicts well) and rise as more frames vanish, then, counterintuitively, fall again near $p = 0.8$ because the encoder has almost no evidence to inject and the posterior collapses back onto the prior. That non-monotonic curve is the fingerprint of a recurrent core doing its job.</p>
+</div>
+<section class="bibliography">
+<h2>Bibliography &amp; Further Reading</h2>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Mastering Diverse Domains through World Models." (2023). <a href="https://arxiv.org/abs/2301.04104" rel="noopener" target="_blank">https://arxiv.org/abs/2301.04104</a></p>
+<p class="bib-annotation">DreamerV3 is the practical modernization of RSSM training, especially for stable large-scale use.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Dream to Control: Learning Behaviors by Latent Imagination." (2020). <a href="https://arxiv.org/abs/1912.01603" rel="noopener" target="_blank">https://arxiv.org/abs/1912.01603</a></p>
+<p class="bib-annotation">Dreamer shows how the RSSM becomes useful once policy learning moves into imagined latent trajectories.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hafner, D. et al.. "Learning Latent Dynamics for Planning from Pixels." (2019). <a href="https://arxiv.org/abs/1811.04551" rel="noopener" target="_blank">https://arxiv.org/abs/1811.04551</a></p>
+<p class="bib-annotation">The PlaNet paper is still the best concise explanation of the deterministic-plus-stochastic RSSM split.</p>
+</div>
+</section>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0293_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.1: Why predict in latent space</a>
+<a class="up" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38: Latent World Models</a>
+<a class="next" href="ch_0295_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Section 38.3: Dreamer to DreamerV3</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

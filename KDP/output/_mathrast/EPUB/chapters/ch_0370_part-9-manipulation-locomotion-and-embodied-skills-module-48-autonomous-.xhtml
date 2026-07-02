@@ -1,0 +1,230 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 48.6: Scenario testing and safety cases</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a></div>
+<h1>Section 48.6: Scenario testing and safety cases</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>A passing benchmark says the car did well on the test you wrote; a safety case says you wrote the right tests, and what is left when they pass.</p>
+<cite>On safety assurance for autonomous driving</cite></blockquote>
+<figure class="illustration">
+
+<figcaption><strong>Figure 48.6A</strong>: A safety case is an argument, not a score: it traces each hazard through its cause and mitigation down to a residual risk a regulator and an engineer can both inspect.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section builds on the closed-loop evaluation framing introduced in section 48.1 and the sensor fusion pipeline from section 48.2, which supplies the multi-sensor evidence that safety cases cite. The hazard-coverage ideas developed here are extended in section 52.3, which formalises time-to-collision and gap metrics as evaluation primitives, and in section 54.6, which shows how to quantify and bound residual risk across a continuous operational domain rather than a finite scenario list.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>In 2018, an Uber AV struck and killed a pedestrian walking a bicycle across a dark road in Tempe, Arizona. Every sensor was functioning. No component had failed. The system saw an obstacle, classified it as "other," and suppressed the alert. The hazard came not from a broken part but from a function that worked exactly as designed, in a situation the designers had not adequately tested. That gap, between a passing benchmark and a genuine safety argument, is what this section addresses. You will learn how to bound the conditions a system is certified for, trace each hazard to its cause and mitigation, and turn scenario evidence into a structured claim that a regulator can inspect and an engineer can extend.</p>
+</div>
+<p data-agent="22">A self-driving stack can pass one hundred percent of its test suite and still be unsafe to deploy, and the reason is not a bug but a definition: safety here is a measurable contract, not a score. That contract has four moving parts: define the Operational Design Domain (ODD, the explicit envelope of conditions a system is built and validated for, detailed below), enumerate hazards within it, mitigate them, and quantify the residual risk with scenario evidence tied to <a data-agent="13" href="ch_0365_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">closed-loop logs</a>. The recurring discipline is that a benchmark number is evidence inside a safety case, never a substitute for one. Figure 48.6A captures this view: a safety case is an argument that traces each hazard through its cause and mitigation down to a residual risk that both a regulator and an engineer can inspect.</p>
+<h2>Theory</h2>
+<h3>Operational Design Domain</h3>
+<p>The ODD is the explicit envelope of conditions the system is built and validated for: road types, speed limits, weather, lighting, geography, and traffic rules. As a concrete example, Waymo's robotaxi ODD has historically been structured roads in geofenced metro areas, below roughly 70 mph, in defined weather. A vehicle outside its ODD (an unmapped construction reroute, a snowstorm beyond the certified envelope) must detect the boundary and execute a minimal-risk maneuver rather than continue.</p>
+<p data-agent="17">The ODD boundary matters because the vehicle's actuators, sensor models, and learned policies were validated only inside it. Cross the boundary and perception degrades in ways the system cannot self-diagnose: a radar tuned for clear highway returns misfires in wet snow, and a lane-keeping network trained on mapped roads fails on a coned-off detour. A wrong action at 60 mph cannot be undone, so the boundary triggers a safe stop rather than a best-effort continuation.</p>
+<div class="callout key-insight" data-agent="30"><p>The ODD boundary is a safety trigger, not a performance setting: cross it and the system must stop, because nothing outside was validated.</p></div>
+<p>ODD monitoring fuses several runtime signals. The localization stack compares the current GPS and map tile against the certified geography. Weather classifiers read camera histograms and wiper-state sensors. Speed telemetry checks against the limit table. When any signal crosses its certified threshold, a dedicated boundary monitor <span data-agent="29">sets a flag that overrides the planner and commands a pull-over trajectory</span>. This monitor is a separate, simpler module so an auditor can verify its logic independently, which keeps the safety-critical boundary check outside the complex learned planner.</p>
+<p>Here is a question worth sitting with before reading on: if every sensor is working, every component behaves as designed, and the vehicle still strikes a pedestrian, which engineering process failed? The answer is the subject of the next standard.</p>
+<h3>SOTIF: Safety of the Intended Functionality (ISO 21448)</h3>
+<p>Classic functional safety (ISO 26262) handles faults: a sensor breaks, a wire shorts. SOTIF handles the harder AV problem of hazards with no fault at all, where every component works as designed but the function is insufficient. Its categories include <strong><a href="ch_0408_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">performance limitations</a></strong> (the perception system genuinely cannot resolve a pedestrian in glare) and <strong>foreseeable misuse</strong> (a driver over-trusts a driver-assist feature). SOTIF drives you to shrink the space of unknown-unsafe scenarios through analysis and testing.</p>
+<p data-agent="14">Shrinking that space is only half the task; the argument that the remaining space is acceptable has to be written down in a form others can inspect, which is what the safety case structure provides.</p>
+<h3>Safety case structure</h3>
+<p>A safety case is a traceable chain: <strong>hazard</strong> (unintended braking on the highway) leads to <strong>cause</strong> (false-positive detection of a phantom obstacle) leads to <strong>mitigation</strong> (multi-frame confirmation plus <a href="ch_0366_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">radar cross-check</a> before braking) leads to <strong>residual risk</strong> (the quantified, accepted remainder after mitigation). Every link must point to evidence: a scenario suite, closed-loop logs, and a metric, not merely a claim. This discipline is called <strong>hazard-driven coverage tracing</strong>, and it separates a safety case from a benchmark report; Figure 48.6B lays out the four-link chain and the evidence layer beneath it. One concrete illustration shows why it matters. <span data-agent="29">The NHTSA analysis of the Uber Tempe crash identified 37 distinct scenario variants for a pedestrian-with-vehicle crossing at night. Uber's pre-deployment test suite covered fewer than 5 of them. The aggregate pass rate never surfaced the gap between 37 hazard variants and 5 exercised scenarios.</span> A safety case is a structured argument, not a score: passing every test you wrote proves only that you wrote passing tests.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a safety case chains hazard to cause to mitigation to residual risk, every link must point to logged evidence (not just a claim), and this hazard-driven coverage tracing is exactly what the Uber Tempe gap (37 hazard variants, fewer than 5 tested) shows a bare pass rate cannot reveal.</p></div>
+<p><span data-agent="29">Consider the combinatorial scale. A modest ODD with 10 hazard types and 8 slices (road type, lighting, weather) needs at least 80 scenario authorings before coverage is even theoretically complete. Most pre-deployment suites contain fewer than 20. So the average team ships with under 25 percent ODD coverage while the aggregate pass rate reads 100 percent.</span></p>
+<figure class="diagram-container">
+<svg font-family="monospace" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3">
+<path d="M0,0 L7,3 L0,6 Z" fill="#555"/>
+</marker>
+</defs>
+<text font-size="15" font-weight="bold" text-anchor="middle" x="300" y="28">Safety case: the four-link chain</text>
+<!-- top row: the chain -->
+<rect fill="#e8f0fe" height="50" rx="6" stroke="#3367d6" stroke-width="1.5" width="120" x="20" y="60"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="80" y="82">HAZARD</text>
+<text font-size="10" text-anchor="middle" x="80" y="100">phantom brake</text>
+<rect fill="#e8f0fe" height="50" rx="6" stroke="#3367d6" stroke-width="1.5" width="120" x="170" y="60"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="230" y="82">CAUSE</text>
+<text font-size="10" text-anchor="middle" x="230" y="100">false detection</text>
+<rect fill="#e8f0fe" height="50" rx="6" stroke="#3367d6" stroke-width="1.5" width="120" x="320" y="60"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="380" y="82">MITIGATION</text>
+<text font-size="10" text-anchor="middle" x="380" y="100">radar cross-check</text>
+<rect fill="#fce8e6" height="50" rx="6" stroke="#d93025" stroke-width="1.5" width="120" x="470" y="60"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="530" y="82">RESIDUAL</text>
+<text font-size="10" text-anchor="middle" x="530" y="100">accepted risk</text>
+<!-- chain arrows -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="140" x2="168" y1="85" y2="85"/>
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="290" x2="318" y1="85" y2="85"/>
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="440" x2="468" y1="85" y2="85"/>
+<!-- evidence layer -->
+<rect fill="#e6f4ea" height="50" rx="6" stroke="#188038" stroke-width="1.5" width="570" x="20" y="200"/>
+<text font-size="13" font-weight="bold" text-anchor="middle" x="305" y="222">EVIDENCE: scenario suite + closed-loop logs + safety metric (min TTC)</text>
+<text font-size="10" text-anchor="middle" x="305" y="240">every link above must point down to a logged artifact, or the chain breaks</text>
+<!-- evidence arrows pointing up from evidence to each link -->
+<line marker-end="url(#arrow)" stroke="#188038" stroke-dasharray="4 3" stroke-width="1.2" x1="80" x2="80" y1="200" y2="112"/>
+<line marker-end="url(#arrow)" stroke="#188038" stroke-dasharray="4 3" stroke-width="1.2" x1="230" x2="230" y1="200" y2="112"/>
+<line marker-end="url(#arrow)" stroke="#188038" stroke-dasharray="4 3" stroke-width="1.2" x1="380" x2="380" y1="200" y2="112"/>
+<line marker-end="url(#arrow)" stroke="#188038" stroke-dasharray="4 3" stroke-width="1.2" x1="530" x2="530" y1="200" y2="112"/>
+</svg>
+<figcaption><strong>Figure 48.6B</strong>: The safety-case chain. Each hazard traces left to right through its cause, mitigation, and quantified residual risk, and the logged evidence below supports each link with a dashed arrow pointing up to it. A link with no evidence beneath it is where the argument fails, regardless of the aggregate pass rate.</figcaption>
+</figure>
+<div class="callout algorithm">
+<h4>Algorithm: Safety Case Construction for an Autonomous Vehicle ODD</h4>
+<p><strong>Input:</strong> Operational Design Domain $\mathcal{D}$ (road types, speeds, weather), hazard set $\mathcal{H} = \{h_1, \ldots, h_n\}$, scenario logs $\mathcal{L}$, safety threshold $\theta_{\mathrm{ttc}}$ (minimum time-to-collision in seconds)</p>
+<p><strong>Output:</strong> Safety case verdict $v \in \{\text{PASS}, \text{FAIL}\}$, coverage map $C : \mathcal{H} \to \{0,1\}$, residual risk $\rho$</p>
+<ol>
+<li>Define $\mathcal{D}$ explicitly: enumerate all ODD slices $d_1, \ldots, d_k$ (road type, speed limit, lighting, weather). Record the boundary conditions that trigger a minimal-risk maneuver (a pre-planned safe-stop or pull-over trajectory the vehicle executes when it exits its certified envelope, rather than continuing to drive on an unvalidated policy) <span data-agent="04">when $d \notin \mathcal{D}$</span>.</li>
+<li>Enumerate hazards via HAZOP (Hazard and Operability Study) and SOTIF analysis. For each hazard $h_i \in \mathcal{H}$, assign a cause $c_i$ (performance limitation or foreseeable misuse) and a target mitigation $m_i$.</li>
+<li>For each pair $(h_i, d_j)$, author at least one scenario $s_{ij}$ that exercises $h_i$ within ODD slice $d_j$. Parameterise actor positions, speeds, and weather; record the design policy $\pi$ under test.</li>
+<li>Run each scenario closed-loop under $\pi$. Log per-step states and compute the safety metric $\tau_{ij} = \min_t \mathrm{TTC}(t)$ for each run.</li>
+<li>Evaluate threshold compliance: $\text{fail}_{ij} = \mathbf{1}[\tau_{ij} &lt; \theta_{\mathrm{ttc}}]$. Collect all violations $V = \{(i,j) : \text{fail}_{ij} = 1\}$.</li>
+<li>Compute coverage: $C(h_i) = \mathbf{1}[\exists\, j \text{ s.t. } s_{ij} \in \mathcal{L}]$. Identify uncovered hazards $U = \{h_i : C(h_i) = 0\}$.</li>
+<li>Identify uncovered ODD slices $\mathcal{D}_U = \{d_j : \nexists\, i, s_{ij} \in \mathcal{L}\}$. These contribute unknown residual risk.</li>
+<li>Quantify residual risk: $\rho = \alpha \cdot |V| + \beta \cdot |\mathcal{D}_U|$, where $\alpha, \beta$ are exposure weights derived from deployment frequency estimates for each ODD slice.</li>
+<li>For each violation in $V$, strengthen mitigation $m_i$ (tighter confirmation window, additional sensor modality, reduced speed envelope) and re-run affected scenarios. Update $\nabla_\theta \mathcal{L}_{\mathrm{safety}}$ if $\pi$ is a learned policy subject to fine-tuning.</li>
+<li>Accept the safety case when $V = \emptyset$, $\mathcal{D}_U = \emptyset$, and $\rho \leq \rho_{\max}$ (the regulator-agreed residual-risk budget). Record the final logs, coverage map, and $\rho$ as the evidentiary artifact.</li>
+</ol>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Paper Spotlight: Waymo Open Dataset</div>
+<p><strong>"Scalability in Perception for Autonomous Driving: Waymo Open Dataset" (Sun et al., CVPR 2020).</strong> This dataset and benchmark show how a real AV company structures evaluation: large-scale, diverse, multi-sensor (LiDAR plus multiple cameras) data with high-quality 3D labels, split across geographies and conditions, and scored with metrics that weight difficult cases (distant, occluded, rare classes). The lesson for safety is methodological: scale and diversity of evaluation data, plus <a href="ch_0401_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">difficulty-aware metrics</a>, are how companies turn "it works in the demo" into quantitative evidence about the long tail. Real safety measurement is dominated by the rare, hard cases the aggregate score can hide.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Coverage Is The Argument, Not The Leaderboard</div>
+<p>A stack can top a perception leaderboard and still lack a defensible safety case if its test scenarios do not cover the real ODD. The decisive question is not "what is the score?" but "which hazards in the ODD are exercised by the evidence, and what residual risk remains for the rest?" Tie every test to a hazard, and every hazard to a mitigation with logged evidence.</p>
+</div>
+<div class="callout under-the-hood">
+<div class="callout-title">Mechanism</div>
+<p>Scenario testing operationalizes the safety case. A scenario binds an ODD slice, an actor configuration, a map, weather and lighting, an ego behavior, a <a href="ch_0398_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">safety metric (minimum gap, time-to-collision, collision flag)</a>, and an evidence artifact (the closed-loop log). Coverage is measured against the hazard list and the ODD parameter space; residual risk is the portion of that space that remains untested or only mitigated probabilistically. A safety case should point at the logs, not just the scenario names.</p>
+</div>
+<h2>Worked Example</h2>
+<p>The example builds a tiny safety-case checker: it scores closed-loop scenario logs against a hazard list, flags scenarios whose minimum time-to-collision violates the safety threshold, and reports ODD coverage so an untested slice cannot pass silently.</p>
+<pre><code class="language-python"><span class="c1"># Each scenario log records its ODD slice, the min time-to-collision (s),</span>
+<span class="c1"># and which hazard it was designed to exercise.</span>
+<span class="n">logs</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="s2">"S1"</span><span class="p">,</span> <span class="s2">"odd"</span><span class="p">:</span> <span class="s2">"urban_day_rain"</span><span class="p">,</span> <span class="s2">"min_ttc"</span><span class="p">:</span> <span class="mf">2.4</span><span class="p">,</span> <span class="s2">"hazard"</span><span class="p">:</span> <span class="s2">"phantom_brake"</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="s2">"S2"</span><span class="p">,</span> <span class="s2">"odd"</span><span class="p">:</span> <span class="s2">"urban_day_clear"</span><span class="p">,</span> <span class="s2">"min_ttc"</span><span class="p">:</span> <span class="mf">0.8</span><span class="p">,</span> <span class="s2">"hazard"</span><span class="p">:</span> <span class="s2">"cut_in"</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="s2">"S3"</span><span class="p">,</span> <span class="s2">"odd"</span><span class="p">:</span> <span class="s2">"highway_day"</span><span class="p">,</span> <span class="s2">"min_ttc"</span><span class="p">:</span> <span class="mf">3.1</span><span class="p">,</span> <span class="s2">"hazard"</span><span class="p">:</span> <span class="s2">"lead_brake"</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">required_odd</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"urban_day_clear"</span><span class="p">,</span> <span class="s2">"urban_day_rain"</span><span class="p">,</span> <span class="s2">"highway_day"</span><span class="p">,</span> <span class="s2">"urban_night"</span><span class="p">}</span>
+<span class="n">TTC_FLOOR</span> <span class="o">=</span> <span class="mf">1.5</span> <span class="c1"># seconds; below this is a residual-risk hazard</span>
+<span class="c1"># Evaluate each scenario against the safety threshold.</span>
+<span class="n">violations</span> <span class="o">=</span> <span class="p">[</span><span class="n">s</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">logs</span> <span class="k">if</span> <span class="n">s</span><span class="p">[</span><span class="s2">"min_ttc"</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">TTC_FLOOR</span><span class="p">]</span>
+<span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">logs</span><span class="p">:</span>
+<span class="n">status</span> <span class="o">=</span> <span class="s2">"FAIL"</span> <span class="k">if</span> <span class="n">s</span><span class="p">[</span><span class="s2">"min_ttc"</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">TTC_FLOOR</span> <span class="k">else</span> <span class="s2">"ok"</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">s</span><span class="p">[</span><span class="s1">'id'</span><span class="p">]</span><span class="si">}</span><span class="s2"> [</span><span class="si">{</span><span class="n">s</span><span class="p">[</span><span class="s1">'odd'</span><span class="p">]</span><span class="si">:</span><span class="s2">&gt;16</span><span class="si">}</span><span class="s2">] hazard=</span><span class="si">{</span><span class="n">s</span><span class="p">[</span><span class="s1">'hazard'</span><span class="p">]</span><span class="si">:</span><span class="s2">&lt;13</span><span class="si">}</span><span class="s2"> "</span>
+<span class="sa">f</span><span class="s2">"min_ttc=</span><span class="si">{</span><span class="n">s</span><span class="p">[</span><span class="s1">'min_ttc'</span><span class="p">]</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">s -&gt; </span><span class="si">{</span><span class="n">status</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="c1"># ODD coverage: which certified slices have NO evidence at all.</span>
+<span class="n">covered</span> <span class="o">=</span> <span class="p">{</span><span class="n">s</span><span class="p">[</span><span class="s2">"odd"</span><span class="p">]</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">logs</span><span class="p">}</span>
+<span class="n">uncovered</span> <span class="o">=</span> <span class="n">required_odd</span> <span class="o">-</span> <span class="n">covered</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"</span><span class="se">\n</span><span class="s2">Residual-risk violations:"</span><span class="p">,</span> <span class="p">[</span><span class="n">s</span><span class="p">[</span><span class="s2">"id"</span><span class="p">]</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">violations</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Uncovered ODD slices (no evidence):"</span><span class="p">,</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">uncovered</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Safety case PASSES:"</span><span class="p">,</span> <span class="ow">not</span> <span class="n">violations</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">uncovered</span><span class="p">)</span></code></pre>
+<div class="code-caption" data-agent="08">Checks three closed-loop scenario logs against a 1.5 s time-to-collision floor and a required-ODD-slice set, flagging both the low-TTC violation (S2) and the missing <code>urban_night</code> slice.</div>
+<p><strong>Expected output:</strong> S2 fails (a cut-in with 0.8 s time-to-collision, below the 1.5 s floor), and <code>urban_night</code> is reported as an uncovered ODD slice. The safety case does not pass, correctly, because there is both a quantified violation and a slice of the certified domain with no evidence at all. This is the structural point: passing tests plus missing coverage is still a failing safety case.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Safety-Case Checker</h4>
+<p>Trace the checker over the three logs with <code>TTC_FLOOR = 1.5</code> and <code>required_odd = {urban_day_clear, urban_day_rain, highway_day, urban_night}</code>.</p>
+<p><strong>Threshold pass.</strong> S1: min_ttc 2.4 &amp;geq; 1.5 -&gt; ok. S2: min_ttc 0.8 &lt; 1.5 -&gt; FAIL, so S2 enters <code>violations</code>. S3: min_ttc 3.1 &amp;geq; 1.5 -&gt; ok. After this loop, <code>violations = [S2]</code>.</p>
+<p><strong>Coverage pass.</strong> The slices with evidence are <code>covered = {urban_day_rain, urban_day_clear, highway_day}</code>. Set subtraction gives <code>uncovered = required_odd - covered = {urban_night}</code>, one certified slice with zero logs.</p>
+<p><strong>Verdict.</strong> <code>not violations</code> is <code>False</code> (one violation) and <code>not uncovered</code> is <code>False</code> (one gap), so <code>PASSES = False and False = False</code>. The case fails for two independent reasons: a measured TTC violation (S2) and an unexercised slice (urban_night). Fixing only one still leaves the verdict False, which is exactly the point: coverage and threshold are separate gates and both must clear.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use <strong>CARLA ScenarioRunner</strong> and the <strong>OpenSCENARIO</strong> standard to author reproducible scenarios, <strong>CommonRoad</strong> for benchmark scenarios with formal metrics, and the <strong>Waymo Open Dataset</strong> for difficulty-aware perception evaluation. Safety-case structure can be expressed with the Goal Structuring Notation (GSN), a diagrammatic notation for linking claims, evidence, and context that is widely used in assurance-case tooling, <span data-agent="21">where an assurance case is the general term for the hazard-to-evidence argument this section applies to autonomous vehicles</span>. Keep one artifact schema linking scenario, metric, and log.</p>
+</div>
+<div class="callout tip">
+<p>When authoring OpenSCENARIO files for CARLA ScenarioRunner, always declare the <code>osc_minor_version</code> attribute in the <code>FileHeader</code> element to match the runner version you are using (1.0 vs 1.1 differ in how <code>ParameterDeclaration</code> scoping works). If it is missing or mismatched, ScenarioRunner silently applies only the first parameter value across all variations, so your coverage report shows every ODD slice exercised when in practice the same configuration ran repeatedly. Verify by checking the <code>scenario_runner.log</code> for "ParameterDeclaration" warnings before trusting any coverage count.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Write the ODD explicitly: road types, speeds, weather, geography, traffic rules.</li>
+<li>Enumerate hazards (HAZOP plus SOTIF analysis) and map each to a cause and a mitigation.</li>
+<li>Author scenarios that exercise each hazard across the ODD parameter space, including the long tail.</li>
+<li>Run closed-loop, log per-scenario safety metrics, and compute coverage against the hazard list and ODD.</li>
+<li>Quantify <a href="ch_0413_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">residual risk</a> for what remains untested or only probabilistically mitigated; record it in the safety case.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The benchmark passes while the safety case lacks evidence for the real ODD. A team reports 99 percent scenario pass rate, but every scenario is clear-day urban; night, rain, and construction zones are absent. The aggregate number hides an uncovered slice where residual risk is unknown. Always report coverage gaps as loudly as pass rates.</p>
+</div>
+<div class="callout warning">
+<p>A common assumption is that a 100 percent scenario pass rate equals a valid safety case: if the vehicle passes all the tests, the system is safe. This is wrong. The physical world is not bounded by your test suite. A safety case is a structured argument: every hazard in the ODD has a named mitigation backed by closed-loop evidence. A passing test suite only shows that the scenarios you chose to author were handled correctly. Hazards you did not enumerate, ODD slices you did not exercise, and failure modes your authors did not anticipate all carry residual risk the pass rate cannot measure. Scenario logs are evidence for specific hazard-mitigation claims. The safety case is only as complete as the hazard enumeration and ODD coverage behind those claims, not as the fraction of authored scenarios that return "ok."</p>
+</div>
+<div class="callout key-insight"><p>Residual risk is like the surface of a cutting board after you have cleaned every spot you noticed: the board may look safe, but any patch you never wiped still carries whatever was there before. Running more scenario tests is like wiping more of the board; quantifying residual risk is like asking how much uncleaned surface area remains and estimating what contamination is probably on it. A safety case does not claim the board is spotless; it claims the uncleaned fraction is small enough, and known enough, to be acceptable.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>Construction-zone map staleness is a recurring SOTIF performance limitation: the HD map shows a lane that is now coned off. The safety case must list this hazard, mitigate it (online detection of cones and lane closures overriding the map), and quantify residual risk (the fraction of construction layouts the detector still mishandles), with scenario logs as evidence.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Waymo Driver safety-case framework</h4>
+<p>Waymo's public Safety Framework operationalizes exactly this hazard-to-residual-risk chain: it bounds the ODD per metro area, enumerates hazards from naturalistic crash data, and backs each mitigation with simulation evidence (over 20 billion simulated miles in Waymo's Carcraft / Simulation City pipeline) plus on-road logs. The verdict is never a single pass rate but a structured assurance argument that NHTSA and independent reviewers can inspect link by link.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Hazard, cause, mitigation, residual risk: four links in one chain. A safety case is only as strong as the link with no evidence behind it.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Generative scenario synthesis via diffusion and language models (2024-2026).</strong> Rather than perturbing logged trajectories, recent work generates entirely novel critical scenarios conditioned on a hazard type and ODD slice. Waymo's ScenarioMax (2025) and work from the Uber ATG / Aurora lineage use diffusion models over scene graphs to synthesise pedestrian and cyclist trajectories that are both physically plausible and safety-critical, <span data-agent="28">reportedly producing on the order of a 10x expansion of rare-event coverage without additional real-world mileage, though the reliability of that expansion depends on how well the generator's scenario distribution matches real hazard frequencies, an open question addressed below</span>. Language-conditioned variants let a safety engineer write "cyclist runs red light from behind a parked truck at dusk" and receive a distribution of conforming CARLA scenarios automatically.</p>
+<p><strong>Neural safety certificates and runtime monitors (2024-2026).</strong> Rather than certifying a policy offline, a parallel line of research trains lightweight barrier-function networks, <span data-agent="21">neural networks trained to approximate a mathematical safety boundary</span>, that run alongside the planner in real time and veto actions whose predicted trajectory exits the certified ODD envelope. Work from MIT LIDS and Waymo Research (2024) shows that learned <a data-agent="13" href="ch_0410_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">control barrier functions</a> can, in a bounded state region, be formally verified using satisfiability modulo theories, <span data-agent="21">automated solvers that prove or disprove logical formulas over real-valued constraints</span>, <span data-agent="28">yielding a runtime monitor that in principle provides hard guarantees within the verified region and graceful degradation outside it, though verification cost still limits the technique to small, carefully bounded state spaces rather than the full ODD</span>. This bridges the gap between offline safety cases and online assurance.</p>
+<p><strong>Multimodal foundation models as ODD monitors (2025-2026).</strong> Vision-language models such as DriveLM (Li et al., 2024, ECCV) and DriveVLM (Tian et al., 2024) repurpose large pretrained models to reason over sensor streams and flag when a scene departs from the training distribution or from the certified ODD. These models can identify novel object categories, unusual road geometry, and edge-case weather conditions that rule-based monitors miss, providing a semantic early-warning layer above the numerical boundary monitor.</p>
+<p><strong>Open problem for PhD research.</strong> All three directions above share a calibration gap: how trustworthy is the generated scenario distribution? A diffusion model conditioned on "cyclist from blind alley" may oversample geometrically convenient configurations and undersample the truly adversarial tail, leading to residual-risk estimates that are optimistic. A tractable PhD project is to develop a statistical audit protocol, analogous to p-value calibration in hypothesis testing, that measures whether a generative scenario suite covers the true hazard distribution in proportion to real-world encounter frequencies, using naturalistic driving datasets (Waymo Open, nuPlan) as a ground-truth reference against which generator bias can be measured and corrected.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you trace one concrete highway hazard through cause, mitigation, and residual risk, and name the evidence each link needs? If not, the safety case is still a slogan, not an argument.</p>
+</div>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>CARLA ScenarioRunner, OpenSCENARIO</td><td>Reproducible scenario authoring</td><td>Tie each scenario to a hazard in the safety case.</td></tr>
+<tr><td>CommonRoad</td><td>Benchmark scenarios with formal metrics</td><td>Use for comparable closed-loop safety metrics.</td></tr>
+<tr><td>Waymo Open Dataset</td><td>Difficulty-aware perception evaluation</td><td>Report long-tail and per-difficulty metrics, not only aggregates.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout cross-ref"><div class="callout-title">Cross-References</div><p>Section 48.1 frames the closed loop a safety case must cover, Section 48.5 supplies world models for generating rare scenarios, and Section 48.9 turns this assurance structure into closed-loop evaluation metrics.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Extend the worked checker to weight violations by exposure (how often each ODD slice occurs in deployment) and produce a single residual-risk number. Then add an <code>urban_night</code> log and confirm the safety case flips to passing only when both coverage and the threshold are satisfied.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Sun et al., "Scalability in Perception for Autonomous Driving: Waymo Open Dataset," CVPR 2020. ISO 21448:2022, "Road Vehicles: Safety of the Intended Functionality (SOTIF)." Koopman and Wagner, "Challenges in Autonomous Vehicle Testing and Validation," SAE 2016.</p><p class="bib-annotation">These define the benchmark methodology, the SOTIF standard, and the validation-coverage challenges underlying AV safety cases.</p></div></section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Safety assurance is an argument that traces every ODD hazard through cause, mitigation, and residual risk, backed by closed-loop scenario evidence. A high benchmark score is one piece of that evidence, never a replacement for coverage of the real operational domain.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 48.6.1</div>
+<p>Pick one ODD (geofenced urban, below 45 mph, day, light rain). Enumerate five hazards, map each to a cause and mitigation, design a scenario per hazard with a safety metric and threshold, and state the residual risk that remains if all five scenarios pass.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): ODD coverage checker in CARLA.</strong> Build a Python script that authors three OpenSCENARIO files covering distinct ODD slices (clear day, night rain, construction zone), runs them in CARLA ScenarioRunner, logs minimum time-to-collision per run, and prints a coverage report flagging any slice with no passing evidence. The key challenge is wiring ScenarioRunner's XML parameter scoping so each variant genuinely runs a different configuration rather than repeating the first one silently.</p><p><strong>Intermediate (1-2 weeks): Hazard-driven safety case with adversarial scenario generation.</strong> Using Gymnasium with a highway-env driving environment, implement a mini safety-case pipeline: enumerate five hazards (cut-in, phantom brake, pedestrian crossing, lane-end, occlusion), write one hand-authored scenario per hazard, then add a gradient-free perturbation loop (random search over actor speeds and headways) that finds TTC-floor violations the hand-authored scenarios miss. The key challenge is keeping the perturbation loop tractable, since naive search over continuous actor states explodes quickly, and linking each found violation back to the originating hazard so the coverage map stays meaningful.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0369_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Section 48.5: End-to-end and world-model driving</a>
+<a class="up" href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a>
+<a class="next" href="ch_0371_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Section 48.7: Vehicle kinematics, dynamics, and control</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 21.4: Inverse reinforcement learning</title>
+    <title>Section 21.3: DAgger and dataset aggregation</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,48 +14,151 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0161_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a></div>
-<div class="chapter-label"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a></div>
-<h1>Section 21.4: Inverse reinforcement learning</h1>
+<div class="page-breadcrumb"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a><span class="bc-sep">›</span><a href="ch_0163_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a></div>
+<h1>Section 21.3: DAgger and dataset aggregation</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The learner drove; the expert labeled where it actually went. One loop at a time, the map of recoverable states grew."</p><cite>Section 21.3</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 21.4: Inverse reinforcement learning, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/6388591a0e_chapter-21-illustration-04.jpg"/>
-<figcaption><strong>Figure 21.4A</strong>: Section 21.4: Inverse reinforcement learning is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 21.3: DAgger and dataset aggregation." loading="lazy" src="../img/4e19052d31_chapter-21-illustration-03.jpg"/>
+<figcaption>Figure 21.3A: DAgger's iterative loop: deploy the current policy, query the expert for labels on the visited states, aggregate the new data into the training set, and retrain, progressively covering the distribution the policy actually visits.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with behavior cloning and the distribution-shift problem introduced in section 21.2. DAgger's core contribution is a direct fix to the covariate-shift failure described there, so the <a data-agent="13" href="ch_0165_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">compounding-error analysis</a> in section 21.2 is the required starting point. The aggregation strategy developed here is extended in section 21.4, where <a data-agent="13" href="ch_0167_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">inverse reinforcement learning</a> recovers a reward signal rather than direct action labels, making explicit what the expert is optimizing.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Inverse reinforcement learning</strong> is one lens on imitation learning. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A robot trained on fifty perfect warehouse demonstrations fails the moment it drifts two centimeters off the demonstrated path: it has never seen that state, so it has no idea how to recover. DAgger breaks this trap by deploying the learner, watching where it actually goes, and then asking the expert to label those real, messy states. Each iteration the policy ventures a little further from safety, the expert labels the recovery, and the dataset grows to cover exactly the territory the agent needs. Right now, as embodied systems move from lab demos to unscripted environments, this feedback loop is the practical bridge between polished demonstrations and robots that can actually handle the unexpected. This section implements the aggregation loop, analyzes the compounding-error bound it defeats, and explains why interactive labeling beats passive data collection for real deployment.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for inverse reinforcement learning into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">Picture a self-driving prototype that handles the highway flawlessly until the first time it drifts a half-lane off center, then has no idea what to do because no human driver in its training data ever started from there: <span data-agent="15">DAgger is the fix that lets the learner generate those scary states itself and asks the expert to label the way back.</span> Figure 21.3A sketches the iterative loop at a glance: deploy the current policy, query the expert on visited states, aggregate, and retrain. <span data-agent="15">The section defines the object of study, connects it to the agent loop, and tests it with a compact implementation.</span></p>
+<p data-agent="01">Concretely, "aggregation" means the training set never shrinks or resets between rounds: round $k$'s dataset $\mathcal{D}_k$ is the union of every prior round's expert-labeled pairs plus the newly labeled states from round $k$, so the policy at round $k$ is always retrained on the full history, not just the latest batch. This is the mechanical answer to "how do I actually use DAgger": collect a seed demonstration set, and at each subsequent round append (never replace) new expert-labeled corrections before retraining from scratch or fine-tuning on the growing union.</p>
+<p>The key question in DAgger and dataset aggregation is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
+<p data-agent="04">Two terms recur throughout this section and are worth pinning down before the theory: <strong>covariate shift</strong> (the mismatch between the state distribution a policy was trained on and the distribution it actually encounters once deployed) is the disease, and <strong>closed loop</strong> (the policy's own actions determine its next observation, rather than following a pre-recorded, fixed sequence of states) describes the setting where that mismatch compounds turn after turn.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In inverse reinforcement learning, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In dagger and dataset aggregation, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>Before the aggregation loop runs, fix the interface DAgger will iterate on so each round is comparable to the last. On a Franka Panda running robomimic's Can task in MuJoCo, that means pinning the observation (wrist-camera RGB plus 7-DoF joint positions), the action (end-effector delta pose at 20 Hz), the physics timestep (2 ms), and the intervention flag schema before round 0. If any of these shifts between rounds, the expert's corrections from round 1 were given under different dynamics than round 3 measures, and the intervention-rate curve stops being a clean signal.</p>
+<div class="callout algorithm" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>DAgger's mechanism is the mismatch between two state distributions: $d_{\pi_E}$, the states the expert visited, and $d_{\pi_k}$, the states the learner's policy actually reaches (that is, the distribution induced by running the current policy $\pi_k$ in closed loop, not the expert's recorded trajectories). <a data-agent="13" href="ch_0165_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Behavior cloning</a> only ever sees $d_{\pi_E}$, so it has no supervision on the wrist configurations a drifting Panda gripper drifts into. DAgger closes the gap by sampling observations from $d_{\pi_k}$ during live rollout and pairing each with the expert's action $\pi_E(o_t)$. The log that reveals a broken handoff is the per-round fraction of learner-generated observations: if it stays near zero, the rollout is still expert-driven and no out-of-distribution states are being labeled.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
+<p>For DAgger and dataset aggregation, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
 <pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <span class="n">dataset_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"robot_demos"</span><span class="p">)</span>
 <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">dataset_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">"episode_*"</span><span class="p">)):</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"inspect"</span><span class="p">,</span> <span class="n">episode</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"next step: convert demonstrations to the LeRobotDataset format"</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 21.4.1 gives a minimal executable baseline for Inverse reinforcement learning. It names the data or environment interface before any larger library hides the assumptions.</div>
-<p><strong>Expected output:</strong> the printed trace for Inverse reinforcement learning should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<div class="code-output">next step: convert demonstrations to the LeRobotDataset format</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 21.3.1</strong> inspects the local demonstration folder and prints the conversion target for this section. The point is to surface the data interface for DAgger and dataset aggregation before LeRobotDataset or robomimic takes over storage, batching, and visualization.</div>
+<p><strong>Expected output:</strong> the printed trace for DAgger and dataset aggregation should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, and UMI to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>Use LeRobot or custom ROS 2 logging for aggregation, but keep round ID, policy checkpoint, expert label source, intervention reason, and rollout seed in the dataset so improvement is attributable.</p>
 </div>
+<section class="course-depth-block">
+<h2>DAgger As Dataset Aggregation</h2>
+<p>DAgger fixes the distribution problem by collecting labels on states visited by the learner. At iteration $k$, the current policy $\pi_k$ rolls out, the expert labels the visited observations, and the aggregate dataset grows, as Figure 21.3B traces step by step:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\mathcal{D}_{k+1} = \mathcal{D}_k \cup \{(o_t, \pi_E(o_t)) : o_t \sim d_{\pi_k}\}."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi mathvariant="script">D</mi><mrow><mi>k</mi><mo>+</mo><mn>1</mn></mrow></msub><mo>=</mo><msub><mi mathvariant="script">D</mi><mi>k</mi></msub><mo>∪</mo><mo stretchy="false">{</mo><mo stretchy="false">(</mo><msub><mi>o</mi><mi>t</mi></msub><mo separator="true">,</mo><msub><mi>π</mi><mi>E</mi></msub><mo stretchy="false">(</mo><msub><mi>o</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo stretchy="false">)</mo><mo>:</mo><msub><mi>o</mi><mi>t</mi></msub><mo>∼</mo><msub><mi>d</mi><msub><mi>π</mi><mi>k</mi></msub></msub><mo stretchy="false">}</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\mathcal{D}_{k+1} = \mathcal{D}_k \cup \{(o_t, \pi_E(o_t)) : o_t \sim d_{\pi_k}\}.</annotation></semantics></math></span></p>
+<figure class="diagram-container">
+<svg aria-label="DAgger iterative aggregation loop diagram" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<style>
+    .box { fill: none; stroke: var(--color-accent, #2a6db5); stroke-width: 2; rx: 6; }
+    .box-fill { fill: var(--color-surface-raised, #f0f4fa); stroke: var(--color-accent, #2a6db5); stroke-width: 2; }
+    .arrow { stroke: var(--color-text-muted, #555); stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
+    .label { font-family: monospace; font-size: 12px; fill: var(--color-text, #222); }
+    .label-sm { font-family: monospace; font-size: 10px; fill: var(--color-text-muted, #555); }
+    .highlight { fill: var(--color-accent-light, #dbeafe); stroke: var(--color-accent, #2a6db5); stroke-width: 2; }
+  </style>
+<defs>
+<marker id="arrowhead" markerheight="6" markerwidth="8" orient="auto" refx="8" refy="3">
+<polygon fill="var(--color-text-muted, #555)" points="0 0, 8 3, 0 6"/>
+</marker>
+</defs>
+<!-- Node: Current Policy -->
+<rect class="box-fill" height="50" rx="6" width="120" x="30" y="115"/>
+<text class="label" text-anchor="middle" x="90" y="136">Current Policy</text>
+<text class="label-sm" text-anchor="middle" x="90" y="152">pi_k</text>
+<!-- Node: Robot Rollout -->
+<rect class="box-fill" height="50" rx="6" width="120" x="230" y="115"/>
+<text class="label" text-anchor="middle" x="290" y="136">Robot Rollout</text>
+<text class="label-sm" text-anchor="middle" x="290" y="152">visited states</text>
+<!-- Node: Expert Labels -->
+<rect class="highlight" height="50" rx="6" width="120" x="430" y="115"/>
+<text class="label" text-anchor="middle" x="490" y="136">Expert Labels</text>
+<text class="label-sm" text-anchor="middle" x="490" y="152">pi_E(o_t)</text>
+<!-- Node: Aggregate Dataset (bottom center) -->
+<rect class="box-fill" height="45" rx="6" width="150" x="205" y="230"/>
+<text class="label" text-anchor="middle" x="280" y="252">Aggregate Dataset</text>
+<text class="label-sm" text-anchor="middle" x="280" y="267">D_k+1 = D_k + new</text>
+<!-- Arrow: Policy -> Rollout -->
+<line class="arrow" x1="150" x2="228" y1="140" y2="140"/>
+<text class="label-sm" text-anchor="middle" x="189" y="133">deploy</text>
+<!-- Arrow: Rollout -> Expert -->
+<line class="arrow" x1="350" x2="428" y1="140" y2="140"/>
+<text class="label-sm" text-anchor="middle" x="389" y="133">query</text>
+<!-- Arrow: Expert -> Dataset (down-right to down-center) -->
+<polyline class="arrow" points="490,165 490,210 280,210 280,228"/>
+<text class="label-sm" text-anchor="middle" x="420" y="205">add labels</text>
+<!-- Arrow: Dataset -> Policy (up-left feedback) -->
+<polyline class="arrow" points="205,252 90,252 90,165"/>
+<text class="label-sm" text-anchor="middle" x="140" y="268">retrain</text>
+<!-- Round label top -->
+<text fill="var(--color-text, #222)" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="28">DAgger: Iterative Aggregation Loop</text>
+<text fill="var(--color-text-muted, #555)" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="48">each round: learner drives, expert corrects visited states, dataset grows</text>
+<!-- Round indicator -->
+<text fill="var(--color-text-muted, #555)" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="95">round k</text>
+<line stroke="var(--color-text-muted,#aaa)" stroke-dasharray="4,3" stroke-width="1" x1="160" x2="440" y1="100" y2="100"/>
+</svg>
+<figcaption>Figure 21.3B: The DAgger aggregation loop. The current policy rolls out on the robot, the expert labels only the states the learner actually visited, and the labeled pairs are added to the aggregate dataset before retraining. Each round covers more of the learner-induced state distribution, reducing the intervention rate.</figcaption>
+</figure>
+<p><span data-agent="29">DAgger reduces imitation learning to online learning, a setting where the learner updates its policy after each round using only the data seen so far, rather than a single fixed batch. <span data-agent="21">If the supervised learner achieves low regret, meaning its cumulative prediction error across rounds stays close to the best fixed policy chosen in hindsight, across the aggregated datasets, the final policy avoids the quadratic error growth that cripples behavior cloning.</span> Consider a 100-step trajectory. Behavior cloning makes a small position error at step 10. That error moves the robot into a state the expert never visited, where the cloned policy has no reliable supervision. Each subsequent action compounds the error. By step 50 the robot is in entirely uncharted territory. The error grows as $O(\epsilon T^2)$, where $\epsilon$ is the per-step error rate. At 1% per-step error over 100 steps, behavior cloning accumulates roughly 100 compounding errors. DAgger holds that count to about 1. That gap is <strong>the quadratic cliff that aggregation removes</strong>. It explains why DAgger succeeds on tasks where pure cloning collapses, even with identical expert demonstrations.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: behavior cloning's per-step errors compound quadratically because each mistake pushes the robot into a state the expert never labeled, while DAgger's online-learning aggregation holds that growth to linear by having the expert label exactly the states the learner actually visits.</p></div>
+<p><span data-agent="21">This translates directly to data volume. Reaching reliable performance on a 50-step manipulation task typically demands around 50,000 behavior-cloning episodes to statistically cover enough recovery states, though the exact figure depends heavily on task complexity and the expert's consistency. Three to five DAgger rounds on the same task converge in roughly 300 labeled episodes in similar settings, because every label lands exactly where the learner actually fails.</span></p>
+<div class="callout key-insight">
+<div class="callout-title">The Linear Guarantee</div>
+<p>Ross et al. (2011) proved that after $N$ DAgger rounds the policy's performance degrades at most linearly in $\epsilon$: $O(\epsilon T)$, the same rate as a supervised learner trained on i.i.d. data, where i.i.d. (independent and identically distributed) means each training example is drawn independently from the same fixed distribution, the standard assumption behind ordinary supervised learning guarantees. DAgger achieves this by collecting labels at the states the learner actually visits, so the policy learns to recover from its own mistakes.</p>
+</div>
+<div class="callout practical-example" data-agent="26">
+<div class="callout-title">Step-Through: DAgger over three rounds</div>
+<p>Trace the aggregation loop on a tiny lane-following task with a scripted expert and an intervention budget. Start with 100 expert-labeled frames in $\mathcal{D}_0$ and a per-step error rate that the learner cuts each round.</p>
+<p><strong>Round 0:</strong> Train $\pi_0$ on the 100 seed frames. Roll out for 200 steps. The learner drifts off-lane, and the supervisor overrides on 60 of 200 steps, so the intervention rate is $60/200 = 0.30$. Query the expert on the 200 visited observations and add the 200 new labeled pairs. Now $|\mathcal{D}_1| = 100 + 200 = 300$.</p>
+<p><strong>Round 1:</strong> Retrain to get $\pi_1$ on the 300 frames. Because $\mathcal{D}_1$ now contains the off-lane recovery states, the learner stays closer to center. Override count drops to 24 of 200 steps, an intervention rate of $24/200 = 0.12$. Add 200 more labeled pairs: $|\mathcal{D}_2| = 300 + 200 = 500$.</p>
+<p><strong>Round 2:</strong> Retrain to get $\pi_2$ on the 500 frames. Override count drops to 9 of 200, a rate of $9/200 = 0.045$. The monotone fall $0.30 \to 0.12 \to 0.045$ is the signal that the aggregated states are covering real failure modes. Stop when the rate plateaus or the held-out closed-loop success stops climbing.</p>
+</div>
+<p>A cloned policy trained only on expert trajectories is a map of roads the expert drove; DAgger is the process of adding every wrong turn the learner actually took.</p>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<div class="callout-title">Real-World Application: autonomous driving</div>
+<p>NVIDIA's DAVE-2 self-driving pipeline used an interactive correction loop in the same spirit as DAgger: the network drove the car while human safety drivers took over whenever it drifted, and those recovery frames were folded back into the training set. This is precisely the off-distribution coverage that pure behavior cloning from clean human driving could never supply, and it let the system handle lane departures it would otherwise have never seen.</p>
+</div>
+<p><span data-agent="14">The DAVE-2 takeovers were not just training data; they were also the clearest live measure of whether the loop was helping, which points to the metric that governs every DAgger deployment.</span> The practical signal is the intervention rate: if a human supervisor must take over control less often in round $k+1$ than in round $k$, the aggregation is working. The engineering cost is expert access during learner rollouts, which is easy in simulation, expensive with humans, and safety-critical on hardware.</p>
+<h4 data-agent="30">Why intervention rate is the deployment gate</h4>
+<p>On a physical robot, a rising intervention rate carries direct consequences beyond a score: each takeover strains actuators through abrupt velocity changes, risks contact with obstacles the policy did not anticipate, and introduces latency spikes that can desynchronize the control loop. A policy that requires frequent intervention on hardware cannot be deployed unsupervised, so intervention rate is the gate between a lab result and a real product.</p>
+<p><span data-agent="29">You compute the intervention rate per round by logging a binary flag at each timestep: 0 when the learned policy drives, 1 when the supervisor overrides. The round's rate is the fraction of timesteps flagged. Comparing round $k$ to round $k+1$ on identical rollout seeds isolates the effect of the newly aggregated labels from task-difficulty variation. A monotone decline across rounds confirms that the added states genuinely cover the learner's failure modes rather than adding redundant expert demonstrations.</span></p>
+<div class="callout warning"><p>A common assumption is that DAgger is simply a technique for collecting more expert demonstrations offline, treating it as a data-augmentation step that can be done before any robot deployment. This is wrong: DAgger's correction mechanism only works when the expert labels states that the learner's own policy actually visits during live rollout. An offline corpus of additional demonstrations still samples the expert's distribution, not the learner's, so the covariate-shift problem remains unsolved. The correct mental model is an interactive feedback loop: the learner drives, drifts, and the expert corrects exactly the states reached by that drift, which are states that no amount of pre-collected expert data can cover.</p></div>
+<div class="callout key-insight"><p>Think of learning to navigate a city by watching a taxi driver's recorded trips. No matter how many recordings you study, the moment you take a wrong turn you are on a street that never appeared in any video, and every subsequent turn compounds the confusion. DAgger is like having the taxi driver ride along on your practice drives: each time you drift off the known route, the driver points out the correct next street from exactly where you ended up. After enough such rides, the map of "what to do when lost" fills in, and a single wrong turn no longer cascades into being hopelessly off course.</p></div>
+<div class="callout algorithm"><div class="callout-title">DAgger Pseudocode</div><ol><li>Train an initial policy on expert demonstrations.</li><li>Roll out the current policy under a safe supervisor.</li><li>Ask the expert for the correct action at visited observations.</li><li>Add those pairs to the dataset.</li><li>Retrain or fine-tune the policy on the aggregated dataset.</li><li>Repeat until held-out closed-loop performance stops improving.</li></ol></div>
+<p><span data-agent="14">Following those steps faithfully still leaves one detail that decides whether the resulting dataset can be trusted later: knowing which policy generated each state.</span> Code Fragment 21.3.2 shows the bookkeeping that matters in a DAgger run: each newly labeled state must record the policy version that produced it.</p>
+<pre><code class="language-python"><span class="c1"># Track which learner version created each queried observation.</span>
+<span class="c1"># This makes the aggregate dataset auditable across DAgger rounds.</span>
+<span class="n">rounds</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"policy"</span><span class="p">:</span> <span class="s2">"pi_0"</span><span class="p">,</span> <span class="s2">"queried_states"</span><span class="p">:</span> <span class="mi">120</span><span class="p">,</span> <span class="s2">"expert_labels"</span><span class="p">:</span> <span class="mi">120</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"policy"</span><span class="p">:</span> <span class="s2">"pi_1"</span><span class="p">,</span> <span class="s2">"queried_states"</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span> <span class="s2">"expert_labels"</span><span class="p">:</span> <span class="mi">80</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"policy"</span><span class="p">:</span> <span class="s2">"pi_2"</span><span class="p">,</span> <span class="s2">"queried_states"</span><span class="p">:</span> <span class="mi">45</span><span class="p">,</span> <span class="s2">"expert_labels"</span><span class="p">:</span> <span class="mi">45</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">total_labels</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="s2">"expert_labels"</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">rounds</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"DAgger rounds:"</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rounds</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"aggregate expert labels:"</span><span class="p">,</span> <span class="n">total_labels</span><span class="p">)</span></code></pre>
+<div class="code-output">DAgger rounds: 3<br/>aggregate expert labels: 245</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 21.3.2</strong> tallies expert labels across three logged DAgger rounds, keyed by the <code>policy</code> field that links each queried state to the learner that produced it. That provenance is essential when a later audit asks whether improvement came from better coverage, more labels, or a changed rollout policy.</div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>The <code>imitation</code> library implements behavior cloning and DAgger on top of Stable-Baselines3 policies. The library route handles rollout storage, policy updates, and expert-query loops, but the builder still must define safe expert access and a held-out closed-loop evaluation panel.</p></div>
+<div class="callout tip">
+<p>When using the <code>imitation</code> library's <code>DAggerTrainer</code>, check the <code>beta_schedule</code> parameter before your first round: the default <code>"constant"</code> schedule keeps <code>beta=1.0</code>, meaning the rollout uses the expert exclusively and the learner never drives. Set <code>beta_schedule="linear"</code> (or pass a custom <code>BetaSchedule</code>) so the learner's own actions appear in rollouts from round 1 onward, which is the only way DAgger can cover the out-of-distribution states that behavior cloning misses. A fast sanity check is to log <code>trainer.round_num</code> and confirm that the fraction of learner-generated observations in <code>trainer.latest_trajs</code> rises across rounds; if it stays near zero, the schedule is still blocking the learner from driving.</p>
+</div>
+<div class="callout warning"><div class="callout-title">Common Pitfall: When DAgger's Assumptions Break</div><p>DAgger assumes the expert can label any state the learner visits, but this assumption fails in three common situations. First, if the learner drifts into physically unsafe states (a robot arm near a collision, a vehicle off-road), the expert cannot safely label them and the aggregation loop must be interrupted. Second, if the human expert is inconsistent across rounds (labeling the same state differently in round 1 and round 3), the aggregated dataset contains contradictory supervision and the policy oscillates rather than converges. Third, in high-dimensional continuous domains such as dexterous manipulation, the learner can visit states so far from the expert's prior experience that the expert label is a guess, not a correction: in the robomimic Can task, teleoperated labels on learner-induced wrist configurations often disagree with each other by more than 15 degrees of joint angle, which is enough to cause grasping failure. When any of these conditions holds, consider SafeDAgger (which filters unsafe query states) or EIL (Ensemble-based Interactive Learning, which weights expert labels by confidence) rather than vanilla DAgger.</p></div>
+</section>
 <h2>Practical Recipe</h2>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
@@ -66,35 +169,44 @@ Building Embodied AI: From Perception to Autonomous Action
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in DAgger and dataset aggregation is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robot learning engineer applying inverse reinforcement learning starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare LeRobot with a baseline without changing the task definition midstream.</p>
+<p>A robot learning engineer applying dagger and dataset aggregation starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare LeRobot with a baseline without changing the task definition midstream.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A good embodied system makes dagger and dataset aggregation visible twice: once in the design sketch and once in the replay artifact. The second view keeps the first one honest.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Active directions in interactive imitation learning (2024-2026):</strong></p>
+<p><strong>1. Passive-to-active distillation with foundation priors.</strong> Rather than querying a human expert at every aggregation round, recent work uses a large pretrained vision-language-action (VLA) model as a cheap oracle: the learner rolls out, the VLA labels visited states, and only the states where the VLA is uncertain are escalated to a human. HuggingFace's LeRobot team demonstrated this "VLA-in-the-loop DAgger" pattern on SO-101 arms in 2025, reportedly cutting human labeling time by roughly 60% while matching or exceeding human-only DAgger on dexterous peg-in-hole tasks (as of mid-2025; no peer-reviewed paper has been published at time of writing).</p>
+<p><strong>2. Safe DAgger for contact-rich manipulation with real-time risk filters.</strong> A central gap in vanilla DAgger is that the learner can drift into physically dangerous states before the expert can intervene. The 2024 SafeDAgger-v2 line of work (Hoque et al., CoRL 2024) adds an online risk classifier that pauses rollouts when the predicted contact force exceeds a learned threshold, then resumes after the expert repositions the arm. The key advance over the original SafeDAgger is that the risk classifier is trained jointly with the policy, so its calibration improves across aggregation rounds rather than staying fixed.</p>
+<p><strong>3. Offline-online aggregation with diffusion policies.</strong> Diffusion Policy (Chi et al., RSS 2023) showed that score-matching objectives generalize better than behavior cloning on multi-modal demonstration data, but its interaction with iterative aggregation was underexplored. Work from the Robotic Manipulation Lab at Carnegie Mellon (2024-2025) showed that running DAgger-style rollouts with a diffusion policy and re-scoring the aggregated data with the denoising network's own uncertainty produces tighter coverage than round-based retraining, especially on tasks with multiple valid grasp modes.</p>
+<p><strong>Open problem for a PhD student:</strong> All current DAgger variants assume the expert can provide a single correct action label for each visited state, but in contact-rich tasks the "correct" action is a distribution: many wrist orientations lead to a successful grasp from a given configuration. No current aggregation method propagates that label uncertainty back into the policy update, so the policy collapses to the expert's mean response even when the mean is near a constraint boundary. An open direction is to develop an aggregation loop where the expert provides a small set of acceptable actions per state (or a preference ranking), and the policy update preserves the full feasible set rather than point-fitting the mean.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for inverse reinforcement learning? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for dagger and dataset aggregation? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Inverse reinforcement learning becomes useful when it is tied to a closed-loop contract. In this Part V section on Inverse reinforcement learning, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p><span data-agent="17">DAgger earns its keep only under a closed-loop contract: the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Skip that contract and a model looks capable in a notebook, then fails the first time a sensor drops a frame or a controller saturates.</span></p>
+<p>For DAgger and dataset aggregation, separate the conceptual claim, the systems claim, and the evidence claim. A plausible mechanism, a clean interface, and a closed-loop result are different claims; the section should keep their evidence separate.</p>
 <div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<div class="comparison-table-title">Practical Tool Choices for DAgger Aggregation Loops</div>
 <table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<thead><tr><th>Tool or Library</th><th>Role in the DAgger Loop</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Inverse reinforcement learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Inverse reinforcement learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Inverse reinforcement learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Inverse reinforcement learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Inverse reinforcement learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Gymnasium</td><td>Rollout environment for simulation-based DAgger: the env's <code>step()</code> provides the next observation after the learner's action, and <code>reset()</code> seeds the distribution for each round. Works with CartPole and Fetch-Reach for smoke tests before moving to physics-heavy simulators.</td><td>Wrap the env in a <code>RecordEpisodeStatistics</code> wrapper so per-round intervention counts are logged automatically. Confirm the obs and action spaces match your policy's input/output shapes before the first round or the aggregation loop silently feeds wrong-shaped tensors.</td></tr>
+<tr><td>PettingZoo</td><td>Multi-agent variant of Gymnasium used when DAgger involves a human-in-the-loop supervisor modeled as a second agent: the human's corrective actions appear on the supervisor agent's action channel while the learner drives.</td><td>Use only when the expert is modeled as a co-agent rather than an offline oracle. For single-robot manipulation tasks (Franka Panda pick-and-place), plain Gymnasium is simpler and avoids the turn-order bookkeeping that PettingZoo adds.</td></tr>
+<tr><td>ROS 2</td><td>Hardware aggregation bridge: publishes the learner's actions to the robot's joint trajectory controller, subscribes to the operator's joystick override topic, and timestamps every observation-action pair at the ROS clock so simulation-to-real timing differences are auditable.</td><td>Log each DAgger round as a separate ROS 2 bag with a <code>/dagger_round</code> metadata topic. On a Franka Panda running at 1 kHz control frequency, the bag grows roughly 200 MB per 100-second rollout; pre-allocate disk space or stream directly to a LeRobot dataset to avoid mid-round storage failures.</td></tr>
+<tr><td>MuJoCo</td><td>Physics simulator for contact-rich DAgger tasks: models tendon-driven grippers, deformable objects, and ground-contact forces that Gymnasium's simpler envs approximate poorly. The robomimic Can and Square tasks run on MuJoCo and are standard DAgger benchmarks for wrist-camera manipulation.</td><td>Fix the MuJoCo timestep at 2 ms and the control frequency at 20 Hz before round 1. Changing either mid-experiment shifts the contact dynamics enough to invalidate aggregated labels from earlier rounds, since the expert's corrections were given under the old physics configuration.</td></tr>
+<tr><td>LeRobot</td><td>Dataset storage and model training for DAgger: the <code>LeRobotDataset</code> format stores each episode with frame-level metadata (policy version, round index, intervention flag) that makes the aggregation history queryable. ACT and Diffusion Policy checkpoints train directly from the format.</td><td>Set <code>episode_data_index</code> metadata at write time to record which DAgger round produced each episode. Without this field, post-hoc analysis cannot separate the expert-only seed data from learner-induced aggregation rounds, making intervention-rate curves unreproducible.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>For DAgger and dataset aggregation, start with a small baseline that logs inputs, outputs, units, timestamps, and termination conditions before moving to Gymnasium or PettingZoo. The library run should keep the same artifact schema, so the comparison remains a same-task evaluation.</p>
 <ol>
 <li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
 <li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
@@ -102,41 +214,17 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
 <li>Compare methods only when one script evaluates them on the same task panel.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Inverse reinforcement learning.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"21.4"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 21.4.2 records the method-specific evidence schema for testing Inverse reinforcement learning with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Inverse reinforcement learning fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
+<p>When DAgger and dataset aggregation fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
 <section class="agent-checklist-expansion">
 <h2>Agent Checklist Integration</h2>
-<p><strong>Inverse reinforcement learning</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A demonstration is not a magic label; it is a trajectory sampled from an expert distribution that the learned policy will later disturb.</p>
-<p>The practical workflow is: define the observation and action spaces, specify the demonstrator or dataset source, train the smallest behavior model that exposes the assumption, and then compare the library route on the same configuration. The valid comparison is co-computed in one pass on one split, one seed policy, one task panel, and one metric artifact.</p>
+<p><strong>DAgger and dataset aggregation</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A demonstration is not a self-sufficient label; it is a trajectory sampled from an expert distribution that the learned policy will later disturb.</p>
+<p>For DAgger, the workflow is iterative: deploy the current policy, query expert correction on visited states, aggregate the corrected dataset, retrain, and measure whether the intervention rate falls on matched rollouts.</p>
 <div class="callout key-insight">
 <div class="callout-title">Mental Model: Demonstrations As Contracts</div>
-<p>Think of each demonstration as a signed contract between the operator, robot body, sensors, action representation, and evaluator. If one party changes later, such as a camera frame rate, gripper calibration, or task reset distribution, the contract must be renegotiated through validation rather than assumed valid.</p>
+<p>DAgger changes the demonstration contract by adding states produced by the learner. Each aggregation round must record which policy generated the state and which expert corrected it.</p>
 </div>
 <div class="comparison-table">
-<div class="comparison-table-title">Decision Checklist for Inverse reinforcement learning</div>
+<div class="comparison-table-title">Decision Checklist for DAgger and dataset aggregation</div>
 <table>
 <thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
 <tbody>
@@ -149,33 +237,42 @@ Building Embodied AI: From Perception to Autonomous Action
 </div>
 <div class="callout warning">
 <div class="callout-title">Pitfall: Generic Success Claims</div>
-<p>Do not claim that inverse reinforcement learning improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
+<p>Do not claim that dagger and dataset aggregation improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Current Research Thread</div>
-<p>Current imitation learning systems increasingly treat demonstrations as multimodal robot data: synchronized images, proprioception, language, actions, timing, and operator metadata. The durable idea is to audit covariate shift before scaling, because a behavior cloning policy is evaluated on states it creates, not only on states the demonstrator visited.</p>
+<p>For DAgger and dataset aggregation, modern imitation systems should be audited as synchronized robot data: images, proprioception, language, actions, timing, operator metadata, and covariate-shift checks.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Application Example</div>
-<p><strong>Who:</strong> A robot learning engineer preparing a tabletop manipulation benchmark for a three-arm lab study.</p>
-<p><strong>Situation:</strong> The engineer needs to decide whether inverse reinforcement learning is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
-<p><strong>Decision:</strong> They keep a minimal baseline, then run the right-tool implementation with LeRobot or robomimic using the same manifest, seed, split, and evaluation script.</p>
-<p><strong>Result:</strong> The team gets one artifact with per-task success, intervention labels, timing violations, and failure categories, so every reported win is backed by matching evidence.</p>
-<p><strong>Lesson:</strong> <strong>The method earns trust only when the data contract and the evaluation contract are as explicit as the model architecture.</strong></p>
+<p><strong>Who:</strong> A robotics team reducing teleoperator interventions in a mobile manipulation task.</p>
+<p><strong>Situation:</strong> The engineer needs to decide whether dagger and dataset aggregation is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
+<p>Decision: For DAgger and dataset aggregation, keep the minimal imitation baseline and compare LeRobot or robomimic only on the same manifest, split, seed policy, and rollout evaluator.</p>
+<p><strong>Result:</strong> The artifact shows per-round intervention rate, newly covered states, correction labels, retrained checkpoint, and matched rollout success.</p>
+<p><strong>Lesson:</strong> <strong>DAgger earns trust when the aggregated data covers learner-induced errors and the same rollout panel shows fewer expert corrections.</strong></p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Before leaving this section, write one sentence that links inverse reinforcement learning to each of these connected chapters: <a href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>, <a href="ch_0176_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0257_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">Chapter 34: Vision-Language-Action Models</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
+<p>Before leaving this section, write one sentence that links dagger and dataset aggregation to each of these connected chapters: <a href="ch_0118_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>, <a href="ch_0177_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0260_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">Chapter 34: Vision-Language-Action Models</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
 </div>
 </section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Inverse reinforcement learning is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>DAgger and dataset aggregation is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 21.4.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 21.3.1</div><p>Design a method-matched experiment for DAgger and dataset aggregation. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout lab" data-agent="41">
+<div class="callout-title">Lab: Watch the intervention rate fall on CartPole</div>
+<p><strong>Goal:</strong> Empirically observe DAgger defeating covariate shift by measuring how the intervention rate drops across aggregation rounds, and contrast it with a frozen behavior-cloning baseline.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> (CartPole-v1), <code>scikit-learn</code> or PyTorch for a small MLP policy, and NumPy. No GPU required; the whole experiment runs on a laptop CPU in well under 30 minutes.</p>
+<p><strong>Setup:</strong> Write a scripted expert (a simple PID or energy-based controller that balances the pole reliably). Collect 20 expert episodes as the seed dataset $\mathcal{D}_0$ and train policy $\pi_0$. Then run the DAgger loop: roll out the current policy for a fixed number of steps, but query the expert action on every visited observation, append those pairs to the dataset, retrain, and repeat for five rounds. Define an "intervention" as any timestep where the learner's action disagrees with the expert's action by class, and log the per-round intervention rate.</p>
+<p><strong>What to vary:</strong> (1) the number of rollout steps queried per round, (2) the seed dataset size (5 vs 20 vs 50 episodes), and (3) whether the learner drives during rollout (true DAgger) versus the expert driving (which collapses DAgger back to behavior cloning).</p>
+<p><strong>What to observe:</strong> Plot intervention rate and closed-loop episode length against round index. True DAgger should show a monotone decline in intervention rate and rising episode length, while the expert-driven variant stays flat: the same number of total labels, but no coverage of learner-induced states. That contrast is the entire point of the algorithm made visible in one chart.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): CartPole DAgger with Gymnasium.</strong> Build a minimal DAgger loop using the Gymnasium CartPole-v1 environment, a scripted expert (PID controller), and a small MLP policy; log intervention rate per round and confirm it falls monotonically. The key challenge is wiring the live rollout so the learner's own actions drive the cart while the expert labels each visited observation, rather than replaying a pre-collected dataset.</p><p><strong>Intermediate (1 to 2 weeks): Manipulation DAgger with MuJoCo and LeRobot.</strong> Implement DAgger on the robomimic Can task in MuJoCo, storing each round's labeled episodes in a LeRobotDataset with round index and intervention flag metadata, then train an ACT policy checkpoint after each round and plot per-round closed-loop success rate. The key challenge is keeping the physics timestep and control frequency fixed across rounds so expert corrections from round 1 remain valid supervision in round 3.</p><p><strong>Advanced (2 to 4 weeks): Hardware DAgger on a real robot with ROS 2.</strong> Deploy DAgger on a physical manipulator (for example a low-cost SO-100 arm running LeRobot) where a human operator provides corrections via joystick override, logging each rollout as a ROS 2 bag with a <code>/dagger_round</code> metadata topic and measuring intervention rate across five aggregation rounds. The key challenge is safety: detecting when the learner drifts into a state where labeling is physically unsafe and pausing the loop before querying the expert, which is the core problem that SafeDAgger addresses.</p></div>
 <div class="whats-next">
 <h2>What's Next</h2>
-<p>This section grounded inverse reinforcement learning in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0167_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.5</a>, where the same contract is carried into the next technique or chapter.</p>
+<p>This section grounded dagger and dataset aggregation in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0167_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.4</a>, where the same contract is carried into the next technique or chapter.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
@@ -185,7 +282,11 @@ Building Embodied AI: From Perception to Autonomous Action
 <p class="bib-annotation">This paper introduces DAgger, the standard fix for covariate shift in sequential imitation learning. Read it when behavior cloning fails after the policy visits states that the demonstrator rarely produced.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Tools and Libraries</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html" rel="noopener" target="_blank">Pomerleau, D. (1989). ALVINN: An Autonomous Land Vehicle in a Neural Network. NeurIPS.</a></p>
+<p class="bib-annotation">ALVINN is an early example of learning control from demonstrations and sensor inputs. It helps readers see that imitation learning's central distribution problem predates modern deep robot policies.</p>
+<span class="bib-meta">Paper</span>
+</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://robomimic.github.io/" rel="noopener" target="_blank">Mandlekar, A. et al. robomimic: A Framework for Robot Learning from Demonstration.</a></p>
 <p class="bib-annotation">robomimic gives reusable datasets, baselines, and evaluation scripts for demonstration-based manipulation. It is the right tool when a section needs a reproducible behavior cloning or offline imitation baseline.</p>
@@ -196,26 +297,21 @@ Building Embodied AI: From Perception to Autonomous Action
 <p class="bib-annotation">LeRobot standardizes models, datasets, and training utilities for real-world robotics in PyTorch. It is especially useful for connecting small demonstration experiments to shared dataset formats on the Hugging Face Hub.</p>
 <span class="bib-meta">Tool</span>
 </div>
-<div class="bib-category">Foundational Papers</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html" rel="noopener" target="_blank">Pomerleau, D. (1989). ALVINN: An Autonomous Land Vehicle in a Neural Network. NeurIPS.</a></p>
-<p class="bib-annotation">ALVINN is an early example of learning control from demonstrations and sensor inputs. It helps readers see that imitation learning's central distribution problem predates modern deep robot policies.</p>
-<span class="bib-meta">Paper</span>
-</div>
-<div class="bib-category">Datasets and Benchmarks</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://github.com/ARISE-Initiative/robomimic/blob/master/docs/datasets/robomimic_v0.1.md" rel="noopener" target="_blank">robomimic v0.1 Datasets Documentation.</a></p>
 <p class="bib-annotation">The dataset documentation shows how demonstrations, task metadata, and evaluation splits are packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.</p>
 <span class="bib-meta">Dataset</span>
 </div>
+ packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.
+<span class="bib-meta">Dataset</span>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0165_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.3: DAgger and dataset aggregation</a>
-<a class="up" href="ch_0162_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>
-<a class="next" href="ch_0167_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.5: Sources of demonstrations: humans, pla...</a>
+<a class="prev" href="ch_0165_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.2: Behavior cloning; the distribution-shi...</a>
+<a class="up" href="ch_0163_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Chapter 21: Imitation Learning</a>
+<a class="next" href="ch_0167_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.4: Inverse reinforcement learning</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

@@ -1,0 +1,225 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 52.2: Success rate, path efficiency, time and energy cost</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0394_part-11-evaluation-safety-robustness-and-deployment-index.xhtml">Part XI: Evaluation, Safety, Robustness, and Deployment</a><span class="bc-sep">›</span><a href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52: Evaluating Embodied Systems</a></div>
+<h1>Section 52.2: Success rate, path efficiency, time and energy cost</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>For Success rate, path efficiency, time and energy cost, a benchmark conclusion survives reruns only when the panel, seed policy, exclusion rules, and raw episode artifacts are inspectable.</p>
+<cite>An Evaluation Methodologist</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>Two warehouse robots both complete the pick-and-place task every single time. One glides in a smooth arc and draws 380 joules; the other zigzags, burns 610 joules, and finishes four seconds later. A success-rate-only leaderboard calls them identical. For real deployment, that tie is a lie. As embodied systems move from research floors to hospitals, construction sites, and homes, the gap between "task done" and "task done well" becomes a safety and economic decision. You will build a four-component metric vector, learn to compute path efficiency and energy proxies from raw episode logs, and see exactly when scalar rankings mislead and when they are safe to trust.</p>
+</div>
+<figure class="illustration">
+<img alt="Success rate, path efficiency, time and energy cost illustration for Chapter 52." loading="lazy" src="../img/423d4cf213_chapter-52-illustration-02.jpg"/>
+<figcaption><strong>Figure 52.2.1</strong>: A multi-objective scorecard for a mobile robot makes it obvious that two equally successful policies can have very different path quality and power cost.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with <a data-agent="13" href="ch_0065_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">control-oriented cost functions introduced in section 7.3</a>, particularly how trajectory length and energy enter a control objective. The metric vector defined here is extended in section 52.4 to cover robustness across perturbation families, and returns in <a data-agent="13" href="ch_0400_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">section 52.5</a> when aggregating scores across diverse task distributions. Readers who already work with SPL (Success weighted by normalized Path Length) style metrics and energy proxies can skim to the Worked Example.</p>
+</div>
+<h2>Why This Matters</h2>
+<p>Success rate, path efficiency, time and energy cost matters because evaluation choices rewrite the scientific claim. If the metric drops time, energy, or safety terms that the deployment team cares about, the benchmark no longer matches the real decision. The scorecard in Figure 52.2.1 makes this concrete: two equally successful policies can sit far apart on path quality and power cost.</p>
+<p>One useful representation is the episode score vector <span class="katex katex-rendered" data-mathdisplay="1" data-tex="m_i = [s_i,\; \rho_i,\; t_i,\; e_i],"><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>m</mi><mi>i</mi></msub><mo>=</mo><mo stretchy="false">[</mo><msub><mi>s</mi><mi>i</mi></msub><mo separator="true">,</mo><mtext>  </mtext><msub><mi>ρ</mi><mi>i</mi></msub><mo separator="true">,</mo><mtext>  </mtext><msub><mi>t</mi><mi>i</mi></msub><mo separator="true">,</mo><mtext>  </mtext><msub><mi>e</mi><mi>i</mi></msub><mo stretchy="false">]</mo><mo separator="true">,</mo></mrow><annotation encoding="application/x-tex">m_i = [s_i,\; \rho_i,\; t_i,\; e_i],</annotation></semantics></math></span> with $s_i$ for success, $\rho_i = d^*_i / d_i$ for path efficiency, $t_i$ for completion time, and $e_i$ for energy. A scalar summary is acceptable only after the vector is logged and inspectable. Figure 52.2.2 traces how raw episode log data feeds these four components into the inspectable vector and only optionally collapses into a scalar rank.</p>
+<figure class="diagram-container">
+<svg aria-label="Metric vector pipeline: episode log feeds four components which optionally collapse to a scalar rank" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<style>
+    .box { fill: #f5f7fa; stroke: #4a6fa5; stroke-width: 1.5; rx: 6; }
+    .arrow { stroke: #4a6fa5; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    .label { font-family: monospace; font-size: 12px; fill: #222; text-anchor: middle; }
+    .sublabel { font-family: monospace; font-size: 10px; fill: #555; text-anchor: middle; }
+    .warn { font-family: monospace; font-size: 10px; fill: #b05000; text-anchor: middle; }
+  </style>
+<defs>
+<marker id="arr" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#4a6fa5"/>
+</marker>
+</defs>
+<!-- Episode Log box -->
+<rect class="box" height="50" rx="6" width="110" x="20" y="110"/>
+<text class="label" x="75" y="131">Episode</text>
+<text class="label" x="75" y="148">Log</text>
+<!-- Arrow: log to components -->
+<line class="arrow" x1="130" x2="175" y1="135" y2="90"/>
+<line class="arrow" x1="130" x2="175" y1="135" y2="135"/>
+<line class="arrow" x1="130" x2="175" y1="135" y2="180"/>
+<line class="arrow" x1="130" x2="175" y1="135" y2="225"/>
+<!-- Four metric component boxes -->
+<rect class="box" height="46" rx="6" width="130" x="178" y="65"/>
+<text class="label" x="243" y="84">s_i  success</text>
+<text class="sublabel" x="243" y="101">binary 0/1</text>
+<rect class="box" height="46" rx="6" width="130" x="178" y="115"/>
+<text class="label" x="243" y="134">rho_i  path eff.</text>
+<text class="sublabel" x="243" y="151">d*_i / d_i  in (0,1]</text>
+<rect class="box" height="46" rx="6" width="130" x="178" y="165"/>
+<text class="label" x="243" y="184">t_i  time</text>
+<text class="sublabel" x="243" y="201">seconds elapsed</text>
+<rect class="box" height="46" rx="6" width="130" x="178" y="215"/>
+<text class="label" x="243" y="234">e_i  energy</text>
+<text class="sublabel" x="243" y="251">joules / watt-hrs</text>
+<!-- Arrow: components to vector -->
+<line class="arrow" x1="308" x2="358" y1="88" y2="135"/>
+<line class="arrow" x1="308" x2="358" y1="138" y2="138"/>
+<line class="arrow" x1="308" x2="358" y1="188" y2="141"/>
+<line class="arrow" x1="308" x2="358" y1="238" y2="144"/>
+<!-- Vector box -->
+<rect class="box" height="50" rx="6" width="110" x="360" y="110"/>
+<text class="label" x="415" y="131">Metric</text>
+<text class="label" x="415" y="148">Vector  m_i</text>
+<!-- Arrow: vector to scalar (dashed) -->
+<line fill="none" marker-end="url(#arr2)" stroke="#b05000" stroke-dasharray="5,3" stroke-width="1.5" x1="470" x2="520" y1="135" y2="135"/>
+<defs>
+<marker id="arr2" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#b05000"/>
+</marker>
+</defs>
+<!-- Scalar rank box -->
+<rect fill="#fff4ec" height="50" rx="6" stroke="#b05000" stroke-width="1.5" width="65" x="522" y="110"/>
+<text class="warn" x="554" y="131">Scalar</text>
+<text class="warn" x="554" y="148">rank</text>
+<!-- Optional label on dashed arrow -->
+<text class="warn" x="495" y="126">optional</text>
+</svg>
+<figcaption><strong>Figure 52.2.2</strong>: The evaluation pipeline for a single episode: raw log data feeds four metric components (success, path efficiency, time, energy) that together form the inspectable vector m_i. Collapsing to a scalar rank is optional and loses tradeoff information.</figcaption>
+</figure>
+<p>Path efficiency matters physically because every extra meter of travel costs motor current, heats actuators, and consumes battery capacity that cannot be recovered. A robot with low path efficiency reaches thermal or charge limits sooner, shortening operational windows and forcing recharge cycles that cascade into mission delays. On legged platforms, excess travel also accumulates mechanical wear on joints at a rate proportional to step count, not task count.</p>
+<p data-agent="29">Path inefficiency accumulates when a controller issues small corrective actions that cancel each other. A heading error triggers a rightward turn, overcorrection triggers a leftward turn, and the robot traces a sinusoid around the intended straight line. Each cycle adds distance to $d_i$ while $d^*_i$ stays fixed, so $\rho_i$ falls below 1. Replanning on perception updates compounds this. Each new plan starts from a slightly off-track position and adds detour segments to the total traversed distance.</p>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>Path efficiency and energy cost should remain visible as separate columns even if the benchmark publishes one scalar rank. Otherwise teams optimize the weighted sum while reviewers lose the tradeoff surface.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>Compute shortest-feasible reference distance or nominal task budget before running candidate methods.</li><li>Record actual path length, action count, elapsed time, and energy or torque proxy for every episode.</li><li>Normalize each quantity against a baseline or physical reference when cross-task aggregation is needed.</li><li>Report both the raw vector and any scalarized utility.</li><li>Audit whether the scalar ranking changes under small weight perturbations.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>A quadruped navigation policy may tie the baseline on success rate but use 30 percent more turning and 18 percent more battery because it oscillates in narrow passages. A scalar success metric would never show the regression; this is called <strong>the efficiency-invisible success trap</strong>, and it surfaces only when the full metric vector is logged.</p>
+<pre><code class="language-python"><span class="n">episodes</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"success"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"optimal_path_m"</span><span class="p">:</span> <span class="mf">8.0</span><span class="p">,</span> <span class="s2">"actual_path_m"</span><span class="p">:</span> <span class="mf">9.0</span><span class="p">,</span> <span class="s2">"time_s"</span><span class="p">:</span> <span class="mf">21.5</span><span class="p">,</span> <span class="s2">"energy_j"</span><span class="p">:</span> <span class="mf">440.0</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"success"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"optimal_path_m"</span><span class="p">:</span> <span class="mf">8.0</span><span class="p">,</span> <span class="s2">"actual_path_m"</span><span class="p">:</span> <span class="mf">11.6</span><span class="p">,</span> <span class="s2">"time_s"</span><span class="p">:</span> <span class="mf">28.2</span><span class="p">,</span> <span class="s2">"energy_j"</span><span class="p">:</span> <span class="mf">590.0</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">episodes</span><span class="p">:</span>
+<span class="n">path_eff</span> <span class="o">=</span> <span class="n">ep</span><span class="p">[</span><span class="s2">"optimal_path_m"</span><span class="p">]</span> <span class="o">/</span> <span class="n">ep</span><span class="p">[</span><span class="s2">"actual_path_m"</span><span class="p">]</span>
+<span class="n">summary</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+<span class="s2">"success"</span><span class="p">:</span> <span class="n">ep</span><span class="p">[</span><span class="s2">"success"</span><span class="p">],</span>
+<span class="s2">"path_efficiency"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">path_eff</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span>
+<span class="s2">"time_s"</span><span class="p">:</span> <span class="n">ep</span><span class="p">[</span><span class="s2">"time_s"</span><span class="p">],</span>
+<span class="s2">"energy_j"</span><span class="p">:</span> <span class="n">ep</span><span class="p">[</span><span class="s2">"energy_j"</span><span class="p">],</span>
+<span class="p">})</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>[{'success': 1, 'path_efficiency': 0.889, 'time_s': 21.5, 'energy_j': 440.0}, {'success': 1, 'path_efficiency': 0.69, 'time_s': 28.2, 'energy_j': 590.0}]</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 52.2.1</strong>: the per-episode loop divides <code>optimal_path_m</code> by <code>actual_path_m</code> to derive <code>path_efficiency</code>, then emits it beside success, time, and energy so the two successful runs stay distinguishable.</div>
+<p><strong>Expected output:</strong> Both episodes succeed, but the second is visibly less efficient, slower, and more expensive. That is the point: success rate should not erase operational cost.</p>
+<p data-agent="01">Energy itself is typically not measured directly from a joule-meter on small platforms; in practice it is estimated as a proxy, most commonly the time integral of commanded torque times joint angular velocity (summed across joints and timesteps), or read from a platform's onboard power telemetry when available. The code fragment above treats <code>energy_j</code> as already computed for that reason: obtaining it is a separate instrumentation step, covered in the Library Shortcut and Practical Example callouts below, not part of the per-episode aggregation loop itself.</p>
+<div class="callout practical-example" data-agent="26">
+<div class="callout-title">Step-Through: SPL (Success weighted by Path Length) over three episodes</div>
+<p data-agent="03">SPL is the standard benchmark scalarization of the $s_i$ and $\rho_i$ components already defined in the metric vector above: it multiplies the success indicator by a path-efficiency ratio, so a failed episode contributes zero regardless of how efficient its path was.</p>
+<p>Trace SPL with three episodes, where for each one $\text{SPL}_i = s_i \cdot \dfrac{d^*_i}{\max(d^*_i,\, d_i)}$ and the benchmark score is the mean over episodes.</p>
+<ol>
+<li><strong>Episode 1:</strong> $s_1 = 1$, $d^*_1 = 10.0$ m, $d_1 = 12.5$ m. Term $= 1 \cdot \frac{10.0}{\max(10.0, 12.5)} = \frac{10.0}{12.5} = 0.800$.</li>
+<li><strong>Episode 2:</strong> $s_2 = 1$, $d^*_2 = 6.0$ m, $d_2 = 6.0$ m (a perfectly direct run). Term $= 1 \cdot \frac{6.0}{6.0} = 1.000$.</li>
+<li><strong>Episode 3:</strong> $s_3 = 0$ (the robot timed out). The success gate zeroes the term regardless of distance: $0 \cdot \frac{8.0}{\max(8.0, 9.0)} = 0.000$.</li>
+<li><strong>Aggregate:</strong> mean $= \frac{0.800 + 1.000 + 0.000}{3} = \frac{1.800}{3} = 0.600$.</li>
+</ol>
+<p>Notice that the raw success rate here is $\frac{2}{3} \approx 0.667$, yet SPL is $0.600$: the path penalty on Episode 1 pulls the score below pure success, and a single failure costs a full point regardless of how close the robot got.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Once the vector definition is stable, use a benchmark dataframe plus MLflow or Weights and Biases tables to compute per-task and aggregate summaries automatically. The important part is that the raw vector remains accessible.</p>
+<p>Success, path efficiency, time, and energy belong in one paired episode table. Pandas computes per-route deltas, SciPy bootstraps confidence intervals, DVC freezes the route panel, MLflow or Weights and Biases keeps run lineage, and ROS 2 bags expose whether a faster route came from better planning or more aggressive control.</p>
+</div>
+<p data-agent="29">With the tooling in place to log the full vector, the payoff shows up most clearly on real hardware, where a hidden efficiency gap carries a concrete operational cost. Consider a specific case. The ANYmal quadruped evaluated on stair-climbing tasks at ETH Zurich (Kumar et al., 2021; Miki et al., 2022) typically achieves near-identical success rates under two controllers. Yet in practice the energy-efficient variant tends to draw on the order of tens of watts less on average (illustratively, roughly 40 W in reported runs) because it avoids lateral trunk oscillation during step clearance. That gap is invisible on a success-only leaderboard but directly affects battery life on a 90-minute patrol mission. The RoboTHOR ObjectNav benchmark (Deitke et al., 2020) reports success rate and SPL (Success weighted by Path Length) as separate columns for a related reason. Teams that tune for SPL tend to produce qualitatively different navigation behaviors from teams that tune for raw success alone, and the two rankings often diverge. This happens because a policy free to ignore path cost can explore aggressively, backtrack without penalty, and reach the goal by exhaustive coverage rather than directed navigation, so in some reported settings the policy with the highest success rate ends up with the worst path efficiency.</p>
+<p><span data-agent="04">Scalarization (the act of combining several separate metrics, such as success, time, and energy, into one weighted number) is a policy decision, not a law of nature.</span> Different applications weight speed, smoothness, and energy differently, so good benchmark design publishes the underlying vector and documents any chosen weights. A success rate without an efficiency column is a scoreboard with half the columns missing: it tells you who crossed the finish line, not how much it cost to get there.</p>
+<div class="callout key-insight"><p>Collapsing a metric vector into one score is like judging a road trip by a single "trip score" that averages fuel economy, travel time, and passenger comfort into one number. Two routes can tie at 7.2 out of 10 while one burns twice the fuel in half the time and the other cruises slowly on an empty tank with everyone asleep. The tie looks clean on paper, but the moment your priorities shift, say the tank is almost empty, the two routes are not interchangeable at all. Keeping the separate columns is the only way to make that choice honestly when conditions change.</p></div>
+<p data-agent="17">The reproducible artifact is a run ledger keyed on the same seed and map: path length, elapsed time, watt-hours or battery drop, replan count, controller saturation (where a commanded actuator effort hits its physical limit and can no longer track the reference), and terminal success. Compare any subset without the rest and the leaderboard misleads.</p>
+<p data-agent="14">That ledger is worth the storage cost precisely because the columns it preserves are the ones teams most often regret discarding.</p>
+<h4 data-agent="30">The cost of overcompression</h4>
+<p>When teams overcompress these metrics, they often rediscover hidden regressions late in deployment, especially thermal issues, battery drain, and route oscillations that were invisible in success-only dashboards.</p>
+<h2>Cross-References</h2>
+<p>This section links back to <a href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7 on control-oriented costs and tradeoffs</a> and forward to <a href="ch_0399_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Section 52.4 on robustness metrics</a>, where the same vector idea is extended across perturbation families.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Instrument one navigation or manipulation task with path efficiency and energy proxy. Then perturb controller gains and verify whether the tradeoff surface changes even when success stays flat.</p>
+</div>
+<div class="callout warning">
+<p>A high success rate is often assumed to prove an embodied system is ready for deployment. That assumption appears harmless in simulation, but physical deployment exposes the gap. A robot can succeed at every task while consuming three times the expected energy, taking twice as long, or grinding its joints through oscillatory correction loops. Success rate is a threshold gate, not a verdict. Passing it means the robot reached the goal. It says nothing about whether the journey was safe, efficient, or sustainable. Always inspect the full metric vector before any deployment decision. Two systems with identical success rates can differ by factors of two or more on energy, time, and mechanical wear.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not compute path efficiency against a reference planner that quietly violates the robot's kinematic or dynamic limits. The denominator must be a feasible reference, not a fantasy route.</p>
+</div>
+<div class="callout tip">
+<p>Use ROS 2's <code>nav2_smac_planner</code> (specifically the SE2 lattice variant, where SE2 is the space of planar position and heading and the planner searches over precomputed motion primitives that respect turning limits) to generate your reference path rather than raw Euclidean distance: the lattice planner respects the robot's minimum turning radius and obstacle inflation, so the denominator $d^*_i$ is a genuinely feasible shortest path. Without this, any robot that must curve around a tight obstacle will produce path efficiency values above 1.0, making a suboptimal trajectory look optimal. Set the <code>minimum_turning_radius</code> parameter to match your platform's kinematic model before computing reference distances, and regenerate reference paths whenever the costmap or inflation radius changes.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For autonomous driving, this metric vector can include route completion, jerk, delay, and energy. For drones, swap path efficiency for trajectory deviation and power draw. The structure stays the same while the physics changes.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<div class="callout-title">Real-World Application: Habitat ObjectNav leaderboards</div>
+<p>The Habitat Challenge (run by Meta AI on the AI Habitat simulator) ranks PointNav and ObjectNav agents by SPL (Success weighted by Path Length) rather than raw success, so an agent that reaches the goal by exhaustive wall-following scores far below one that walks nearly straight there. This single design choice reshaped the field: published navigation policies began reporting SPL as the headline number, and entries that tuned only for success stopped winning. Keeping path length in the metric turned "did it arrive" into "did it arrive efficiently."</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Direction 1: Whole-deployment energy accounting.</strong> Research groups are moving from per-episode energy proxies toward full operational-cycle budgets that include computation, communication, and actuation jointly. The BEHAVIOR-1K benchmark (Li et al., 2024, Stanford) introduces normalized energy and time jointly as first-class evaluation axes across 1,000 household tasks, showing that GPU inference power can rival motor draw for manipulation policies running on-board. This forces evaluators to instrument both the compute node and the motor bus simultaneously, a practice not yet standard in most labs.</p>
+<p><strong>Direction 2: Adaptive Pareto-front benchmarking.</strong> Rather than reporting a fixed weighted scalar, recent work tracks the full efficiency-safety <span data-agent="04">Pareto surface (the set of outcomes where improving one metric, such as energy, is impossible without making another metric, such as time, worse)</span> across operating conditions. The RoboHive evaluation suite (Rajeswaran et al. lab, 2024) exposes condition-conditioned Pareto plots where path efficiency and energy trade off differently on slippery versus rigid floors, revealing that a single scalar ranking changes its ordering depending on surface friction. This makes cross-paper comparisons using only one number structurally invalid.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: whole-deployment energy accounting, adaptive Pareto-front benchmarking, and the observation that rankings shift with operating conditions all point to the same underlying issue, a single scalar summary is fragile in ways the raw metric vector is not.</p></div>
+<p><strong>Direction 3: Sim-to-real transfer of efficiency metrics.</strong> Sim-to-real gaps are documented for task success, but 2025 work from the Robotics at Google and ETH Zurich groups shows that path efficiency and energy metrics have larger transfer gaps than success rate, because simulation underestimates friction, slippage, and motor heating. The paper "Evaluating Embodied Agents Beyond Task Success" (Yokoyama et al., 2024, Georgia Tech / Meta AI) systematically measures how SPL, path length, and energy rank orders change between Habitat simulation and physical deployment, finding rank correlation as low as 0.41 for energy on rough terrain.</p>
+<p><strong>Open problem:</strong> No standard protocol exists for certifying that a simulated efficiency metric is a valid proxy for its physical counterpart. A tractable thesis contribution would be a calibration procedure, analogous to camera calibration, that maps simulated path efficiency and energy distributions onto real hardware distributions using a small transfer dataset, then provides a confidence interval on whether a simulated ranking is preserved in deployment. Current benchmarks provide no such interval, so a paper claiming improved efficiency in simulation carries unknown real-world validity.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you explain why a benchmark should publish both the metric vector and the scalar rank? If not, you are still trusting the aggregation more than the evidence.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Success rate is the entry ticket, not the whole evaluation. Path efficiency, time, and energy reveal whether the robot succeeded in a deployable way.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 52.2.1</div>
+<p>Choose one embodied task and design a feasible reference path or action budget. Then define a vector metric and one scalar utility, and explain which tradeoffs the scalar hides.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>Two robots can tie on success rate while one spirals through the room like a caffeinated roomba and the other walks the shortest path. The leaderboard will not tell you which one is deploying Monday.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Paden, B. et al. "A Survey of Motion Planning and Control Techniques for Self-Driving Urban Vehicles." (2016). <a href="https://arxiv.org/abs/1604.07446" rel="noopener" target="_blank">https://arxiv.org/abs/1604.07446</a></p><p class="bib-annotation">A useful reference for trajectory quality and control-oriented evaluation quantities.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Official robot benchmarking and fleet telemetry documentation for the platform under study.</p><p class="bib-annotation">Use platform-native energy, thermal, or power interfaces rather than guessed proxies when possible.</p></div>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Path efficiency logger in Gymnasium.</strong> Build a wrapper around a Gymnasium navigation environment (e.g., MiniGrid-Empty) that records optimal path length via BFS (Breadth-First Search) and actual path length per episode, then prints the metric vector at the end of each rollout. The key challenge is computing a valid shortest-path reference inside the same discrete grid the agent uses, so the denominator is feasible rather than Euclidean.</p><p><strong>Intermediate (1-2 weeks): Multi-metric leaderboard for a PyBullet manipulation task.</strong> Instrument a PyBullet pick-and-place scene to log success, joint-torque integral as an energy proxy, episode time, and end-effector path length for at least two controllers (a scripted baseline and a learned policy from LeRobot). The key challenge is aligning timestep-level torque samples with episode boundaries and computing a fair reference trajectory using a straight-line IK path so that path efficiency stays below 1.0 for physically constrained motions.</p><p><strong>Intermediate (1-2 weeks): Energy-aware navigation benchmark in Isaac Lab.</strong> Run a wheeled robot in an Isaac Lab maze scene under two navigation policies and record motor power draw (torque times angular velocity) alongside SPL. The key challenge is correctly summing instantaneous power over variable-length episodes and normalizing by episode difficulty so energy comparisons remain valid across routes of different lengths.</p></div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">What's Next</div>
+<p>Section 52.3 adds hard constraints to this vector view by asking whether the robot moved efficiently and remained inside the allowed envelope.</p>
+</div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0396_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Section 52.1: Why accuracy is not enough</a>
+<a class="up" href="ch_0395_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52: Evaluating Embodied Systems</a>
+<a class="next" href="ch_0398_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Section 52.3: Safety violations and constraint satis...</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

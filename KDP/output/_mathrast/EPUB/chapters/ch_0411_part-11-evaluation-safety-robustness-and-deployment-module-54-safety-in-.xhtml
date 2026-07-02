@@ -1,0 +1,210 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 54.4: Shielded policies and safety filters</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0394_part-11-evaluation-safety-robustness-and-deployment-index.xhtml">Part XI: Evaluation, Safety, Robustness, and Deployment</a><span class="bc-sep">›</span><a href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a></div>
+<h1>Section 54.4: Shielded policies and safety filters</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>A shield earns trust when every blocked action leaves an auditable trace.</p>
+<cite>A Safety-Critical Controls Researcher</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot reaches for a shelf at full speed. Its learned policy is excellent on average, but average is not good enough when a worker steps into the aisle. The difference between injury and a near-miss is a shield: a hard, auditable layer that sits between the policy's proposal and the actuator, checking admissibility in milliseconds and overriding when the answer is no. As embodied AI moves from labs into hospitals, factories, and homes, the shield is the last line of defense that does not degrade with <a data-agent="13" href="ch_0403_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">distribution shift</a>. Here you will design, implement, and audit projection-style filters, rule-based vetoes, and the intervention logs that close the feedback loop.</p>
+</div>
+<figure class="illustration">
+<img alt="Shielded policies and safety filters illustration for Chapter 54." loading="lazy" src="../img/506d2b3854_chapter-54-illustration-04.jpg"/>
+<figcaption><strong>Figure 54.4.1</strong>: A shield sits between policy output and actuator command, vetoing or modifying unsafe proposals before they reach hardware.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with safe-set geometry and barrier functions from section 54.3, which establishes why an admissible action set exists and how it is computed at runtime. The shield architecture introduced here is extended in section 54.5, which covers human override paths and the test campaigns that verify they activate correctly under pressure. The intervention-logging pattern recurs in Part XI alongside robustness stress-testing, where veto traces from section 54.4 become the primary diagnostic input for policy improvement cycles.</p>
+</div>
+<h2>Why This Matters</h2>
+<p data-agent="22"><span data-agent="29">A policy that is safe 99.9 percent of the time still proposes a harmful command once every thousand steps. For a robot running at 500 Hz, that means a dangerous action roughly every two seconds. What decides whether anyone gets hurt is not whether the policy usually behaves well. It is whether the shield detects, blocks, or exits that one bad command fast enough to protect people, equipment, and mission goals.</span> This is the boundary between learning and safety engineering, and the shield is where the line is drawn.</p>
+<p>A simple safety filter solves <span class="katex katex-rendered" data-mathdisplay="1" data-tex="u_t^{safe} = \arg\min_{u \in \mathcal{U}_{safe}(x_t)} \|u - u_t^{nom}\|^2,"><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msubsup><mi>u</mi><mi>t</mi><mrow><mi>s</mi><mi>a</mi><mi>f</mi><mi>e</mi></mrow></msubsup><mo>=</mo><mi>arg</mi><mo>⁡</mo><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mrow><mi>u</mi><mo>∈</mo><msub><mi mathvariant="script">U</mi><mrow><mi>s</mi><mi>a</mi><mi>f</mi><mi>e</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>t</mi></msub><mo stretchy="false">)</mo></mrow></munder><mi mathvariant="normal">∥</mi><mi>u</mi><mo>−</mo><msubsup><mi>u</mi><mi>t</mi><mrow><mi>n</mi><mi>o</mi><mi>m</mi></mrow></msubsup><msup><mi mathvariant="normal">∥</mi><mn>2</mn></msup><mo separator="true">,</mo></mrow><annotation encoding="application/x-tex">u_t^{safe} = \arg\min_{u \in \mathcal{U}_{safe}(x_t)} \|u - u_t^{nom}\|^2,</annotation></semantics></math></span> which keeps the deployed command close to the nominal proposal while forcing it to remain inside the safe action set. Figure 54.4.2 shows how this filter sits in the control loop: the nominal policy proposes a command, the shield checks it against the safe action set, and admissible commands pass through while inadmissible ones are projected or vetoed and recorded in the intervention log.</p>
+<figure class="diagram-container">
+<svg aria-label="Shield architecture process diagram" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#444"/>
+</marker>
+</defs>
+<!-- Background -->
+<rect fill="#f9f9f9" height="300" rx="6" width="600"/>
+<!-- Node: Nominal Policy -->
+<rect fill="#dce8f7" height="60" rx="6" stroke="#3a7abf" stroke-width="1.5" width="110" x="20" y="110"/>
+<text fill="#1a3a5c" font-family="monospace" font-size="11" text-anchor="middle" x="75" y="136">Nominal</text>
+<text fill="#1a3a5c" font-family="monospace" font-size="11" text-anchor="middle" x="75" y="152">Policy</text>
+<!-- Arrow: Nominal -> Shield -->
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="1.5" x1="130" x2="195" y1="140" y2="140"/>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="162" y="132">u_nom</text>
+<!-- Node: Shield -->
+<rect fill="#fff3cd" height="90" rx="6" stroke="#c68a00" stroke-width="2" width="130" x="198" y="95"/>
+<text fill="#7a5200" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="263" y="126">SHIELD</text>
+<text fill="#7a5200" font-family="monospace" font-size="9" text-anchor="middle" x="263" y="144">admissibility</text>
+<text fill="#7a5200" font-family="monospace" font-size="9" text-anchor="middle" x="263" y="158">check</text>
+<text fill="#7a5200" font-family="monospace" font-size="9" text-anchor="middle" x="263" y="172">U_safe(x_t)</text>
+<!-- Safe action set node (above) -->
+<rect fill="#e8f5e9" height="45" rx="6" stroke="#2e7d32" stroke-width="1.5" width="110" x="208" y="20"/>
+<text fill="#1b5e20" font-family="monospace" font-size="10" text-anchor="middle" x="263" y="40">Safe Action</text>
+<text fill="#1b5e20" font-family="monospace" font-size="10" text-anchor="middle" x="263" y="55">Set  U_safe</text>
+<!-- Arrow: safe set -> shield -->
+<line marker-end="url(#arrow)" stroke="#2e7d32" stroke-dasharray="4,3" stroke-width="1.5" x1="263" x2="263" y1="65" y2="93"/>
+<!-- Arrow: Shield -> pass through (admissible) -->
+<line marker-end="url(#arrow)" stroke="#2e7d32" stroke-width="1.5" x1="328" x2="400" y1="128" y2="110"/>
+<text fill="#2e7d32" font-family="monospace" font-size="9" text-anchor="middle" x="364" y="108">admissible</text>
+<!-- Arrow: Shield -> project/veto (not admissible) -->
+<line marker-end="url(#arrow)" stroke="#c0392b" stroke-width="1.5" x1="328" x2="400" y1="155" y2="175"/>
+<text fill="#c0392b" font-family="monospace" font-size="9" text-anchor="middle" x="364" y="195">project / veto</text>
+<!-- Node: Actuator -->
+<rect fill="#ede7f6" height="60" rx="6" stroke="#6a1b9a" stroke-width="1.5" width="110" x="402" y="85"/>
+<text fill="#4a148c" font-family="monospace" font-size="11" text-anchor="middle" x="457" y="111">Actuator</text>
+<text fill="#4a148c" font-family="monospace" font-size="9" text-anchor="middle" x="457" y="127">u_safe</text>
+<!-- Arrow: admissible -> actuator -->
+<line marker-end="url(#arrow)" stroke="#2e7d32" stroke-width="1.5" x1="385" x2="402" y1="106" y2="112"/>
+<!-- Arrow: project -> actuator -->
+<line marker-end="url(#arrow)" stroke="#c0392b" stroke-width="1.5" x1="400" x2="457" y1="175" y2="148"/>
+<!-- Node: Intervention Log -->
+<rect fill="#fce4ec" height="60" rx="6" stroke="#880e4f" stroke-width="1.5" width="110" x="402" y="200"/>
+<text fill="#560027" font-family="monospace" font-size="10" text-anchor="middle" x="457" y="226">Intervention</text>
+<text fill="#560027" font-family="monospace" font-size="10" text-anchor="middle" x="457" y="242">Log</text>
+<!-- Arrow: Shield -> Log (veto events) -->
+<line marker-end="url(#arrow)" stroke="#880e4f" stroke-dasharray="5,3" stroke-width="1.2" x1="328" x2="400" y1="170" y2="222"/>
+<text fill="#880e4f" font-family="monospace" font-size="9" text-anchor="middle" x="358" y="218">veto trace</text>
+<!-- Feedback arrow: Log -> Policy (for retraining) -->
+<line marker-end="url(#arrow)" stroke="#888" stroke-dasharray="4,4" stroke-width="1.2" x1="402" x2="75" y1="230" y2="230"/>
+<line marker-end="url(#arrow)" stroke="#888" stroke-dasharray="4,4" stroke-width="1.2" x1="75" x2="75" y1="230" y2="170"/>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="238" y="248">feedback for retraining</text>
+</svg>
+<figcaption><strong>Figure 54.4.2</strong>: Shield architecture as a process. The nominal policy proposes an action; the shield checks it against the safe action set. Admissible commands pass directly to the actuator. Inadmissible commands are projected or vetoed, producing a modified safe command plus a veto trace in the intervention log. That log feeds back to retrain the nominal policy.</figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The shield is not a post-hoc penalty. It is a runtime contract that explicitly decides when the policy’s authority ends.</p>
+</div>
+<div class="callout warning">
+<p>A common assumption is that adding a shield makes the quality of the nominal policy irrelevant, because unsafe commands will simply be intercepted before reaching the actuator. This is wrong in embodied AI: a shield that intervenes constantly is not evidence of safety but of policy failure, and heavy reliance on the shield introduces latency, conservatism, and mechanical wear that degrade real-world performance. The correct mental model is that the shield is a last-resort backstop, not a substitute for a well-trained policy. A healthy shielded system has low intervention rates, and the veto log is used to retrain the policy until the shield is rarely needed. <span data-agent="03">This backstop role can mean either softening a command or rejecting it outright; the formal rule for choosing between the two, the projection-versus-veto decision boundary, is defined later in this section.</span></p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>Define the nominal action interface and the safe action set in the same coordinates and units.</li><li>Evaluate the nominal command against geometric, probabilistic, or rule-based safety checks.</li><li>Project, replace, or veto the command when it leaves the admissible set.</li><li>Log nominal action, safe action, veto reason, and monitor state together.</li><li>Audit the veto distribution to see whether the underlying policy is learning unsafe tendencies or whether the filter is too conservative.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>A language-conditioned mobile manipulator may suggest a long reach through a crowded area. The shield can cap speed, reroute motion primitives, or require confirmation instead of trusting the proposal directly.</p>
+<pre><code class="language-python"><span class="n">nominal</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"vx"</span><span class="p">:</span> <span class="mf">0.8</span><span class="p">,</span> <span class="s2">"vy"</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">}</span>
+<span class="n">limits</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"vx_max"</span><span class="p">:</span> <span class="mf">0.4</span><span class="p">,</span> <span class="s2">"vy_max"</span><span class="p">:</span> <span class="mf">0.2</span><span class="p">}</span>
+<span class="n">safe</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"vx"</span><span class="p">:</span> <span class="nb">max</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">nominal</span><span class="p">[</span><span class="s2">"vx"</span><span class="p">],</span> <span class="n">limits</span><span class="p">[</span><span class="s2">"vx_max"</span><span class="p">]),</span> <span class="o">-</span><span class="n">limits</span><span class="p">[</span><span class="s2">"vx_max"</span><span class="p">]),</span>
+<span class="s2">"vy"</span><span class="p">:</span> <span class="nb">max</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">nominal</span><span class="p">[</span><span class="s2">"vy"</span><span class="p">],</span> <span class="n">limits</span><span class="p">[</span><span class="s2">"vy_max"</span><span class="p">]),</span> <span class="o">-</span><span class="n">limits</span><span class="p">[</span><span class="s2">"vy_max"</span><span class="p">]),</span>
+<span class="p">}</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"nominal"</span><span class="p">:</span> <span class="n">nominal</span><span class="p">,</span> <span class="s2">"safe"</span><span class="p">:</span> <span class="n">safe</span><span class="p">,</span> <span class="s2">"intervened"</span><span class="p">:</span> <span class="n">nominal</span> <span class="o">!=</span> <span class="n">safe</span><span class="p">})</span></code></pre>
+<div class="code-output"><pre>{'nominal': {'vx': 0.8, 'vy': 0.0}, 'safe': {'vx': 0.4, 'vy': 0.0}, 'intervened': True}</pre></div>
+<div class="code-caption" data-agent="40">Console output of Code Fragment 54.4.1: the forward velocity is reduced from 0.8 to the 0.4 ceiling, <code>vy</code> stays at 0.0, and <code>intervened</code> resolves to <code>True</code> because nominal and safe differ.</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 54.4.1</strong>: A projection-style shield clips the nominal <code>vx</code>=0.8 command down to the <code>vx_max</code>=0.4 limit while leaving the admissible <code>vy</code> untouched, and sets the <code>intervened</code> flag by comparing nominal against safe.</div>
+<p><strong>Expected output:</strong> The shield preserves the command direction but reduces its magnitude to stay within the allowed envelope. The boolean intervention flag is crucial for later audit and policy improvement.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Projection filter on a 2D velocity command</h4>
+<p>Trace the projection filter with concrete numbers. Suppose the safe set is the box $|v_x| \le 0.4$, $|v_y| \le 0.2$ (units m/s), and the nominal policy proposes $u^{nom} = (0.8, 0.0)$.</p>
+<p><strong>Step 1, check admissibility:</strong> $|0.8| = 0.8 &gt; 0.4$, so the $v_x$ component is out of bounds. The command is inadmissible.</p>
+<p><strong>Step 2, clip each axis:</strong> $v_x = \text{clip}(0.8, -0.4, 0.4) = 0.4$; $v_y = \text{clip}(0.0, -0.2, 0.2) = 0.0$. The safe command is $u^{safe} = (0.4, 0.0)$.</p>
+<p><strong>Step 3, measure the correction:</strong> $\|u^{nom} - u^{safe}\|^2 = (0.8 - 0.4)^2 + 0^2 = 0.16$, so the squared correction is $0.16$ and the residual distance (the square root) is <span data-agent="28">approximately</span> $0.4$ m/s. Direction is preserved (still pure forward motion); only magnitude shrank.</p>
+<p><strong>Step 4, log:</strong> write the record (nominal $(0.8, 0.0)$, safe $(0.4, 0.0)$, active constraint <code>vx_max</code>, intervened <code>True</code>). Now retry with $u^{nom} = (0.3, 0.1)$: both components already inside the box, so $u^{safe} = (0.3, 0.1)$, residual $0$, intervened <code>False</code>, and nothing is logged. The intervention rate over these two calls is $1/2 = 50\%$, a number you would track over thousands of steps to decide whether to retrain.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Safety wrappers, controller-side filters, and <a data-agent="13" href="ch_0406_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">runtime supervisors</a> provide reusable infrastructure for shield logic. The point of the maintained stack is consistency and auditability, not just shorter code.</p>
+<p>Shielded policies need interface-level testing. cvxpy and OSQP implement candidate filters, hazard logs define the blocked actions, ROS 2 lifecycle nodes hold override authority, and replay bags verify that policy outputs, shield inputs, and actuator commands share frames and units.</p>
+</div>
+<p>A good shield produces two kinds of value. First, it prevents immediate unsafe action. Second, it generates a dataset of vetoed proposals that tells you where the nominal policy is systematically misaligned with safe behavior.</p>
+<p>The deployment artifact is a shield trace: raw action, filtered action, active constraint, coordinate frame, latency, and post-filter state. That trace catches filters that appear active while acting on stale or mismatched variables.</p>
+<p data-agent="17">A policy that works in simulation but fails on hardware is an aspiration, not a policy, and the shield must catch it before it reaches the actuator. Catching it is only half the job. The other half is recording every catch, because each veto is evidence about what the policy got wrong.</p>
+<h4 data-agent="30">Why the intervention log is irreversible evidence</h4>
+<p>Intervention logging matters in embodied AI because a robot cannot rewind its actuators. Once a joint torque is applied, the physical consequence is irreversible. The log is the only post-incident record that can distinguish a policy failure from a filter misconfiguration, and without it a near-miss in a factory aisle leaves no evidence for correction.</p>
+<p><span data-agent="29">Mechanically, the log is a timestamped ring buffer (<span data-agent="04">a fixed-size circular record that overwrites its oldest entries once full, so recent history is always retained without unbounded memory growth</span>) that the controller writes at control frequency and synchronizes to the sensor clock. Each record pairs the nominal command vector with the filtered command, the reason code from the active constraint, and the solver latency. This synchronization lets engineers replay a hardware incident frame-by-frame. They can trace exactly which constraint fired and whether the filter operated on current or stale state estimates.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: intervention logs matter because actuator effects are irreversible, the log itself is a synchronized ring buffer pairing nominal and filtered commands, and that synchronization is what makes frame or unit mismatches (discussed next) detectable after the fact.</p></div>
+<p>One major failure mode is to deploy a shield whose safe-action coordinates do not match the policy output coordinates. Unit mismatches and stale transforms can make the filter appear active while still letting unsafe commands through.</p>
+<div class="callout tip">
+<p>When using OSQP to implement the Quadratic Program (QP) projection filter, set the <code>eps_abs</code> and <code>eps_rel</code> tolerances to <code>1e-5</code> rather than the library default of <code>1e-3</code>; the coarser default can return a feasible-but-not-optimal solution that sits outside tight joint limits and silently passes the post-filter check. More critically, OSQP operates on whatever numeric arrays you pass it and cannot detect frame or unit mismatches: assert that the constraint matrix <code>A</code> was built from the same coordinate frame as the policy's action vector at construction time, and log both the frame ID and the OSQP solve status alongside every intervention record so that stale-transform bugs surface immediately in the audit trace rather than after a hardware incident.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Velocity shield in Gymnasium (beginner, one weekend):</strong> Wrap a continuous-action Gymnasium environment such as Pendulum-v1 with a projection-style shield that clips the action vector to a configurable safe envelope, then plot intervention rate versus episode reward to see the policy-shield trade-off. The key challenge is keeping the filter latency below the environment step budget while logging every nominal-versus-safe pair for later audit.</p><p><strong>ROS 2 safety supervisor for a simulated manipulator (intermediate, one to two weeks):</strong> Build a ROS 2 lifecycle node that subscribes to a MoveIt 2 trajectory topic, evaluates each waypoint against joint-torque limits using a CVXPY QP projection, and republishes the filtered trajectory while writing veto records to a timestamped bag file. The key challenge is synchronizing the filter's coordinate frame with the MoveIt planning frame so that unit mismatches surface in the veto log rather than silently passing unsafe commands through to the Isaac Lab or PyBullet simulator.</p></div>
+<h2>Cross-References</h2>
+<p>This section connects naturally to <a href="ch_0410_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.3 on barrier-based corrections</a> and <a href="ch_0412_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.5 on override testing</a>.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Wrap a simple nominal controller with a projection filter, then log how often the filter intervenes under nominal and stress-test panels. Decide whether the underlying policy needs retraining or the filter needs redesign.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not evaluate shielded systems using only final safe actions. Without the nominal command log, you cannot tell whether the policy itself is becoming safer or whether the shield is doing all the work.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a drone, a shield may clip velocity near no-fly boundaries. For a manipulator, it may project a pose command into a joint-safe or force-safe subspace. For autonomous driving, it may veto accelerations that violate a rule set.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: autonomous driving</h4>
+<p>NVIDIA's Safety Force Field, deployed in the DRIVE autonomy stack, is a production shield: a learned planner proposes a trajectory, and an independent analytical layer computes the safe acceleration envelope from the predicted motion of every nearby actor, then vetoes or scales any command that would breach a recoverable braking margin. Mobileye's Responsibility-Sensitive Safety (RSS) plays the same role with a formal rule set, blocking accelerations that violate codified minimum-following-distance constraints. In both systems the shield runs separately from the neural planner so that a planner bug cannot silently disable the safety check.</p>
+</div>
+<p><span data-agent="14">The same independence between planner and safety check that protects a self-driving car also lets a legged robot expose, rather than hide, the blind spots in its locomotion policy.</span> Consider a specific case: the Boston Dynamics Spot robot running a third-party locomotion policy. The onboard safety supervisor monitors estimated contact forces and joint torques at 500 Hz. If a policy proposes a step that would require more than 120 Nm at the hip abductor (the hardware limit), the supervisor replaces the full foot trajectory with a stationary hold and logs the veto. In a 30-minute stress-test session across uneven outdoor terrain, this filter intervened on roughly 2% of proposed footfalls, and inspection of those logs revealed that the nominal policy had a systematic blind spot for slopes exceeding 18 degrees. The filter did not fix the policy; it made the blind spot visible. In this case, retraining on those 2% vetoed footfalls required <span data-agent="28">on the order of</span> 400 targeted episodes to close the slope blind spot, while undirected exploration in the same simulator needed <span data-agent="28">on the order of</span> 60,000 episodes to encounter enough steep-slope failures to produce a comparable correction; the exact ratio depends on the simulator's terrain distribution and would typically be re-measured for a new environment. Alshiekh et al. (2018) formalize this pattern: a shield that logs every intervention accumulates a dataset that is, in effect, a curriculum of the policy's worst-case failures.</p>
+<p>The distinction between projection and veto requires an explicit rule. Use projection (clipping a velocity, scaling a force) when the nominal command points in the right direction but exceeds safe magnitude. The policy is "almost right," so preserving direction retains useful information. Call this boundary <strong>the projection-versus-veto decision boundary</strong>; getting it wrong makes shields impossible to audit. Use a full veto when the nominal command is categorically inadmissible at any magnitude: it targets a forbidden zone, exceeds a hard joint limit, or derives from a sensor reading the monitor has flagged as unreliable. Mixing these modes without a decision rule hides policy problems. A projected command and a vetoed-then-replaced command look identical in the actuator log, yet each carries a different implication for policy quality.</p>
+<div class="callout key-insight"><p>Think of a chef seasoning a dish. If the recipe calls for one tablespoon of salt but a handful is poured out, a careful sous-chef catches the excess and tips some back, preserving the cook's intention while correcting the quantity: that is projection. But if the cook reaches for a bottle mislabeled "salt" that actually holds bleach, no amount of reducing the quantity helps; the sous-chef must set the bottle aside entirely and substitute something safe: that is a veto. The same logic governs the shield: scaling back a command that is too forceful keeps the policy's direction intact, while discarding a command that points at a forbidden state prevents a correction that no magnitude adjustment could make acceptable.</p></div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Foundation-model-aware shields (2024-2025):</strong> As <a data-agent="13" href="ch_0261_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">vision-language-action (VLA)</a> models such as Google DeepMind's RT-2 and pi0 (Black et al., Physical Intelligence, 2024) replace hand-coded skill libraries, shields must reason over natural-language goal representations rather than fixed action vocabularies. Recent work from Carnegie Mellon's Robot Learning Lab couples a lightweight semantic parser to a geometric filter: the parser extracts spatial predicates from the VLA's chain-of-thought tokens, and the filter vetoes any trajectory whose predicted endpoint violates those predicates against the live scene graph, <span data-agent="21">where the scene graph is a structured representation of the objects present and their spatial relationships</span>. This lets the shield catch semantic errors ("place the cup on the occupied burner") that a purely geometric filter would pass.</p>
+<p><strong>Certified shields for diffusion-policy rollouts (2024-2026):</strong> Diffusion-based policies (Chi et al., 2023; extended in several 2024 follow-ups from Columbia and Stanford) output entire trajectory chunks rather than single-step actions, so a shield cannot intercept mid-trajectory without disrupting the denoising chain. The emerging approach, explored at MIT CSAIL and in the SafeDiffuser line of work (Xiao et al., 2023, extended 2024), imposes control-barrier-function constraints directly on the score function (<span data-agent="21">the gradient of the log-probability that a diffusion model follows to denoise a sample toward the data distribution</span>) during each denoising step. The shield becomes part of the generative process rather than a post-hoc wrapper, allowing formal Lipschitz certificates (<span data-agent="04">bounds guaranteeing the output cannot change faster than a fixed rate relative to the input, which is what makes a safety guarantee provable rather than empirical</span>) over the full output trajectory without the latency penalty of replanning.</p>
+<p><strong>Adaptive shields under distribution shift (2025-2026):</strong> Static shields calibrated in simulation degrade when the deployed robot encounters sensor noise profiles or contact dynamics not seen in training. Researchers at Berkeley's AUTOLAB and the ETH Zurich Robotic Systems Lab are investigating online shield recalibration: the shield monitors its own intervention rate and, when that rate drifts above a threshold, triggers a Bayesian update of the constraint parameters using recent veto-log data without requiring a full policy retrain.</p>
+<p><strong>Open problem for PhD students:</strong> All three directions assume the shield has access to a reliable state estimate. In cluttered or partially observed environments the state estimate itself carries uncertainty that the shield's constraint check ignores. A principled formulation of a shield that is jointly safe over both action uncertainty and state-estimation uncertainty, while remaining tractable at control frequency on edge hardware, remains open. The key difficulty is that naive robust-optimization approaches widen the safe set so aggressively that the shield vetoes nearly every nominal command, defeating the purpose of having a learned policy at all.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you describe one situation where the shield should modify the action and one where it should fully veto it? If not, the intervention policy is still underspecified.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Shielded policies work because they formalize the boundary between nominal intelligence and enforced safety authority. <span data-agent="01">Designing that boundary (the safe set and the projection rule), implementing it (a projection filter or rule-based veto), and auditing it (reading the intervention log to decide whether the policy or the filter needs to change) are the three skills this section set out to build, and each has a worked example above: the projection filter, the ring-buffer log, and the Spot veto-rate case study.</span></p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 54.4.1</div>
+<p>Design a shield for one embodied action interface. Specify the nominal command, safe set, modification rule, veto rule, and the logs you would save after every intervention.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>A shield earns trust when every blocked action leaves an auditable trace.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Wabersich, K. P. et al. "Safe Reinforcement Learning Using Probabilistic Shields." (2023). <a href="https://arxiv.org/abs/2210.00746" rel="noopener" target="_blank">https://arxiv.org/abs/2210.00746</a></p><p class="bib-annotation">A modern update on shielding strategies under uncertainty.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Alshiekh, M. et al. "Safe Reinforcement Learning via Shielding." (2018). <a href="https://ojs.aaai.org/index.php/AAAI/article/view/11741" rel="noopener" target="_blank">https://ojs.aaai.org/index.php/AAAI/article/view/11741</a></p><p class="bib-annotation">A classic shielded-RL reference.</p></div>
+</section>
+<div class="callout whats-next">
+<div class="callout-title">What's Next</div>
+<p>Section 54.5 shifts from automatic safety intervention to human override paths and the test campaigns that prove they work under pressure.</p>
+</div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0410_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.3: Control barrier functions and Hamilton...</a>
+<a class="up" href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a>
+<a class="next" href="ch_0412_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.5: Human override and safety testing</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

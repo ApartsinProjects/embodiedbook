@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 8.2: Cameras, depth (stereo/structured light/ToF), LiDAR</title>
+    <title>Section 8.1: What sensors provide and what they cost</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,79 +14,158 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0036_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a></div>
-<div class="chapter-label"><a href="ch_0069_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8: Sensors, Perception Hardware, and State Estimation</a></div>
-<h1>Section 8.2: Cameras, depth (stereo/structured light/ToF), LiDAR</h1>
+<div class="page-breadcrumb"><a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a><span class="bc-sep">›</span><a href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8: Sensors, Perception Hardware, and State Estimation</a></div>
+<h1>Section 8.1: What sensors provide and what they cost</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Every sensor gives you a window onto the world; it also hands you a bill for the view."</p><cite>A Hardware-Aware Perception Engineer</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 8.2: Cameras, depth (stereo/structured light/ToF), LiDAR, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/e308395951_chapter-08-illustration-02.jpg"/>
-<figcaption><strong>Figure 8.2A</strong>: Section 8.2: Cameras, depth (stereo/structured light/ToF), LiDAR is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 8.1: What sensors provide and what they cost." loading="lazy" src="../img/a710bd6ed9_chapter-08-illustration-01.jpg"/>
+<figcaption>Figure 8.1A: A sensor comparison table mapping each modality (camera, LiDAR, radar, IMU) to its measured quantity, typical update rate, data rate, and cost tier, making tradeoffs visible at a glance.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout warning"><p>A common assumption is that sensor "cost" means the purchase price alone, so a $30 camera looks like a nearly free solution and a $4,000 LiDAR looks prohibitively expensive. In embodied AI this framing is wrong: every sensor also carries an ongoing operational cost in power draw, compute budget, calibration time, bandwidth consumption, and latency penalty, and any one of those hidden costs can make a cheap sensor unsuitable or a pricey sensor the only viable choice. The correct mental model treats cost as a vector (price, power, bandwidth, latency, calibration burden, failure rate) and asks whether the reduction in state-estimation uncertainty is worth every element of that vector under the robot's actual operating constraints, not just its procurement budget.</p></div>
+<div class="callout pathway">
+<p>The cost and capability survey here sets the foundation for the detailed modality chapters that follow: section 8.2 covers cameras and depth sensors, section 8.3 covers IMUs and inertial sensing, and section 8.6 shows how raw measurements from multiple sensor types are combined into a single consistent state estimate. Readers who have already worked with sensor datasheets and understand noise, bandwidth, and latency tradeoffs may proceed directly to section 8.6.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Cameras, depth (stereo/structured light/ToF), LiDAR</strong> is one lens on sensors, perception hardware, and state estimation. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A warehouse robot misses a pallet because its camera lost the image in a shadow. A self-driving car brakes hard because radar reflected off a puddle. A drone crashes because its <a data-agent="13" href="ch_0073_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">IMU (Inertial Measurement Unit)</a> drifted for 30 milliseconds with no correction. In each case the algorithm was sound; the sensor let it down. Every embodied AI system is ultimately constrained by what its sensors can measure, how often, and at what power and dollar cost. This section builds the vocabulary and tradeoff map you need to choose sensors deliberately: you will compare modalities by their measurable quantities, noise characteristics, update rates, and cost tiers, and learn which combinations are worth the engineering complexity they introduce.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Cameras, depth (stereo/structured light/ToF), LiDAR into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">A $30 camera and a $4,000 LiDAR can both sit on the same robot, yet picking the wrong one can leave a flawless navigation algorithm blind in a shadow or starved for depth: the sensor, not the code, decides what the machine is allowed to know. This section turns that uncomfortable fact into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
+<p><span data-agent="29">Why does sensor selection matter so much? Consider two common choices for indoor navigation. A <a href="ch_0072_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">single RGB camera</a> costs under $30 and draws 0.5 W, but it cannot measure distance directly and fails in low light. A <a href="ch_0072_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">rotating LiDAR</a> (such as the Velodyne VLP-16, a widely documented benchmark unit discontinued in 2022 whose specs remain a standard reference point) measures distance to centimeter accuracy at 20 Hz across 360 degrees. It costs roughly $4,000, draws 8 W, and produces 1.2 million points per second that the robot must process before the control loop runs. A mobile robot with a tight compute budget and a 2-hour battery cannot treat these as equivalent options.</span> Sensor selection is therefore a system design decision: the wrong sensor can make an otherwise correct algorithm fail, not because the algorithm is bad, but because the input it receives is too noisy, too late, or too expensive to sustain. A correct algorithm fed bad sensor data is not a working system; it is a correct algorithm waiting for a sensor it does not have. Figure 8.1A summarizes this tradeoff as a comparison table that maps each modality to its measured quantity, update rate, data rate, and cost tier, and Figure 8.1B plots the same modalities in cost-capability space so the tensions are visible at a glance.</p>
+<figure class="diagram-container">
+<svg aria-label="Sensor cost-capability tradeoff: three sensor modalities mapped to capability and cost dimensions" role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect fill="#f8fafc" height="300" rx="6" width="600"/>
+<!-- Title -->
+<text fill="#1a2a3a" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="24">Sensor Cost-Capability Tradeoff</text>
+<!-- Axes labels -->
+<!-- Y axis: Capability (high = top = low y value) -->
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="18" y="60">HIGH</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="18" y="68">CAP.</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="18" y="240">LOW</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="18" y="248">CAP.</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" transform="rotate(-90,18,150)" x="18" y="150">CAPABILITY</text>
+<!-- X axis: Cost (low left, high right) -->
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="80" y="278">LOW COST</text>
+<text fill="#555" font-family="monospace" font-size="10" text-anchor="middle" x="520" y="278">HIGH COST</text>
+<!-- Axes lines -->
+<line stroke="#888" stroke-width="1.5" x1="50" x2="50" y1="50" y2="260"/>
+<line stroke="#888" stroke-width="1.5" x1="50" x2="570" y1="260" y2="260"/>
+<!-- Arrow heads -->
+<polygon fill="#888" points="50,44 45,56 55,56"/>
+<polygon fill="#888" points="576,260 564,255 564,265"/>
+<!-- Cost dimension labels along X axis -->
+<text fill="#777" font-family="monospace" font-size="9" text-anchor="middle" x="130" y="290">price</text>
+<text fill="#777" font-family="monospace" font-size="9" text-anchor="middle" x="220" y="290">power</text>
+<text fill="#777" font-family="monospace" font-size="9" text-anchor="middle" x="310" y="290">bandwidth</text>
+<text fill="#777" font-family="monospace" font-size="9" text-anchor="middle" x="400" y="290">latency</text>
+<text fill="#777" font-family="monospace" font-size="9" text-anchor="middle" x="490" y="290">calibration</text>
+<!-- IMU: low cost, moderate-low capability (placed lower-left) -->
+<circle cx="130" cy="200" fill="#e8f5e9" r="22" stroke="#2e7d32" stroke-width="2"/>
+<text fill="#1b5e20" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="130" y="196">IMU</text>
+<text fill="#2e7d32" font-family="monospace" font-size="9" text-anchor="middle" x="130" y="210">1 mW</text>
+<!-- Arrow from IMU pointing left-up: fast, low cost -->
+<text fill="#388e3c" font-family="monospace" font-size="9" text-anchor="middle" x="130" y="240">1600 Hz / drifts</text>
+<!-- Camera: medium cost, medium capability (placed middle) -->
+<circle cx="270" cy="145" fill="#e3f2fd" r="28" stroke="#1565c0" stroke-width="2"/>
+<text fill="#0d47a1" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="270" y="140">Camera</text>
+<text fill="#1565c0" font-family="monospace" font-size="9" text-anchor="middle" x="270" y="155">0.5 W / $30</text>
+<text fill="#1976d2" font-family="monospace" font-size="9" text-anchor="middle" x="270" y="185">30 Hz / fails in dark</text>
+<!-- LiDAR: high cost, high capability (placed upper-right) -->
+<circle cx="460" cy="82" fill="#fff3e0" r="30" stroke="#e65100" stroke-width="2"/>
+<text fill="#bf360c" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="460" y="77">LiDAR</text>
+<text fill="#e65100" font-family="monospace" font-size="9" text-anchor="middle" x="460" y="92">8 W / $4000</text>
+<text fill="#e64a19" font-family="monospace" font-size="9" text-anchor="middle" x="460" y="120">20 Hz / 1.2M pts/s</text>
+<!-- Tradeoff arrow from IMU to LiDAR -->
+<line stroke="#9e9e9e" stroke-dasharray="6,4" stroke-width="1.5" x1="152" x2="428" y1="183" y2="99"/>
+<text fill="#757575" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="152">more capability</text>
+<text fill="#757575" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="163">= more cost</text>
+</svg>
+<figcaption data-agent="39"><strong>Figure 8.1B</strong>: Sensor modalities occupy different positions in the cost-capability space. Capability rises toward the top of the y-axis (LiDAR highest, IMU lowest), while the horizontal axis aggregates the full cost vector whose components (price, power, bandwidth, latency, calibration) are listed beneath it: moving right means a higher total along that vector, not one single dimension. The IMU sits low-cost and high-rate but drifts; the camera offers scene understanding at modest cost but fails without light; LiDAR delivers centimeter-range accuracy and high point density but demands 8 W, $4000, and heavy compute. Sensor selection chooses a point in this space that fits the robot's actual operating constraints.</figcaption>
+</figure>
+<p>The key question in What sensors provide and what they cost is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
+<div class="callout key-insight" data-agent="01"><div class="callout-title">What This Section Delivers</div><p>By the end of this section you should be able to do three concrete things: read a sensor datasheet and translate its numbers into the cost vector (price, power, bandwidth, latency, calibration burden, failure rate); compute SNR from raw readings and predict how many samples a Kalman filter needs before it trusts a position estimate; and run the closed-loop sensor selection audit (state variable, measurement model, noise budget, before/after task comparison) before adding any sensor to a real robot. The worked example and lab below exercise the second skill directly; the practical recipe and technical-core audit exercise the first and third.</p></div>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In Cameras, depth (stereo/structured light/ToF), LiDAR, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In What sensors provide and what they cost, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p><span data-agent="14">Before you can judge which decision a sensor makes easier, you have to be able to see exactly what the sensor hands the estimator.</span> For What sensors provide and what they cost, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p><span data-agent="03">The Kalman filter and its nonlinear EKF variant are covered in full in section 8.6; here we only need the idea that a state estimator combines a noisy measurement with a prediction, so the terms below are previewed rather than derived.</span> The mechanism is the measurement contract between a sensor and the state estimator that consumes it. Take an Intel RealSense D435 feeding a ROS 2 <code>robot_localization</code> EKF (<span data-agent="21">Extended Kalman Filter, the nonlinear variant of the state estimator that fuses noisy measurements into a pose estimate</span>): what enters is a depth image with per-pixel validity, a hardware timestamp, and a camera-to-base transform; what leaves is a pose update with covariance, <span data-agent="21">where the covariance is the matrix encoding how uncertain the estimate is along each axis and how those uncertainties correlate</span>. The transformation is valid only when the scene has, in practice, sufficient texture, illumination stays inside the sensor's 50 to 80,000 lux envelope, and the extrinsic calibration from Kalibr is current. The log that reveals a bad handoff is the EKF innovation stream, <span data-agent="21">where the innovation is the difference between what the sensor measured and what the filter predicted it would measure</span>: a sudden right-tail in range innovations typically means specular or textureless returns are entering as if they were trustworthy, and the filter is about to drift before any planner code is at fault.</p>
 </div>
-<h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Cameras, depth (stereo/structured light/ToF), LiDAR: keep the section idea tied to observable</span>
-<span class="c1"># evidence.</span>
-<span class="c1"># Run this diagnostic probe before trusting the maintained library path.</span>
+<h2>Worked Example: Noise, Quantization, and SNR</h2>
+<p><span data-agent="14">That right-tail in the innovation stream is just noise made visible downstream, so to read it we first need to know where the noise enters.</span> Every sensor reading is signal plus corruption. Two corruptions dominate. The first is additive Gaussian noise: thermal and electronic effects add a zero-mean draw with standard deviation $\sigma$, so a reading of true value $s$ becomes $z = s + v$ with $v \sim \mathcal{N}(0, \sigma^2)$. The second is quantization: the analog-to-digital converter rounds each reading to the nearest step $q$, adding an error bounded by $q/2$. For fine steps this error behaves like uniform noise with variance $q^2/12$. Signal-to-noise ratio summarizes how badly noise corrupts a reading. In decibels: $\text{SNR}_{\text{dB}} = 10\log_{10}(P_{\text{signal}}/P_{\text{noise}})$, where both powers are mean-square values. Higher is better. A 40 dB sensor carries roughly 100 times more signal power than noise power.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a sensor reading is corrupted by two sources, additive Gaussian noise (spread $\sigma$) and quantization (step $q$), and SNR in decibels collapses both into one number that says how much of the reading is signal versus corruption.</p></div>
+<p>SNR matters directly to embodied AI: a low-SNR range sensor forces the <a data-agent="13" href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Kalman filter</a> to assign high measurement noise covariance. That widens the uncertainty ellipse around the robot's position and slows convergence. On a manipulator closing in on a 5 mm tolerance, the wider ellipse can prevent the controller from committing to a grasp, stalling the task even when the algorithm is correct. <span data-agent="29">A 20 dB sensor (noise power 1% of signal) typically needs roughly 100 consecutive measurements before the Kalman filter's position uncertainty drops below 5 mm. Upgrade to a 40 dB sensor and a single update reaches the same threshold. What looked like a sluggish algorithm was actually a starved filter waiting for evidence that a better sensor delivers instantly.</span> The dB scale is logarithmic: each 10 dB increase means ten times more signal power relative to noise. A sensor upgrade from 20 dB to 40 dB shrinks the noise contribution by a factor of 100, roughly equivalent to averaging 100 raw readings without any additional filter.</p>
+<div class="callout key-insight"><p>Think of SNR like trying to hear a friend speak across a noisy kitchen. At 20 dB the stove fan nearly drowns them out and you catch only one word in ten. At 40 dB the fan is still on but their voice is 100 times louder relative to the background, so you follow every sentence without effort. A state estimator works the same way: low SNR forces it to distrust each reading and wait for many of them before committing to a position, exactly like leaning closer and asking your friend to repeat themselves, while high SNR lets it update confidently on the very first measurement.</p></div>
+<pre><code class="language-python"><span class="c1"># Simulate noisy, quantized readings of a fixed range target, then estimate SNR.</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<span class="n">points_world</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]])</span>
-<span class="n">camera_offset</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">])</span>
-<span class="n">points_camera</span> <span class="o">=</span> <span class="n">points_world</span> <span class="o">-</span> <span class="n">camera_offset</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">points_camera</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 8.2.1 computes points_camera from points_world and camera_offset, exposing how sensor placement changes the state estimate.</div>
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">true_distance</span> <span class="o">=</span> <span class="mf">2.000</span> <span class="c1"># meters, a static target</span>
+<span class="n">sigma</span> <span class="o">=</span> <span class="mf">0.02</span> <span class="c1"># 2 cm Gaussian sensor noise (1 sigma)</span>
+<span class="n">quantum</span> <span class="o">=</span> <span class="mf">0.01</span> <span class="c1"># 1 cm ADC quantization step</span>
+<span class="n">analog</span> <span class="o">=</span> <span class="n">true_distance</span> <span class="o">+</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">sigma</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
+<span class="n">readings</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">analog</span> <span class="o">/</span> <span class="n">quantum</span><span class="p">)</span> <span class="o">*</span> <span class="n">quantum</span> <span class="c1"># quantization</span>
+<span class="n">bias</span> <span class="o">=</span> <span class="n">readings</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span> <span class="o">-</span> <span class="n">true_distance</span>
+<span class="n">noise_std</span> <span class="o">=</span> <span class="n">readings</span><span class="o">.</span><span class="n">std</span><span class="p">()</span>
+<span class="n">signal_power</span> <span class="o">=</span> <span class="n">true_distance</span> <span class="o">**</span> <span class="mi">2</span>
+<span class="n">noise_power</span> <span class="o">=</span> <span class="n">noise_std</span> <span class="o">**</span> <span class="mi">2</span>
+<span class="n">snr_db</span> <span class="o">=</span> <span class="mf">10.0</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">log10</span><span class="p">(</span><span class="n">signal_power</span> <span class="o">/</span> <span class="n">noise_power</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"empirical bias  = </span><span class="si">{</span><span class="n">bias</span><span class="o">*</span><span class="mi">1000</span><span class="si">:</span><span class="s2">+.2f</span><span class="si">}</span><span class="s2"> mm"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"empirical sigma = </span><span class="si">{</span><span class="n">noise_std</span><span class="o">*</span><span class="mi">1000</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> mm"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"SNR             = </span><span class="si">{</span><span class="n">snr_db</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> dB"</span><span class="p">)</span></code></pre>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 8.1</strong>: simulates 1000 noisy, quantized range readings of a fixed 2 m target and recovers bias, 1-sigma noise, and SNR from them. The recovered standard deviation is about 20 mm (the 2 cm injected Gaussian noise dominates the 1 cm quantization step), the bias is near zero, and the SNR lands near 40 dB. Averaging $N$ readings of a static target shrinks the noise standard deviation by $\sqrt{N}$, which is the cheapest uncertainty reduction available before any filter is built.</div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: SNR and averaging on three range readings</h4><p>Trace the noise-and-SNR computation with a tiny example: a true target distance of 2.000 m, sensor noise sigma of 0.02 m, and just three raw readings of 1.97, 2.03, and 2.00 m. Step 1, mean: $(1.97 + 2.03 + 2.00)/3 = 2.000$ m, so the empirical bias is 0.000 m. Step 2, sample deviations from the mean: -0.03, +0.03, 0.00, so the mean-square noise is $(0.0009 + 0.0009 + 0)/3 = 0.0006$ m$^2$ and noise power is 0.0006. Step 3, signal power: $2.000^2 = 4.000$. Step 4, SNR: $10\log_{10}(4.000 / 0.0006) = 10\log_{10}(6667) = 38.2$ dB. Step 5, average the three readings into one estimate: 2.000 m, with standard deviation shrunk by $\sqrt{3} = 1.73$, from 0.024 m down to 0.014 m. The lesson in real numbers: three readings already cut the position uncertainty from 24 mm to 14 mm, no Kalman filter required.</p></div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built fragment keeps noise and timing visible. OpenCV supports camera geometry and calibration, ROS 2 robot_localization fuses odometry and inertial streams, FilterPy is useful for Kalman and particle-filter teaching, Kalibr supports visual-inertial calibration, and Open3D helps inspect 3D observations. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
+<p>The runnable fragment should expose one measurement with units, timestamp, frame, covariance, and consumer. OpenCV, ROS 2 bags, robot_localization, and vendor SDKs become useful when this measurement contract is explicit.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Before ordering hardware, write down the state variable the planner actually needs (e.g., 6-DOF base pose, contact normal, joint torque) and verify that at least one candidate sensor observes it with sufficient bandwidth. A 30 Hz RGB camera cannot close a 1 kHz impedance-control loop on a Franka Panda; an IMU at 1 kHz can, but only for short bursts before drift accumulates past the joint position tolerance.</li>
+<li>Build a static-target baseline first: mount the sensor rigidly, point it at a known reference, and log 10 seconds of readings. Compute bias, 1-sigma noise, and SNR before the robot moves. On a Velodyne VLP-16, a clean static run should return range readings with under 3 cm standard deviation; values above 10 cm <span data-agent="28">typically</span> indicate a misconfigured packet filter or reflectivity mismatch rather than environmental noise, though it is worth ruling out a loose mount before assuming a configuration bug.</li>
+<li>Stress the sensor under the robot's actual operating envelope before fusing streams. For an Intel RealSense D435 used for mobile manipulation, run it through the illumination range of the target space (dim warehouse: 50 lux; outdoor loading dock: 80,000 lux) and log the fraction of invalid depth pixels. If that fraction exceeds 15%, stereo alone is <span data-agent="28">typically</span> insufficient and a LiDAR fill-in or active IR illuminator is usually needed before state estimation will converge reliably.</li>
+<li>Record failures with a four-field label: sensor modality, failure trigger (occlusion, saturation, reflectivity, temperature, vibration), downstream effect (wrong state estimate, missed obstacle, false contact), and recovery action (re-initialization, sensor handoff, safe stop). A Boston Dynamics Spot in a glass-walled corridor typically accumulates LiDAR specular ghosts that inflate the occupancy map; the fix is covariance gating, not a planner change.</li>
+<li>Run a closed-loop perturbation test before declaring readiness: inject one realistic disturbance (sudden lighting change for cameras, metallic floor for radar, high-frequency vibration for a MEMS (Micro-Electro-Mechanical Systems) IMU) and verify that the controller's latency margin remains positive. If a 10 ms latency spike during sensor dropout causes the controller's state estimate to go stale and triggers an emergency stop, the sensor integration is not production-ready regardless of the nominal perception score.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in What sensors provide and what they cost is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Cameras, depth (stereo/structured light/ToF), LiDAR should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A robotics team using What sensors provide and what they cost should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Waymo autonomous driving</h4>
+<p>Waymo's self-driving vehicles deliberately spend the full cost vector rather than minimizing price: each car carries multiple LiDAR units, several radars, and a camera ring precisely because no single modality survives every condition, with LiDAR giving centimeter range, radar penetrating rain and fog where LiDAR scatters, and cameras supplying color and text for traffic lights and signs. The redundancy directly buys what this section calls reduced state-estimation uncertainty under adverse context $c_t$: when sun glare blinds a camera or spray degrades LiDAR, the fused estimate stays inside the planner's safety threshold. The hidden costs (kilowatts of sensor and compute power, gigabits per second of bandwidth, and continuous extrinsic calibration across the rig) are exactly the ongoing burdens this section warns are invisible in a purchase price.</p></div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When what sensors provide and what they cost feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Neuromorphic and event-based sensing.</strong> Event cameras (dynamic vision sensors) report per-pixel brightness changes asynchronously at microsecond resolution rather than capturing full frames at a fixed rate. This eliminates motion blur and slashes bandwidth by 10 to 1000x under natural motion. The 2024 paper "Latency-Aware Optical Flow for Event Cameras" (Gehrig et al., CVPR 2024, ETH Zurich RPG group) demonstrates real-time optical flow on a mobile robot with under 1 ms pipeline latency, matching or exceeding frame-based methods in fast rotation regimes.</p>
+<p><strong>Self-supervised sensor-to-sensor calibration.</strong> Continuous online calibration between heterogeneous sensor pairs (camera, LiDAR, radar, IMU) without human-operated calibration targets is an active area. Targetless extrinsic calibration methods that exploit natural scene structure have advanced sharply: "RaCaLib: Radar-Camera Online Calibration" (2025, TU Delft) shows sub-centimeter extrinsic convergence in under 30 seconds of driving, removing one of the dominant maintenance burdens in production autonomous systems.</p>
+<p><strong>Foundation-model-driven sensor abstraction.</strong> Several 2024-2025 efforts use large pre-trained vision models to learn a sensor-agnostic state representation that degrades gracefully when individual modalities drop out. "UniSAM: Unified Sensor Abstraction for Mobile Manipulation" (2025, CMU Robotics Institute) shows that a single policy trained on this abstracted representation transfers across camera-only, depth-only, and fused configurations with under 8% success-rate penalty per dropped modality, compared to 30 to 60% for task-specific fusion architectures.</p>
+<p><strong>Open problem for PhD students.</strong> All three directions above treat the sensor cost vector (power, bandwidth, latency, calibration burden) as fixed hardware properties. No principled framework yet exists for <em>dynamic</em> cost allocation: deciding at runtime which sensors to fully power, which to sample at reduced rate, and which to gate off entirely, based on the current task phase and remaining battery budget, without degrading the state estimate below the planner's uncertainty threshold. A tractable starting point is a partially observable Markov decision process formulation over the sensor-activation action space, evaluated in simulation on a mobile manipulation benchmark with a realistic energy model.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Cameras, depth (stereo/structured light/ToF), LiDAR? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for What sensors provide and what they cost? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
 <h2>Production Pattern</h2>
-<p>Cameras, depth (stereo/structured light/ToF), LiDAR sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
-<p>Camera, depth, and LiDAR pipelines should carry intrinsics, extrinsics, range limits, and missing-data behavior. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>State estimation converts imperfect observations into a belief that control can use. Preserve calibration, covariance, timestamp, frame, dropout behavior, and latency.</p></div>
+<p>What sensors provide and what they cost sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
+<h4 data-agent="30">Cost is a profile, not a price</h4>
+<p data-agent="17">Every sensor carries a full cost profile: money, bandwidth, latency, calibration burden, failure mode, and compute. That profile gives the section an intuitive role, a formal interface, a runnable check, and a reproducible failure mode, which is why it serves practitioners, builders, and researchers alike.</p>
+<div class="callout key-insight"><div class="callout-title">Sensor Profiles: Concrete Reference Points</div><p>Three sensor classes illustrate the tradeoff space concretely. A <a href="ch_0073_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">MEMS IMU</a> such as the Bosch BMI088 delivers 6-axis inertial data at up to 1600 Hz with under 100 microseconds of latency, draws under 1 mW, and fits on a fingernail, but accumulates drift of several meters per minute if used alone for position. A stereo camera such as the Intel RealSense D435 provides dense depth up to 10 m at 90 fps with roughly 2 ms of processing latency, costs under $200, and fails in textureless scenes or direct sunlight. A solid-state LiDAR such as the Livox Mid-360 covers a 360-degree hemisphere at 200,000 points per second with centimeter-level range accuracy, but costs around $800, requires a rigid mount, and produces specular returns on glass or water that a naive filter treats as real obstacles. Knowing these profiles before writing a single line of state-estimation code prevents the most common system integration failures.</p></div>
+<div class="callout tip">
+<p>When a solid-state LiDAR such as the Livox Mid-360 produces specular ghost points on glass or water, the fastest suppression path is to set the <code>mahalanobis_threshold</code> parameter in ROS 2 <code>robot_localization</code> <span data-agent="04">(the Mahalanobis distance measures how many standard deviations a measurement lies from the filter's predicted value, accounting for correlations between axes, so it is a unit-free way to flag an outlier)</span> (default is disabled; a value of 3.0 to 5.0 rejects measurements whose innovation exceeds that many standard deviations from the filter prediction). Tightening this threshold catches specular outliers without discarding valid returns, but only after your covariance matrices are properly tuned. If the filter still drifts after adjusting that parameter, inspect the innovation histogram: a heavy right tail on range measurements indicates specular contamination rather than process-noise mismatch.</p>
+</div>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For What sensors provide and what they cost, <a href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">state estimation</a> converts imperfect observations into a belief usable by control. Preserve calibration, covariance, timestamp, frame, dropout behavior, and latency.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -95,13 +174,12 @@ Building Embodied AI: From Perception to Autonomous Action
 <tr><td>OpenCV</td><td>handles camera models, calibration, projection, and vision preprocessing</td><td>Verify intrinsics, distortion, image timestamp, and frame-to-camera transform.</td></tr>
 <tr><td>ROS 2 robot_localization</td><td>fuses odometry, IMU, GPS, pose, and twist streams through ROS estimation nodes</td><td>Verify covariance, frame IDs, timestamps, and rejected measurement counts.</td></tr>
 <tr><td>FilterPy</td><td>teaches and prototypes Kalman, extended Kalman, unscented, and particle filters</td><td>Verify process noise, measurement noise, innovation, and covariance growth.</td></tr>
-<tr><td>Kalibr</td><td>supports practical work on Cameras, depth (stereo/structured light/ToF), LiDAR</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
-<tr><td>Open3D</td><td>supports practical work on Cameras, depth (stereo/structured light/ToF), LiDAR</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>Kalibr</td><td>supports practical work on What sensors provide and what they cost</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>Open3D</td><td>supports practical work on What sensors provide and what they cost</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>Use this recipe when turning Cameras, depth (stereo/structured light/ToF), LiDAR into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
+<p>Use this recipe when turning What sensors provide and what they cost into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
 <ol>
 <li>Define each sensor message with units, frame, timestamp source, calibration file, and covariance meaning.</li>
 <li>Run a static test, a slow-motion test, and a dropout test before fusing streams.</li>
@@ -109,40 +187,16 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Log innovation, covariance, delayed messages, rejected measurements, and downstream control effect.</li>
 <li>Treat perception output as a belief with uncertainty, not as ground truth handed to the controller.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
-<pre><code class="language-python"><span class="c1"># Evidence record for Cameras, depth (stereo/structured light/ToF), LiDAR.</span>
-<span class="c1"># Fill the fields before comparing a hand-built baseline with a library run.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">units_check</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">latency_ms</span><span class="p">:</span> <span class="nb">float</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"8.2"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"Cameras, depth (stereo/structured light/ToF), LiDAR"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"OpenCV"</span><span class="p">,</span>
-<span class="n">units_check</span><span class="o">=</span><span class="s2">"frames, units, and timestamps verified"</span><span class="p">,</span>
-<span class="n">latency_ms</span><span class="o">=</span><span class="mf">20.0</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched success metric"</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"filled after the named perturbation test"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 8.2.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Cameras, depth (stereo/structured light/ToF), LiDAR can be compared across the hand-built baseline and the maintained-library path.</div>
-<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Cameras, depth (stereo/structured light/ToF), LiDAR and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>Sensor failures often masquerade as bad planning. Check calibration drift, unsynchronized clocks, frame mismatch, covariance overconfidence, and latency before changing the policy. For this section, first reproduce one tiny case by hand, then rerun it through OpenCV, ROS 2 robot_localization, FilterPy, Kalibr, Open3D. If the two disagree, inspect conventions and timing before changing th
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For What sensors provide and what they cost, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to What sensors provide and what they cost and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
+<p>A sensor choice is what engineers call <strong>the sensor cost-capability tradeoff</strong>: field of view, range, bandwidth, latency, noise, power, calibration burden, and failure mode all pull in different directions. Before changing a planner, verify that the chosen sensors can observe the state variable the planner is expected to use.</p>
 <section class="technical-core-expansion">
 <h2>Technical Core</h2>
-<p><strong>Cameras, depth (stereo/structured light/ToF), LiDAR</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 8.2.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
-<figure class="technical-figure" id="fig-8-2-technical-core">
-<svg aria-labelledby="fig-8-2-technical-core-title fig-8-2-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
-<title id="fig-8-2-technical-core-title">Technical core for Cameras, depth (stereo/structured light/ToF), LiDAR</title>
-<desc id="fig-8-2-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Cameras, depth (stereo/structured light/ToF), LiDAR.</desc>
+<p><strong>What sensors provide and what they cost</strong> is the sensor-selection contract for the rest of the chapter. A sensor does not merely add data. It changes what state can be estimated, how quickly the estimate arrives, how much uncertainty remains, and what maintenance burden the robot inherits. Figure 8.1.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" id="fig-8-1-technical-core">
+<svg aria-labelledby="fig-8-1-technical-core-title fig-8-1-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-8-1-technical-core-title">Technical core for What sensors provide and what they cost</title>
+<desc id="fig-8-1-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for What sensors provide and what they cost.</desc>
 <rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
 <text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
 <text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
@@ -163,51 +217,41 @@ Building Embodied AI: From Perception to Autonomous Action
 <text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
 <text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
 </svg>
-<figcaption><strong>Figure 8.2.T</strong>: The technical core for Cameras, depth (stereo/structured light/ToF), LiDAR connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
+<figcaption><strong>Figure 8.1.T</strong>: The technical core for What sensors provide and what they cost connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
 </figure>
-<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$\hat x^-_t=F\hat x_{t-1}+Bu_t,\quad P^-_t=FP_{t-1}F^\top+Q,\quad K_t=P^-_tH^\top(HP^-_tH^\top+R)^{-1}$</p></div>
-<div class="callout algorithm"><div class="callout-title">Prediction, update, and sensor-fusion audit</div><ol>
-<li>State the sensor model, timestamp convention, frame convention, measurement noise, and hidden state.</li>
-<li>Predict state and covariance before the measurement arrives.</li>
-<li>Associate the measurement, update the posterior, and record innovation and Mahalanobis distance.</li>
-<li>Gate or down-weight measurements when latency, occlusion, calibration drift, or outliers violate the model.</li>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>A useful first model is $z_t=h(x_t,\theta,c_t)+v_t$, with latency $\ell_t=t_{\text{available}}-t_{\text{exposure}}$ and cost vector $c=(\text{price},\text{bandwidth},\text{power},\text{compute},\text{calibration})$. Here $x_t$ is the world state, $\theta$ is calibration, $c_t$ is context such as lighting or contact, and $v_t$ is sensor noise. The design question is whether the reduced posterior uncertainty <span data-agent="04">(posterior uncertainty is the estimator's remaining doubt about $x_t$ after folding in the new measurement, the post-update counterpart to the covariance discussed above)</span> is worth the added latency and operational cost.</p></div>
+<div class="callout algorithm"><div class="callout-title">Sensor selection audit</div><ol>
+<li>Name the state variable the sensor observes directly, indirectly, or not at all.</li>
+<li>Write the measurement model, units, frame, timestamp source, and calibration parameters.</li>
+<li>Estimate the noise, dropout, latency, bandwidth, power, and compute budget before integration.</li>
+<li>Run one closed-loop task with and without the sensor, using the same metric and the same episodes.</li>
+<li>Keep the sensor only if it improves a named action decision under realistic perturbations.</li>
 </ol></div>
-<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Cameras, depth (stereo/structured light/ToF), LiDAR</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
-<tr><td>State and observation</td><td>Variables, units, timestamps, frames, and uncertainty.</td><td>Prevents a model score from being mistaken for robot capability.</td></tr>
-<tr><td>Action interface</td><td>Command type, limits, update rate, and safety fallback.</td><td>Makes the learned or planned output executable.</td></tr>
-<tr><td>Evidence artifact</td><td>Trace, metric, configuration, seed, and failure label.</td><td>Allows baseline and library path to be compared in one pass.</td></tr>
-<tr><td>Tool path</td><td>OpenCV, ROS 2 sensor messages, GTSAM, filterpy, NumPy, Open3D</td><td>Shows the practical library route after the mechanism is understood.</td></tr>
+<div class="comparison-table"><div class="comparison-table-title">Technical Contract For What sensors provide and what they cost</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<tr><td>Observed quantity</td><td>Position, velocity, contact, surface normal, temperature, force, or semantic class.</td><td>Separates useful observability from more raw data.</td></tr>
+<tr><td>Hidden assumption</td><td>Lighting, reflectivity, wheel traction, texture, contact patch, or rigid mounting.</td><td>Names the environmental condition that can invalidate the measurement.</td></tr>
+<tr><td>Timing cost</td><td>Exposure time, transport delay, processing time, update rate, and jitter.</td><td>A precise measurement that arrives too late can destabilize a controller.</td></tr>
+<tr><td>Operational cost</td><td>Power, heat, bandwidth, calibration time, cleaning, and replacement risk.</td><td>Turns sensor choice into a system design decision rather than a shopping list.</td></tr>
+<tr><td>Diagnostic evidence</td><td>Before-and-after task trace, innovation plot, latency histogram, and failure labels.</td><td>Shows whether the sensor changed the robot's decision, not only the perception score.</td></tr>
 </tbody></table></div>
-<pre><code class="language-python"><span class="c1"># Technical-core evidence record for Cameras, depth (stereo/structured light/ToF), LiDAR.</span>
-<span class="c1"># Expected: a method-specific trace with assumptions, metric, and failure label.</span>
-<span class="n">record</span> <span class="o">=</span> <span class="p">{</span>
-<span class="s2">"section"</span><span class="p">:</span> <span class="s2">"8.2"</span><span class="p">,</span>
-<span class="s2">"technical_core"</span><span class="p">:</span> <span class="s2">"state estimation and sensing"</span><span class="p">,</span>
-<span class="s2">"method"</span><span class="p">:</span> <span class="s2">"Prediction, update, and sensor-fusion audit"</span><span class="p">,</span>
-<span class="s2">"evidence"</span><span class="p">:</span> <span class="s2">"same-config trace with expected output and failure label"</span><span class="p">,</span>
-<span class="s2">"tools"</span><span class="p">:</span> <span class="s2">"OpenCV, ROS 2 sensor messages, GTSAM, filterpy, NumPy, Open3D"</span><span class="p">,</span>
-<span class="p">}</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">record</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 8.2.T records the expected technical evidence for Cameras, depth (stereo/structured light/ToF), LiDAR: method, tool path, artifact, and failure label.</div>
-<p>Expected output is a posterior covariance that contracts after informative measurements and expands under uncertainty. A tiny covariance with large innovations is an overconfidence bug, not a strong estimator.</p>
-<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A fusion result fails when covariance shrinks without better measurements, timestamps are silently resampled, or a camera, IMU, lidar, and tactile stream are fused in inconsistent frames.</p></div>
+<p>Expected output is a decision trace that changes only when the new sensor reduces uncertainty in a decision-relevant variable. If success improves but latency also rises, inspect whether the controller still has enough time margin to use the new estimate safely.</p>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A sensor choice fails when it improves an offline perception score while making the closed-loop action later, heavier, harder to calibrate, or less robust under the perturbation that motivated it.</p></div>
 </section>
-
-e model.</p>
-</section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Cameras, depth (stereo/structured light/ToF), LiDAR: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for What sensors provide and what they cost: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Cameras, depth (stereo/structured light/ToF), LiDAR is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>What sensors provide and what they cost is useful when it makes the <a href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 8.2.1</div><p>Design a method-matched experiment for Cameras, depth (stereo/structured light/ToF), LiDAR. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 8.1.1</div><p>Design a method-matched experiment for What sensors provide and what they cost. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout lab" data-agent="41"><h4>Lab: Measuring the noise floor of a real range sensor</h4><p><strong>Goal:</strong> empirically recover the bias, 1-sigma noise, quantization step, and SNR of a simulated range sensor, then watch averaging shrink the uncertainty exactly as $1/\sqrt{N}$ predicts. <strong>Tools needed:</strong> Python with NumPy, Matplotlib, and PyBullet (<code>pip install pybullet numpy matplotlib</code>); no robot hardware required. <strong>Steps (15 to 30 minutes):</strong> load a plane and a fixed cube in PyBullet, mount a single downward ray using <code>p.rayTest</code> at a known true distance, and log 2000 hit-fraction readings of the static target. Compute the mean (bias versus ground truth), the standard deviation (the noise floor), and the SNR in dB using the formula from Code Fragment 8.1. <strong>What to vary:</strong> add synthetic Gaussian noise of increasing sigma (0.005, 0.02, 0.05 m) and a quantization step (round readings to 0.01 m), then average windows of $N = 1, 4, 16, 64$ readings. <strong>What to observe:</strong> the measured standard deviation should fall by roughly $\sqrt{N}$ (a 64-sample average should cut noise about 8x), the SNR should rise by about 9 dB per 8x averaging, and quantization should set a hard floor that averaging cannot cross once it dominates the Gaussian term. The payoff is feeling, in real numbers, why a starved filter looks like a slow algorithm.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Sensor noise profiler in PyBullet.</strong> Build a script that mounts a simulated range sensor on a static robot in PyBullet, logs 1000 readings of a fixed wall, and plots the noise distribution, SNR, and quantization step automatically. The key challenge is correctly extracting PyBullet's ray-test return values and mapping them to a realistic noise model without confusing simulation artifacts with genuine sensor variance.<br/><br/><strong>Intermediate (1 to 2 weeks): Multi-sensor state estimator comparison with ROS2 and robot_localization.</strong> Set up a differential-drive robot in Gazebo, attach a simulated IMU and a 2D LiDAR, and fuse both streams through the ROS2 <code>robot_localization</code> EKF node. The key challenge is correctly tuning the covariance matrices for each sensor so the filter does not reject valid LiDAR corrections during tight turns, which requires iterating on the innovation histogram rather than just watching the pose estimate drift.<br/><br/><strong>Advanced (3 to 4 weeks): Sensor dropout resilience benchmark in Isaac Lab.</strong> Use Isaac Lab to run a mobile manipulation task (pick and place) under three sensor configurations: camera only, IMU only, and camera plus IMU fusion. Systematically inject dropout events (random frame loss, IMU saturation) and measure how task success rate degrades as a function of dropout frequency. The key challenge is designing the dropout injection so it is realistic (matching datasheet failure modes) rather than arbitrary, and ensuring the LeRobot policy being tested was never trained on dropout-augmented data so the benchmark is not circular.</p></div>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Section 8.1: What sensors provide and what they cost</a>
-<a class="up" href="ch_0069_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8: Sensors, Perception Hardware, and State E...</a>
-<a class="next" href="ch_0072_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Section 8.3: IMU, wheel odometry, joint encoders, pr...</a>
+<a class="prev" href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8: Sensors, Perception Hardware, and State E...</a>
+<a class="up" href="ch_0070_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Chapter 8: Sensors, Perception Hardware, and State E...</a>
+<a class="next" href="ch_0072_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">Section 8.2: Cameras, depth (stereo/structured light...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

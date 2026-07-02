@@ -1,0 +1,230 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 48.4: Route and local planning</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0318_part-9-manipulation-locomotion-and-embodied-skills-index.xhtml">Part IX: Manipulation, Locomotion, and Embodied Skills</a><span class="bc-sep">›</span><a href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a></div>
+<h1>Section 48.4: Route and local planning</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>Choose the right coordinate frame and a hard planning problem can become an easy one: drive along the road, not across the map.</p>
+<cite>On motion planning in the Frenet frame</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 48.4: Route and local planning." loading="lazy" src="../img/dbe4e14da3_chapter-48-illustration-04.jpg"/>
+<figcaption><strong>Figure 48.4A</strong>: In the Frenet frame the road becomes a straight ruler: progress along the lane is one axis, lateral offset is the other, and curved-road planning collapses into simple polynomial shaping.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section builds on the predicted occupancy fields introduced in section 48.3 and assumes familiarity with coordinate frame transformations from section 4.2. The kinematic vehicle model used by Hybrid A* is developed in full in section 48.7. The Frenet planning approach introduced here is revisited in Part X alongside learned trajectory scoring in section 48.5, where the same feasibility constraints are enforced on neural planner outputs.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A car at 60 mph must pick a lane, match the gap ahead, and avoid a cyclist merging right, all within 100 milliseconds and a 4-meter lane. That is the local planning problem, and it is currently one of the sharpest bottlenecks separating research robots from deployable vehicles. The core insight that makes it tractable is a coordinate change: the <strong>Frenet frame</strong> replaces the city map with a ruler aligned to the lane, so a lane change becomes a one-dimensional polynomial and <span data-agent="21">jerk (the rate of change of acceleration, the quantity that makes a maneuver feel abrupt to a passenger even when acceleration itself is within limits)</span> can be minimized analytically. Where no lane exists (a parking lot, a U-turn), <strong>Hybrid A*</strong> takes over, searching feasible steering sequences rather than grid squares. You will derive both planners, implement the Frenet trajectory sampler, and wire it to the occupancy predictions from section 48.3.</p>
+</div>
+<p data-agent="22">Ask a fresh grid planner to change lanes on a curving highway and it will happily hand back a path the steering rack can never execute; the fix is not a smarter search but a change of coordinates that turns the whole maneuver into a single polynomial. That is the contract this section develops: given a reference path and a Frenet start and goal, generate a trajectory that satisfies <strong>the feasibility-comfort-safety triple</strong> (curvature and acceleration within limits, bounded jerk, and clear of <a href="ch_0367_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">predicted occupancy</a>). The worked example converts a Cartesian waypoint into Frenet $(s, d)$ and shapes a polynomial lateral profile.</p>
+<h2>Theory</h2>
+<h3>The Frenet frame</h3>
+<p><span data-agent="15">As Figure 48.4A illustrates, the Frenet frame straightens the road into a ruler so that curved-lane planning collapses into one-dimensional polynomial shaping.</span> Given a smooth reference path $r(s)$ parameterized by arc length $s$, any nearby point $p$ is described by its projection's arc length $s$ (along-track, how far along the lane) and its signed perpendicular distance $d$ (lateral, how far off-center, positive to the left). The mapping decouples the two problems that matter for driving: longitudinal behavior (speed, gaps) lives in $s$, and lane positioning lives in $d$.</p>
+<figure class="diagram-container">
+<svg aria-label="Frenet frame: a point decomposed into along-track arc length s and lateral offset d against a curved reference path." role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- curved reference path (lane centerline) -->
+<path d="M 40 230 Q 240 120 560 110" fill="none" stroke="#888" stroke-width="3"/>
+<text fill="#666" font-family="monospace" font-size="13" text-anchor="start" x="50" y="255">reference path r(s)</text>
+<!-- start marker on path -->
+<circle cx="40" cy="230" fill="#444" r="4"/>
+<text fill="#444" font-family="monospace" font-size="12" text-anchor="middle" x="40" y="218">s=0</text>
+<!-- projection point on path -->
+<circle cx="320" cy="139" fill="#2a6" r="5"/>
+<text fill="#2a6" font-family="monospace" font-size="13" text-anchor="middle" x="320" y="160">projection</text>
+<!-- arc-length s arrow along the path region -->
+<path d="M 40 245 Q 200 150 318 152" fill="none" marker-end="url(#ah)" stroke="#2a6" stroke-dasharray="5 4" stroke-width="1.5"/>
+<text fill="#2a6" font-family="monospace" font-size="14" text-anchor="middle" x="180" y="205">s (along-track)</text>
+<!-- the nearby point p, offset to the left (above the path) -->
+<circle cx="360" cy="80" fill="#c33" r="5"/>
+<text fill="#c33" font-family="monospace" font-size="14" text-anchor="start" x="372" y="76">point p</text>
+<!-- lateral offset d: perpendicular from projection to p -->
+<line marker-end="url(#ahr)" stroke="#c33" stroke-width="2" x1="320" x2="360" y1="139" y2="80"/>
+<text fill="#c33" font-family="monospace" font-size="14" text-anchor="end" x="300" y="100">d (lateral)</text>
+<!-- tangent/normal hint at projection -->
+<line stroke="#39c" stroke-width="1.5" x1="285" x2="355" y1="148" y2="130"/>
+<text fill="#39c" font-family="monospace" font-size="11" text-anchor="end" x="270" y="138">tangent</text>
+<defs>
+<marker id="ah" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="#2a6"/></marker>
+<marker id="ahr" markerheight="9" markerwidth="9" orient="auto" refx="7" refy="3"><path d="M0,0 L7,3 L0,6 Z" fill="#c33"/></marker>
+</defs>
+</svg>
+<figcaption><strong>Figure 48.4B</strong>: The Frenet decomposition. A nearby point p is described by its projection's arc length s along the reference path (along-track, green) and its signed perpendicular offset d from the path (lateral, red). Longitudinal planning lives in s, lane positioning in d.</figcaption>
+</figure>
+<h3>Polynomial paths and boundary conditions</h3>
+<p data-agent="39">Figure 48.4B labels the projection point, the along-track arc length $s$, and the lateral offset $d$ that Figure 48.4A introduces at the scale of a full lane change.</p>
+<p><span data-agent="14">With lane positioning now isolated in the single scalar $d$, the planning problem reduces to choosing how that offset should evolve over time.</span> <span data-agent="29">A comfortable lateral maneuver is a polynomial $d(t)$ that satisfies boundary conditions. A <strong>quintic (5th-degree) polynomial</strong> fixes position, velocity, and acceleration at both the start and the end. Six conditions determine six coefficients, so the quintic is the standard choice for jerk-optimal lane changes. Degree matters: a cubic lane change at 100 km/h produces a lateral jerk spike of roughly 8 m/s³ at the seam. A quintic over the same distance and duration holds jerk below 2 m/s³ throughout. That is the difference between a passenger grabbing the handle and not noticing the maneuver.</span>
+</p><div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: lane positioning lives in the scalar $d$, and a quintic (six boundary conditions, six coefficients) is the standard polynomial for shaping $d(t)$ because it can pin down position, velocity, and acceleration at both ends, keeping jerk low enough that a passenger does not feel the maneuver.</p></div>
+<p><span data-agent="29">On a typical fan of 45 sampled candidates, the quintic's tighter jerk envelope eliminates roughly 38 before any collision check runs and leaves 7 to score. Without the quintic constraint the same filter passes 43 candidates, and the planner wastes most of its budget on trajectories that feel like an emergency stop.</span> A lower-degree (cubic) polynomial fixes fewer conditions and is enough when only endpoint positions and slopes matter. The planner shapes longitudinal motion $s(t)$ the same way, targeting speed and acceleration.</p>
+<h3>Hybrid A* for structured search</h3>
+<p>Polynomial sampling assumes a usable reference path. When there is none (a parking lot, a tight unprotected turn), <strong>Hybrid A*</strong> searches a grid of poses but expands successors using a <a href="ch_0371_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">kinematic vehicle model</a>, so every node is reachable by a real steering command. It blends <a href="ch_0230_part-6-embodied-perception-module-30-navigation-and-path-planning-sectio.xhtml">grid search</a> (completeness) with continuous motion (feasibility) and uses a <a href="ch_0048_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">non-holonomic</a>-with-obstacles heuristic to stay efficient.</p>
+<p data-agent="03">A vehicle is <strong>non-holonomic</strong> (its steerable degrees of freedom are fewer than its position-and-heading degrees of freedom, so it cannot move sideways on demand the way it can move forward): this constraint, defined here before the search mechanics below rely on it, is what separates a car's reachable poses from an arbitrary grid cell.</p>
+<p data-agent="29">This matters for embodied AI because a car cannot slide sideways: its minimum turning radius is a hard physical constraint, not a preference. Standard A* ignores this and returns paths that require zero-radius turns. The actuators cannot execute those turns. In a parking garage with 0.3 m clearance on each side, an infeasible path does not merely waste distance; it drives the car into a wall. Any planner for a non-holonomic robot must respect the turning radius during planning, not as a post-processing filter.</p>
+<h4 data-agent="30">How the search expands</h4>
+<p data-agent="17">Each grid cell stores a continuous pose $(x, y, \theta)$, not just an integer index. To expand a node, Hybrid A* pushes a fixed set of steering angles (e.g., $\{-35°, -17.5°, 0°, 17.5°, 35°\}$) through the kinematic model for one timestep, yielding reachable child poses. Its heuristic takes the maximum of two admissible estimates: <span data-agent="21">a Dubins or Reeds-Shepp cost (the shortest path length for a car-like vehicle with a fixed minimum turning radius, computed on empty ground with no obstacles; Reeds-Shepp additionally allows reverse motion)</span> that ignores obstacles, and a 2D Dijkstra distance that ignores the turning constraint. The maximum keeps the search focused without over-estimating.</p>
+<p class="engagement-hook">Hybrid A* exists because the 2007 DARPA Urban Challenge exposed exactly this failure: Stanford's Junior entry needed feasible motion in unstructured zones (parking lots, U-turns) where a lane-relative planner has no reference path to follow. Dolgov, Thrun, and colleagues built Hybrid A* for that vehicle so every expanded node was reachable by a real steering command, and the same algorithm now ships in Apollo and Autoware for production parking. A standard grid A* would happily return a path with a zero-radius pivot that the steering rack physically cannot execute.</p>
+<div class="callout key-insight">
+<div class="callout-title">The Frame Does The Work</div>
+<p>The same lane change that is an awkward, curvature-coupled problem in $(x, y)$ becomes a one-dimensional polynomial in $d(s)$ once you adopt the Frenet frame. Picking the <a href="ch_0040_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">coordinate system</a> that matches the constraint structure is often more powerful than picking a fancier optimizer.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>Frenet planning typically samples a fan of candidate trajectories: several lateral end-offsets $d$ crossed with several longitudinal speed or time targets, each realized as a polynomial. Every candidate is checked for kinematic feasibility and collision against <a href="ch_0367_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">predicted occupancy</a>, then scored by a cost (jerk, deviation from lane center, proximity to obstacles). The lowest-cost feasible candidate is sent to control. The conversion back from $(s, d)$ to $(x, y)$ for execution requires the reference path geometry.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Frenet Optimal Trajectory Selection</h4>
+<p><strong>Input:</strong> reference path $r(s)$, current state $(s_0, d_0, \dot{s}_0, \dot{d}_0)$, goal speed $v^*$, predicted occupancy grid $\mathcal{O}$, feasibility bounds $(\kappa_{\max}, a_{\max}, j_{\max})$</p>
+<p><strong>Output:</strong> optimal trajectory $\pi^* = \{(s(t), d(t))\}_{t=0}^{T}$ and its Cartesian realization $\{(x(t), y(t), \theta(t))\}$</p>
+<ol>
+<li>Project the vehicle's Cartesian state onto $r(s)$ to obtain the Frenet start state $(s_0, d_0, \dot{s}_0, \dot{d}_0, \ddot{d}_0)$.</li>
+<li>Sample a grid of lateral goal offsets $\{d_f^{(i)}\}$ centered on the lane (e.g., $d_f \in \{-1.5, 0, 1.5\}$ m) and longitudinal horizon durations $\{T^{(j)}\}$ (e.g., $T \in \{3, 4, 5\}$ s).</li>
+<li>For each pair $(d_f^{(i)}, T^{(j)})$, fit a quintic polynomial $d(t)$ that satisfies the six boundary conditions: $d(0)=d_0$, $\dot{d}(0)=\dot{d}_0$, $\ddot{d}(0)=\ddot{d}_0$, $d(T)=d_f$, $\dot{d}(T)=0$, $\ddot{d}(T)=0$.</li>
+<li>Fit a <span data-agent="04">quartic (4th-degree) polynomial, one degree lower than the quintic above because the longitudinal profile fixes only five boundary conditions, not six: there is no terminal position constraint on $s$, only a terminal speed</span> $s(t)$ matching $s(0)=s_0$, $\dot{s}(0)=\dot{s}_0$, $\ddot{s}(0)=\ddot{s}_0$, $\dot{s}(T)=v^*$, $\ddot{s}(T)=0$.</li>
+<li>Compute curvature $\kappa(t) = \ddot{d}(t) / (1 + \dot{d}(t)^2)^{3/2}$ and lateral acceleration $a_y(t) = \dot{s}(t)^2 \kappa(t)$; reject any candidate where $\max_t |\kappa(t)| &gt; \kappa_{\max}$, $\max_t |a_y(t)| &gt; a_{\max}$, or $\max_t |\dddot{d}(t)| &gt; j_{\max}$.</li>
+<li>Convert each surviving $(s(t), d(t))$ back to Cartesian $(x(t), y(t), \theta(t))$ using the reference path tangent and normal at each arc-length sample.</li>
+<li>Reject candidates whose Cartesian tube overlaps occupied cells in $\mathcal{O}$ (inflate by half the vehicle width $w/2$).</li>
+<li>Score remaining candidates with cost $J = \alpha \int_0^T \dddot{d}^2 \, dt + \beta (d_f - 0)^2 + \gamma \int_0^T (\dot{s} - v^*)^2 \, dt$, where $\alpha, \beta, \gamma$ are tunable weights.</li>
+<li>Select <span data-agent="04">$\pi^* = \arg\min J$ (the candidate trajectory that achieves the lowest cost $J$, not the value of $J$ itself)</span> over all feasible, collision-free candidates.</li>
+<li>Return $\pi^*$ in Cartesian form; re-plan at the next control cycle using the updated state and occupancy grid.</li>
+</ol>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Frenet Optimal Trajectory Selection</h4>
+<p>Trace the algorithm with a tiny three-candidate fan. Start state on a straight reference path: $s_0 = 0$, $d_0 = 0.4$ m (slightly right of center), $\dot{s}_0 = 25$ m/s, $\dot{d}_0 = 0$, $\ddot{d}_0 = 0$. Goal speed $v^* = 25$ m/s, comfort limit $a_{\max} = 2.0$ m/s², horizon $T = 3$ s, lateral offsets $d_f \in \{-1.5,\ 0,\ +1.5\}$ m.</p>
+<p><strong>Quintic fit, candidate B</strong> ($d_f = 0$): with zero end velocity and acceleration the six coefficients reduce to $a_0=0.4$, $a_1=0$, $a_2=0$, $a_3=10(0-0.4)/3^3=-0.148$, $a_4=-15(-0.4)/3^4=0.074$, $a_5=6(-0.4)/3^5=-0.0099$. Sampling $d(t)$: $d(0)=0.40$, $d(1.5)=0.20$, $d(3.0)=0.00$ m. Smooth nudge back to center.</p>
+<p><strong>Feasibility check.</strong> Peak lateral acceleration for each candidate (approximated as $\dot{s}^2 \cdot \max_t|\ddot{d}|/\dot{s}^2 \approx \max_t|\ddot{d}|$ at this near-straight geometry): candidate A ($d_f=-1.5$) peaks near $\max|\ddot{d}| \approx 2.5$ m/s², which exceeds $a_{\max}=2.0$, so A is rejected. Candidate B peaks near 0.5 m/s² (pass). Candidate C ($d_f=+1.5$) peaks near 2.1 m/s², also rejected. Two of three gone before any collision check.</p>
+<p><strong>Score the survivor.</strong> Only B remains, so $\pi^* = $ B. Its cost $J = \alpha \int \dddot{d}^2 dt + \beta d_f^2 + \gamma \int (\dot{s}-v^*)^2 dt = \alpha(0.7) + \beta(0) + \gamma(0) = 0.7\alpha$, the lowest possible since $d_f=0$ and speed already matches $v^*$. The planner returns the gentle re-centering maneuver.</p>
+</div>
+<div class="callout tip">
+<p>When sampling a fan of Frenet candidates, apply the kinematic feasibility filter (curvature limit $\kappa_{\max} = 1/r_{\min}$, peak lateral acceleration $a_{y,\max}$, and jerk bound) <em>before</em> evaluating the collision or comfort cost. In PythonRobotics' <code>frenet_optimal_trajectory.py</code>, the relevant threshold parameters are <code>MAX_CURVATURE</code> and <code>MAX_ACCEL</code>; tightening them to your vehicle's actual turning radius and powertrain limits eliminates infeasible candidates early and can cut the per-step planning time by more than half on a dense sample grid. <span data-agent="28">Skipping this ordering is, in practice, a common source of a planner that is slow in curves but fast on straights.</span></p>
+</div>
+<h2>Worked Example</h2>
+<p>The example converts a Cartesian waypoint to Frenet $(s, d)$ against a reference path, then generates a 3rd-degree polynomial that moves $d$ from 0 to 1 m over 3 seconds (a gentle nudge toward the lane's left).</p>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># Reference path as densely sampled (x, y) points (here a gentle arc).</span>
+<span class="n">s_vals</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">50</span><span class="p">,</span> <span class="mi">501</span><span class="p">)</span> <span class="c1"># arc-length samples (m)</span>
+<span class="n">ref</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">([</span><span class="n">s_vals</span><span class="p">,</span> <span class="mf">0.02</span> <span class="o">*</span> <span class="n">s_vals</span><span class="o">**</span><span class="mf">1.0</span><span class="p">],</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="c1"># slowly rising centerline</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">to_frenet</span><span class="p">(</span><span class="n">point</span><span class="p">,</span> <span class="n">ref</span><span class="p">,</span> <span class="n">s_vals</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Cartesian (x, y) -&gt; Frenet (s, d) against a polyline reference path."""</span>
+<span class="n">p</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">point</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+<span class="n">d2</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">((</span><span class="n">ref</span> <span class="o">-</span> <span class="n">p</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="c1"># squared distance to each ref point</span>
+<span class="n">i</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmin</span><span class="p">(</span><span class="n">d2</span><span class="p">))</span> <span class="c1"># nearest reference index</span>
+<span class="n">s</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">s_vals</span><span class="p">[</span><span class="n">i</span><span class="p">])</span> <span class="c1"># along-track arc length</span>
+<span class="c1"># Lateral offset: signed perpendicular distance using the local tangent.</span>
+<span class="n">tan</span> <span class="o">=</span> <span class="n">ref</span><span class="p">[</span><span class="nb">min</span><span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">ref</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)]</span> <span class="o">-</span> <span class="n">ref</span><span class="p">[</span><span class="nb">max</span><span class="p">(</span><span class="n">i</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)]</span>
+<span class="n">tan</span> <span class="o">=</span> <span class="n">tan</span> <span class="o">/</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">tan</span><span class="p">)</span> <span class="o">+</span> <span class="mf">1e-9</span><span class="p">)</span>
+<span class="n">normal</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="o">-</span><span class="n">tan</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">tan</span><span class="p">[</span><span class="mi">0</span><span class="p">]])</span> <span class="c1"># left-hand normal</span>
+<span class="n">d</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">p</span> <span class="o">-</span> <span class="n">ref</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">normal</span><span class="p">))</span> <span class="c1"># signed lateral distance</span>
+<span class="k">return</span> <span class="n">s</span><span class="p">,</span> <span class="n">d</span>
+<span class="n">wp</span> <span class="o">=</span> <span class="p">(</span><span class="mf">20.0</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">)</span> <span class="c1"># a Cartesian waypoint near the path</span>
+<span class="n">s</span><span class="p">,</span> <span class="n">d</span> <span class="o">=</span> <span class="n">to_frenet</span><span class="p">(</span><span class="n">wp</span><span class="p">,</span> <span class="n">ref</span><span class="p">,</span> <span class="n">s_vals</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Frenet of </span><span class="si">{</span><span class="n">wp</span><span class="si">}</span><span class="s2">: s=</span><span class="si">{</span><span class="n">s</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> m, d=</span><span class="si">{</span><span class="n">d</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> m"</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">cubic_lateral</span><span class="p">(</span><span class="n">d0</span><span class="p">,</span> <span class="n">d1</span><span class="p">,</span> <span class="n">T</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""3rd-degree d(t): d(0)=d0, d'(0)=0, d(T)=d1, d'(T)=0."""</span>
+<span class="c1"># Coefficients for d(t) = a0 + a1 t + a2 t^2 + a3 t^3 with zero end slopes.</span>
+<span class="n">a0</span><span class="p">,</span> <span class="n">a1</span> <span class="o">=</span> <span class="n">d0</span><span class="p">,</span> <span class="mf">0.0</span>
+<span class="n">a2</span> <span class="o">=</span> <span class="mi">3</span> <span class="o">*</span> <span class="p">(</span><span class="n">d1</span> <span class="o">-</span> <span class="n">d0</span><span class="p">)</span> <span class="o">/</span> <span class="n">T</span><span class="o">**</span><span class="mi">2</span>
+<span class="n">a3</span> <span class="o">=</span> <span class="o">-</span><span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">d1</span> <span class="o">-</span> <span class="n">d0</span><span class="p">)</span> <span class="o">/</span> <span class="n">T</span><span class="o">**</span><span class="mi">3</span>
+<span class="k">return</span> <span class="k">lambda</span> <span class="n">t</span><span class="p">:</span> <span class="n">a0</span> <span class="o">+</span> <span class="n">a1</span> <span class="o">*</span> <span class="n">t</span> <span class="o">+</span> <span class="n">a2</span> <span class="o">*</span> <span class="n">t</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="n">a3</span> <span class="o">*</span> <span class="n">t</span><span class="o">**</span><span class="mi">3</span>
+<span class="n">d_of_t</span> <span class="o">=</span> <span class="n">cubic_lateral</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">)</span> <span class="c1"># move 0 -&gt; 1 m over 3 s</span>
+<span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">,</span> <span class="mf">2.25</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">]:</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"t=</span><span class="si">{</span><span class="n">t</span><span class="si">:</span><span class="s2">4.2f</span><span class="si">}</span><span class="s2">s  d=</span><span class="si">{</span><span class="n">d_of_t</span><span class="p">(</span><span class="n">t</span><span class="p">)</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> m"</span><span class="p">)</span></code></pre>
+<div class="code-caption" data-agent="08">Converts a Cartesian waypoint to Frenet $(s, d)$ against a sampled reference path, then fits a zero-end-slope cubic that carries the lateral offset $d$ from 0 to 1 m over 3 seconds.</div>
+<p><strong>Expected output:</strong> the waypoint maps to roughly <code>s=20.0 m, d=1.10 m</code> (the offset measured perpendicular to the arc), and the cubic profile rises smoothly from 0 to 1 m, passing through 0.5 m at the midpoint with zero slope at both ends, the signature of a comfortable, jerk-bounded nudge.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Production stacks use optimization-based planners rather than hand-rolled sampling: <strong>Apollo</strong> (Baidu) and <strong>Autoware</strong> ship Frenet and lattice planners plus Hybrid A* for parking. <strong>CommonRoad</strong> provides reproducible planning scenarios and a route planner. The <strong>PythonRobotics</strong> repository has readable reference implementations of Frenet optimal trajectory planning and Hybrid A*. Keep the same feasibility and cost definitions across these tools.</p>
+</div>
+<p data-agent="01">This section's contract was to derive both planners, implement the Frenet trajectory sampler, and wire it to occupancy predictions; the Cartesian-to-Frenet conversion and the cubic sampler are covered in the worked example above, and the wiring step is completed here for clarity: the algorithm's step 7 rejects any candidate whose inflated Cartesian tube overlaps an occupied cell in the section 48.3 occupancy grid $\mathcal{O}$, so the same predicted occupancy that section 48.3 produces becomes a hard constraint on which Frenet candidate the planner is allowed to select, not merely an input it consults informally.</p>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Build or fetch a smooth reference path (lane centerline) and verify the Frenet mapping on known points.</li>
+<li>Sample candidate trajectories: a grid of lateral offsets crossed with speed or time targets.</li>
+<li>Reject candidates violating curvature, acceleration, or jerk limits before scoring.</li>
+<li>Score feasible candidates against predicted occupancy and lane-keeping cost; send the best to control.</li>
+<li>Use Hybrid A* only where no reference path exists (parking, unstructured maneuvers).</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A poorly conditioned reference path (sharp kinks, uneven spacing) corrupts the $s$ and $d$ estimate, so a perfectly safe trajectory in Frenet maps back to a swerve in Cartesian. Always smooth and re-sample the reference path, and validate the round trip $(x,y) \to (s,d) \to (x,y)$ before trusting the planner.</p>
+</div>
+<div class="callout warning"><p>A common misconception is that the Frenet planner is the complete planning system and can decide which road or junction to take next. The Frenet sampler is a local planner that only shapes motion within an already-chosen reference path (a lane centerline handed to it by a separate route planner). In embodied AI, planning is hierarchical because no single representation scales from city-block navigation down to sub-second actuator commands. The correct mental model is a stack: a route planner (graph search over the road network) selects the lane sequence, a behavioral layer decides when to merge or yield, and only then does the local Frenet planner optimize a smooth, feasible trajectory along that pre-selected corridor.</p></div>
+<div class="callout key-insight"><p>Think of the planning hierarchy like cooking a meal for guests. A recipe book (route planner) tells you which dishes to make tonight. A sous chef (behavioral layer) decides the order of preparation and when to start the oven. The line cook (local planner) then executes each precise knife cut and flame adjustment. Asking the line cook to also choose the menu and manage the dining room would be absurd: each layer operates at its own timescale and level of detail, and collapsing them into one role produces chaos. The Frenet sampler is the line cook, and it only works well when a higher layer has already decided which corridor to cook in.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a highway lane change, fix the boundary conditions to start at the current lateral state and end centered in the target lane with zero lateral velocity and acceleration, then use a quintic in $d$ over a comfort-tuned duration. Sweeping the duration trades aggressiveness against jerk, giving a tunable family of human-like maneuvers.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">When to Use Each Method</div>
+<p>Use a <strong>cubic polynomial</strong> when only position and slope need to match at each end: a short lane nudge of 0.5 m over 1 s where the vehicle is already moving steadily, and comfort is not safety-critical. Upgrade to a <strong>quintic</strong> whenever peak lateral acceleration matters, such as a full lane change of 3.5 m at highway speed (100 km/h), where an uncontrolled acceleration jump at the seam can exceed the 2 m/s² comfort limit. Switch to <strong>Hybrid A*</strong> entirely when no lane centerline exists: a typical 90-degree parking maneuver into a 2.5 m-wide bay requires evaluating turning-radius-constrained arcs over a grid, because no smooth polynomial in $d$ can represent the three-point-turn sequence needed to fit the car in bounds.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Autonomous Valet Parking</h4>
+<p>Baidu's Apollo stack runs Hybrid A* as its <code>open_space_planner</code> for exactly the case Frenet sampling cannot handle: parking lots and narrow unprotected turns where no lane centerline exists. Apollo expands turning-radius-constrained motion primitives with a Reeds-Shepp heuristic, then smooths the result with a quadratic-programming pass, the same algorithm-then-optimize pattern shipped in production valet parking. The lane-relative Frenet planner takes back over the instant the vehicle re-enters a structured road with a reference path.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>s is how far down the road, d is how far off the line. Plan speed in s, plan position in d, and the curves take care of themselves.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Language-conditioned local planning (2024-2026).</strong> Recent work treats the planner's cost weights not as fixed scalars but as outputs of a <a data-agent="13" href="ch_0252_part-7-language-vision-and-action-module-33-llms-as-planners-and-control.xhtml">large language model (LLM)</a> that reads a natural-language instruction ("merge right before the exit, stay comfortable"). Waymo's 2024 EMMA system and Nvidia's 2025 DriveLM-Agent both ground LLM outputs to hard kinematic constraints via a differentiable Frenet filter, enabling instruction-following lane changes without violating curvature or jerk bounds. The open question for a PhD student: how do you certify that the LLM never produces a weight vector that makes the kinematic filter vacuous (i.e., where every candidate trajectory passes because the cost surface is flat)?</p>
+<p><strong>Diffusion-based trajectory generation (2024-2025).</strong> Rather than sampling a fixed polynomial fan, several 2024 papers (Zhong et al., "Guided Conditional Diffusion for Controllable Traffic Simulation," ICLR 2024; MotionDiffuser from Waymo Research, 2024) use a <a data-agent="13" href="ch_0313_part-8-world-models-and-model-based-embodied-ai-module-41-diffusion-and-.xhtml">denoising diffusion</a> process in Frenet space to produce a continuous distribution over trajectories, then draw the highest-likelihood sample that clears the occupancy grid. This replaces the combinatorial fan-and-filter loop with a single forward pass, but the safety argument changes: instead of exhaustive enumeration, you rely on the probability mass assigned to infeasible regions being near zero.</p>
+<p><strong>Closed-loop online adaptation (2025-2026).</strong> The nuPlan benchmark and the Waymo Open Motion Dataset now include reactive agents, making it possible to measure how a planner degrades when other vehicles respond to its own trajectory rather than following pre-recorded logs. ETH Zurich's SLEDGE (2024) and Waymo's Waymax simulator (2023, extended 2025) enable training and evaluating planners in fully closed-loop settings. An open PhD-level problem: designing an online adaptation mechanism that can update the learned cost weights from a handful of closed-loop failures in a new geographic domain (e.g., a roundabout-dense European city) without catastrophic forgetting of highway behavior.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you say why a quintic, not a cubic, is the natural choice for a jerk-comfortable lane change, and when Hybrid A* is needed instead of Frenet sampling? If not, revisit the boundary-condition counting above.</p>
+</div>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Apollo, Autoware</td><td>Production Frenet, lattice, and Hybrid A* planners</td><td>Reuse their feasibility checks rather than re-deriving limits.</td></tr>
+<tr><td>CommonRoad</td><td>Reproducible planning scenarios and routes</td><td>Benchmark a planner on shared scenarios before deployment.</td></tr>
+<tr><td>PythonRobotics</td><td>Readable Frenet and Hybrid A* references</td><td>Use to learn the algorithm before adopting a heavy stack.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout pathway" data-agent="25"><div class="callout-title">Cross-References</div><p>Section 48.3 supplies the predicted occupancy this planner avoids, Section 48.7 tracks the planned trajectory with control, and Section 48.8 places local planning inside route-level and behavior-level decision making.</p></div>
+<div class="callout lab"><div class="callout-title">Mini Lab</div><p>Replace the cubic in the worked example with a quintic that also fixes lateral acceleration to zero at both ends. Plot $d(t)$, its velocity, and its acceleration, and confirm the quintic removes the acceleration discontinuity the cubic leaves at the endpoints.</p></div>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Werling et al., "Optimal Trajectory Generation for Dynamic Street Scenarios in a Frenet Frame," ICRA 2010. Dolgov et al., "Path Planning for Autonomous Vehicles in Unknown Semi-structured Environments" (Hybrid A*), IJRR 2010. Althoff et al., "CommonRoad: Composable Benchmarks for Motion Planning on Roads," IV 2017.</p><p class="bib-annotation">These define Frenet optimal trajectory planning, Hybrid A*, and a reproducible planning benchmark.</p></div></section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Local planning becomes tractable in the Frenet frame, where speed lives in $s$, lane position lives in $d$, and comfortable maneuvers are jerk-bounded polynomials. Reserve Hybrid A* for the unstructured cases where no reference path exists.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 48.4.1</div>
+<p>Build a small Frenet sampler: generate five candidate lateral offsets, realize each as a quintic over 3 s, reject any whose peak lateral acceleration exceeds 2 m/s^2, and score the rest by deviation from lane center. Report which candidate wins and why.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Frenet sampler in PythonRobotics (beginner, weekend):</strong> Clone the PythonRobotics repository and run <code>frenet_optimal_trajectory.py</code>, then add a second lane (shift the reference path by 3.5 m) and implement a lane-change trigger that fires when a static obstacle appears within 20 m ahead. The key challenge is correctly updating the Frenet start state at each replanning step so the sampled trajectories are continuous in velocity. <strong>Hybrid A* parking in Gymnasium (intermediate, 1-2 weeks):</strong> Build a custom Gymnasium environment that places a car in a simulated parking lot with 2.5 m-wide bays using PyBullet for physics (PyBullet is straightforward for this use case; note that as of 2024 it is in maintenance mode, so MuJoCo or Isaac Lab are better choices for new projects requiring active support), then implement Hybrid A* with a Reeds-Shepp heuristic to plan and execute a pull-in maneuver from a fixed start pose. The key challenge is closing the loop between the planner output and a low-level PD controller that tracks the planned arc without accumulating heading error over the three-point turn sequence. <strong>Learned trajectory scorer on nuPlan mini (intermediate, 2 weeks):</strong> Use the nuPlan devkit to load 10 hours of logged data, extract Frenet candidate trajectories from each logged frame, label them by whether the ego vehicle chose them, and train a small multilayer perceptron (MLP) in PyTorch to replace the hand-tuned cost weights $\alpha, \beta, \gamma$ from the algorithm above. The key challenge is defining a balanced training set: most logged frames are straight-road cruising, so without stratified sampling the model ignores lane-change frames entirely.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0367_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Section 48.3: Detection, lane and behavior prediction</a>
+<a class="up" href="ch_0364_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Chapter 48: Autonomous Driving as Embodied AI</a>
+<a class="next" href="ch_0369_part-9-manipulation-locomotion-and-embodied-skills-module-48-autonomous-.xhtml">Section 48.5: End-to-end and world-model driving</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

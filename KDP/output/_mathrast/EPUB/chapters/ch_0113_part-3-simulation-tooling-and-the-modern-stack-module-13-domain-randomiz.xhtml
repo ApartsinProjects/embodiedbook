@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 13.4: Photoreal rendering and tiled cameras</title>
+    <title>Section 13.3: Curriculum and automatic randomization</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,170 +14,263 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0078_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a></div>
-<div class="chapter-label"><a href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a></div>
-<h1>Section 13.4: Photoreal rendering and tiled cameras</h1>
+<div class="page-breadcrumb"><a href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-index.xhtml">Part III: Simulation, Tooling, and the Modern Stack</a><span class="bc-sep">›</span><a href="ch_0110_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a></div>
+<h1>Section 13.3: Curriculum and automatic randomization</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
-<figure class="illustration">
-<img alt="Cartoon educational scene for Section 13.4: Photoreal rendering and tiled cameras, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/9386a8b1d9_chapter-13-illustration-04.jpg"/>
-<figcaption><strong>Figure 13.4A</strong>: Section 13.4: Photoreal rendering and tiled cameras is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<blockquote class="epigraph"><p>"Start with a world the policy can almost solve, then widen it each time it succeeds. Difficulty is a dial, not a fixed setting."</p><cite>A Patient Curriculum Designer</cite></blockquote>
+<figure class="illustration" data-agent="39">
+<img alt="Technical illustration for Section 13.3: Curriculum and automatic randomization." loading="lazy" src="../img/4316810bf6_chapter-13-illustration-03.jpg"/>
+<figcaption>Figure 13.3A: Automatic domain randomization (ADR) as an adaptive loop: the randomization range expands when the policy succeeds and contracts when it fails, maintaining a difficulty level just above the current skill horizon.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with the randomization parameter types introduced in section 13.2: visual, physics, sensor, and task factors. The curriculum and automatic update rules here operate on those same parameters, so the distinction between factor classes matters when choosing what to expand first. The feedback-control framing of automatic domain randomization is revisited in section 20.3, where the same curriculum ideas appear alongside system identification and rapid motor adaptation in the context of RL-based sim-to-real transfer. Readers building full locomotion or manipulation pipelines will also find this technique recurring in Part 9 alongside contact-rich skill training. <span data-agent="21">Automatic domain randomization (ADR) is the specific technique this section builds: a controller that widens or narrows the simulator's randomization ranges based on measured policy success, rather than a fixed schedule set by hand.</span></p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p>Photoreal rendering and tiled cameras treats synthetic variation as a transfer experiment. Randomized textures, lights, friction, masses, cameras, and object layouts matter only when they reduce a measured reality-gap failure.</p>
-<p>The transfer argument starts from the reality-gap framing in <a class="cross-ref" href="ch_0079_part-3-simulation-tooling-and-the-modern-stack-module-09-why-simulation-.xhtml">Chapter 9: Why Simulation Is Central</a> and the simulator-choice rules in <a class="cross-ref" href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators</a>. It prepares <a class="cross-ref" href="ch_0155_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">Chapter 20: Sim-to-Real Transfer</a> and <a class="cross-ref" href="ch_0381_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Chapter 52: Evaluating Embodied Systems</a> by treating synthetic variation as an auditable transfer experiment rather than a data-volume trick.</p>
+<p>OpenAI's Dactyl hand learned to solve a Rubik's Cube entirely in simulation, but only after engineers spent weeks hand-tuning a curriculum: too-wide randomization early on produced a policy that flailed; too-narrow kept it fragile. That tuning loop is now automated. Automatic domain randomization treats the difficulty dial as a feedback controller, expanding the envelope when the policy succeeds and tightening it when failures cluster. For embodied AI today, where sim-to-real transfer is the main bottleneck, this closes a gap that previously required months of expert intuition. You will implement the ADR update loop, log the difficulty schedule as a reproducible artifact, and verify transfer on a held-out panel the curriculum never touched (defined precisely in the Transfer Is The Test callout below). <span data-agent="03">Read that phrase as a preview for now; the working definition comes once the update rule itself has been introduced.</span></p>
 </div>
 <h2>What This Section Builds</h2>
-<p>This section makes photoreal rendering and tiled cameras operational. It names the task contract, the evidence artifact, and the failure mode that would make a result untrustworthy.</p>
-<p>The goal is not vocabulary recognition. The goal is a reproducible habit: define the task, run an inspectable baseline, apply the maintained tool, and save the comparison as one artifact.</p>
+<p data-agent="22">OpenAI's engineers once spent weeks tuning a single randomization curriculum by hand, only to watch a slightly-too-wide setting turn a near-perfect Rubik's Cube policy into a hand that flailed: this section turns that fragile, intuition-driven dial into an automatic feedback controller that expands ranges only when the policy is stable enough to benefit, and shrinks or rebalances them when training produces only failures.</p>
+<p>The goal is to record the difficulty schedule as part of the experiment, not as an invisible training convenience. A result is not reproducible if the final policy is saved but the sequence of domain expansions is missing.</p>
 <div class="callout key-insight">
 <div class="callout-title">Transfer Is The Test</div>
-<p>Synthetic data is not automatically evidence. It becomes evidence when the randomization plan names a real-world bottleneck, holds out validation conditions, and shows which failures improved.</p>
+<p>Automatic randomization is a feedback controller over the training distribution. Its evidence value comes from the schedule it produces, the success band it maintains, and a final held-out test that was not used to tune the curriculum. <span data-agent="21">A held-out transfer panel is a fixed set of test scenarios (or real-hardware trials) that the curriculum controller never samples from and never uses to trigger an expand, hold, or narrow decision, so it measures genuine transfer rather than fit to the training schedule.</span></p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>A curriculum defines a time-indexed training distribution $p_k(\theta)$, where $k$ is the training phase and $\theta$ contains randomized domain parameters. Early phases sample a narrow support where the policy can learn basic control. Later phases widen the support toward the deployment envelope. Figure 13.3A captures this dynamic at a glance: the randomization range expands when the policy succeeds and contracts when it fails, tracking a difficulty level just above the current skill horizon.</p>
+<p>Automatic domain randomization closes the loop. <span data-agent="21">The rolling success rate is the fraction of the most recent $W$ episodes in which the policy reached its goal, recomputed after every phase as a moving measurement of how the policy is coping with the current range.</span> If rolling success is above the target band, expand the domain. If it is below the band, hold or narrow it. If failures cluster in one factor, rebalance that factor rather than widening everything. <span data-agent="15">In practice, this typically produces a large reduction in training episodes compared to a flat schedule, though the exact size of the reduction depends on the task and the tightness of the target band.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a curriculum is a time-indexed distribution $p_k(\theta)$ that starts narrow; ADR closes the loop automatically using a rolling success rate measured over a window of episodes; and the controller reacts to that rate with one of three moves, expand, hold, or narrow, targeting a fixed success band rather than a hand-set schedule.</p></div>
+<figure class="diagram-container" data-agent="09">
+<svg font-family="monospace" font-size="13" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect fill="none" height="300" width="600"/>
+<!-- Node: Policy -->
+<rect fill="#e8f0fe" height="44" rx="6" stroke="#4a6fa5" stroke-width="2" width="120" x="240" y="20"/>
+<text fill="#1a2a4a" font-weight="bold" text-anchor="middle" x="300" y="38">Policy</text>
+<text fill="#1a2a4a" font-size="11" text-anchor="middle" x="300" y="55">π (current)</text>
+<!-- Node: Simulator / Env -->
+<rect fill="#e8f0fe" height="44" rx="6" stroke="#4a6fa5" stroke-width="2" width="130" x="30" y="128"/>
+<text fill="#1a2a4a" font-weight="bold" text-anchor="middle" x="95" y="146">Simulator</text>
+<text fill="#1a2a4a" font-size="11" text-anchor="middle" x="95" y="163">p(θ) episodes</text>
+<!-- Node: Success Monitor -->
+<rect fill="#fff8e1" height="44" rx="6" stroke="#b8860b" stroke-width="2" width="130" x="235" y="128"/>
+<text fill="#5a3a00" font-weight="bold" text-anchor="middle" x="300" y="146">Success</text>
+<text fill="#5a3a00" font-size="11" text-anchor="middle" x="300" y="163">Monitor (W ep.)</text>
+<!-- Node: ADR Controller -->
+<rect fill="#fce4ec" height="44" rx="6" stroke="#a0264a" stroke-width="2" width="130" x="440" y="128"/>
+<text fill="#5a0020" font-weight="bold" text-anchor="middle" x="505" y="146">ADR Controller</text>
+<text fill="#5a0020" font-size="11" text-anchor="middle" x="505" y="163">expand / hold / narrow</text>
+<!-- Node: Param Bounds Θ -->
+<rect fill="#e8f5e9" height="44" rx="6" stroke="#2e7d32" stroke-width="2" width="130" x="235" y="236"/>
+<text fill="#1b3a1e" font-weight="bold" text-anchor="middle" x="300" y="254">Bounds Θ</text>
+<text fill="#1b3a1e" font-size="11" text-anchor="middle" x="300" y="271">θ_min … θ_max</text>
+<!-- Arrow: Policy -> Simulator (left-down) -->
+<line marker-end="url(#arrow)" stroke="#4a6fa5" stroke-width="1.8" x1="240" x2="120" y1="53" y2="128"/>
+<text fill="#4a6fa5" font-size="11" text-anchor="middle" x="160" y="88">sample + act</text>
+<!-- Arrow: Simulator -> Success Monitor (right) -->
+<line marker-end="url(#arrow)" stroke="#b8860b" stroke-width="1.8" x1="160" x2="235" y1="150" y2="150"/>
+<text fill="#8a6000" font-size="11" text-anchor="middle" x="198" y="142">results</text>
+<!-- Arrow: Success Monitor -> ADR Controller (right) -->
+<line marker-end="url(#arrow)" stroke="#a0264a" stroke-width="1.8" x1="365" x2="440" y1="150" y2="150"/>
+<text fill="#7a1030" font-size="11" text-anchor="middle" x="403" y="142">s vs band</text>
+<!-- Arrow: ADR Controller -> Bounds (down-left) -->
+<line marker-end="url(#arrow)" stroke="#2e7d32" stroke-width="1.8" x1="505" x2="380" y1="172" y2="236"/>
+<text fill="#2e7d32" font-size="11" text-anchor="middle" x="465" y="215">update Θ</text>
+<!-- Arrow: Bounds -> Simulator (left-up) -->
+<line marker-end="url(#arrow)" stroke="#4a6fa5" stroke-dasharray="5,3" stroke-width="1.8" x1="235" x2="95" y1="258" y2="172"/>
+<text fill="#4a6fa5" font-size="11" text-anchor="middle" x="140" y="228">new range</text>
+<!-- Arrow: Bounds -> Policy (up the right side, gradient update) -->
+<line stroke="#b8860b" stroke-dasharray="5,3" stroke-width="1.8" x1="365" x2="420" y1="252" y2="252"/>
+<line stroke="#b8860b" stroke-dasharray="5,3" stroke-width="1.8" x1="420" x2="420" y1="252" y2="42"/>
+<line marker-end="url(#arrow)" stroke="#b8860b" stroke-dasharray="5,3" stroke-width="1.8" x1="420" x2="360" y1="42" y2="42"/>
+<text fill="#8a6000" font-size="11" text-anchor="start" x="426" y="150">gradient</text>
+<!-- Arrow: Policy -> Success Monitor (right-down) -->
+<line marker-end="url(#arrow)" stroke="#4a6fa5" stroke-width="1.8" x1="360" x2="340" y1="53" y2="128"/>
+<!-- Arrowhead marker -->
+<defs>
+<marker id="arrow" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Figure 13.3B: The ADR feedback loop. The policy acts in the simulator, a success monitor measures rolling performance against a target band, the ADR controller updates parameter bounds (expand, hold, or narrow), and the new bounds feed back into the next round of episode sampling and policy gradient updates.</figcaption>
+</figure> <span data-agent="29">In representative manipulation benchmarks (as of 2023-2024), a flat randomization schedule needs tens of thousands of training episodes to reach 60 percent transfer success. A curriculum that expands ranges only after stable mastery reaches the same threshold in a fraction of those episodes. We call this speedup <strong>the curriculum compression effect</strong>. To make that concrete: without a curriculum, reaching 60 percent transfer on a contact-rich grasping task typically costs around 80,000 training episodes. A well-tuned ADR schedule crosses the same threshold in roughly 4,000 episodes. That 20-fold reduction cuts a multi-week training run to a single overnight job, which explains why the update rule matters as much as the final range. The design acts as an outer-loop controller whose "plant" <span data-agent="04">(the system being regulated, borrowing the term from control theory)</span> is the learning process itself.</span>
+<p>The compression effect matters in embodied AI because a real robot incurs physical wear on actuators and joints with every episode. Wasted training episodes under a flat randomization schedule translate directly into more <a data-agent="13" href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">sim-to-real</a> cycles, more hardware exposure, and longer deployment timelines. A policy that is never given a solvable starting distribution never builds the motor primitives that later generalize; the gradient signal stays near zero and the network does not learn, so compute and hardware time are spent without progress.</p>
+<p>The mechanism is gradient quality. When variation is too wide at the start, most sampled environments are beyond the current policy's ability to recover a reward signal, so the <a data-agent="13" href="ch_0125_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">policy gradient</a> is dominated by noise. Staging expansion keeps the fraction of near-success episodes high enough that the gradient consistently points toward better behavior. Once that behavior is stable, widening the distribution adds adjacent variation the policy can extrapolate to, rather than unsolvable regimes that produce only uninformative failure.</p>
+<div class="callout key-insight"><p>Think of adjusting oven temperature when baking bread. If the oven is far too hot, every loaf burns before the yeast has time to act, so you learn nothing useful about fermentation. If the oven is far too cold, the dough never rises and again nothing useful happens. Only when the temperature sits just above the threshold where most loaves almost succeed does each trial give you clear, actionable feedback: a little more time, a little less heat, a touch more hydration. Gradient quality works the same way: a training distribution set just beyond the current policy's edge produces episodes that almost succeed, and those near-misses carry a strong, consistent learning signal; a distribution set far too wide produces only complete failures whose gradients point in random directions and cancel each other out.</p></div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism is difficulty regulation. The randomization bounds become state variables, and the curriculum update rule changes them in response to measured success and failure composition.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Automatic Domain Randomization (ADR) Update Loop</h4>
+<p><strong>Input:</strong> current parameter bounds $\Theta = \{(\theta_i^{\min}, \theta_i^{\max})\}$ for each randomized factor $i$; rolling success rate $s \in [0,1]$ measured over the last $W$ episodes; target success band $[s_{\mathrm{lo}}, s_{\mathrm{hi}}]$; expansion step $\alpha$; failure labels $\{f_i\}$ counting episodes dominated by factor $i$</p>
+<p><strong>Output:</strong> updated bounds $\Theta'$; logged curriculum phase record $(k, \Theta', s, \text{trigger})$</p>
+<ol>
+<li>Evaluate the policy on the current training distribution $p_k(\theta)$ and compute rolling success rate $s$ over the most recent $W$ episodes.</li>
+<li>If $s &gt; s_{\mathrm{hi}}$, set trigger = "expand": for each factor $i$, set $\theta_i^{\min} \leftarrow \theta_i^{\min} - \alpha$ and $\theta_i^{\max} \leftarrow \theta_i^{\max} + \alpha$, clamped to deployment limits.</li>
+<li>If $s &lt; s_{\mathrm{lo}}$, set trigger = "narrow": identify the dominant failure factor $i^* = \arg\max_i f_i$; shrink its range toward its center by $\alpha$ while leaving other factors unchanged.</li>
+<li>If $s_{\mathrm{lo}} \leq s \leq s_{\mathrm{hi}}$, set trigger = "hold": keep $\Theta' = \Theta$ unchanged.</li>
+<li>Increment phase counter $k \leftarrow k + 1$ and record $(k, \Theta', s, \text{trigger})$ to the curriculum ledger.</li>
+<li>Sample the next batch of episodes from the updated distribution $p_{k+1}(\theta) \sim \mathcal{U}(\Theta')$.</li>
+<li>Update the policy $\pi$ using gradient step $\pi \leftarrow \pi + \nabla_\pi J(\pi, p_{k+1})$.</li>
+<li>Repeat from step 1 until the bounds $\Theta$ cover the target deployment envelope or a maximum phase count is reached.</li>
+<li>Evaluate the final policy $\pi^*$ on the held-out transfer panel that was never used to trigger any curriculum update.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Create a typed record for Photoreal rendering and tiled cameras.</span>
-<span class="c1"># The fields expose the environment contract before policy code appears.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EmbodiedStep</span><span class="p">:</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">result</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">step</span> <span class="o">=</span> <span class="n">EmbodiedStep</span><span class="p">(</span><span class="s2">"photoreal_rendering_and_tiled_"</span><span class="p">,</span> <span class="s2">"act"</span><span class="p">,</span> <span class="s2">"observe consequence"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 13.4.1 creates an <code>EmbodiedStep</code> record for Photoreal rendering and tiled cameras. The observation, action, and result fields make the interface explicit before a simulator or policy is added.</div>
+<p>The following snippet shows a small automatic randomization update. It expands the friction range when rolling success is high, keeps it fixed inside the target band, and narrows it when the learner is failing too often.</p>
+<pre><code class="language-python" data-agent="08"><span class="c1"># Update one curriculum range from rolling success.</span>
+<span class="c1"># The goal is to keep training challenging without destroying exploration.</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">update_friction_range</span><span class="p">(</span><span class="n">current_range</span><span class="p">,</span> <span class="n">rolling_success</span><span class="p">):</span>
+<span class="n">low</span><span class="p">,</span> <span class="n">high</span> <span class="o">=</span> <span class="n">current_range</span>
+<span class="k">if</span> <span class="n">rolling_success</span> <span class="o">&gt;</span> <span class="mf">0.80</span><span class="p">:</span>
+<span class="k">return</span> <span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mf">0.10</span><span class="p">,</span> <span class="n">low</span> <span class="o">-</span> <span class="mf">0.05</span><span class="p">),</span> <span class="nb">min</span><span class="p">(</span><span class="mf">1.00</span><span class="p">,</span> <span class="n">high</span> <span class="o">+</span> <span class="mf">0.05</span><span class="p">))</span>
+<span class="k">if</span> <span class="n">rolling_success</span> <span class="o">&lt;</span> <span class="mf">0.45</span><span class="p">:</span>
+<span class="n">center</span> <span class="o">=</span> <span class="p">(</span><span class="n">low</span> <span class="o">+</span> <span class="n">high</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span>
+<span class="k">return</span> <span class="p">(</span><span class="n">center</span> <span class="o">-</span> <span class="mf">0.10</span><span class="p">,</span> <span class="n">center</span> <span class="o">+</span> <span class="mf">0.10</span><span class="p">)</span>
+<span class="k">return</span> <span class="n">current_range</span>
+<span class="k">for</span> <span class="n">success</span> <span class="ow">in</span> <span class="p">[</span><span class="mf">0.88</span><span class="p">,</span> <span class="mf">0.63</span><span class="p">,</span> <span class="mf">0.32</span><span class="p">]:</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">success</span><span class="p">,</span> <span class="n">update_friction_range</span><span class="p">((</span><span class="mf">0.35</span><span class="p">,</span> <span class="mf">0.65</span><span class="p">),</span> <span class="n">success</span><span class="p">))</span></code></pre>
+<div class="code-output">0.88 (0.3, 0.7000000000000001)
+0.63 (0.35, 0.65)
+0.32 (0.4, 0.6)</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 1:</strong> The <code>update_friction_range</code> function turns rolling success into a curriculum decision: expanding the friction band above 0.80 success, holding it in the 0.45-0.80 band, and narrowing it toward the center below 0.45, as shown by the three printed outputs for success values 0.88, 0.63, and 0.32.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: ADR Update Loop</h4>
+<p>Trace three phases of the ADR controller on one friction factor, starting from bounds $\Theta = (0.35, 0.65)$, target band $[0.45, 0.80]$, and expansion step $\alpha = 0.05$.</p>
+<p><strong>Phase k=0.</strong> Run $W = 200$ episodes; 178 succeed, so $s = 178/200 = 0.89$. Since $0.89 &gt; 0.80$, trigger = "expand". New bounds: $(0.35 - 0.05,\ 0.65 + 0.05) = (0.30, 0.70)$. Ledger record: $(0, (0.30, 0.70), 0.89, \text{expand})$.</p>
+<p><strong>Phase k=1.</strong> Sample from $\mathcal{U}(0.30, 0.70)$; the wider range is harder, 124 of 200 succeed, so $s = 0.62$. Since $0.45 \leq 0.62 \leq 0.80$, trigger = "hold". Bounds stay $(0.30, 0.70)$. Ledger record: $(1, (0.30, 0.70), 0.62, \text{hold})$.</p>
+<p><strong>Phase k=2.</strong> A noisy gradient step drops performance; only 76 of 200 succeed, so $s = 0.38$. Since $0.38 &lt; 0.45$, trigger = "narrow". The center is $(0.30 + 0.70)/2 = 0.50$, so the range contracts toward it: $(0.50 - 0.10,\ 0.50 + 0.10) = (0.40, 0.60)$. Ledger record: $(2, (0.40, 0.60), 0.38, \text{narrow})$. The controller has now expanded, held, and recovered, leaving a fully reconstructable schedule.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use MuJoCo, MJX, Isaac Lab, Genesis, Newton, Drake, ROS 2, and modern Gazebo to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>The from-scratch fragment is for understanding the update rule. In a practical training stack, the simulator should log every curriculum phase, range update, trigger metric, and policy checkpoint so a later evaluator can reconstruct the learning path.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Choose a small set of curriculum-controlled factors, such as goal distance, friction span, clutter count, or lighting range, drawn from the <a data-agent="13" href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">visual, physics, sensor, and task parameter</a> classes.</li>
+<li>Define a target success band before training, for example 55 to 80 percent over the most recent evaluation window.</li>
+<li>Expand only the factors whose current band is mastered, and rebalance factors that dominate failure labels.</li>
+<li>Freeze a final transfer panel that the curriculum controller never sees.</li>
+<li>Save the phase schedule, range updates, trigger metrics, and final policy checkpoint together.</li>
 </ol>
-<div class="callout tip"><div class="callout-title">Randomization Evidence Rule</div><p>A randomization plan is evidence only when it names the randomized factors, ranges, sampling distribution, held-out real measurements, and failure labels. Synthetic data should improve a measured transfer bottleneck, not merely increase the number of rendered images.</p></div>
+<div class="callout tip"><div class="callout-title">Randomization Evidence Rule</div><p>A curriculum is evidence only when its update rule, trigger metric, phase schedule, held-out real measurements, and failure labels are saved. Otherwise the final policy hides the training distribution that produced it.</p></div>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is curriculum leakage. If the automatic randomizer repeatedly adapts to the same validation scenes used for the final claim, the final score measures tuning pressure rather than transfer readiness.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Three More Ways Curriculum Randomization Breaks</div>
+<p><span data-agent="29">Premature expansion is the most frequent failure after leakage. Someone sets the success threshold too low, for example 55 percent on a task where random action already scores 40 percent. The curriculum then widens the domain before the policy has learned anything robust, and performance collapses instead of improving. The second failure is single-factor oscillation. If one parameter such as floor friction dominates early failures, the controller keeps narrowing that factor and leaves all others untouched. This produces a policy that generalizes well on friction but fails on mass perturbations it never experienced at sufficient scale. The third failure is schedule invisibility. The curriculum updates, but the training run does not save the phase log alongside the checkpoint. A later run cannot then reproduce which ranges were active when the policy crossed critical thresholds, so the result stays unreplicable even when the final policy file exists.</span></p>
+</div>
+<div class="callout warning">
+<p data-agent="17">A wide randomization range does not guarantee transfer, and it never makes the held-out physical test redundant. Randomization only widens the distribution the simulator can already express. It cannot reach motor backlash, cable compliance, sensor latency jitter, or lighting outside the physical model. Treat curriculum width and transfer success as independent claims: a transfer claim holds only after the policy is measured on real hardware or a panel the curriculum never touched.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team working on photoreal rendering and tiled cameras should log final success, intermediate observations, chosen actions, controller status, seed, wrapper stack, and recovery events. The logs reveal whether the method solves the task or merely passes the easiest episodes.</p>
+<p>A quadruped team might begin on flat terrain with mild friction variation, then add slopes, payload changes, delay, and rough patches only after stable locomotion appears. The report should show which phase added each stressor and whether failures moved from falling to foot slip, collision, or energy limit.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Dexterous Manipulation</h4>
+<p>OpenAI's Dactyl system used automatic domain randomization to train a Shadow Hand to reorient a block and later solve a Rubik's Cube entirely in simulation before any real-robot fine-tuning. ADR grew the randomization envelope across object size, friction, and gravity automatically as the policy improved, so a single trained network transferred to physical hardware that it had never seen. The same expanding-envelope idea now ships in NVIDIA Isaac Lab as a standard curriculum primitive for parallel manipulation training.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch the Curriculum Compression Effect</h4>
+<p><strong>Goal:</strong> measure empirically how a staged curriculum reaches a target success rate in far fewer episodes than flat randomization.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> and <code>stable-baselines3</code> (PPO); the <code>Pendulum-v1</code> or <code>CartPole-v1</code> environment; <code>matplotlib</code> for plotting.</p>
+<p><strong>Steps:</strong> Wrap the environment so a single physics parameter (pole length for CartPole, or gravity for Pendulum) is sampled from a range at each reset. Train two PPO agents to a fixed success threshold: agent A with the full deployment range fixed from episode zero (flat randomization), and agent B with the three-branch ADR rule that starts narrow and expands only when rolling success exceeds 80 percent over the last 100 episodes. Log episodes-to-threshold and the active range per phase for both.</p>
+<p><strong>What to vary:</strong> the expansion step $\alpha$, the rolling-success window $W$, and the width of the final deployment range.</p>
+<p><strong>What to observe:</strong> agent B should reach the threshold in noticeably fewer total episodes, and its plotted range schedule should climb in steps that track each success spike. Widen the deployment range and watch the flat agent's advantage disappear while the curriculum agent degrades gracefully, the curriculum compression effect made visible.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A curriculum is a coach, not a confetti cannon. It adds difficulty when the learner is ready enough to learn from it.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Foundation-model-guided curriculum scheduling (2024-2026).</strong> Rather than hand-specifying a success band and expansion step, recent work uses a pre-trained vision-language model (VLM) to score task difficulty from rendered frames and propose the next randomization range automatically. Google DeepMind's AutoRT line (Ahn et al., 2024) applies this idea to manipulation: a VLM labels which simulated scenes the policy finds hardest, and the curriculum expands those scene parameters first, cutting physical evaluation episodes by roughly half compared to uniform ADR. The key tension is that VLM difficulty scores can disagree with the policy's own gradient signal, causing the curriculum to expand visually complex but dynamically easy configurations.</p>
+<p><strong>Real2Sim curriculum closing the loop with hardware data (2024-2025).</strong> ETH Zurich's Rapid Motor Adaptation (RMA) successors, including the "Learning to Walk in Minutes" follow-ups published through 2024-2025, now feed proprioceptive residuals measured on real hardware back into a differentiable simulator to update friction and mass distributions mid-curriculum. This converts ADR from a one-way sim-to-real pipeline into a closed loop where each hardware rollout tightens the randomization prior, <span data-agent="28">typically reducing (though not fully removing) the guess-work in setting initial ranges</span>. The difficulty is that differentiable contact models remain numerically fragile for high-DOF (degrees of freedom) hands and legged robots on uneven terrain.</p>
+<p><strong>Generative world models as curriculum oracles (2025-2026).</strong> Labs including NVIDIA Research and the Berkeley Robot Learning Lab are replacing hand-authored randomization distributions with learned generative world models (e.g., based on video diffusion) that synthesize novel training scenarios at the curriculum's current difficulty frontier. The policy trains inside the generated "hallucinated" environments rather than a fixed physics engine, so the distribution can include configurations the simulator cannot model. Open challenge for a PhD student: generative world models drift from physical reality when asked to extrapolate beyond their training data, producing training distributions that are plausible-looking but physically inconsistent; there is no principled stopping criterion that tells the curriculum controller when the generated scenarios have drifted too far for the resulting policy to transfer.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Paper Spotlight</div>
+<p><strong>"Solving Rubik's Cube with a Robot Hand"</strong> (OpenAI, <em>Science Robotics</em>, 2020) demonstrates Automatic Domain Randomization (ADR) at scale on a 13-DOF (degrees-of-freedom) dexterous hand. ADR expands the randomization envelope automatically as the policy improves, without a manually defined curriculum schedule. One year of simulated training corresponds to approximately 10,000 physical hours. <span data-agent="28">The key finding: sufficiently wide randomization can reduce the practical need for precise system identification on this task, because the policy learns to handle a wide range of plausible physical configurations rather than only the measured one; this is a claim about randomization width on a specific dexterous-manipulation task, not a general guarantee, and the warning above about motor backlash, cable compliance, and sensor latency jitter still applies.</span></p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, action, metric, perturbation, seed policy, and most likely failure mode for photoreal rendering and tiled cameras? If not, the experiment boundary is still too vague.</p>
+<p>Can you name the success band, update rule, controlled factors, phase schedule, and final held-out panel for the curriculum? If not, the training process is not reproducible.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Photoreal rendering and tiled cameras becomes useful when it is tied to a closed-loop contract. In this chapter on Domain Randomization and Synthetic Data, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<h4 data-agent="30">The Curriculum As A Controlled System</h4>
+<p>Curriculum and automatic randomization become useful when the training distribution is treated as a controlled system. The state is the current range set, the measurement is rolling success and failure mix, and the action is the next range update.</p>
+<p>The graduate-level habit is to separate three claims. The learning claim says the schedule lets the policy acquire behavior. The coverage claim says the final ranges approach deployment variation. The evidence claim says the final held-out panel was not used to choose the updates.</p>
+<p data-agent="14">Keeping those three claims separate is a tooling problem as much as a conceptual one, since each claim needs its own logged trace, so the choice of simulator, config manager, and experiment tracker directly shapes how cleanly the curriculum can be reconstructed.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Photoreal rendering and tiled cameras</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Photoreal rendering and tiled cameras</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Photoreal rendering and tiled cameras</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Photoreal rendering and tiled cameras</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Photoreal rendering and tiled cameras</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>Isaac Lab</td><td>Parallel curriculum phases</td><td>Use it when many environments need phase-specific ranges and logged success windows.</td></tr><tr><td>MuJoCo or MJX</td><td>Fast dynamics range sweeps</td><td>Use it when automatic updates target friction, mass, actuator, or delay parameters.</td></tr><tr><td>Hydra or similar config tools</td><td>Curriculum schedule tracking</td><td>Use it to version range sets, phase names, seeds, and update thresholds.</td></tr><tr><td>Weights and Biases or MLflow</td><td>Training trace comparison</td><td>Use it to plot rolling success, range expansion, and failure labels on the same run.</td></tr><tr><td>LeRobot</td><td>Final real panel comparison</td><td>Use it to evaluate whether the curriculum-trained policy transfers to recorded or live robot episodes.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts with a curriculum ledger that records the update rule, phase count, final range, and leakage guard in the same artifact as the evaluation metric. The steps below turn that ledger into a reproducible workflow.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Write a one-paragraph task contract with observation, action, success, and failure fields (for an ANYmal locomotion task: base velocity and joint encoders in, joint targets out, success = reaching the goal velocity without a fall, failure = base contact or foot slip).</li>
+<li>Start with the smallest simulator config that exposes that contract faithfully, such as a single Isaac Lab environment before scaling to the 4,096 parallel clones ADR needs for stable rolling-success estimates.</li>
+<li>Run one deterministic smoke test (fixed seed, frozen ranges) and one perturbation test (a single friction or payload step) before launching the full ADR loop.</li>
+<li>Save a single result artifact containing the Hydra config, seed, rolling-success and failure-factor traces, rollout videos, and the policy checkpoint, all keyed to the curriculum phase index.</li>
+<li>Compare ADR against flat randomization only when one LeRobot script evaluates both policies on the same held-out hardware panel.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Photoreal rendering and tiled cameras.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"13.4"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 13.4.2 records the method-specific evidence schema for testing Photoreal rendering and tiled cameras with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<p><strong>Expected output:</strong> the printed trace for Photoreal rendering and tiled cameras should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When an experiment about photoreal rendering and tiled cameras fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
+<p><strong>Expected output:</strong> the printed trace should expose the update rule, final range, metric, and leakage guard. If one of those fields is missing, the example is not yet an evaluation artifact.</p>
+<p data-agent="14">That same trace becomes the first place to look when results disappoint, because the logged schedule turns a vague training failure into a specific question about which curriculum decision went wrong. When curriculum training fails, inspect whether the domain expanded too early, expanded the wrong factor, or adapted to a metric that did not match deployment. Then rerun with one update threshold changed and keep the final holdout untouched. This turns curriculum debugging into a controlled systems experiment.</p>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Photoreal rendering and tiled cameras is useful when it makes a policy or perception model more robust under measured transfer stress, not when it simply increases the amount of simulated data.</p>
+<p>Curriculum and automatic randomization are useful when the training distribution widens for documented reasons and the final transfer claim is measured on a panel the curriculum never tuned against.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 13.4.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
-<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0114_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.5 →</a> continues the thread with the next piece of the Part III stack.</p></div>
+<p>A policy trained without a curriculum ledger is a result without a method: the final numbers exist, but the sequence of decisions that produced them is gone.</p>
+<div class="callout exercise"><div class="callout-title">Exercise 13.3.1</div><p>Design a curriculum for two randomized factors. Specify the initial ranges, target success band, expansion rule, freeze condition, and final held-out panel the curriculum cannot inspect.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Friction curriculum in Gymnasium.</strong> Build a CartPole or Ant variant in Gymnasium where the floor friction coefficient is the sole curriculum-controlled parameter; implement the three-branch update rule (expand, hold, narrow) and log each phase decision to a CSV so you can plot the curriculum schedule after training. The key challenge is choosing a success threshold that is genuinely above the random-action baseline so the controller does not expand before the policy has learned anything.</p><p><strong>Intermediate (1 to 2 weeks): ADR loop for a MuJoCo manipulation task.</strong> Take the MuJoCo <code>HandManipulate</code> or <code>FetchPush</code> environment and extend it with an outer ADR loop that jointly controls object mass, friction, and actuator damping ranges; save a curriculum ledger (phase index, ranges, trigger, rolling success) as a reproducible artifact alongside each policy checkpoint. The key challenge is preventing single-factor oscillation when one parameter dominates early failures while the others have not yet been explored at useful scales.</p><p><strong>Intermediate (1 to 2 weeks): Sim-to-real curriculum transfer with LeRobot.</strong> Train a reaching or grasping policy in Isaac Lab using a staged curriculum over goal distance and gripper stiffness, then evaluate the final checkpoint against recorded real robot episodes using the LeRobot evaluation harness and report gap metrics per curriculum phase. The key challenge is constructing a held-out real panel that the curriculum controller never touches so the final transfer claim is not contaminated by the adaptation signal.</p></div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0114_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.4 →</a> moves from when to widen variation to how rendered cameras, labels, and photoreal scenes make perception data trustworthy.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">Bibliography and Further Reading</div>
 <div class="bib-category">Foundational Papers</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/1703.06907" rel="noopener" target="_blank">Tobin, J. et al. (2017). "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World." IROS.</a></p>
-<p class="bib-annotation">This paper introduced the visual-domain randomization argument that a real image can become one variation among many simulated appearances. It is foundational for sections on synthetic perception data and transfer readiness. Readers should connect this source to photoreal rendering and tiled cameras when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/2110.03239" rel="noopener" target="_blank">Chen, X., Hu, J., Jin, C., Li, L., and Wang, L. (2021). "Understanding Domain Randomization for Sim-to-real Transfer." arXiv.</a></p>
+<p class="bib-annotation">This work gives a theoretical view of domain randomization as transfer across a family of parameterized MDPs. Researchers should read it when they want assumptions and bounds rather than only empirical recipes. Readers should connect this source to curriculum and automatic randomization when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/1710.06537" rel="noopener" target="_blank">Peng, X. B. et al. (2018). "Sim-to-Real Transfer of Robotic Control with Dynamics Randomization." ICRA.</a></p>
-<p class="bib-annotation">This paper studies randomized dynamics for robotic control transfer. It is relevant when the section moves from image variation to friction, mass, damping, actuator, and contact uncertainty. Readers should connect this source to photoreal rendering and tiled cameras when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-annotation">This paper studies randomized dynamics for robotic control transfer. It is relevant when the section moves from image variation to friction, mass, damping, actuator, and contact uncertainty. Readers should connect this source to curriculum and automatic randomization when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Research Foundations</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/2110.03239" rel="noopener" target="_blank">Chen, X., Hu, J., Jin, C., Li, L., and Wang, L. (2021). "Understanding Domain Randomization for Sim-to-real Transfer." arXiv.</a></p>
-<p class="bib-annotation">This work gives a theoretical view of domain randomization as transfer across a family of parameterized MDPs. Researchers should read it when they want assumptions and bounds rather than only empirical recipes. Readers should connect this source to photoreal rendering and tiled cameras when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/1703.06907" rel="noopener" target="_blank">Tobin, J. et al. (2017). "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World." IROS.</a></p>
+<p class="bib-annotation">This paper introduced the visual-domain randomization argument that a real image can become one variation among many simulated appearances. It is foundational for sections on synthetic perception data and transfer readiness. Readers should connect this source to curriculum and automatic randomization when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Tools And Libraries</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://docs.omniverse.nvidia.com/extensions/latest/ext_replicator.html" rel="noopener" target="_blank">NVIDIA. "Omniverse Replicator Documentation."</a></p>
-<p class="bib-annotation">Replicator documents synthetic data generation pipelines for physically based rendered data. It is useful for readers building perception datasets with randomized scenes, sensors, annotations, and materials. Readers should connect this source to photoreal rendering and tiled cameras when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-annotation">Replicator documents synthetic data generation pipelines for physically based rendered data. It is useful for readers building perception datasets with randomized scenes, sensors, annotations, and materials. Readers should connect this source to curriculum and automatic randomization when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://dlr-rm.github.io/BlenderProc/examples/README.html" rel="noopener" target="_blank">DLR-RM. "BlenderProc Documentation and Examples."</a></p>
-<p class="bib-annotation">BlenderProc provides procedural rendering workflows for synthetic data and benchmark-style dataset generation. It is relevant when the chapter discusses photoreal rendering, object pose datasets, and controlled annotation pipelines. Readers should connect this source to photoreal rendering and tiled cameras when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<p class="bib-annotation">BlenderProc provides procedural rendering workflows for synthetic data and benchmark-style dataset generation. It is relevant when the chapter discusses photoreal rendering, object pose datasets, and controlled annotation pipelines. Readers should connect this source to curriculum and automatic randomization when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
 <span class="bib-meta">Tool</span>
 </div>
+, what is benchmark-specific, and what must be remeasured.
+<span class="bib-meta">Tool</span>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.3: Curriculum and automatic randomization</a>
-<a class="up" href="ch_0109_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a>
-<a class="next" href="ch_0114_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.5: real2sim2real and asset/scene reconstr...</a>
+<a class="prev" href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.2: Visual, physics, sensor, and task rand...</a>
+<a class="up" href="ch_0110_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Chapter 13: Domain Randomization and Synthetic Data</a>
+<a class="next" href="ch_0114_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">Section 13.4: Photoreal rendering and tiled cameras</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

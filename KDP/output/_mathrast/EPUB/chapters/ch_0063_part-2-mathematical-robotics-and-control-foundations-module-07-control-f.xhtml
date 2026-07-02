@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 7.2: Feedback, error, stability, overshoot, oscillation</title>
+    <title>Section 7.1: Open-loop vs. closed-loop control</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,54 +14,160 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0036_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a></div>
-<div class="chapter-label"><a href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a></div>
-<h1>Section 7.2: Feedback, error, stability, overshoot, oscillation</h1>
+<div class="page-breadcrumb"><a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a><span class="bc-sep">›</span><a href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a></div>
+<h1>Section 7.1: Open-loop vs. closed-loop control</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"Open-loop trusts the plan. Closed-loop trusts the plan until the world says otherwise, then adjusts."</p><cite>Section 7.1</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 7.2: Feedback, error, stability, overshoot, oscillation, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/2090654447_chapter-07-illustration-02.jpg"/>
-<figcaption><strong>Figure 7.2A</strong>: Section 7.2: Feedback, error, stability, overshoot, oscillation is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 7.1: Open-loop vs. closed-loop control." loading="lazy" src="../img/80dbeb302a_chapter-07-illustration-01.jpg"/>
+<figcaption>Figure 7.1A: Open-loop vs. closed-loop control for a robot arm: the open-loop version drifts when gravity is mis-modeled; the closed-loop version corrects the joint-angle error on every tick.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>The ideas here are extended in section 7.2, which formalizes the error signal, stability margins, and overshoot that determine whether a closed-loop controller is safe to deploy, and in section 7.3, which derives the PID law introduced briefly in the worked example. The closed-loop form depends on timely, accurate state estimates; section 8.6 covers the perception and state-estimation pipeline that makes that feedback possible in practice. This section recurs in Part III alongside domain randomization (section 13.2), where open-loop policies must implicitly compensate for the disturbances that a sensor-based feedback loop would otherwise correct directly.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Feedback, error, stability, overshoot, oscillation</strong> is one lens on Control for AI Practitioners. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A robot arm commanded to pour exactly 200 ml of water will spill if its joint model is even slightly wrong, because nothing corrects the drift mid-motion. Add a force sensor and a feedback loop, and the arm adjusts on every millisecond tick, finishing the pour accurately even on an uneven surface. That gap, between blind execution and continuous correction, is the heart of this section. Modern embodied AI systems fail in deployment not because their neural networks are weak but because they rely on open-loop assumptions that collapse the moment physics disagrees. Here you will build the formal vocabulary, trace the feedback loop as a computation graph, and implement both control modes so you can predict exactly when each one breaks. Figure 7.1A shows this contrast on a robot arm: the open-loop version drifts when gravity is mis-modeled, while the closed-loop version corrects the joint-angle error on every tick.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Feedback, error, stability, overshoot, oscillation into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">Tape a robot's joint commands to a perfect plan, hit play, and walk away: it will reach the target only in a universe where friction, payload, and gravity match your model to the digit, which is to say never. The fix is to let the robot keep asking the world what just happened. <span data-agent="15">This section turns the technical contract for open-loop versus closed-loop control into a usable mental model. It defines the object of study, connects it to the <a data-agent="13" href="ch_0020_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">agent loop</a>, and tests it with a compact implementation.</span></p>
+<p>The key question in Open-loop vs. closed-loop control is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In Feedback, error, stability, overshoot, oscillation, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In Open-loop vs. closed-loop control, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>For Open-loop vs. closed-loop control, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<p><span data-agent="29">An open-loop controller commits to an action sequence before observing any consequences: $a_{0:T-1}=g(r_{0:T-1}, \hat s_0)$. It works only when the plant model, initial state, and disturbances are all predictable, <span data-agent="21">where the plant is the physical system being controlled (the robot and its environment), the thing that turns a commanded action into a measured outcome</span>. On a physical robot, small modeling errors in friction, joint compliance, or payload mass do not average out. They accumulate across every time step. A 1-degree joint-angle error at step 1 grows into a centimeter of end-effector displacement by step 50. To put that in context, an open-loop imitation policy on a real robot often needs on the order of tens of thousands of demonstration episodes to statistically average out disturbances that a simple closed-loop PID can reject within a few hundred control ticks, though the exact ratio depends heavily on the task and disturbance magnitude.</span> The open-loop plan has no mechanism to notice or correct that drift. Contact-rich tasks fail for exactly this reason: the world pushes back in ways the pre-committed sequence cannot accommodate. The planner solves for the entire command trajectory offline, typically by inverting a <a data-agent="13" href="ch_0059_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">dynamics model</a> or running trajectory optimization once. At execution time it replays each $a_k$ at the scheduled tick with no sensor read. The robot follows the tape regardless of what happened on the previous step.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: open-loop control commits to a full action sequence offline from an initial state estimate, accumulates any modeling error unchecked because nothing observes the outcome mid-run, and therefore fails predictably on contact-rich or disturbance-heavy tasks; the next paragraph introduces the closed-loop alternative that reads state on every tick to correct that drift.</p></div>
+<p>A closed-loop controller takes a different approach. It computes $a_t=\pi(\hat s_t,r_t)$ after each new state estimate, so <a href="ch_0076_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">perception and state estimation</a> can correct drift, slip, delay, and contact surprises. This is <strong>the difference between blind execution and continuous correction</strong>. It determines whether small modeling errors stay small or compound into large failures. A controller that never reads a sensor is not controlling the robot; it is narrating a plan the robot may have already abandoned. Figure 7.1B contrasts the two architectures side by side: the open-loop path runs left to right with no return arrow, while the closed-loop path adds a sensor that feeds the measured state back into the controller on every tick.</p>
+<figure class="diagram-container">
+<svg aria-label="Block diagrams comparing open-loop and closed-loop control architectures" role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Open-loop row label -->
+<text fill="#555" font-family="monospace" font-size="13" text-anchor="start" x="10" y="55">OPEN-LOOP</text>
+<!-- Open-loop blocks -->
+<rect fill="#e3f2fd" height="44" rx="6" stroke="#1565c0" stroke-width="1.5" width="110" x="10" y="65"/>
+<text fill="#1565c0" font-family="monospace" font-size="12" text-anchor="middle" x="65" y="84">Reference</text>
+<text fill="#1565c0" font-family="monospace" font-size="11" text-anchor="middle" x="65" y="100">r(t)</text>
+<rect fill="#fff3e0" height="44" rx="6" stroke="#e65100" stroke-width="1.5" width="110" x="170" y="65"/>
+<text fill="#e65100" font-family="monospace" font-size="12" text-anchor="middle" x="225" y="84">Controller</text>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="225" y="100">g(r, s0)</text>
+<rect fill="#e8f5e9" height="44" rx="6" stroke="#2e7d32" stroke-width="1.5" width="110" x="340" y="65"/>
+<text fill="#2e7d32" font-family="monospace" font-size="12" text-anchor="middle" x="395" y="84">Plant</text>
+<text fill="#2e7d32" font-family="monospace" font-size="11" text-anchor="middle" x="395" y="100">robot/env</text>
+<!-- Open-loop arrows (left to right, no feedback) -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="120" x2="168" y1="87" y2="87"/>
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="280" x2="338" y1="87" y2="87"/>
+<!-- Output line, no return -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="450" x2="540" y1="87" y2="87"/>
+<text fill="#555" font-family="monospace" font-size="11" text-anchor="start" x="545" y="91">y(t)</text>
+<!-- No sensor label -->
+<text fill="#999" font-family="monospace" font-size="10" text-anchor="middle" x="225" y="128">no sensor read</text>
+<!-- Divider -->
+<line stroke="#ccc" stroke-dasharray="4,3" stroke-width="1" x1="10" x2="590" y1="155" y2="155"/>
+<!-- Closed-loop row label -->
+<text fill="#555" font-family="monospace" font-size="13" text-anchor="start" x="10" y="185">CLOSED-LOOP</text>
+<!-- Closed-loop blocks -->
+<rect fill="#e3f2fd" height="44" rx="6" stroke="#1565c0" stroke-width="1.5" width="110" x="10" y="195"/>
+<text fill="#1565c0" font-family="monospace" font-size="12" text-anchor="middle" x="65" y="214">Reference</text>
+<text fill="#1565c0" font-family="monospace" font-size="11" text-anchor="middle" x="65" y="230">r(t)</text>
+<rect fill="#fff3e0" height="44" rx="6" stroke="#e65100" stroke-width="1.5" width="110" x="170" y="195"/>
+<text fill="#e65100" font-family="monospace" font-size="12" text-anchor="middle" x="225" y="214">Controller</text>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="225" y="230">pi(s_t, r)</text>
+<rect fill="#e8f5e9" height="44" rx="6" stroke="#2e7d32" stroke-width="1.5" width="110" x="340" y="195"/>
+<text fill="#2e7d32" font-family="monospace" font-size="12" text-anchor="middle" x="395" y="214">Plant</text>
+<text fill="#2e7d32" font-family="monospace" font-size="11" text-anchor="middle" x="395" y="230">robot/env</text>
+<rect fill="#f3e5f5" height="34" rx="6" stroke="#6a1b9a" stroke-width="1.5" width="110" x="430" y="258"/>
+<text fill="#6a1b9a" font-family="monospace" font-size="12" text-anchor="middle" x="485" y="276">Sensor</text>
+<!-- Closed-loop arrows -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="120" x2="168" y1="217" y2="217"/>
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="280" x2="338" y1="217" y2="217"/>
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.8" x1="450" x2="540" y1="217" y2="217"/>
+<text fill="#555" font-family="monospace" font-size="11" text-anchor="start" x="545" y="221">y(t)</text>
+<!-- Feedback path: output down, across, up to controller -->
+<line stroke="#6a1b9a" stroke-width="1.5" x1="450" x2="450" y1="217" y2="275"/>
+<line marker-end="url(#arrowpurple)" stroke="#6a1b9a" stroke-width="1.5" x1="430" x2="170" y1="275" y2="275"/>
+<line stroke="#6a1b9a" stroke-width="1.5" x1="170" x2="170" y1="275" y2="239"/>
+<text fill="#6a1b9a" font-family="monospace" font-size="10" text-anchor="middle" x="300" y="291">feedback: s_t read each tick</text>
+<!-- Arrow markers -->
+<defs>
+<marker id="arrow" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+</marker>
+<marker id="arrowpurple" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#6a1b9a"/>
+</marker>
+</defs>
+</svg>
+<figcaption>Figure 7.1B: Open-loop control (top) commits to an action sequence from the initial state with no sensor read. Closed-loop control (bottom) reads sensor state each tick and feeds the error back into the controller, correcting drift continuously.</figcaption>
+</figure>
+<div class="callout key-insight">
+<div class="callout-title">Open Loop Is A Promise, Closed Loop Is A Conversation</div>
+<p>Open-loop control is a promise that the world will behave as predicted. Closed-loop control treats every observation as a chance to renegotiate the next action. The engineering question is not which one sounds smarter, but whether sensing is timely and reliable enough to improve the next command.</p>
+</div>
+<div class="callout warning">
+<p>A common assumption is that closed-loop control is always superior to open-loop control because feedback "corrects mistakes." In embodied AI this is wrong: closed-loop control is only better when the sensor observations arrive faster than errors accumulate and when the state estimator is more trustworthy than the original plan. A wrist-camera feedback loop running at 10 Hz cannot correct a 1 kHz vibration; a noisy force sensor can drive a PID controller into oscillation that an open-loop trajectory would have avoided entirely. The correct mental model is that closed-loop control trades the assumption of a perfect plant model for the assumption of timely and accurate sensing; when sensing is slow, noisy, or intermittent, a well-designed open-loop plan can be more reliable.</p>
+</div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The mechanism in Open-loop vs. closed-loop control is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Feedback, error, stability, overshoot, oscillation: keep the section idea tied to observable</span>
-<span class="c1"># evidence.</span>
-<span class="c1"># Run this diagnostic probe before trusting the maintained library path.</span>
-<span class="n">instruction</span> <span class="o">=</span> <span class="p">(</span>
-<span class="s2">"run the Feedback, error, stability, overshoot, oscillation diagnostic and save the evidence"</span>
-<span class="s2">"trace"</span>
-<span class="p">)</span>
-<span class="n">skills</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"find_object"</span><span class="p">,</span> <span class="s2">"estimate_pose"</span><span class="p">,</span> <span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"move_to_tray"</span><span class="p">,</span> <span class="s2">"release"</span><span class="p">]</span>
-<span class="n">plan</span> <span class="o">=</span> <span class="p">[</span><span class="n">skill</span> <span class="k">for</span> <span class="n">skill</span> <span class="ow">in</span> <span class="n">skills</span><span class="p">]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">instruction</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 7.2.1 names instruction, skills, and plan so the reader can inspect where feedback control hands corrected action back to the task loop.</div>
+<p>The cleanest way to feel the difference between an open-loop plan and a closed-loop controller is to run both on the same plant with the same unmodeled disturbance. Code Fragment 7.1.1 simulates a 1D point mass (<span class="katex katex-rendered" data-mathdisplay="0" data-tex="m\,\ddot x = u"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>m</mi><mtext> </mtext><mover accent="true"><mi>x</mi><mo>¨</mo></mover><mo>=</mo><mi>u</mi></mrow><annotation encoding="application/x-tex">m\,\ddot x = u</annotation></semantics></math></span>) twice. The open-loop path commits to a precomputed force profile that would reach the target under a perfect model. The closed-loop path runs a <a href="ch_0065_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">discrete Proportional-Integral-Derivative (PID) law</a>, <span class="katex katex-rendered" data-mathdisplay="0" data-tex="u(t)=K_p e(t)+K_i\!\int e\,dt+K_d\,\dot e(t)"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>u</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi>K</mi><mi>p</mi></msub><mi>e</mi><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo><mo>+</mo><msub><mi>K</mi><mi>i</mi></msub><mtext> ⁣</mtext><mo>∫</mo><mi>e</mi><mtext> </mtext><mi>d</mi><mi>t</mi><mo>+</mo><msub><mi>K</mi><mi>d</mi></msub><mtext> </mtext><mover accent="true"><mi>e</mi><mo>˙</mo></mover><mo stretchy="false">(</mo><mi>t</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">u(t)=K_p e(t)+K_i\!\int e\,dt+K_d\,\dot e(t)</annotation></semantics></math></span><span data-agent="03">, where the proportional term $K_p e(t)$ pushes back in proportion to the current error, the integral term $K_i\!\int e\,dt$ accumulates past error to cancel a steady-state offset, and the derivative term $K_d\,\dot e(t)$ resists how fast the error is changing to damp overshoot; section 7.3 derives this law from first principles, this section only needs the three terms to read the code below</span>, with an anti-windup clamp (a guard that stops the integral term from continuing to accumulate while the actuator is saturated, i.e. already commanding its maximum force). A constant 2 N disturbance enters both runs.</p>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># 1D point mass  m*xdd = u (force).  Compare an open-loop plan with a PID loop.</span>
+<span class="n">m</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">T</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.02</span><span class="p">,</span> <span class="mf">4.0</span>
+<span class="n">n</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">T</span> <span class="o">/</span> <span class="n">dt</span><span class="p">)</span>
+<span class="n">kp</span><span class="p">,</span> <span class="n">ki</span><span class="p">,</span> <span class="n">kd</span> <span class="o">=</span> <span class="mf">12.0</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">,</span> <span class="mf">6.0</span>
+<span class="n">u_max</span> <span class="o">=</span> <span class="mf">8.0</span> <span class="c1"># actuator force limit (saturation)</span>
+<span class="n">x_ref</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="c1"># step setpoint, meters</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">u</span><span class="p">):</span>
+<span class="n">a</span> <span class="o">=</span> <span class="n">u</span> <span class="o">/</span> <span class="n">m</span>
+<span class="k">return</span> <span class="n">x</span> <span class="o">+</span> <span class="n">v</span> <span class="o">*</span> <span class="n">dt</span><span class="p">,</span> <span class="n">v</span> <span class="o">+</span> <span class="n">a</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">open_loop</span><span class="p">(</span><span class="n">dist</span><span class="p">):</span>
+<span class="c1"># Bang-bang plan that "should" reach x_ref if the model were exact.</span>
+<span class="n">u_plan</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n</span><span class="p">)</span> <span class="o">&lt;</span> <span class="n">n</span> <span class="o">//</span> <span class="mi">2</span><span class="p">,</span> <span class="n">u_max</span><span class="p">,</span> <span class="o">-</span><span class="n">u_max</span><span class="p">)</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">xs</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">v</span> <span class="o">=</span> <span class="n">step</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">u_plan</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">+</span> <span class="n">dist</span><span class="p">,</span> <span class="o">-</span><span class="n">u_max</span><span class="p">,</span> <span class="n">u_max</span><span class="p">))</span>
+<span class="n">xs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">xs</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">pid</span><span class="p">(</span><span class="n">dist</span><span class="p">):</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">ei</span><span class="p">,</span> <span class="n">e_prev</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="n">x_ref</span>
+<span class="n">xs</span><span class="p">,</span> <span class="n">errs</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span>
+<span class="n">e</span> <span class="o">=</span> <span class="n">x_ref</span> <span class="o">-</span> <span class="n">x</span>
+<span class="n">ei_trial</span> <span class="o">=</span> <span class="n">ei</span> <span class="o">+</span> <span class="n">e</span> <span class="o">*</span> <span class="n">dt</span>
+<span class="n">de</span> <span class="o">=</span> <span class="p">(</span><span class="n">e</span> <span class="o">-</span> <span class="n">e_prev</span><span class="p">)</span> <span class="o">/</span> <span class="n">dt</span>
+<span class="n">u_unsat</span> <span class="o">=</span> <span class="n">kp</span> <span class="o">*</span> <span class="n">e</span> <span class="o">+</span> <span class="n">ki</span> <span class="o">*</span> <span class="n">ei_trial</span> <span class="o">+</span> <span class="n">kd</span> <span class="o">*</span> <span class="n">de</span>
+<span class="n">u</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">u_unsat</span><span class="p">,</span> <span class="o">-</span><span class="n">u_max</span><span class="p">,</span> <span class="n">u_max</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">u</span> <span class="o">==</span> <span class="n">u_unsat</span><span class="p">:</span> <span class="c1"># anti-windup: integrate only when not clamping</span>
+<span class="n">ei</span> <span class="o">=</span> <span class="n">ei_trial</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">v</span> <span class="o">=</span> <span class="n">step</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">u</span> <span class="o">+</span> <span class="n">dist</span><span class="p">)</span>
+<span class="n">xs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">x</span><span class="p">);</span> <span class="n">errs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">e</span><span class="p">);</span> <span class="n">e_prev</span> <span class="o">=</span> <span class="n">e</span>
+<span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">xs</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">errs</span><span class="p">)</span>
+<span class="n">dist</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="c1"># unmodeled constant force disturbance (N)</span>
+<span class="n">xs_ol</span> <span class="o">=</span> <span class="n">open_loop</span><span class="p">(</span><span class="n">dist</span><span class="p">)</span>
+<span class="n">xs_cl</span><span class="p">,</span> <span class="n">errs</span> <span class="o">=</span> <span class="n">pid</span><span class="p">(</span><span class="n">dist</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"open-loop final pos   = </span><span class="si">{</span><span class="n">xs_ol</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="si">:</span><span class="s2">+.3f</span><span class="si">}</span><span class="s2"> m  (target </span><span class="si">{</span><span class="n">x_ref</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"closed-loop final pos = </span><span class="si">{</span><span class="n">xs_cl</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="si">:</span><span class="s2">+.3f</span><span class="si">}</span><span class="s2"> m  steady error = </span><span class="si">{</span><span class="n">errs</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="si">:</span><span class="s2">+.4f</span><span class="si">}</span><span class="s2"> m"</span><span class="p">)</span></code></pre>
+<div class="code-output">open-loop final pos   = +35.960 m  (target 1.0)
+closed-loop final pos = +1.102 m  steady error = -0.1026 m</div>
+<div class="code-caption"><strong>Code Fragment 7.1.1</strong>: the same 2 N disturbance pushes the open-loop plan tens of meters past the target, while the closed-loop PID law re-estimates the error every tick and holds the mass near 1 m. Plotting <code>errs</code> against <code>np.arange(n) * dt</code> shows the closed-loop error decaying toward a small residual that integral action keeps shrinking.</div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: closed-loop PID, first three ticks</h4><p>Trace the <code>pid</code> loop above with the actual numbers (m = 1, dt = 0.02, kp = 12, ki = 4, kd = 6, u_max = 8, x_ref = 1, dist = 2). State starts at x = 0, v = 0, ei = 0, e_prev = 1.</p>
+<p><strong>Tick 0:</strong> e = 1 - 0 = 1. ei_trial = 0 + 1(0.02) = 0.02. de = (1 - 1)/0.02 = 0. u_unsat = 12(1) + 4(0.02) + 6(0) = 12.08. Clamp to u_max: u = 8 (saturated, so anti-windup keeps ei = 0, NOT 0.02). a = (u + dist)/m = (8 + 2)/1 = 10. x = 0 + 0(0.02) = 0. v = 0 + 10(0.02) = 0.20. Record x = 0, e_prev = 1.</p>
+<p><strong>Tick 1:</strong> e = 1 - 0 = 1 (x is still 0 because position lags velocity by one step). ei_trial = 0 + 0.02 = 0.02. de = (1 - 1)/0.02 = 0. u_unsat = 12 + 0.08 + 0 = 12.08 -&gt; clamp u = 8 (still saturated, ei stays 0). a = 10. x = 0 + 0.20(0.02) = 0.004. v = 0.20 + 0.20 = 0.40. Record x = 0.004.</p>
+<p><strong>Tick 2:</strong> e = 1 - 0.004 = 0.996. ei_trial = 0 + 0.996(0.02) = 0.0199. de = (0.996 - 1)/0.02 = -0.20. u_unsat = 12(0.996) + 4(0.0199) + 6(-0.20) = 11.95 + 0.080 - 1.20 = 10.83 -&gt; clamp u = 8 (saturated again). x = 0.004 + 0.40(0.02) = 0.012. v = 0.40 + 0.20 = 0.60.</p>
+<p>The takeaway you can see by hand: while the actuator is saturated the integrator is frozen, so windup never builds; only once <code>u_unsat</code> falls below 8 N (later in the run, as the mass approaches the target and the error shrinks) does <code>ei</code> begin to accumulate and quietly cancel the constant 2 N disturbance, leaving the small steady-state residual the code prints.</p></div>
+<div class="callout tip">
+<p>When porting the PID loop above to ROS 2 control, set the controller's <code>update_rate</code> parameter in your YAML config to match the hardware interface's actual publish frequency exactly. If the two differ, the derivative term <code>de/dt</code> divides by the wrong <code>dt</code>, inflating or shrinking <code>kd</code>'s effective gain and causing unexpected oscillation or sluggishness that is invisible in pure-Python simulation. Run <code>ros2 topic hz /joint_states</code> to measure the real publish rate before locking in the YAML value.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built fragment keeps feedback semantics visible. python-control supports linear analysis, CasADi supports nonlinear optimization, Drake supports model-based design and verification, do-mpc packages receding-horizon control, and ROS 2 control connects algorithms to real controller interfaces. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
+<p>Once you trust the hand-built loop, three libraries take over different jobs on real robots. python-control gives you <code>step_response</code> and <code>margin</code> to check the same point-mass loop for overshoot and gain margin before it touches hardware. Drake's <code>Simulator</code> plus <code>MultibodyPlant</code> runs the identical PID against a contact-rich model (used for the Atlas and Allegro-hand work at the Toyota Research Institute) so windup and saturation show up against real geometry. ROS 2 control's <code>ros2_control</code> hardware interface then maps the same gains onto an actual arm such as the Franka Emika Panda or the low-cost SO-100, where <code>update_rate</code> mismatch, not the gains, is the usual cause of oscillation.</p>
 </div>
 <h2>Practical Recipe</h2>
+<p data-agent="14">The worked example showed open-loop and closed-loop behavior on one toy plant; turning that intuition into a dependable workflow on real hardware means fixing the order of operations before any controller is tuned.</p>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
 <li>Build a baseline that is simple enough to debug by inspection.</li>
@@ -71,25 +177,44 @@ Building Embodied AI: From Perception to Autonomous Action
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in Open-loop vs. closed-loop control is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+</div>
+<div class="callout key-insight">
+<p>Think of integral windup like pressing harder and harder on a car accelerator while the wheels spin on ice. The engine is already at its limit, yet you keep pushing the pedal further down. The moment the tyres grip again, all that stored pedal position launches the car forward in a sudden lurch. The anti-windup clamp is the discipline of keeping your foot exactly at the traction limit, not beyond it, so the instant grip returns the response is proportional and controlled, not explosive.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>Integral windup is the most frequently overlooked closed-loop failure. When an actuator is saturated (for example, a motor at its torque limit), the integral term keeps accumulating error as if the actuator were still responding. When saturation lifts, the accumulated integral drives a large overshoot that can destabilize the system. The fix is anti-windup clamping: stop accumulating the integral whenever the commanded output exceeds the actuator limit. Without this guard, a well-tuned PID on a benchtop test plant can become dangerously oscillatory on the real robot where torque limits are tighter.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Feedback, error, stability, overshoot, oscillation should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A robotics team using Open-loop vs. closed-loop control should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: surgical robotics</h4>
+<p>Intuitive Surgical's da Vinci platform runs its instrument tips under tight closed-loop position and force feedback: the surgeon's hand motion is a reference, and encoders plus a kinematic model close the loop hundreds of times per second to reject tremor and cable stretch. A purely open-loop replay of the commanded path would let unmodeled tendon compliance accumulate into millimeter tip errors, which is unacceptable when operating millimeters from a vessel.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>For open-loop vs. closed-loop control, the useful test is simple: could a teammate point to the log line, plot, or trace that proves the idea changed the agent's next action?</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Adaptive replanning frequency for visuomotor policies (2024-2025).</strong> Building on action-chunking ideas from Diffusion Policy and ACT, recent work asks how often a policy must replan to remain effectively closed-loop. Pi0 (Black et al., 2024, Physical Intelligence) demonstrates that a flow-matching policy on a fleet of dexterous manipulation tasks selects its own chunk length at inference time, achieving closed-loop correction rates that adapt to contact uncertainty rather than running at a fixed period. The open question is how to analytically bound the maximum safe chunk length given a disturbance spectrum, sensor latency, and actuator bandwidth without exhaustive hardware trials.</p>
+<p><strong>Event-triggered and asynchronous feedback architectures (2024-2026).</strong> Rather than sampling feedback at a fixed rate, event-triggered control fires a sensor read only when an estimated state deviation exceeds a threshold, dramatically reducing communication and compute load on resource-constrained platforms. Recent hardware experiments from ETH Zurich (Gehring et al., 2024, on ANYmal-D) show that event-triggered proprioceptive feedback for legged locomotion reduces onboard bandwidth by roughly 60 percent while maintaining stability on irregular terrain. An open problem for a PhD student: deriving tight triggering thresholds for learned neural policies whose Lipschitz constants are unknown and whose internal representations do not map cleanly onto physical state variables.</p>
+<p><strong>Residual and corrective closed-loop layers over open-loop foundation policies (2025).</strong> Large visuomotor foundation models (e.g., OpenVLA, Octo) are trained to produce single-step or short-horizon actions but lack explicit feedback structure. A 2025 direction, explored by groups at UC Berkeley and CMU, wraps a lightweight residual controller around a frozen foundation policy: the foundation provides a nominal open-loop command, and a fast low-dimensional PD or impedance layer corrects for contact force error at 200-500 Hz. This separates generalization (handled by the large model) from disturbance rejection (handled by classical feedback), but raises the open problem of how to learn the residual gain schedule so that the corrective layer does not fight the foundation model's intended trajectory.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Feedback, error, stability, overshoot, oscillation? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Open-loop vs. closed-loop control? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
 <h2>Production Pattern</h2>
-<p>Feedback, error, stability, overshoot, oscillation sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
-<p>Translate feedback behavior into measurable overshoot, settling time, steady-state error, and oscillation. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>Control closes the loop between estimated state and action. Separate reference, measured state, error signal, control law, actuator limits, and safety fallback.</p></div>
+<p data-agent="14">Those failure modes are not isolated bugs; they are symptoms of where this control choice sits in the larger robotics stack, which is where the production pattern begins.</p>
+<p>Open-loop vs. closed-loop control sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
+<h4 data-agent="30">Where this choice bites in a deployed stack</h4>
+<p data-agent="17">Open-loop plans stake everything on disturbance assumptions; closed-loop controllers stake everything on measurement and timing contracts. Either way the choice comes with an intuitive role, a formal interface, a runnable check, and a reproducible failure mode, so any reader can locate the exact assumption their deployment violates.</p>
+<p><span data-agent="29">Consider a specific case. The Boston Dynamics Spot quadruped uses closed-loop leg controllers running at roughly 1 kHz. Each one reads <a href="ch_0073_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">joint encoders and Inertial Measurement Unit (IMU) data</a> to correct foot placement within milliseconds of ground contact. An open-loop gait script replays a fixed joint trajectory, so it fails on any surface that differs from the recording surface. Unmodeled tendon compliance and ground reaction forces accumulate into a pose error, and a 1 kHz feedback loop can <span data-agent="28">typically</span> correct that error before it grows large enough to cause a fall, provided the disturbance itself does not exceed the actuator's torque limit. The same principle appears at slower timescales in robotic manipulation. OpenAI's Dactyl hand (2019) relied on <a href="ch_0112_part-3-simulation-tooling-and-the-modern-stack-module-13-domain-randomiz.xhtml">randomized simulation training</a> precisely because its open-loop policy could not assume exact <a href="ch_0058_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">finger contact geometry</a>. The policy therefore had to internalize a distribution over disturbances rather than depend on any single model being correct.</span></p>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Open-loop vs. closed-loop control, control closes the loop between estimated state and action. Keep reference, measured state, error signal, control law, actuator limits, and safety fallback separate in the evidence record.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -99,12 +224,11 @@ Building Embodied AI: From Perception to Autonomous Action
 <tr><td>CasADi</td><td>formulates optimization-based controllers with constraints and horizons</td><td>Verify constraints, warm start, solver status, and deadline behavior.</td></tr>
 <tr><td>Drake</td><td>models dynamical systems, multibody plants, optimization, and controllers</td><td>Verify scalar type, plant finalization, frame convention, and solver status.</td></tr>
 <tr><td>do-mpc</td><td>formulates optimization-based controllers with constraints and horizons</td><td>Verify constraints, warm start, solver status, and deadline behavior.</td></tr>
-<tr><td>ROS 2 control</td><td>supports practical work on Feedback, error, stability, overshoot, oscillation</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>ROS 2 control</td><td>supports practical work on Open-loop vs. closed-loop control</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>Use this recipe when turning Feedback, error, stability, overshoot, oscillation into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
+<p>Use this recipe when turning Open-loop vs. closed-loop control into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
 <ol>
 <li>Write the control objective, measured state, actuator command, update rate, and saturation policy.</li>
 <li>Run a step-response test before adding learning, with overshoot, settling time, and steady-state error logged.</li>
@@ -112,40 +236,16 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Record latency, missed deadlines, saturation events, constraint violations, and recovery actions.</li>
 <li>Only compare controllers and policies when they share sensors, action limits, disturbance tests, and safety checks.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
-<pre><code class="language-python"><span class="c1"># Evidence record for Feedback, error, stability, overshoot, oscillation.</span>
-<span class="c1"># Fill the fields before comparing a hand-built baseline with a library run.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">units_check</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">latency_ms</span><span class="p">:</span> <span class="nb">float</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"7.2"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"Feedback, error, stability, overshoot, oscillation"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"python-control"</span><span class="p">,</span>
-<span class="n">units_check</span><span class="o">=</span><span class="s2">"frames, units, and timestamps verified"</span><span class="p">,</span>
-<span class="n">latency_ms</span><span class="o">=</span><span class="mf">20.0</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched success metric"</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"filled after the named perturbation test"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 7.2.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Feedback, error, stability, overshoot, oscillation can be compared across the hand-built baseline and the maintained-library path.</div>
-<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Feedback, error, stability, overshoot, oscillation and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>A learned policy can hide an unstable inner loop until the disturbance changes. Check update rate, delay, saturation, integral windup, and fallback behavior before scaling training. For this section, first reproduce one tiny case by hand, then rerun it through python-control, CasADi, Drake, do-mpc, ROS 2 control. If the two disagree
+<div class="callout key-takeaway" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Open-loop vs. closed-loop control, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Open-loop vs. closed-loop control and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
+<p>An open-loop plan can look perfect in simulation because no observation is allowed to contradict it. Test it with a pose offset, a delayed actuator command, and a small unmodeled disturbance, then compare the same trial under a closed-loop policy that re-estimates state after each action. If the two disagree, inspect sensing latency, frame conventions, actuator saturation, and the exact point where feedback re-enters the decision loop before changing the model.</p>
 <section class="technical-core-expansion">
 <h2>Technical Core</h2>
-<p><strong>Feedback, error, stability, overshoot, oscillation</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 7.2.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
-<figure class="technical-figure" id="fig-7-2-technical-core">
-<svg aria-labelledby="fig-7-2-technical-core-title fig-7-2-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
-<title id="fig-7-2-technical-core-title">Technical core for Feedback, error, stability, overshoot, oscillation</title>
-<desc id="fig-7-2-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Feedback, error, stability, overshoot, oscillation.</desc>
+<p><strong>Open-loop vs. closed-loop control</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 7.1.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" id="fig-7-1-technical-core">
+<svg aria-labelledby="fig-7-1-technical-core-title fig-7-1-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-7-1-technical-core-title">Technical core for Open-loop vs. closed-loop control</title>
+<desc id="fig-7-1-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Open-loop vs. closed-loop control.</desc>
 <rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
 <text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
 <text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
@@ -166,51 +266,42 @@ Building Embodied AI: From Perception to Autonomous Action
 <text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
 <text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
 </svg>
-<figcaption><strong>Figure 7.2.T</strong>: The technical core for Feedback, error, stability, overshoot, oscillation connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
+<figcaption><strong>Figure 7.1.T</strong>: A controller is only as trustworthy as its weakest link in this chain: vague assumptions or missing evidence quietly invalidate the algorithm downstream, so each block must be made explicit before the control law can be believed on hardware.</figcaption>
 </figure>
-<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$u_t=K_p e_t+K_i\sum_{\tau\le t}e_\tau\Delta t+K_d(e_t-e_{t-1})/\Delta t,\quad \min_{u_{0:H}}\sum_{k=0}^{H}\ell(x_k,u_k)$</p></div>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Formal Object</div><p>Open-loop: choose $a_{0:T-1}$ once from $\hat s_0$ and a reference $r_{0:T-1}$. Closed-loop: update $\hat s_t=h(\hat s_{t-1},a_{t-1},o_t)$ and choose $a_t=\pi(\hat s_t,r_t)$. The closed-loop form is more robust only when $o_t$ arrives fast enough and the estimator is trusted more than the original prediction.</p></div>
 <div class="callout algorithm"><div class="callout-title">Controller evaluation loop</div><ol>
 <li>Define the reference, measured state, error signal, actuator command, update rate, and saturation policy.</li>
 <li>Run a step or disturbance response before adding learning.</li>
 <li>Log overshoot, settling time, steady-state error, latency, saturation, and recovery behavior.</li>
 <li>Compare PID, LQR, or MPC only under the same plant, sensors, limits, disturbance panel, and metric code.</li>
 </ol></div>
-<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Feedback, error, stability, overshoot, oscillation</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Open-loop vs. closed-loop control</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
 <tr><td>State and observation</td><td>Variables, units, timestamps, frames, and uncertainty.</td><td>Prevents a model score from being mistaken for robot capability.</td></tr>
 <tr><td>Action interface</td><td>Command type, limits, update rate, and safety fallback.</td><td>Makes the learned or planned output executable.</td></tr>
 <tr><td>Evidence artifact</td><td>Trace, metric, configuration, seed, and failure label.</td><td>Allows baseline and library path to be compared in one pass.</td></tr>
 <tr><td>Tool path</td><td>python-control, CasADi, do-mpc, Drake, ROS 2 control, MuJoCo</td><td>Shows the practical library route after the mechanism is understood.</td></tr>
 </tbody></table></div>
-<pre><code class="language-python"><span class="c1"># Technical-core evidence record for Feedback, error, stability, overshoot, oscillation.</span>
-<span class="c1"># Expected: a method-specific trace with assumptions, metric, and failure label.</span>
-<span class="n">record</span> <span class="o">=</span> <span class="p">{</span>
-<span class="s2">"section"</span><span class="p">:</span> <span class="s2">"7.2"</span><span class="p">,</span>
-<span class="s2">"technical_core"</span><span class="p">:</span> <span class="s2">"feedback control"</span><span class="p">,</span>
-<span class="s2">"method"</span><span class="p">:</span> <span class="s2">"Controller evaluation loop"</span><span class="p">,</span>
-<span class="s2">"evidence"</span><span class="p">:</span> <span class="s2">"same-config trace with expected output and failure label"</span><span class="p">,</span>
-<span class="s2">"tools"</span><span class="p">:</span> <span class="s2">"python-control, CasADi, do-mpc, Drake, ROS 2 control, MuJoCo"</span><span class="p">,</span>
-<span class="p">}</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">record</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 7.2.T records the expected technical evidence for Feedback, error, stability, overshoot, oscillation: method, tool path, artifact, and failure label.</div>
-<p>Expected output is a trace showing the error falls, overshoot stays inside the design bound, and actuator commands remain within limits. If success changes when logging is enabled, the timing budget is part of the system.</p>
-<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A controller that looks good on nominal tracking may still fail under delay, integral windup, actuator saturation, unmodeled friction, or reference-frame mismatch.</p></div>
+<p>For Open-loop vs. closed-loop control, expected output is a trace where the relevant error decreases, overshoot stays within the design bound, and actuator commands remain within limits under the stated timing budget.</p>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>Open-loop vs. closed-loop control should be stress-tested under delay, integral windup, actuator saturation, unmodeled friction, and reference-frame mismatch before the nominal trace is trusted.</p></div>
 </section>
-
-, inspect conventions and timing before changing the model.</p>
-</section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Feedback, error, stability, overshoot, oscillation: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Open-loop vs. closed-loop control: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Feedback, error, stability, overshoot, oscillation is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>Open-loop vs. closed-loop control is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 7.2.1</div><p>Design a method-matched experiment for Feedback, error, stability, overshoot, oscillation. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 7.1.1</div><p>Design a method-matched experiment for Open-loop vs. closed-loop control. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): PID cart-pole balancer in Gymnasium.</strong> Build a PID controller that keeps the classic CartPole-v1 pole upright using the angle and angular velocity observations as the error signal. The key challenge is tuning Kp, Ki, and Kd purely from step-response data rather than a dynamics model, since the pole mass and rod length differ from any textbook example.</p><p><strong>Intermediate (1-2 weeks): open-loop vs. closed-loop reaching in MuJoCo.</strong> Use the MuJoCo <code>reacher</code> environment to implement a joint-space trajectory planner (open-loop) and a PID joint controller (closed-loop), then compare final end-effector error across 100 randomized goal positions with a 0.5 N disturbance force injected mid-motion. The key challenge is matching the controller update rate to MuJoCo's physics timestep and logging saturation events so you can attribute residual error to windup rather than gains.</p><p><strong>Intermediate (1-2 weeks): closed-loop pick-and-place with LeRobot and ROS2.</strong> Deploy a wrist-camera feedback loop on a low-cost SO-100 arm using the LeRobot inference stack and a ROS2 control node, then measure how much pose error at grasp is recovered by re-estimating object position on each frame versus replaying a single recorded trajectory. The key challenge is synchronizing the camera publish rate (<code>ros2 topic hz</code>) with the controller update period so the derivative term uses the correct dt.</p></div>
+<div class="callout lab" data-agent="41"><h4>Lab: Watch open-loop drift turn into closed-loop correction</h4><p><strong>Goal:</strong> Feel, empirically, the moment a feedback loop saves a motion that an open-loop plan loses, and find the disturbance level where each control mode breaks.</p>
+<p><strong>Tools needed:</strong> Python with <code>numpy</code> and <code>matplotlib</code> (no robot required). Start from Code Fragment 7.1.1 in this section; optionally install <code>control</code> (python-control) for the stretch step.</p>
+<p><strong>Steps and what to vary:</strong> (1) Run both controllers at <code>dist = 2.0</code> and plot <code>xs_ol</code> and <code>xs_cl</code> against time on one axis. (2) Sweep the disturbance from <code>dist = 0.0</code> to <code>8.0</code> in steps of 0.5 and record each final position. (3) Sweep the control rate by changing <code>dt</code> from 0.005 to 0.1 while holding the gains fixed. (4) Stretch: feed the same plant to python-control's <code>step_response</code> and read off the predicted overshoot.</p>
+<p><strong>What to observe:</strong> The open-loop final position grows roughly linearly with the disturbance and never recovers, while the closed-loop final position stays pinned near 1.0 m until the disturbance approaches the actuator limit <code>u_max = 8</code>, where saturation finally defeats feedback too. As you increase <code>dt</code>, watch the closed-loop run start to oscillate and then diverge: that is the sampling-rate ceiling described in the warning callout above, made visible as a single failing plot.</p></div>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.1: Open-loop vs. closed-loop control</a>
-<a class="up" href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a>
-<a class="next" href="ch_0064_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.3: PID control, intuition and tuning</a>
+<a class="prev" href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a>
+<a class="up" href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a>
+<a class="next" href="ch_0064_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.2: Feedback, error, stability, overshoot, ...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

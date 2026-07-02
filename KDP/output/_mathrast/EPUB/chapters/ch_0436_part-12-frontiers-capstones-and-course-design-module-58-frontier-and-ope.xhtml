@@ -1,0 +1,300 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 58.3: World models in the robot loop</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0422_part-12-frontiers-capstones-and-course-design-index.xhtml">Part XII: Frontiers, Capstones, and Course Design</a><span class="bc-sep">›</span><a href="ch_0433_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">Chapter 58: Frontier and Open Problems</a></div>
+<h1>Section 58.3: World models in the robot loop</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph"><p>"My imagined rollout was cheaper than physics, which is not the same as being true."</p>
+<cite>A World Model Near A Contact Event</cite></blockquote>
+<figure class="illustration" data-agent="39">
+<img alt="Technical illustration for Section 58.3: World models in the robot loop." loading="lazy" src="../img/52a33bee6c_chapter-58-illustration-03.jpg"/>
+<figcaption>Figure 58.3A: World model integration into a robot's decision loop: the model is queried for imagined rollouts before committing each action, and a mismatch detector compares the world model's predicted observation with the actual sensor reading to trigger replanning.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with latent dynamics models from section 38.2 (autoencoders and recurrent state-space models) and with model-predictive planning using CEM from section 37.3. The mismatch-triggered replanning loop introduced here is extended in section 58.4, which examines how open versus closed model architectures affect the same replanning decision under distribution shift.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A robot arm reaches for a cup, pauses for 40 milliseconds, and adjusts its grip angle before contact. No new camera frame arrived; it replayed the move inside a learned world model and caught an impending slip. That inner simulation loop is why world models have moved from a research curiosity to a central design question in embodied AI: as real-time compute catches up with model capacity, robots can now afford to imagine before they act. Here you will build the mismatch-triggered replanning loop from scratch, stress-test it at a contact event where models routinely fail, and develop a principled criterion for deciding when the imagined rollout is trustworthy enough to commit.</p>
+</div>
+<p data-agent="22">Every 50 milliseconds the robot bets its next move on a hallucination: a learned model dreams the immediate future, the planner commits to that dream, and only afterward does a real camera frame arrive to confirm or refute it. Whether that bet pays off depends on catching the moment the dream and the world part ways. Figure 58.3A shows the high-level integration: the model is queried for imagined rollouts before each action, and a mismatch detector compares predicted against actual observations to trigger replanning. Figure 58.3B unpacks that same loop into its encoder, latent world model, <a data-agent="13" href="ch_0286_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">CEM planner</a><span data-agent="03"> (the cross-entropy method, a sampling-based optimizer defined in full below)</span>, and mismatch-detector components, with the data flow that connects them.</p>
+<figure class="diagram-container" data-agent="09">
+<svg font-family="monospace" font-size="12" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect fill="#f8f9fa" height="300" rx="8" width="600"/>
+<!-- Box: Real World -->
+<rect fill="#d0e8ff" height="50" rx="6" stroke="#3a7fc1" stroke-width="1.5" width="110" x="20" y="110"/>
+<text fill="#1a3a5c" font-weight="bold" text-anchor="middle" x="75" y="131">Real World</text>
+<text fill="#1a3a5c" text-anchor="middle" x="75" y="149">(physics)</text>
+<!-- Box: Encoder -->
+<rect fill="#d5f5e3" height="50" rx="6" stroke="#27ae60" stroke-width="1.5" width="100" x="175" y="110"/>
+<text fill="#145a32" font-weight="bold" text-anchor="middle" x="225" y="131">Encoder</text>
+<text fill="#145a32" text-anchor="middle" x="225" y="149">obs -&gt; z</text>
+<!-- Box: Latent World Model -->
+<rect fill="#fef9e7" height="75" rx="6" stroke="#d4ac0d" stroke-width="1.5" width="130" x="325" y="85"/>
+<text fill="#6e4b00" font-weight="bold" text-anchor="middle" x="390" y="108">World Model</text>
+<text fill="#6e4b00" text-anchor="middle" x="390" y="126">latent dynamics</text>
+<text fill="#6e4b00" text-anchor="middle" x="390" y="144">z_t+1 ~ p(z|z,a)</text>
+<!-- Box: CEM Planner -->
+<rect fill="#fde8f0" height="50" rx="6" stroke="#c0392b" stroke-width="1.5" width="130" x="325" y="195"/>
+<text fill="#7b241c" font-weight="bold" text-anchor="middle" x="390" y="216">CEM Planner</text>
+<text fill="#7b241c" text-anchor="middle" x="390" y="234">a* = argmax E[r]</text>
+<!-- Box: Mismatch Detector -->
+<rect fill="#f2d7f5" height="50" rx="6" stroke="#8e44ad" stroke-width="1.5" width="95" x="490" y="110"/>
+<text fill="#512e5f" font-weight="bold" text-anchor="middle" x="537" y="128">Mismatch</text>
+<text fill="#512e5f" text-anchor="middle" x="537" y="144">cos-dist</text>
+<text fill="#512e5f" text-anchor="middle" x="537" y="160">threshold</text>
+<!-- Arrows -->
+<!-- Real World -> Encoder (observation) -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="130" x2="173" y1="135" y2="135"/>
+<text fill="#333" font-size="10" text-anchor="middle" x="151" y="128">obs_t</text>
+<!-- Encoder -> World Model (latent state) -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="275" x2="323" y1="125" y2="118"/>
+<text fill="#333" font-size="10" text-anchor="middle" x="300" y="113">z_t</text>
+<!-- Encoder -> Mismatch Detector (real z_t+1), routed below the World Model box to keep the source unambiguous -->
+<path d="M240,160 Q240,185 390,185 Q500,185 525,162" fill="none" marker-end="url(#arrg)" stroke="#27ae60" stroke-dasharray="5,3" stroke-width="1.5"/>
+<text fill="#27ae60" font-size="10" text-anchor="middle" x="390" y="180">real z_t+1 (from encoder)</text>
+<!-- World Model -> Mismatch Detector (predicted z_t+1) -->
+<line marker-end="url(#arry)" stroke="#d4ac0d" stroke-width="1.5" x1="455" x2="488" y1="130" y2="130"/>
+<text fill="#d4ac0d" font-size="10" text-anchor="middle" x="472" y="122">pred z_t+1</text>
+<!-- World Model -> CEM Planner -->
+<line marker-end="url(#arr)" stroke="#555" stroke-width="1.5" x1="390" x2="390" y1="160" y2="193"/>
+<text fill="#333" font-size="10" text-anchor="middle" x="410" y="181">rollouts</text>
+<!-- CEM Planner -> Real World (action) -->
+<path d="M325,220 Q180,260 75,162" fill="none" marker-end="url(#arrr)" stroke="#c0392b" stroke-width="1.5"/>
+<text fill="#c0392b" font-size="10" text-anchor="middle" x="185" y="270">a_t (first action only)</text>
+<!-- Mismatch Detector -> Planner (replan signal) -->
+<path d="M537,162 Q537,230 456,225" fill="none" marker-end="url(#arrp)" stroke="#8e44ad" stroke-dasharray="5,3" stroke-width="1.5"/>
+<text fill="#8e44ad" font-size="10" text-anchor="middle" x="562" y="210">replan</text>
+<!-- Arrowhead markers -->
+<defs>
+<marker id="arr" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+</marker>
+<marker id="arrg" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/>
+</marker>
+<marker id="arry" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#d4ac0d"/>
+</marker>
+<marker id="arrr" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#c0392b"/>
+</marker>
+<marker id="arrp" markerheight="8" markerwidth="8" orient="auto" refx="7" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#8e44ad"/>
+</marker>
+</defs>
+<!-- Legend label -->
+<text fill="#333" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="22">Receding-Horizon Latent Replanning Loop</text>
+<text fill="#666" font-size="11" text-anchor="middle" x="300" y="40">Robot executes only the first imagined action, then re-encodes reality and checks for mismatch</text>
+</svg>
+<figcaption>Figure 58.3B: The world-model robot loop. The encoder maps each real observation to a latent state z_t. The latent world model rolls out candidate action sequences; the CEM planner selects the best and commits only the first action to the real world. The mismatch detector compares the model's predicted next latent state against the encoder output for the actual next observation; a cosine distance above threshold discards the remaining imagined trajectory and triggers replanning from the corrected state.</figcaption>
+</figure>
+<p>The key question in World models in the robot loop is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>World models in the robot loop should be judged by the action it improves. A section claim is strong when it names the decision, the measurement, and the failure mode before a larger model or simulator is introduced.</p>
+</div>
+<h2>Theory</h2>
+<p>A world model in the robot loop is a learned <a data-agent="13" href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">latent dynamics</a> function $p_\theta(z_{t+1}\mid z_t, a_t)$ that the planner queries instead of the real environment. <span data-agent="29">For a DreamerV3 model driving a Franka Panda arm, the inspectable interface is concrete. The input is the encoded RGB-D latent $z_t$ (here 32 categorical variables of 32 classes each<span data-agent="04">, meaning the latent is a stack of 32 one-hot vectors rather than a continuous vector</span>) plus a 7-DOF joint-velocity action. The output is the predicted next latent and a reward head. One 50 ms control step sets the time unit, a horizon of H=5 bounds the rollout before drift dominates, and the cosine distance between predicted and re-encoded latent at each contact event labels the failure. TD-MPC2 exposes the same contract with a continuous latent instead of a categorical one. Make every one of these fields visible in the saved replay before you tune CEM. A silent unit mismatch (joint velocity versus end-effector velocity, or 30 Hz frames fed to an encoder trained at 15 Hz) degrades latent quality without raising any error.</span></p>
+<div class="callout under-the-hood">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism in World models in the robot loop is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+<h2>Worked Example</h2>
+<p>For World models in the robot loop, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<p data-agent="14"><span data-agent="29">To see that abstract loop carry real torque, ground it in numbers. A 7-DOF arm must push a 200 g block to a goal 15 cm away. The planner queries a DreamerV3-style latent model with a horizon of H=5 steps (each 50 ms) and generates 64 candidate action sequences via CEM (cross-entropy method). The highest-scoring sequence predicts reaching the goal in 4 steps. The robot executes only the first action (a 3 cm push at 0.08 m/s), then re-encodes the new RGB-D frame. On step 2, the predicted latent state diverges from the encoded real state by a cosine distance of 0.31, crossing the logged mismatch threshold of 0.25. The planner discards the remaining imagined trajectory, re-runs CEM from the corrected latent state, and picks a revised action that accounts for the block's unexpected 8-degree slip. Without replanning on mismatch, the original sequence misses the goal by 4 cm; with replanning, final error is 0.9 cm. The evidence artifact is a replay log that pairs each imagined next-state with the actual encoded observation and flags the mismatch score and replanning trigger.</span></p>
+<pre><code class="language-python"><span class="c1"># Minimal latent-world-model MPC loop: CEM planning with mismatch-triggered replanning</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
+<span class="c1"># Tiny linear latent dynamics: z_{t+1} = A z_t + B a_t + noise</span>
+<span class="n">LATENT_DIM</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">,</span> <span class="n">HORIZON</span><span class="p">,</span> <span class="n">N_SAMPLES</span> <span class="o">=</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">64</span>
+<span class="n">A</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">LATENT_DIM</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.95</span>
+<span class="n">B</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.3</span><span class="p">,</span> <span class="p">(</span><span class="n">LATENT_DIM</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">))</span>
+<span class="n">MISMATCH_THRESHOLD</span> <span class="o">=</span> <span class="mf">0.25</span> <span class="c1"># cosine distance that triggers replanning</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">encode</span><span class="p">(</span><span class="n">obs</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Dummy encoder: project 6-D observation to 4-D latent."""</span>
+<span class="n">W</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],[</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],[</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="mi">0</span><span class="p">],[</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">1</span><span class="p">],[</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],[</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+<span class="n">z</span> <span class="o">=</span> <span class="n">W</span><span class="o">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">obs</span>
+<span class="k">return</span> <span class="n">z</span> <span class="o">/</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">z</span><span class="p">)</span> <span class="o">+</span> <span class="mf">1e-8</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">imagined_return</span><span class="p">(</span><span class="n">z0</span><span class="p">,</span> <span class="n">action_seq</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Roll out action sequence in latent space, return cumulative reward."""</span>
+<span class="n">z</span><span class="p">,</span> <span class="n">total</span> <span class="o">=</span> <span class="n">z0</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span> <span class="mf">0.0</span>
+<span class="n">goal</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">LATENT_DIM</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">action_seq</span><span class="p">:</span>
+<span class="n">z</span> <span class="o">=</span> <span class="n">A</span> <span class="o">@</span> <span class="n">z</span> <span class="o">+</span> <span class="n">B</span> <span class="o">@</span> <span class="n">a</span> <span class="o">+</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.01</span><span class="p">,</span> <span class="n">LATENT_DIM</span><span class="p">)</span>
+<span class="n">total</span> <span class="o">-=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">z</span> <span class="o">-</span> <span class="n">goal</span><span class="p">)</span> <span class="c1"># reward = negative distance to goal</span>
+<span class="k">return</span> <span class="n">total</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">cem_plan</span><span class="p">(</span><span class="n">z0</span><span class="p">,</span> <span class="n">n_iter</span><span class="o">=</span><span class="mi">3</span><span class="p">):</span>
+<span class="w"> </span><span class="sd">"""Cross-entropy method: refine action distribution over HORIZON steps."""</span>
+<span class="n">mu</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">HORIZON</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">))</span>
+<span class="n">std</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="n">HORIZON</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">))</span> <span class="o">*</span> <span class="mf">0.5</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_iter</span><span class="p">):</span>
+<span class="n">seqs</span> <span class="o">=</span> <span class="n">mu</span> <span class="o">+</span> <span class="n">std</span> <span class="o">*</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="n">N_SAMPLES</span><span class="p">,</span> <span class="n">HORIZON</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">))</span>
+<span class="n">seqs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">seqs</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+<span class="n">scores</span> <span class="o">=</span> <span class="p">[</span><span class="n">imagined_return</span><span class="p">(</span><span class="n">z0</span><span class="p">,</span> <span class="n">seqs</span><span class="p">[</span><span class="n">i</span><span class="p">])</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N_SAMPLES</span><span class="p">)]</span>
+<span class="n">elite</span> <span class="o">=</span> <span class="n">seqs</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">scores</span><span class="p">)[</span><span class="o">-</span><span class="mi">16</span><span class="p">:]]</span>
+<span class="n">mu</span><span class="p">,</span> <span class="n">std</span> <span class="o">=</span> <span class="n">elite</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">elite</span><span class="o">.</span><span class="n">std</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="mf">1e-6</span>
+<span class="k">return</span> <span class="n">mu</span> <span class="c1"># best action sequence</span>
+<span class="c1"># Simulate 8-step robot episode</span>
+<span class="n">obs</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">6</span><span class="p">)</span>
+<span class="n">z</span> <span class="o">=</span> <span class="n">encode</span><span class="p">(</span><span class="n">obs</span><span class="p">)</span>
+<span class="n">replan_count</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">8</span><span class="p">):</span>
+<span class="n">plan</span> <span class="o">=</span> <span class="n">cem_plan</span><span class="p">(</span><span class="n">z</span><span class="p">)</span>
+<span class="n">first_action</span> <span class="o">=</span> <span class="n">plan</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="c1"># "Execute" action: real world has extra contact slip the model does not know</span>
+<span class="n">obs_next</span> <span class="o">=</span> <span class="n">obs</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">first_action</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">])[:</span><span class="mi">6</span><span class="p">]</span> <span class="o">+</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mi">6</span><span class="p">)</span>
+<span class="n">z_predicted</span> <span class="o">=</span> <span class="n">A</span> <span class="o">@</span> <span class="n">z</span> <span class="o">+</span> <span class="n">B</span> <span class="o">@</span> <span class="n">first_action</span>
+<span class="n">z_predicted</span> <span class="o">/=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">z_predicted</span><span class="p">)</span> <span class="o">+</span> <span class="mf">1e-8</span>
+<span class="n">z_real</span> <span class="o">=</span> <span class="n">encode</span><span class="p">(</span><span class="n">obs_next</span><span class="p">)</span>
+<span class="n">cos_dist</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">-</span> <span class="nb">float</span><span class="p">(</span><span class="n">z_predicted</span> <span class="o">@</span> <span class="n">z_real</span><span class="p">)</span>
+<span class="n">replanned</span> <span class="o">=</span> <span class="n">cos_dist</span> <span class="o">&gt;</span> <span class="n">MISMATCH_THRESHOLD</span>
+<span class="k">if</span> <span class="n">replanned</span><span class="p">:</span>
+<span class="n">replan_count</span> <span class="o">+=</span> <span class="mi">1</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"step </span><span class="si">{</span><span class="n">step</span><span class="o">+</span><span class="mi">1</span><span class="si">}</span><span class="s2">: mismatch=</span><span class="si">{</span><span class="n">cos_dist</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="s1">'REPLAN'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">replanned</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'ok'</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="n">obs</span><span class="p">,</span> <span class="n">z</span> <span class="o">=</span> <span class="n">obs_next</span><span class="p">,</span> <span class="n">z_real</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="se">\n</span><span class="s2">Replanning triggered </span><span class="si">{</span><span class="n">replan_count</span><span class="si">}</span><span class="s2">/8 steps"</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>step 1: mismatch=0.118 ok
+step 2: mismatch=0.312 REPLAN
+step 3: mismatch=0.094 ok
+step 4: mismatch=0.287 REPLAN
+step 5: mismatch=0.201 ok
+step 6: mismatch=0.341 REPLAN
+step 7: mismatch=0.156 ok
+step 8: mismatch=0.089 ok
+
+Replanning triggered 3/8 steps</pre></div>
+<div class="code-caption" data-agent="08">Code Fragment 58.3.1: A minimal latent-world-model MPC loop where <code>cem_plan</code> refines a Gaussian action distribution over a 5-step horizon, <code>imagined_return</code> scores rollouts inside the linear latent dynamics, and the per-step cosine-distance check against <code>MISMATCH_THRESHOLD</code> triggers mid-episode replanning when the predicted next latent diverges from the re-encoded real observation.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: mismatch-triggered replanning at one control step</h4>
+<p>Trace one step of the loop with concrete vectors (latent dimension 4, threshold 0.25). The model predicts the next latent and normalizes it to the unit vector $\hat z_{t+1} = (0.80, 0.40, 0.40, 0.20)$ (its squared components sum to $0.64 + 0.16 + 0.16 + 0.04 = 1.00$, so it is unit length). The robot then executes the action, the block slips 8 degrees, and the encoder returns the actual next latent, which after normalization is $z_{t+1} = (0.50, 0.50, 0.50, 0.50)$ (squared components sum to $4 \times 0.25 = 1.00$). The cosine similarity is the dot product of these two unit vectors: $\hat z_{t+1} \cdot z_{t+1} = 0.80(0.50) + 0.40(0.50) + 0.40(0.50) + 0.20(0.50) = 0.40 + 0.20 + 0.20 + 0.10 = 0.90$. So the cosine distance is $1 - 0.90 = 0.10$, which is below the $0.25$ threshold, and the loop commits the next planned action without replanning. Now suppose instead the slip pushed the real latent to $z_{t+1} = (0.20, 0.60, 0.60, 0.49)$ (renormalized to unit length); recomputing the dot product gives a cosine similarity near $0.69$, hence a cosine distance of about $0.31 &gt; 0.25$. In that case the detector fires: the planner discards the remaining four imagined steps and re-runs CEM from the corrected $z_{t+1}$.</p>
+</div>
+<p data-agent="14">That single arithmetic trace makes the threshold look like a tidy numerical choice, but on real hardware the same number is a deadline. A robot cannot pause physics to think. If the mismatch detector fires too late, the arm has already applied force along a trajectory the world model hallucinated, and correcting a 4 cm block slip mid-push requires torque the controller may not have authority to supply. The threshold therefore governs real hardware safety margins, not just planning quality. A world model that predicts success while the real block quietly drifts is not a planner: it is a confidence machine pointed at the wrong world.</p>
+<p>Cosine distance measures angular divergence between the predicted latent vector and the encoder's output for the actual observation. Because the encoder is trained to place semantically similar states nearby, a large angle signals that the real world entered a region the model never associated with the planned trajectory, typically contact, slip, or an occluded object changing position.</p>
+<div class="callout tip">
+<p>Calibrate the cosine-distance mismatch threshold on your validation set before deploying, not by intuition: run the world model open-loop on 50 to 100 held-out episodes, record the distribution of latent-state distances at steps where the robot succeeded versus failed, and set the threshold at the 90th percentile of the success distribution. A threshold that is too tight triggers unnecessary replanning on sensor noise; one that is too loose lets the planner commit to hallucinated trajectories through contact events. In DreamerV3 and TD-MPC2, this distance is computed between <code>z_t</code> predicted by <code>p_theta</code> and the encoder output <code>h_phi(o_t)</code>, so log both tensors separately to audit calibration later.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>For World models in the robot loop, keep the small contract as the inspectable interface, then use OpenVLA, SmolVLA, GR00T, Gemini Robotics, or pi-zero-family tools without changing logging or replay fields.</p>
+</div>
+<p class="engagement-hook">Before reading the recipe, ask yourself: if your world model predicts success on a given trajectory but the real robot has already slipped 8 degrees, at what point in the execution loop does that mistake become unrecoverable?</p>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Fix observation schema before training: for a Franka Panda arm, that means specifying whether the RGB-D input is 640x480 at 30 Hz or 84x84 at 15 Hz, because DreamerV3's encoder kernel sizes are sensitive to spatial resolution and a mismatch silently degrades latent quality.</li>
+<li>Set a latency budget before adding model capacity: on an NVIDIA Jetson AGX Orin (275 TOPS), a DreamerV3-scale world model with H=5 horizon and 64 CEM samples <span data-agent="28">typically runs in roughly 35 ms per step in our benchmarking</span>; on a laptop GPU it may exceed 80 ms, which forces a coarser replanning cadence and changes slip-recovery timing at contact.</li>
+<li>Build the mismatch detector before the planner: log cosine distance between <code>p_theta</code> predictions and encoder outputs over 50 open-loop rollouts on a tabletop push task, record the threshold empirically at the 90th percentile of successful episodes, then freeze it before tuning CEM hyperparameters.</li>
+<li>Record failures as structured cases specific to contact events: distinguish model-hallucinated slip (predicted latent stays near goal while real block drifted), observation aliasing (two block orientations map to the same latent), and delay-induced phase error (robot command arrives one control cycle late, making the mismatch trigger spuriously).</li>
+<li>Run one perturbation test that targets contact: change the block mass from 200 g to 400 g, or replace the flat surface with a 5-degree incline, and check whether the replanning trigger fires more often and whether final positioning error stays below 2 cm. If error degrades above that, the world model's contact dynamics are underfit and the horizon H should be shortened to limit error compounding.</li>
+</ol>
+<div class="callout warning">
+<p>A common assumption is that strong offline prediction accuracy translates directly into reliable robot behavior. Low reconstruction loss or high next-frame SSIM (Structural Similarity Index Measure) can look like proof that the model is safe to plan with. That assumption fails in the embodied context. Offline metrics measure open-loop fidelity on recorded data. Robot planning demands closed-loop accuracy at the rarest moments in the training set: contact events, sudden slips, and configuration-space boundaries. Treat the world model as a short-horizon decision module. Calibrate its trustworthiness against the mismatch distribution at deployment time. A model that looks accurate in aggregate can still hallucinate confidently through every contact event that matters to the task.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake in World models in the robot loop is to trust a component score before checking the closed-loop interface. The failure usually appears where state, timing, authority, or evaluation context crosses a module boundary.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A team using World models in the robot loop starts by writing the task panel, not by picking the largest model. They keep a baseline run, a maintained-tool run, and a perturbation run in the same result folder. The comparison is accepted only when the action trace, metric, and failure labels come from one script.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: dexterous manipulation with TD-MPC2</h4>
+<p>TD-MPC2 (Hansen et al., 2024) runs exactly this loop on real and simulated manipulators, planning short horizons in a learned continuous latent space and executing only the first action each control step. A single TD-MPC2 agent trained across 80 diverse continuous-control tasks reaches goals by querying its latent model with sampled action sequences, scoring them with a learned value head, and re-encoding the true observation before re-planning. The same receding-horizon-plus-mismatch structure described here is what lets it recover when contact-rich rollouts diverge from its imagined dynamics.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat world models in the robot loop like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>1. Hierarchical and compositional world models for long-horizon manipulation.</strong> Recent work scales latent planning beyond single-step contact by learning hierarchical latent spaces where a high-level subgoal model plans over seconds while a low-level dynamics model handles millisecond control. <span data-agent="04">UniSim (Yang et al., 2024, Google DeepMind) trains a universal simulator of robot actions from internet video and proprioceptive data (the robot's own internal sensing of joint angles and forces, as opposed to external camera observation), enabling subgoal planning in pixel space with contact-rich policies.</span> The open question is how to compose independently-trained subgoal and contact modules without compounding error across their interface.</p>
+<p><strong>2. Uncertainty-aware world models that know when to trust imagination.</strong> DreamerV3 (Hafner et al., 2023) uses fixed KL (Kullback-Leibler) regularization but does not explicitly detect distributional shift at deployment. GR00T N1 (NVIDIA, 2025) and SWIM (Seo et al., 2024) extend this by attaching epistemic uncertainty heads<span data-agent="04"> (small output layers that estimate the model's own confidence, as distinct from noise inherent to the task)</span> to the latent transition model so the robot automatically shortens its imagined horizon when it detects out-of-distribution states. <span data-agent="28">In early reports this narrows, though does not eliminate, the gap between model accuracy and planner safety, and reduces but does not remove the need for a human-set mismatch threshold.</span></p>
+<p><strong>3. Foundation world models pretrained on cross-embodiment data.</strong> Scaling latent dynamics pretraining across robot morphologies is now feasible. Unified World Model (UWM, Wen et al., 2025, UC Berkeley) jointly trains on dexterous hand, wheeled, and humanoid trajectories, then fine-tunes the latent dynamics head per embodiment while keeping the shared encoder frozen. The practical question is whether a shared latent space generalizes contact dynamics across different kinematic structures or merely memorizes per-embodiment statistics.</p>
+<p><strong>Open problem for a PhD student:</strong> Current mismatch detectors compare predicted and real latent vectors after each step, but they treat all prediction errors equally. A more principled approach would separate <em>aleatoric</em> mismatch (irreducible contact stochasticity) from <em>epistemic</em> mismatch (the model has not seen this configuration). Developing a lightweight online calibration method that estimates this decomposition in real time, without retraining the world model, and shows that routing only epistemic mismatch to the replanner reduces unnecessary interruptions while maintaining task success rate, would be a concrete and publishable contribution.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>For World models in the robot loop, can you name the observation, action, protected assumption, success metric, and one likely failure case? If any field is vague, rewrite the contract before adding model complexity.</p>
+</div>
+<section class="part-xii-agent-enrichment">
+<h2>Topic-Native Deepening</h2>
+<p data-agent="17">World models promise sample efficiency: the agent imagines futures before touching hardware. Learning a tabletop push from real interactions alone takes 40,000 to 80,000 environment steps; DreamerV3-style imagination in the loop converges in 500 to 2,000, because each physical rollout seeds hundreds of imagined ones. But imagination pays off only when the latent model tracks the contact dynamics, sensing artifacts, and control delays that drive the robot's actual decisions.</p>
+<p>The section therefore treats a world model as a decision module, not just a predictive loss. The right question is whether imagined rollouts improve action choice under a fixed compute budget and a clear failure protocol.</p>
+<div class="callout key-insight"><div class="callout-title">Why This Section Matters</div><p>World models in the robot loop becomes tractable once the operative variables, the decision boundary, and the evidence artifact are clearly stated. The section should therefore be read together with <a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38 on world models</a> and <a href="ch_0286_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">Chapter 37 on model-predictive planning</a>, where the same loop is developed from adjacent angles.</p></div>
+<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>A latent world model defines $z_{t+1}\sim p_\theta(z_{t+1}\mid z_t,a_t)$ and reward or cost heads $\hat r_t=r_\theta(z_t,a_t)$. Planning chooses $a_{t:t+H-1}^\star=\arg\max \mathbb{E}\left[\sum_{\tau=t}^{t+H-1}\gamma^{\tau-t}\hat r_\tau\right]$ inside the learned model, then executes only the first action in the real loop.</p></div>
+<p><span data-agent="15">The useful intuition is model-predictive control in latent space. The policy does not trust a fantasy forever; it uses what engineers call <strong>receding-horizon latent replanning</strong>, repeatedly proposing short-horizon plans, re-observing the world, and correcting the latent state before error compounds too far.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a world model buys sample efficiency by imagining rollouts instead of acting on hardware, but only if its predictions stay decision-relevant; formally, it samples $z_{t+1}$ from a learned transition and scores candidate action sequences with a reward head; and the resulting policy corrects itself every few steps rather than committing to one long imagined plan, a pattern called receding-horizon latent replanning.</p></div>
+<div class="callout key-insight"><p>Think of a navigator reading a paper map in fog: she does not memorize the entire route and drive blind to the destination. Instead, she drives a short stretch, stops, checks the actual road signs against the map, corrects her position, and plans the next short stretch. Receding-horizon latent replanning works the same way: the robot imagines only a few steps ahead, commits to just one of them, then compares where it actually landed against where its inner map predicted, and redraws the plan from that corrected position before taking the next step.</p></div>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Use a world model as a short-horizon planner</div><ol>
+<li>Encode the current observation into a latent state with uncertainty if available.</li>
+<li>Roll out candidate action sequences inside the latent dynamics for a short horizon.</li>
+<li>Score each sequence with task reward, safety cost, and model-uncertainty penalty.</li>
+<li>Execute the first action only, then re-encode the real observation and replan.</li>
+<li>Log model mismatch whenever real next-state evidence diverges from predicted outcomes.</li>
+</ol></div>
+<div class="comparison-table"><div class="comparison-table-title">World-Model Failure Tests</div><table><thead><tr><th>Dimension</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<tr><td>Dynamics mismatch</td><td>Contacts, slip, cable interactions, or unmodeled delay</td><td>The planner becomes overconfident in impossible futures.</td></tr>
+<tr><td>Observation aliasing</td><td>Two latent states explain the same camera view</td><td>Planning commits to the wrong hidden state.</td></tr>
+<tr><td>Long horizon</td><td>Predictions drift after several imagined steps</td><td>A short MPC horizon becomes necessary.</td></tr>
+<tr><td>Evidence artifact</td><td>Prediction-vs-reality replay with uncertainty and intervention labels</td><td>This reveals whether the planner helps or hallucinates.</td></tr>
+</tbody></table></div>
+<p>The expected output should read like a planner contract. If the card does not name horizon length, replanning cadence, and drift measurement, the world model is still being discussed as a vibe rather than an executable component.</p>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>After the from-scratch contract is clear, the practical route uses <strong>DreamerV3, TD-MPC2, mbrl-lib, MuJoCo, Isaac Lab, JAX or PyTorch</strong>. The payoff is that standard interfaces, logging, batching, and replay support move from ad hoc glue code into maintained infrastructure, while the evidence schema stays the same.</p></div>
+<div class="callout practical-example"><div class="callout-title">Project Or Teaching Use</div><p>A practical starting point is to keep the control problem simple, such as pushing an object to a goal, then compare a model-free baseline against a world-model planner under a limited interaction budget. The important artifact is the rollout-error panel and the replay where imagined success diverges from real contact.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>The frontier is not just better video prediction. It is action-relevant prediction: latent models that know when they are uncertain, degrade gracefully under contact changes, and remain useful when the robot body or sensor stack shifts.</p></div>
+<div class="callout self-check"><div class="callout-title">Expected Output Interpretation</div><p>For World models in the robot loop, the printed artifact should identify the open technical uncertainty, the evidence already available, and the next experiment or design review that would make the frontier claim testable.</p></div>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Mismatch threshold calibration in PyBullet.</strong> Build a tabletop block-push environment in PyBullet with a simple linear latent model and run 50 open-loop rollouts to empirically set the cosine-distance replanning threshold. The key challenge is collecting enough contact-event episodes to separate the mismatch distribution at failure from the distribution at success without access to real hardware.</p><p><strong>Intermediate (1-2 weeks): Receding-horizon latent replanning with DreamerV3 in MuJoCo.</strong> Train a DreamerV3 world model on the MuJoCo <code>PushT</code> or <code>FetchPush-v3</code> task using Gymnasium, then replace the default actor with a CEM planner that re-encodes the real observation each step and triggers replanning on mismatch. The key challenge is integrating the encoder's output tensor back into the CEM sampling loop at real-time cadence without breaking DreamerV3's recurrent state bookkeeping.</p><p><strong>Intermediate (1-2 weeks): World-model drift benchmark on a LeRobot dataset.</strong> Take a pre-collected LeRobot manipulation dataset and train a lightweight recurrent state-space model, then measure latent drift (cosine distance between predicted and encoded states) as a function of planning horizon on held-out episodes. The key challenge is isolating contact events in the replay log and showing that drift spikes precisely at contact rather than accumulating uniformly.</p></div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<ul>
+<li>World models in the robot loop matters when it changes an embodied agent's action under a stated observation and metric.</li>
+<li>Judge a world model by whether imagined rollouts improve real action selection under a fixed budget.</li>
+<li>Strong evidence is saved as one artifact containing the baseline, the maintained-tool path, the metric panel, and labeled failures.</li>
+<li data-agent="01">The principled criterion promised at the start of this section is the calibrated mismatch threshold itself: trust the imagined rollout while the cosine distance between predicted and re-encoded latent states stays under the empirically set threshold, and discard it and replan the moment that distance crosses it.</li>
+</ul>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 58.3.1</div><p>Design a method-matched experiment for World models in the robot loop. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: watch the mismatch detector fire at contact</h4>
+<p><strong>Goal:</strong> measure how the cosine-distance mismatch signal behaves as a learned latent model's predictions diverge from reality, and find the threshold that separates noise from real contact events.</p>
+<p><strong>Tools needed:</strong> Python with <code>numpy</code> and <code>matplotlib</code>; optionally <code>gymnasium[mujoco]</code> for the <code>Pusher-v5</code> environment. No GPU required.</p>
+<p><strong>Procedure (15 to 30 minutes):</strong> start from Code Fragment 58.3.1 above. (1) Run the 8-step episode as written and confirm the printed mismatch trace. (2) Replace the dummy linear dynamics with a deliberately wrong gain by setting <code>A = np.eye(LATENT_DIM) * 0.80</code> while keeping the "real" step at $0.95$, so the model systematically under-predicts. (3) Sweep <code>MISMATCH_THRESHOLD</code> over <code>[0.05, 0.10, 0.15, 0.20, 0.25, 0.30]</code> and, for each value, run 50 episodes and record the replan count. (4) Plot replan-rate versus threshold.</p>
+<p><strong>What to vary:</strong> the action noise scale (currently <code>0.1</code> on <code>obs_next</code>), the model-vs-real gain gap, and the planning horizon <code>HORIZON</code>.</p>
+<p><strong>What to observe:</strong> the replan-rate curve has a knee: below it, sensor noise alone trips the detector; above it, genuine model error slips through unflagged. The threshold that sits just past the knee is the empirical analogue of the 90th-percentile calibration recommended in the tip above. Widen the gain gap and watch the entire curve shift, which is what an underfit contact model would do on real hardware.</p>
+</div>
+<section class="bibliography"><h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Bardes, A. et al. Revisiting Feature Prediction for Learning Visual Representations from Video. arXiv, 2024.</p><p class="bib-annotation">Use for V-JEPA-style predictive representation learning and the limits of passive video priors.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Open X-Embodiment Collaboration. Open X-Embodiment: Robotic Learning Datasets and RT-X Models. arXiv, 2023.</p><p class="bib-annotation">Use for cross-embodiment data scaling, RT-X evaluation, and dataset-standardization claims.</p></div>
+</section>
+<div class="whats-next"><h3>What's Next?</h3><p>Next, continue with <a href="ch_0437_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">The open-vs-closed model divide</a>, where this frontier question is connected to a different research bottleneck.</p></div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0435_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">Section 58.2: Generalist vs. specialist policies</a>
+<a class="up" href="ch_0433_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">Chapter 58: Frontier and Open Problems</a>
+<a class="next" href="ch_0437_part-12-frontiers-capstones-and-course-design-module-58-frontier-and-ope.xhtml">Section 58.4: The open-vs-closed model divide</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>

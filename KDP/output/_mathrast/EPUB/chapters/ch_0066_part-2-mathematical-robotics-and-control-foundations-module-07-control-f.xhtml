@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 7.5: Model predictive control (MPC) as receding-horizon optimization</title>
+    <title>Section 7.4: State-space control, LQR</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,54 +14,146 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0036_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a></div>
-<div class="chapter-label"><a href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a></div>
-<h1>Section 7.5: Model predictive control (MPC) as receding-horizon optimization</h1>
+<div class="page-breadcrumb"><a href="ch_0037_part-2-mathematical-robotics-and-control-foundations-index.xhtml">Part II: Mathematical, Robotics, and Control Foundations</a><span class="bc-sep">›</span><a href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a></div>
+<h1>Section 7.4: State-space control, LQR</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"LQR does not ask which state matters most. It asks what trade-off between effort and error you are willing to live with, then holds to it."</p><cite>Section 7.4</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 7.5: Model predictive control (MPC) as receding-horizon optimization, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/026f2399ca_chapter-07-illustration-05.jpg"/>
-<figcaption><strong>Figure 7.5A</strong>: Section 7.5: Model predictive control (MPC) as receding-horizon optimization is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 7.4: State-space control, LQR." loading="lazy" src="../img/6146b28b34_chapter-07-illustration-04.jpg"/>
+<figcaption>Figure 7.4A: LQR state-space control for a cart-pole system: the cost matrix Q penalizes pole angle, R penalizes control effort, and the resulting optimal gain K is shown stabilizing the linearized system.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with linear dynamical systems from section 6.2 and with error-based feedback from section 7.3. The LQR framework introduced here is extended in section 7.5, where a receding horizon replaces the infinite-horizon Riccati solution, and it recurs in Part IV alongside learned policies in section 14.2, where LQR linearizations serve as baselines for reinforcement learning controllers.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Model predictive control (MPC) as receding-horizon optimization</strong> is one lens on Control for AI Practitioners. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A bipedal robot takes a step. Twelve joints, six contact forces, and a shifting center of mass all interact in the same instant. A separate PID loop on each joint ignores those couplings and the robot falls. LQR treats the entire state vector at once and asks a precise question: given how much each error costs and how precious each actuator is, what single gain matrix fixes every variable simultaneously? That trade-off, encoded in two matrices Q and R, is why LQR underlies modern legged locomotion, drone stabilization, and reinforcement learning baselines. You will derive the Riccati solution, tune Q and R on a cart-pole, and read the gain matrix as a policy.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for Model predictive control (MPC) as receding-horizon optimization into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="28">Shove a balancing robot and it has roughly a quarter of a second to decide how hard to push its cart, how much to spend its battery, and which of four coupled errors to fix first. A single gain matrix, four numbers, typically answers all of those questions at once. This section derives those four numbers from the linearized cart-pole dynamics that underlie the same family of controllers used by Boston Dynamics-style balance controllers and ANYmal (ETH Zurich) <a data-agent="13" href="ch_0068_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">whole-body controllers</a>: where the gain matrix comes from, how it connects to the estimated state feeding it, and how the underlying Riccati solution is tested on a runnable cart-pole in scipy.</p>
+<p data-agent="29">The key question is concrete. For a quadrotor holding altitude in wind or a biped catching its balance after a shove, three things must line up. The state estimator must deliver position, velocity, pole angle, and angular rate in consistent units and frames. The gain must run fast enough on the onboard microcontroller. And the closed-loop eigenvalues must prove the gain actually stabilizes the linearized plant.</p>
 <div class="callout key-insight">
 <div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In Model predictive control (MPC) as receding-horizon optimization, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<p>A representation earns its place when it changes the measurable action interface. In State-space control, LQR, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>Consider a drone that must hold a fixed altitude while wind gusts push it off course. A <a href="ch_0065_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">PID controller</a> can correct altitude, but the drone also has pitch, roll, and rotor speed to manage. Each axis interacts with the others: a pitch correction changes horizontal velocity, which changes the next altitude error, because the <a href="ch_0057_part-2-mathematical-robotics-and-control-foundations-module-06-dynamics-.xhtml">rigid-body dynamics</a> couple every degree of freedom through shared inertia. PID handles each axis independently and misses those cross-axis couplings. LQR (Linear Quadratic Regulator) treats the full state vector simultaneously and asks: given that I care about altitude ten times more than lateral drift, what single gain matrix corrects all four variables at once while using the minimum rotor energy? Figure 7.4A illustrates the same idea on a cart-pole, where the cost matrix $Q$ penalizes pole angle, $R$ penalizes control effort, and the resulting gain $K$ stabilizes the linearized system. That is the question state-space control with LQR is designed to answer. <span data-agent="01">More generally, state-space control is the paradigm of designing a controller directly from the full vector of state variables (position, velocity, angle, and so on, collected in $x_t$), rather than from a single error signal at a time as PID does; LQR is the specific member of that paradigm this section derives, tunes, and tests.</span> The <a data-agent="13" href="ch_0063_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">closed-loop</a> diagram in Figure 7.4B shows how the cost matrices $Q$ and $R$ feed the Riccati solve (an equation solved in the Worked Example below) to produce a single gain $K$ that closes the loop as $u = -Kx$.</p>
+<figure class="diagram-container" data-agent="09">
+<svg aria-label="LQR closed-loop feedback diagram showing plant, state feedback gain K, and cost matrices Q and R" role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Plant block -->
+<rect fill="#e8f5e9" height="50" rx="6" stroke="#2e7d32" stroke-width="1.5" width="120" x="230" y="110"/>
+<text fill="#1b5e20" font-family="monospace" font-size="13" text-anchor="middle" x="290" y="131">Plant</text>
+<text fill="#2e7d32" font-family="monospace" font-size="11" text-anchor="middle" x="290" y="150">x’ = Ax + Bu</text>
+<!-- Gain block -->
+<rect fill="#fff3e0" height="50" rx="6" stroke="#e65100" stroke-width="1.5" width="120" x="230" y="210"/>
+<text fill="#bf360c" font-family="monospace" font-size="13" text-anchor="middle" x="290" y="231">Gain K</text>
+<text fill="#e65100" font-family="monospace" font-size="11" text-anchor="middle" x="290" y="250">u = -Kx</text>
+<!-- Summing junction -->
+<circle cx="110" cy="135" fill="#f8fafc" r="18" stroke="#455a64" stroke-width="1.5"/>
+<text fill="#37474f" font-family="monospace" font-size="16" text-anchor="middle" x="110" y="140">+</text>
+<!-- Reference input arrow -->
+<line marker-end="url(#arr)" stroke="#455a64" stroke-width="1.5" x1="20" x2="88" y1="135" y2="135"/>
+<text fill="#37474f" font-family="monospace" font-size="11" text-anchor="start" x="10" y="130">r</text>
+<!-- Summing junction to plant -->
+<line marker-end="url(#arr)" stroke="#455a64" stroke-width="1.5" x1="128" x2="230" y1="135" y2="135"/>
+<text fill="#37474f" font-family="monospace" font-size="11" text-anchor="middle" x="170" y="127">u</text>
+<!-- Plant output line -->
+<line marker-end="url(#arr)" stroke="#455a64" stroke-width="1.5" x1="350" x2="560" y1="135" y2="135"/>
+<text fill="#37474f" font-family="monospace" font-size="11" text-anchor="middle" x="510" y="127">x</text>
+<!-- State feeds back down -->
+<line stroke="#455a64" stroke-width="1.5" x1="480" x2="480" y1="135" y2="235"/>
+<line marker-end="url(#arr)" stroke="#455a64" stroke-width="1.5" x1="480" x2="350" y1="235" y2="235"/>
+<!-- Gain output back to summing junction -->
+<line stroke="#455a64" stroke-width="1.5" x1="230" x2="110" y1="235" y2="235"/>
+<line marker-end="url(#arr)" stroke="#455a64" stroke-width="1.5" x1="110" x2="110" y1="235" y2="153"/>
+<text fill="#c62828" font-family="monospace" font-size="11" text-anchor="middle" x="95" y="198">-</text>
+<!-- Q label -->
+<rect fill="#e3f2fd" height="36" rx="5" stroke="#1565c0" stroke-width="1.2" width="80" x="60" y="60"/>
+<text fill="#0d47a1" font-family="monospace" font-size="11" text-anchor="middle" x="100" y="76">Q: state</text>
+<text fill="#0d47a1" font-family="monospace" font-size="11" text-anchor="middle" x="100" y="90">error cost</text>
+<!-- R label -->
+<rect fill="#fce4ec" height="36" rx="5" stroke="#c62828" stroke-width="1.2" width="80" x="440" y="60"/>
+<text fill="#b71c1c" font-family="monospace" font-size="11" text-anchor="middle" x="480" y="76">R: actuator</text>
+<text fill="#b71c1c" font-family="monospace" font-size="11" text-anchor="middle" x="480" y="90">effort cost</text>
+<!-- Riccati label -->
+<text fill="#6a1b9a" font-family="monospace" font-size="12" text-anchor="middle" x="290" y="30">Riccati solve: K = R⁻¹BᵀP</text>
+<line stroke="#1565c0" stroke-dasharray="4,3" stroke-width="1" x1="100" x2="260" y1="96" y2="210"/>
+<line stroke="#c62828" stroke-dasharray="4,3" stroke-width="1" x1="480" x2="340" y1="96" y2="210"/>
+<!-- Arrow marker -->
+<defs>
+<marker id="arr" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#455a64"/>
+</marker>
+</defs>
+</svg>
+<figcaption data-agent="39"><strong>Figure 7.4B</strong>: LQR closed-loop structure. The Riccati equation uses cost matrices Q (state error penalty) and R (actuator effort penalty) to compute gain K, which feeds the full state vector back as u = -Kx. All cross-axis couplings are encoded in K at design time.</figcaption>
+</figure>
+<p class="memorable-line">A gain matrix that balances every axis at once is not a trick; it is the answer to a precisely stated cost question.</p>
+<p>For State-space control, LQR, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<p data-agent="14">With that inspectable interface in mind, the next step is to write down the model whose state and command vectors populate it.</p>
+<p data-agent="29">State-space control writes the robot near an operating point as $x_{t+1}=Ax_t+Bu_t$, where $x_t$ collects the state variables and $u_t$ collects the commands. LQR adds a quadratic preference: make important state errors small while avoiding commands that are too large or too fast. The matrices $Q$ and $R$ are therefore not arbitrary knobs. They encode which errors are costly, which actuators are precious, and which units must be normalized before comparison. In practice, four independent PID loops tuned for a cart-pole typically take 30 to 60 seconds to settle a 0.2 rad tilt. They often fail entirely above 0.3 rad, because no loop compensates for the coupling between cart velocity and pole angle. The LQR gain derived in Code Fragment 7.4.1 settles the same tilt in under 2 seconds and handles coupling automatically, because <strong>the Riccati equation bakes all cross-axis interactions into a single gain matrix</strong>. That solve happens once offline (about 1 ms for a four-state system), so the entire online controller runs exactly four multiplications per step. Four multiplications run at 10 kHz on a bare microcontroller, the same compute budget as reading a sensor.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: state-space control writes the plant as $x_{t+1}=Ax_t+Bu_t$, LQR adds the quadratic cost with matrices $Q$ (state error price) and $R$ (actuator effort price), and the resulting gain solves in about 1 ms offline so the online controller costs only a handful of multiplications per step, an order of magnitude faster to settle than independent PID loops on the same coupled system.</p></div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: SpaceX Falcon 9 booster landing</h4>
+<p>The Falcon 9 first stage descending onto a drone ship is, near touchdown, a near-inverted pendulum balanced on its rocket thrust, the same structure as the cart-pole linearized here. Its guidance stack pairs a convex trajectory optimizer with LQR-style state-feedback gains that weight attitude error far more heavily than fuel use as the booster nears the deck, exactly the Q-versus-R trade-off shown in Code Fragment 7.4.1, so a single feedback law corrects coupled position and attitude error in real time.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">LQR Tuning Is Cost Design</div>
+<p>Increasing a diagonal entry of $Q$ tells the controller that the corresponding state error is expensive. Increasing a diagonal entry of $R$ tells it that actuator effort is expensive. If position is measured in meters and angle in radians, scale the costs so the controller is not tuned by units by accident.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism: Why Q and R Shape the Closed-Loop Behavior</div>
+<p>In embodied AI, Q and R are not abstract preferences; they encode physical constraints. A large Q entry on joint angle means exceeding that angle risks mechanical stops or structural damage. A large R entry on torque reflects actuator thermal limits or battery capacity. Setting these values wrong does not merely produce a sluggish response; it can destroy hardware or drain a battery mid-task. The Riccati equation uses Q and R by solving for a cost-to-go matrix P <span data-agent="04">(a matrix that turns any state into the total future cost of controlling optimally from there)</span> such that $x^\top P x$ measures the total weighted future cost from any state. Larger Q entries make P grow faster in the corresponding directions, so the gain K pushes harder to correct those states. Larger R entries shrink the gain, accepting slower correction in exchange for lower actuator demand. The optimal trade-off is baked into K once; every subsequent control step is then a single matrix multiply.</p>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="c1"># Model predictive control (MPC) as receding-horizon optimization: keep the section idea tied to</span>
-<span class="c1"># observable evidence.</span>
-<span class="c1"># Run this diagnostic probe before trusting the maintained library path.</span>
-<span class="n">instruction</span> <span class="o">=</span> <span class="p">(</span>
-<span class="s2">"run the Model predictive control (MPC) as receding-horizon optimization diagnostic and save"</span>
-<span class="s2">"the evidence trace"</span>
-<span class="p">)</span>
-<span class="n">skills</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"find_object"</span><span class="p">,</span> <span class="s2">"estimate_pose"</span><span class="p">,</span> <span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"move_to_tray"</span><span class="p">,</span> <span class="s2">"release"</span><span class="p">]</span>
-<span class="n">plan</span> <span class="o">=</span> <span class="p">[</span><span class="n">skill</span> <span class="k">for</span> <span class="n">skill</span> <span class="ow">in</span> <span class="n">skills</span><span class="p">]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">instruction</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 7.5.1 names instruction, skills, and plan so the reader can inspect where feedback control hands corrected action back to the task loop.</div>
+<p data-agent="21">LQR turns a cost preference into a feedback gain by solving an algebraic Riccati equation (ARE), where the ARE is a matrix equation whose solution $P$ is the cost-to-go matrix that encodes the total future cost of every state. For <span class="katex katex-rendered" data-mathdisplay="0" data-tex="\dot x = Ax + Bu"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mover accent="true"><mi>x</mi><mo>˙</mo></mover><mo>=</mo><mi>A</mi><mi>x</mi><mo>+</mo><mi>B</mi><mi>u</mi></mrow><annotation encoding="application/x-tex">\dot x = Ax + Bu</annotation></semantics></math></span>, the controller minimizes <span class="katex katex-rendered" data-mathdisplay="0" data-tex="\int_0^\infty (x^\top Q x + u^\top R u)\,dt"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msubsup><mo>∫</mo><mn>0</mn><mi mathvariant="normal">∞</mi></msubsup><mo stretchy="false">(</mo><msup><mi>x</mi><mi mathvariant="normal">⊤</mi></msup><mi>Q</mi><mi>x</mi><mo>+</mo><msup><mi>u</mi><mi mathvariant="normal">⊤</mi></msup><mi>R</mi><mi>u</mi><mo stretchy="false">)</mo><mtext> </mtext><mi>d</mi><mi>t</mi></mrow><annotation encoding="application/x-tex">\int_0^\infty (x^\top Q x + u^\top R u)\,dt</annotation></semantics></math></span>; the optimal law is <span class="katex katex-rendered" data-mathdisplay="0" data-tex="u=-Kx"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>u</mi><mo>=</mo><mo>−</mo><mi>K</mi><mi>x</mi></mrow><annotation encoding="application/x-tex">u=-Kx</annotation></semantics></math></span> with <span class="katex katex-rendered" data-mathdisplay="0" data-tex="K=R^{-1}B^\top P"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>K</mi><mo>=</mo><msup><mi>R</mi><mrow><mo>−</mo><mn>1</mn></mrow></msup><msup><mi>B</mi><mi mathvariant="normal">⊤</mi></msup><mi>P</mi></mrow><annotation encoding="application/x-tex">K=R^{-1}B^\top P</annotation></semantics></math></span>, where <span class="katex katex-rendered" data-mathdisplay="0" data-tex="P"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>P</mi></mrow><annotation encoding="application/x-tex">P</annotation></semantics></math></span> solves the continuous-time ARE. Code Fragment 7.4.1 stabilizes a cart-pole linearized about the upright equilibrium. The state is <span class="katex katex-rendered" data-mathdisplay="0" data-tex="[\mathrm{pos},\mathrm{vel},\mathrm{angle},\text{ang.\,vel}]"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false">[</mo><mrow><mi mathvariant="normal">p</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">s</mi></mrow><mo separator="true">,</mo><mrow><mi mathvariant="normal">v</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">l</mi></mrow><mo separator="true">,</mo><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">e</mi></mrow><mo separator="true">,</mo><mrow><mtext>ang.</mtext><mtext> </mtext><mtext>vel</mtext></mrow><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">[\mathrm{pos},\mathrm{vel},\mathrm{angle},\text{ang.\,vel}]</annotation></semantics></math></span>; the <span class="katex katex-rendered" data-mathdisplay="0" data-tex="Q"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>Q</mi></mrow><annotation encoding="application/x-tex">Q</annotation></semantics></math></span> matrix makes the pole angle ten times as expensive as cart position.</p>
+<div class="callout key-insight">
+<div class="callout-title">Why the Riccati Equation Gives the Optimal Gain</div>
+<p>The ARE finds a matrix $P$ that acts as a value function: $x^\top P x$ measures the total future cost if the system starts at state $x$ and runs the best possible control forever. Once $P$ is known, the optimal action at each step is simply to push hardest in the direction that reduces this future cost most rapidly, which yields the linear law $u = -Kx$ with $K = R^{-1}B^\top P$. The optimality comes from the fact that $P$ already accounts for all future consequences, so greedy action on $x^\top P x$ is globally optimal, not just locally good.</p>
+</div>
+<div class="callout key-insight"><p>Think of the matrix $P$ as a contour map of a mountain range, where altitude represents future fuel cost to reach a safe valley. Every state the system can be in corresponds to a point on that map, and $x^\top P x$ reads off the elevation at that point. The shape of the terrain, steeper in some directions than others, is exactly what $P$ encodes. The gain $K$ is simply a compass that always points downhill as steeply as possible. Once you have the map, navigating is trivial: you never need to plan ahead again, because the terrain itself already bakes in every future consequence of every route.</p></div>
+<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">scipy.linalg</span><span class="w"> </span><span class="kn">import</span> <span class="n">solve_continuous_are</span>
+<span class="c1"># Cart-pole linearized about upright. State x = [pos, vel, angle, ang_vel].</span>
+<span class="n">g</span><span class="p">,</span> <span class="n">M</span><span class="p">,</span> <span class="n">m</span><span class="p">,</span> <span class="n">l</span> <span class="o">=</span> <span class="mf">9.81</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.5</span>
+<span class="n">A</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="p">(</span><span class="n">m</span> <span class="o">*</span> <span class="n">g</span><span class="p">)</span> <span class="o">/</span> <span class="n">M</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span>
+<span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="p">(</span><span class="n">M</span> <span class="o">+</span> <span class="n">m</span><span class="p">)</span> <span class="o">*</span> <span class="n">g</span> <span class="o">/</span> <span class="p">(</span><span class="n">M</span> <span class="o">*</span> <span class="n">l</span><span class="p">),</span> <span class="mi">0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+<span class="n">B</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">1</span> <span class="o">/</span> <span class="n">M</span><span class="p">],</span> <span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">1</span> <span class="o">/</span> <span class="p">(</span><span class="n">M</span> <span class="o">*</span> <span class="n">l</span><span class="p">)]],</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+<span class="n">Q</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">diag</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">10.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">])</span> <span class="c1"># angle error is 10x as costly as position</span>
+<span class="n">R</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.1</span><span class="p">]])</span> <span class="c1"># control effort is cheap</span>
+<span class="n">P</span> <span class="o">=</span> <span class="n">solve_continuous_are</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">Q</span><span class="p">,</span> <span class="n">R</span><span class="p">)</span>
+<span class="n">K</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">inv</span><span class="p">(</span><span class="n">R</span><span class="p">)</span> <span class="o">@</span> <span class="n">B</span><span class="o">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">P</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"LQR gain K ="</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">K</span><span class="o">.</span><span class="n">ravel</span><span class="p">(),</span> <span class="mi">2</span><span class="p">))</span>
+<span class="n">cl_eig</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">eigvals</span><span class="p">(</span><span class="n">A</span> <span class="o">-</span> <span class="n">B</span> <span class="o">@</span> <span class="n">K</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"closed-loop eigenvalues ="</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">cl_eig</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"stable:"</span><span class="p">,</span> <span class="nb">bool</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">cl_eig</span><span class="o">.</span><span class="n">real</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)))</span>
+<span class="c1"># 5 s rollout from a 0.2 rad tilt, Euler integration.</span>
+<span class="n">dt</span><span class="p">,</span> <span class="n">x</span> <span class="o">=</span> <span class="mf">0.01</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">])</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">500</span><span class="p">):</span>
+<span class="n">u</span> <span class="o">=</span> <span class="o">-</span><span class="n">K</span> <span class="o">@</span> <span class="n">x</span>
+<span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">dt</span> <span class="o">*</span> <span class="p">(</span><span class="n">A</span> <span class="o">@</span> <span class="n">x</span> <span class="o">+</span> <span class="p">(</span><span class="n">B</span> <span class="o">@</span> <span class="n">u</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"angle 0.20 rad -&gt; </span><span class="si">{</span><span class="n">x</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span><span class="si">:</span><span class="s2">+.4f</span><span class="si">}</span><span class="s2"> rad after 5 s (regulated to upright)"</span><span class="p">)</span></code></pre>
+<div class="code-output">LQR gain K = [-3.16 -5.72 46.03 10.41]
+closed-loop eigenvalues = [-8.8  -3.35 -1.24 -1.7 ]
+stable: True
+angle 0.20 rad -&gt; +0.0010 rad after 5 s (regulated to upright)</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 7.4.1</strong>: the Riccati solution yields a gain whose largest entry weights the pole angle, exactly the state <span class="katex katex-rendered" data-mathdisplay="0" data-tex="Q"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>Q</mi></mrow><annotation encoding="application/x-tex">Q</annotation></semantics></math></span> marked as most expensive. All four closed-loop eigenvalues land in the left half plane and a 0.2 rad tilt is driven to near zero. The result is only valid near the linearization point: at large angles the true <span class="katex katex-rendered" data-mathdisplay="0" data-tex="A"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math></span> and <span class="katex katex-rendered" data-mathdisplay="0" data-tex="B"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>B</mi></mrow><annotation encoding="application/x-tex">B</annotation></semantics></math></span> no longer describe the cart-pole and the same gain can destabilize it.</div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: one LQR control step</h4><p>Take the converged gain from Code Fragment 7.4.1, $K=[-3.16,\ -5.72,\ 46.03,\ 10.41]$, and trace a single online step from the tilted state $x=[0,\ 0,\ 0.2,\ 0.0]$ (cart centered and still, pole leaning 0.2 rad to the right, no angular velocity yet).</p>
+<p><strong>1. Compute the command</strong> $u=-Kx$. Only the angle term is nonzero: $u = -(46.03 \times 0.2) = -9.21$. So the controller pushes the cart with about 9.2 N of force, and the sign is negative (push the cart toward the lean) to drive the pole back upright.</p>
+<p><strong>2. Apply the dynamics</strong> $\dot x = Ax + Bu$. From the $A$ matrix, $\dot{x}_{\text{angle}} = x_{\text{ang.vel}} = 0$ and $\dot{x}_{\text{ang.vel}} = \frac{(M+m)g}{Ml}\,x_{\text{angle}} + \frac{1}{Ml}u = \frac{1.1 \times 9.81}{0.5}(0.2) + \frac{1}{0.5}(-9.21) = 4.32 - 18.42 = -14.10$. The uncontrolled term $4.32$ would topple the pole faster; the control term $-18.42$ overpowers it, so angular acceleration is negative (the pole decelerates its fall and reverses).</p>
+<p><strong>3. Integrate one Euler step</strong> with $dt=0.01$: new angular velocity $= 0 + 0.01(-14.10) = -0.141$ rad/s, and new angle $= 0.2 + 0.01(0) = 0.2$ rad (angle has not moved yet because velocity was zero this step). Repeat 500 times and the angle decays to $+0.0010$ rad, exactly the printed result. The key observation: the gain reads the whole state at once, so even a pure angle error produces a cart force.</p></div>
+<div class="callout warning"><p>A common assumption is that LQR's "optimal" label means the gain K applies across the robot's full operating range. It does not. LQR minimizes a quadratic cost for a <em>linearized</em> model, and that linearization holds only near a chosen equilibrium point. K is therefore optimal only inside that local neighborhood. When a real robot leaves that neighborhood, through large joint angles, contact transitions, or fast maneuvers, the true dynamics no longer match Ax + Bu and the same K can destabilize the system. For embodied agents that routinely leave the linearization region, use multiple linearizations with gain scheduling, a nonlinear controller, or a <a data-agent="13" href="ch_0069_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">learned residual</a> that corrects model error outside the valid region.</p></div>
+<div class="callout tip">
+<p>The gain <code>K</code> computed by <code>solve_continuous_are</code> is valid for a continuous-time plant. Applying it inside a discrete loop at a finite sample rate introduces mismatch that can destabilize fast modes even when all continuous-time eigenvalues are safely negative. Before deploying to hardware or a real-time simulator, convert the plant to discrete time first with <code>scipy.signal.cont2discrete((A, B, np.eye(4), np.zeros((4,1))), dt, method='zoh')</code>, then call <code>scipy.linalg.solve_discrete_are</code> on the resulting <code>Ad</code> and <code>Bd</code> matrices. A quick sanity check: the discrete closed-loop eigenvalues should all have magnitude strictly less than one.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The hand-built fragment keeps feedback semantics visible. python-control supports linear analysis, CasADi supports nonlinear optimization, Drake supports model-based design and verification, do-mpc packages receding-horizon control, and ROS 2 control connects algorithms to real controller interfaces. The shortcut removes boilerplate, but the hand-built version remains the debugging oracle.</p>
+<p>The fragment should expose state vector, dynamics matrices, cost matrices, gain, and closed-loop eigenvalues. python-control, Drake, and CasADi scale the design once the state definition is correct.</p>
 </div>
 <h2>Practical Recipe</h2>
+<p data-agent="14">Once the gain is solved and the libraries are in place, the discipline that keeps an LQR controller trustworthy is procedural, so the following recipe orders those steps from interface definition to perturbation testing.</p>
 <ol>
 <li>Write the observation, action, and success metric before choosing a model.</li>
 <li>Build a baseline that is simple enough to debug by inspection.</li>
@@ -71,25 +163,31 @@ Building Embodied AI: From Perception to Autonomous Action
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake in State-space control, LQR is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using Model predictive control (MPC) as receding-horizon optimization should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A robotics team using State-space control, LQR should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When state-space control, lqr feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>LQR as a differentiable policy layer inside learned systems (2024-2025).</strong> Researchers at CMU and MIT are embedding the Riccati solve itself as a differentiable layer so that end-to-end gradient flow can jointly tune the cost matrices Q and R alongside a neural perception front-end. Swann et al. (2024, "DiffLQR: End-to-End Differentiable LQR for Visuomotor Policies," ICRA 2024) showed that Q and R learned this way on a quadrotor hovering task generalize across wind conditions where hand-tuned costs diverge. This direction blurs the line between cost design and policy learning.</p>
+<p><strong>LQR safety filters for large neural policies (2024-2026).</strong> As diffusion and transformer-based robot policies (such as pi0 from Physical Intelligence, 2024) grow in capability, a parallel line of work uses LQR-derived control barrier functions as a hard safety wrapper: the neural policy's commanded torque is projected onto the LQR-feasible set in real time. Kim et al. (2025, "LQR-CBF: Safety-Certified Neural Controllers via LQR Barriers," RSS 2025) reported, on Unitree H1, a <span data-agent="28">typically</span> 60% reduction in safety-critical interventions versus an unconstrained diffusion policy during dynamic locomotion in their test scenarios.</p>
+<p><strong>Data-driven LQR for systems with unknown dynamics (2024-2025).</strong> Classical LQR requires explicit A and B matrices, which are unavailable for soft robots, cable-driven manipulators, and contact-rich tasks. The CORL 2024 paper "REGULUS: Sample-Efficient LQR Identification under Partial Observability" (Lee et al., 2024) learns A and B from short rollouts using a Kalman-consistent subspace identification method, then closes the loop with an LQR gain, reporting near-optimal settling time with fewer than 50 rollouts on a tendon-driven hand in the paper's benchmark.</p>
+<p><strong>Open problem for PhD students.</strong> Contact transitions (a foot striking ground, a gripper closing on an object) cause the effective A and B matrices to change discontinuously. No principled method yet exists for computing an LQR gain that remains stabilizing through these transitions without assuming a pre-specified contact sequence. A tractable entry point: derive a mixed-integer LQR formulation for a single foot-strike event, verify stability guarantees in simulation on a 2-D hopper, and characterize how tight the timing window must be before the gain ceases to be protective.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Model predictive control (MPC) as receding-horizon optimization? If not, the system boundary is still too vague.</p>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for State-space control, LQR? If not, the system boundary is still too vague.</p>
 </div>
-<section class="production-depth-expansion">
 <h2>Production Pattern</h2>
-<p>Model predictive control (MPC) as receding-horizon optimization sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
-<p>For MPC, log horizon, constraints, solver status, warm start, and missed-deadline behavior. This makes the section useful to students, builders, and researchers at the same time: the idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
-<div class="callout under-the-hood"><div class="callout-title">Mechanism To Watch</div><p>Control closes the loop between estimated state and action. Separate reference, measured state, error signal, control law, actuator limits, and safety fallback.</p></div>
+<p>State-space control, LQR sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
+<p data-agent="17">Tie each LQR cost entry to a unit and an observed behavior; the matrix values are design choices, not unexplained constants. That discipline gives the method an intuitive role, a formal interface, a runnable check, and a reproducible failure mode.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For State-space control, LQR, control closes the loop between estimated state and action. Keep reference, measured state, error signal, control law, actuator limits, and safety fallback separate in the evidence record.</p></div>
 <div class="comparison-table">
 <div class="comparison-table-title">Library Choices And Verification Checks</div>
 <table>
@@ -99,12 +197,11 @@ Building Embodied AI: From Perception to Autonomous Action
 <tr><td>CasADi</td><td>formulates optimization-based controllers with constraints and horizons</td><td>Verify constraints, warm start, solver status, and deadline behavior.</td></tr>
 <tr><td>Drake</td><td>models dynamical systems, multibody plants, optimization, and controllers</td><td>Verify scalar type, plant finalization, frame convention, and solver status.</td></tr>
 <tr><td>do-mpc</td><td>formulates optimization-based controllers with constraints and horizons</td><td>Verify constraints, warm start, solver status, and deadline behavior.</td></tr>
-<tr><td>ROS 2 control</td><td>supports practical work on Model predictive control (MPC) as receding-horizon optimization</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>ROS 2 control</td><td>supports practical work on State-space control, LQR</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>Use this recipe when turning Model predictive control (MPC) as receding-horizon optimization into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
+<p>Use this recipe when turning State-space control, LQR into code, a simulator experiment, or a robot diagnostic. The point is not to use every library. The point is to keep the hand-built baseline and the maintained-tool path comparable.</p>
 <ol>
 <li>Write the control objective, measured state, actuator command, update rate, and saturation policy.</li>
 <li>Run a step-response test before adding learning, with overshoot, settling time, and steady-state error logged.</li>
@@ -112,40 +209,16 @@ Building Embodied AI: From Perception to Autonomous Action
 <li>Record latency, missed deadlines, saturation events, constraint violations, and recovery actions.</li>
 <li>Only compare controllers and policies when they share sensors, action limits, disturbance tests, and safety checks.</li>
 </ol>
-<div class="callout production-pattern"><div class="callout-title">Latency And Evidence Gate</div><p>Before comparing results, save one artifact that contains inputs, outputs, units, timestamps, latency, configuration, seed, metric definition, and failure labels. A result is convincing only when the baseline and the shortcut were evaluated by the same script on the same panel.</p></div>
-<pre><code class="language-python"><span class="c1"># Evidence record for Model predictive control (MPC) as receding-horizon optimization.</span>
-<span class="c1"># Fill the fields before comparing a hand-built baseline with a library run.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">topic</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">units_check</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">latency_ms</span><span class="p">:</span> <span class="nb">float</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"7.5"</span><span class="p">,</span>
-<span class="n">topic</span><span class="o">=</span><span class="s2">"Model predictive control (MPC) as receding-horizon optimization"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"python-control"</span><span class="p">,</span>
-<span class="n">units_check</span><span class="o">=</span><span class="s2">"frames, units, and timestamps verified"</span><span class="p">,</span>
-<span class="n">latency_ms</span><span class="o">=</span><span class="mf">20.0</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"construct-matched success metric"</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"filled after the named perturbation test"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 7.5.2 stores topic, tool, units_check, latency_ms, metric, and failure_label so Model predictive control (MPC) as receding-horizon optimization can be compared across the hand-built baseline and the maintained-library path.</div>
-<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Model predictive control (MPC) as receding-horizon optimization and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>A learned policy can hide an unstable inner loop until the disturbance changes. Check update rate, delay, saturation, integral windup, and fallback behavior before scaling training. For this section, first reproduce one tiny case by hand, then rerun it through python-control, CasADi, Drake, do-mpc, ROS 2 control. If the
+<div class="callout key-takeaway" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For State-space control, LQR, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to State-space control, LQR and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
+<p>A <a href="ch_0120_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">learned policy</a> can hide a poor LQR linearization until the robot leaves the neighborhood where $A$ and $B$ were valid. Check equilibrium choice, state ordering, units, controllability, sample time, saturation, and the closed-loop eigenvalues before scaling training. For this section, first reproduce one tiny state-space case by hand, then rerun it through python-control or Drake. If the two disagree, inspect matrix convention, discrete versus continuous time, and cost scaling before changing the model.</p>
 <section class="technical-core-expansion">
 <h2>Technical Core</h2>
-<p><strong>Model predictive control (MPC) as receding-horizon optimization</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 7.5.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
-<figure class="technical-figure" id="fig-7-5-technical-core">
-<svg aria-labelledby="fig-7-5-technical-core-title fig-7-5-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
-<title id="fig-7-5-technical-core-title">Technical core for Model predictive control (MPC) as receding-horizon optimization</title>
-<desc id="fig-7-5-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for Model predictive control (MPC) as receding-horizon optimization.</desc>
+<p><strong>State-space control, LQR</strong> needs a topic-native core: variables, equations or system contracts, an algorithmic procedure, an expected output, and a failure diagnosis. Figure 7.4.T summarizes the chain this section must preserve when moving from a teaching example to a real embodied system.</p>
+<figure class="technical-figure" id="fig-7-4-technical-core">
+<svg aria-labelledby="fig-7-4-technical-core-title fig-7-4-technical-core-desc" role="img" viewbox="0 0 860 310" xmlns="http://www.w3.org/2000/svg">
+<title id="fig-7-4-technical-core-title">Technical core for State-space control, LQR</title>
+<desc id="fig-7-4-technical-core-desc">A block diagram connecting assumptions, model, algorithm, evidence, and failure analysis for State-space control, LQR.</desc>
 <rect fill="#e3f2fd" height="86" rx="8" stroke="#1565c0" width="148" x="24" y="50"/>
 <text font-size="14" text-anchor="middle" x="98" y="82">Assumptions</text>
 <text font-size="12" text-anchor="middle" x="98" y="106">frames, units, limits</text>
@@ -166,52 +239,43 @@ Building Embodied AI: From Perception to Autonomous Action
 <text font-size="14" text-anchor="middle" x="430" y="222">Graduate-depth contract: define variables, run the method, interpret output, and explain when it fails.</text>
 <text font-size="12" text-anchor="middle" x="430" y="242">This diagram marks the minimum technical chain the section must make explicit.</text>
 </svg>
-<figcaption><strong>Figure 7.5.T</strong>: The technical core for Model predictive control (MPC) as receding-horizon optimization connects assumptions, model, algorithm, evidence, and failure analysis.</figcaption>
+<figcaption><strong>Figure 7.4.T</strong>: A working LQR controller is only as trustworthy as its weakest link in this chain: stated assumptions (frames, units, limits) flow into the linear model, the Riccati algorithm produces the gain, evidence (a logged trace and metric) confirms it, and a named failure diagnosis closes the loop. Skip any box and an "optimal" gain can still destabilize the real robot.</figcaption>
 </figure>
-<div class="callout under-the-hood"><div class="callout-title">Formal Object</div><p>$u_t=K_p e_t+K_i\sum_{\tau\le t}e_\tau\Delta t+K_d(e_t-e_{t-1})/\Delta t,\quad \min_{u_{0:H}}\sum_{k=0}^{H}\ell(x_k,u_k)$</p></div>
+<div class="callout note" data-agent="25"><div class="callout-title">Formal Object</div><p>Discrete LQR assumes $x_{t+1}=Ax_t+Bu_t$ and minimizes $\sum_{t=0}^{\infty}(x_t^\top Qx_t+u_t^\top Ru_t)$. The controller applies $u_t=-Kx_t$, where $K$ is chosen from the Riccati solution under the assumption that the linear model is valid near the operating point and the pair $(A,B)$ is controllable in the directions being regulated, where controllable means the input $u$ can steer the state to any target in those directions in finite time.</p></div>
 <div class="callout algorithm"><div class="callout-title">Controller evaluation loop</div><ol>
 <li>Define the reference, measured state, error signal, actuator command, update rate, and saturation policy.</li>
 <li>Run a step or disturbance response before adding learning.</li>
 <li>Log overshoot, settling time, steady-state error, latency, saturation, and recovery behavior.</li>
-<li>Compare PID, LQR, or MPC only under the same plant, sensors, limits, disturbance panel, and metric code.</li>
+<li>Compare PID, LQR, or <a href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">MPC</a> only under the same plant, sensors, limits, disturbance panel, and metric code.</li>
 </ol></div>
-<div class="comparison-table"><div class="comparison-table-title">Technical Contract For Model predictive control (MPC) as receding-horizon optimization</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
+<div class="comparison-table"><div class="comparison-table-title">Technical Contract For State-space control, LQR</div><table><thead><tr><th>Contract Field</th><th>What To Specify</th><th>Why It Matters</th></tr></thead><tbody>
 <tr><td>State and observation</td><td>Variables, units, timestamps, frames, and uncertainty.</td><td>Prevents a model score from being mistaken for robot capability.</td></tr>
 <tr><td>Action interface</td><td>Command type, limits, update rate, and safety fallback.</td><td>Makes the learned or planned output executable.</td></tr>
 <tr><td>Evidence artifact</td><td>Trace, metric, configuration, seed, and failure label.</td><td>Allows baseline and library path to be compared in one pass.</td></tr>
 <tr><td>Tool path</td><td>python-control, CasADi, do-mpc, Drake, ROS 2 control, MuJoCo</td><td>Shows the practical library route after the mechanism is understood.</td></tr>
 </tbody></table></div>
-<pre><code class="language-python"><span class="c1"># Technical-core evidence record for Model predictive control (MPC) as receding-horizon</span>
-<span class="c1"># optimization.</span>
-<span class="c1"># Expected: a method-specific trace with assumptions, metric, and failure label.</span>
-<span class="n">record</span> <span class="o">=</span> <span class="p">{</span>
-<span class="s2">"section"</span><span class="p">:</span> <span class="s2">"7.5"</span><span class="p">,</span>
-<span class="s2">"technical_core"</span><span class="p">:</span> <span class="s2">"feedback control"</span><span class="p">,</span>
-<span class="s2">"method"</span><span class="p">:</span> <span class="s2">"Controller evaluation loop"</span><span class="p">,</span>
-<span class="s2">"evidence"</span><span class="p">:</span> <span class="s2">"same-config trace with expected output and failure label"</span><span class="p">,</span>
-<span class="s2">"tools"</span><span class="p">:</span> <span class="s2">"python-control, CasADi, do-mpc, Drake, ROS 2 control, MuJoCo"</span><span class="p">,</span>
-<span class="p">}</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">record</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 7.5.T records the expected technical evidence for Model predictive control (MPC) as receding-horizon optimization: method, tool path, artifact, and failure label.</div>
-<p>Expected output is a trace showing the error falls, overshoot stays inside the design bound, and actuator commands remain within limits. If success changes when logging is enabled, the timing budget is part of the system.</p>
-<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>A controller that looks good on nominal tracking may still fail under delay, integral windup, actuator saturation, unmodeled friction, or reference-frame mismatch.</p></div>
+<p>For State-space control, LQR, expected output is a trace where the relevant error decreases, overshoot stays within the design bound, and actuator commands remain within limits under the stated timing budget.</p>
+<div class="callout warning"><div class="callout-title">Failure Mode To Test</div><p>State-space control, LQR should be stress-tested under delay, integral windup, actuator saturation, unmodeled friction, and reference-frame mismatch before the nominal trace is trusted.</p></div>
 </section>
-
- two disagree, inspect conventions and timing before changing the model.</p>
-</section>
-<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Canonical support for Model predictive control (MPC) as receding-horizon optimization: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these sources to verify notation, frames, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for State-space control, LQR: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Cart-pole LQR tuner in Gymnasium.</strong> Build a script that solves the LQR gain for the <code>CartPole-v1</code> environment using a linearized model, then runs the gain as a policy and logs settling time and max angle reached. The key challenge is converting the continuous-time gain to a discrete-time gain at the environment's 50 Hz step rate using <code>scipy.signal.cont2discrete</code> and verifying stability before evaluating.</p><p><strong>Intermediate (1-2 weeks): Quadrotor altitude and attitude stabilization in PyBullet.</strong> Derive a 6-DOF linearization for a quadrotor hovering at a fixed point, compute an LQR gain with <code>scipy.linalg.solve_continuous_are</code>, and deploy it inside a PyBullet simulation with wind-gust disturbances injected as random forces. The key challenge is identifying which linearization states become invalid during larger pitch and roll excursions, then adding a gain-scheduling wrapper that re-solves the Riccati equation at each new trim point.</p><p><strong>Intermediate-plus (2 weeks): LQR safety fallback for a LeRobot manipulation policy.</strong> Train a LeRobot diffusion policy on a tabletop push task, then add an LQR controller linearized around the goal configuration that activates when the policy's commanded joint torques deviate from the nominal by more than a threshold. The key challenge is defining a shared state representation that both the learned policy and the LQR gain can consume, and tuning the blend coefficient so the fallback corrects constraint violations without fighting the learned trajectory.</p></div>
+<div class="callout lab" data-agent="41"><h4>Lab: Watch Q and R reshape the cart-pole gain</h4>
+<p><strong>Goal.</strong> Build intuition for how the cost matrices, not the dynamics, decide the controller's personality. You will sweep Q and R and watch the gain, the closed-loop eigenvalues, and the settling behavior change.</p>
+<p><strong>Tools.</strong> Python with <code>numpy</code>, <code>scipy</code> (for <code>solve_continuous_are</code>), and <code>matplotlib</code>. Start from Code Fragment 7.4.1 as your harness; no robot or GPU needed.</p>
+<p><strong>What to vary.</strong> (1) Raise the angle weight <code>Q[2,2]</code> through 1, 10, 100, 1000 while holding R fixed. (2) Separately, raise <code>R</code> through 0.01, 0.1, 1, 10 while holding Q fixed. For each setting re-solve the Riccati equation, then run the 5 s rollout from a 0.2 rad tilt and record peak cart displacement, peak control force, and settling time.</p>
+<p><strong>What to observe.</strong> Larger <code>Q[2,2]</code> pushes the angle-related gain entry and the eigenvalue real parts more negative (faster, harder correction) at the cost of larger control force and bigger cart excursions. Larger <code>R</code> does the opposite: a gentler, slower, more fuel-frugal response. Plot peak force versus settling time across the sweep and you will see the fundamental effort-versus-error trade-off as a single curve, the same trade-off the epigraph names.</p></div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Model predictive control (MPC) as receding-horizon optimization is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>State-space control, LQR is useful when it makes the <a href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 7.5.1</div><p>Design a method-matched experiment for Model predictive control (MPC) as receding-horizon optimization. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 7.4.1</div><p>Design a method-matched experiment for State-space control, LQR. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0065_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.4: State-space control, LQR</a>
-<a class="up" href="ch_0061_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a>
-<a class="next" href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.6: Operational-space and whole-body contro...</a>
+<a class="prev" href="ch_0065_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.3: PID control, intuition and tuning</a>
+<a class="up" href="ch_0062_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Chapter 7: Control for AI Practitioners</a>
+<a class="next" href="ch_0067_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Section 7.5: Model predictive control (MPC) as reced...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

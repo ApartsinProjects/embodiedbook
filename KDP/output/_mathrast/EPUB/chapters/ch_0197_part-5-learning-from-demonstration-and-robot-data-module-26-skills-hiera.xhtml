@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 26.2: The options framework</title>
+    <title>Section 26.1: What a skill is; low- vs. high-level actions</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,259 +14,244 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0161_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a></div>
-<div class="chapter-label"><a href="ch_0195_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26: Skills, Hierarchy, and Task Decomposition</a></div>
-<h1>Section 26.2: The options framework</h1>
+<div class="page-breadcrumb"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a><span class="bc-sep">›</span><a href="ch_0196_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26: Skills, Hierarchy, and Task Decomposition</a></div>
+<h1>Section 26.1: What a skill is; low- vs. high-level actions</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"A skill is a promise to the planner: start here, follow this policy, and I will tell you when I am done."</p><cite>A Hierarchical Policy Designer</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 26.2: The options framework, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/8e4ce4f30f_chapter-26-illustration-02.jpg"/>
-<figcaption><strong>Figure 26.2A</strong>: Section 26.2: The options framework is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Technical illustration for Section 26.1: What a skill is; low- vs. high-level actions." loading="lazy" src="../img/1b919d3cfc_chapter-26-illustration-01.jpg"/>
+<figcaption>Figure 26.1A: Low-level actions (joint torques, gripper open/close) vs. high-level skills (pick, place, open door) shown as a two-level action hierarchy, with the skill boundary defined by temporal abstraction and reusability.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with the perception-action loop introduced in section 1.2. The option tuple defined here is examined in depth in section 26.2, which formalizes initiation sets, termination conditions, and the option-critic learning rule. The skill vocabulary built in this section recurs in section 26.4, where language models act as high-level planners over typed skill libraries, and in section 33.2, where SayCan grounds natural-language instructions by scoring candidate skills against affordance functions.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>The options framework</strong> is one lens on skills, hierarchy, and task decomposition. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A robot arm completing a pick-and-place task issues roughly 3,000 joint-torque commands per minute, yet the human who taught it described the job in four words: "pick up the cup." Bridging that gap is the central design problem in embodied AI right now, as systems leave structured factories and enter unscripted homes and hospitals. A <em>skill</em> is the abstraction that makes it possible: a self-contained behavioral unit with a start condition, an internal controller, and a termination rule. You will see how the option framework formalizes this contract, why the boundary between low-level and high-level actions is defined by temporal scale and reusability, and how a typed skill library turns a planner into a reliable sequencer rather than a fragile script.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for the options framework into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<h2>Why Hierarchy Matters</h2>
+<p data-agent="22"><span data-agent="29">Ask a robot to "pick up the cup." Beneath that four-word instruction, roughly 3,000 joint-torque commands per minute must fire in the right order. No human planner thinks in torques. The entire discipline of skill hierarchy exists to let the planner reason in cups while the controller reasons in newtons.</span> Hierarchy separates timing, contact, recovery, and sequencing so a high-level planner can select skills without pretending every low-level policy is deterministic.</p>
+<p data-agent="04">Two terms will recur constantly from here on: a <strong>low-level action</strong> is a single motor command issued on a millisecond timescale (a joint torque or a velocity setpoint), while a <strong>high-level skill</strong> is a longer-running, self-contained behavior (seconds or more) that decides internally which low-level actions to issue and when to stop. The rest of this section defines the boundary between the two precisely.</p>
+<p>The distinction is temporal scale. A low-level action might be a velocity command for 20 milliseconds. A high-level skill might be a 6-second door-opening routine that watches force, pose, contact, and success. Both are actions from the planner's perspective, but only the skill hides a controlled sequence behind <strong>a stable, reusable behavioral interface</strong> that the <a data-agent="13" href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">perception-action loop</a> can drive without re-deriving every motor command. Figure 26.1.C below lays out this progression from torque command to skill to task on a single timescale.</p>
+<figure class="diagram-container" data-agent="09">
+<svg aria-labelledby="action-hierarchy-26-1" role="img" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<title id="action-hierarchy-26-1">Low-level actions versus high-level skills on the temporal and abstraction scale</title>
+<defs>
+<marker id="arrow-action-26-1" markerheight="10" markerwidth="10" orient="auto" refx="8" refy="3">
+<path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+</marker>
+</defs>
+<!-- Low-level axis label -->
+<text fill="#1a1a2e" font-family="monospace" font-size="14" text-anchor="middle" x="50" y="30"><tspan font-weight="bold">Low-level</tspan></text>
+<text fill="#666" font-family="monospace" font-size="12" x="50" y="48">(milliseconds)</text>
+<!-- High-level axis label -->
+<text fill="#1a1a2e" font-family="monospace" font-size="14" text-anchor="middle" x="550" y="30"><tspan font-weight="bold">High-level</tspan></text>
+<text fill="#666" font-family="monospace" font-size="12" x="550" y="48">(seconds)</text>
+<!-- Low-level box -->
+<rect fill="#ffebee" height="100" rx="6" stroke="#c62828" stroke-width="2" width="120" x="20" y="80"/>
+<text fill="#1a1a2e" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="80" y="110">Torque</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="128">command</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="145">20 ms</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="162">No state</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="176">tracking</text>
+<!-- Mid-level box -->
+<rect fill="#fff3e0" height="100" rx="6" stroke="#e65100" stroke-width="2" width="140" x="230" y="80"/>
+<text fill="#1a1a2e" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="300" y="110">Skill</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="128">or primitive</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="145">6 seconds</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="162">Monitors</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="176">force, pose</text>
+<!-- High-level box -->
+<rect fill="#e3f2fd" height="100" rx="6" stroke="#1565c0" stroke-width="2" width="130" x="450" y="80"/>
+<text fill="#1a1a2e" font-family="monospace" font-size="13" font-weight="bold" text-anchor="middle" x="515" y="110">Task</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="128">or goal</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="145">Minutes</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="162">Planner</text>
+<text fill="#333" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="176">decides</text>
+<!-- Arrows showing progression -->
+<path d="M 140 130 L 230 130" marker-end="url(#arrow-action-26-1)" stroke="#666" stroke-width="2"/>
+<path d="M 370 130 L 450 130" marker-end="url(#arrow-action-26-1)" stroke="#666" stroke-width="2"/>
+<!-- Bottom labels for properties -->
+<text fill="#333" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="300" y="230">Key distinction: temporal scale and reusability</text>
+<text fill="#666" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="250">Skills hide controlled sequences behind a stable interface.</text>
+<text fill="#666" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="267">Planners wait for skill termination, not microsecond details.</text>
+</svg>
+<figcaption data-agent="39"><strong>Figure 26.1.C</strong>: As the timescale grows left to right (20 ms torque command, to 6 s skill, to minutes-long task), each level hides the one below it: the torque command tracks no state, the skill monitors force and pose, and the planner only decides which skill to run, never seeing the torques underneath.</figcaption>
+</figure>
+<div class="callout fun-note">
+<p>A 20-millisecond torque command and a 6-second door-opening routine are both "actions" in the same way that pressing a single piano key and performing a sonata are both "music": technically accurate, practically useless as a comparison.</p>
+</div>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In the options framework, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Skill Equals Promise</div>
+<p>For What a skill is; low- vs. high-level actions, treat the skill as an interface: initiation set, internal controller, progress signal, termination rule, verifier, and recovery status must be explicit.</p>
 </div>
-<h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<h2>Formal Contract</h2>
+<p data-agent="14">Naming that stable interface is only half the story; to use it as a contract the planner can trust, we need to say precisely why hiding the low level is worth the effort and what fields the contract must contain.</p>
+<p><span data-agent="29">Temporal abstraction matters in embodied AI because physical execution is typically irreversible. A gripper that closes on a fragile object cannot undo a 20-millisecond torque command that exceeded safe contact force. Grouping those commands into a skill with an internal force guard lets the skill catch and reverse failures before the planner ever sees a bad state. Without this boundary, a planner operating at the wrong timescale does one of two bad things. It issues unsafe low-level commands directly, or it sequences hundreds of micro-actions and multiplies error propagation at every step.</span> A concrete illustration of the cost: learning a pick-and-place task from scratch at the torque level typically requires on the order of 50,000 demonstration episodes in published benchmarks, while the same task learned at the skill level, where the planner selects from three typed primitives, typically converges in roughly 300; exact counts vary with object variety and controller quality.</p>
+<p>The mechanism is a time-extended policy governed by a termination function. At each timestep, the skill's internal policy selects an action; the termination function independently evaluates whether the skill's <span data-agent="21">postcondition, the sensor-space fact that must hold true for the skill to count as successfully finished (for example, the object is in the gripper),</span> is met or a safety guard is violated. The planner waits, issuing no new commands, until termination fires. This suspends the planner's decision cycle for the duration of the skill, reducing its effective <span data-agent="21">branching factor, the number of distinct choices the planner must consider at each decision point,</span> from thousands of torque-space choices to a handful of skill-level options.</p>
+<h4 data-agent="30">The option tuple</h4>
+<p>For What a skill is; low- vs. high-level actions, use the <a data-agent="13" href="ch_0198_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">option tuple</a> as an audit checklist: initiation states, internal policy, termination probability, and verifier must match the robot task. The equation below states this contract formally: an option $\omega$ is the triple of an initiation set $I_\omega$ (the states where the skill may start), an internal policy $\pi_\omega$ (which action to take), and a termination function $\beta_\omega$ (the probability of stopping in the current state).</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="\omega=(I_\omega,\pi_\omega,\beta_\omega),\quad a_t\sim\pi_\omega(a\mid s_t),\quad \mathrm{stop}\sim\beta_\omega(s_t)."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>ω</mi><mo>=</mo><mo stretchy="false">(</mo><msub><mi>I</mi><mi>ω</mi></msub><mo separator="true">,</mo><msub><mi>π</mi><mi>ω</mi></msub><mo separator="true">,</mo><msub><mi>β</mi><mi>ω</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="1em"/><msub><mi>a</mi><mi>t</mi></msub><mo>∼</mo><msub><mi>π</mi><mi>ω</mi></msub><mo stretchy="false">(</mo><mi>a</mi><mo>∣</mo><msub><mi>s</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="1em"/><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">p</mi></mrow><mo>∼</mo><msub><mi>β</mi><mi>ω</mi></msub><mo stretchy="false">(</mo><msub><mi>s</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">\omega=(I_\omega,\pi_\omega,\beta_\omega),\quad a_t\sim\pi_\omega(a\mid s_t),\quad \mathrm{stop}\sim\beta_\omega(s_t).</annotation></semantics></math></span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: physical actions are irreversible enough that skills need internal safety guards, a termination function lets the planner stop watching once a postcondition or guard fires, and the option tuple $(I_\omega,\pi_\omega,\beta_\omega)$ is just the formal name for "where it can start, what it does, when it stops."</p></div>
+<div class="callout key-insight"><p>Think of a GPS navigator handing you a route to a distant city. While you are driving that route, the navigator does not recalculate turn-by-turn from scratch every second; it waits, monitoring your position, and only interrupts when you deviate or arrive. The skill's termination function plays exactly that role: the high-level planner issues one decision ("execute this skill"), then steps back and waits for a signal that the skill is done or has gone wrong. Just as the navigator reduces your decision load from "which micro-lane adjustment every 50 ms" to "which city next," the skill reduces the planner's branching factor from thousands of torque-space options to a small set of composable behavioral units.</p></div>
+<p>For What a skill is; low- vs. high-level actions, map the option fields onto behavior trees, task graphs, finite-state machines, or task-and-motion planning nodes so start, act, stop, and verify remain inspectable. Figure 26.1.B shows one such mapping, where a mission goal expands into a task graph of skills with a verifier that can route failures back upstream.</p>
+<div class="callout tip">
+<p>In BehaviorTree.CPP, declare every skill's postcondition as a typed output port and every skill's precondition as a typed input port using <code>BT::OutputPort</code> and <code>BT::InputPort</code> in <code>providedPorts()</code>. The blackboard then enforces that the producing skill writes the same key the consuming skill reads, which catches coordinate-frame mismatches (map frame vs. odom frame) at tree-load time rather than at runtime. Without typed ports, two skills can each pass their own unit tests while silently exchanging stale or misframed data at their boundary.</p>
 </div>
-<h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<div class="diagram-container" data-agent="09">
+<svg aria-labelledby="skill-diagram-26-1" role="img" viewbox="0 0 940 330" xmlns="http://www.w3.org/2000/svg">
+<title id="skill-diagram-26-1">Hierarchical robot policy from mission goal to task graph to verified skills</title>
+<rect fill="#e3f2fd" height="70" rx="8" stroke="#1565c0" stroke-width="3" width="170" x="40" y="45"/>
+<text fill="#1a1a2e" font-size="18" text-anchor="middle" x="125" y="86">Mission goal</text>
+<rect fill="#e8f5e9" height="70" rx="8" stroke="#2e7d32" stroke-width="3" width="190" x="280" y="45"/>
+<text fill="#1a1a2e" font-size="18" text-anchor="middle" x="375" y="78">Task graph</text>
+<text fill="#1a1a2e" font-size="14" text-anchor="middle" x="375" y="101">ordering and fallback</text>
+<rect fill="#fff3e0" height="58" rx="8" stroke="#e65100" stroke-width="3" width="150" x="550" y="25"/>
+<text fill="#1a1a2e" font-size="16" text-anchor="middle" x="625" y="60">Navigate</text>
+<rect fill="#fff3e0" height="58" rx="8" stroke="#e65100" stroke-width="3" width="150" x="550" y="105"/>
+<text fill="#1a1a2e" font-size="16" text-anchor="middle" x="625" y="140">Manipulate</text>
+<rect fill="#fff3e0" height="58" rx="8" stroke="#e65100" stroke-width="3" width="150" x="550" y="185"/>
+<text fill="#1a1a2e" font-size="16" text-anchor="middle" x="625" y="220">Recover</text>
+<rect fill="#f3e5f5" height="58" rx="8" stroke="#6a1b9a" stroke-width="3" width="130" x="770" y="105"/>
+<text fill="#1a1a2e" font-size="16" text-anchor="middle" x="835" y="140">Verifier</text>
+<path d="M210 80 L280 80" marker-end="url(#arrow-skill-26-1)" stroke="#333" stroke-width="3"/>
+<path d="M470 80 L550 54" marker-end="url(#arrow-skill-26-1)" stroke="#333" stroke-width="3"/>
+<path d="M470 80 L550 134" marker-end="url(#arrow-skill-26-1)" stroke="#333" stroke-width="3"/>
+<path d="M470 80 L550 214" marker-end="url(#arrow-skill-26-1)" stroke="#333" stroke-width="3"/>
+<path d="M700 134 L770 134" marker-end="url(#arrow-skill-26-1)" stroke="#333" stroke-width="3"/>
+<path d="M835 163 C835 285 420 285 375 115" fill="none" marker-end="url(#arrow-skill-26-1)" stroke="#c62828" stroke-dasharray="8 7" stroke-width="3"/>
+<defs><marker id="arrow-skill-26-1" markerheight="10" markerwidth="10" orient="auto" refx="8" refy="3"><path d="M0,0 L0,6 L9,3 z" fill="#333"/></marker></defs>
+</svg>
+<div class="diagram-caption" data-agent="39"><strong>Figure 26.1.B</strong>: A mission goal expands into a task graph that orders three skills (Navigate, Manipulate, Recover); the dashed red arrow is the key element, showing that the Verifier feeds failure back into the task graph, so a failed skill reroutes the plan instead of silently corrupting downstream state.</div>
+</div>
+<h2>Worked Implementation</h2>
+<p data-agent="14">The option tuple and its diagram stay abstract until you watch the four fields turn into running code; the fragment below makes the initiation, termination, and verifier fields concrete in a few lines of Python.</p>
+<p data-agent="17">Before wiring a skill to ROS 2, BehaviorTree.CPP, Drake, or a learned policy, the code must expose five fields: initiation, progress, termination, verification, and failure reporting. The fragment below shows all five in one dataclass.</p>
+<pre><code class="language-python"><span class="c1"># Define a reusable robot skill with explicit start, stop, and verify logic.</span>
+<span class="c1"># The example separates planner-facing status from low-level control details.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
 <span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EmbodiedStep</span><span class="p">:</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">result</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">step</span> <span class="o">=</span> <span class="n">EmbodiedStep</span><span class="p">(</span><span class="s2">"the_options_framework"</span><span class="p">,</span> <span class="s2">"act"</span><span class="p">,</span> <span class="s2">"observe consequence"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 26.2.1 gives a minimal executable baseline for The options framework. It names the data or environment interface before any larger library hides the assumptions.</div>
-<p><strong>Expected output:</strong> the printed trace for The options framework should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use MuJoCo, MJX, Isaac Lab, Genesis, Newton, Drake, ROS 2, and modern Gazebo to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<span class="k">class</span><span class="w"> </span><span class="nc">SkillResult</span><span class="p">:</span>
+<span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">status</span><span class="p">:</span> <span class="nb">str</span>
+<span class="n">reason</span><span class="p">:</span> <span class="nb">str</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">grasp_ready</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
+<span class="k">return</span> <span class="n">state</span><span class="p">[</span><span class="s2">"object_visible"</span><span class="p">]</span> <span class="ow">and</span> <span class="n">state</span><span class="p">[</span><span class="s2">"base_distance_m"</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mf">0.8</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">run_grasp_skill</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">grasp_ready</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
+<span class="k">return</span> <span class="n">SkillResult</span><span class="p">(</span><span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"blocked"</span><span class="p">,</span> <span class="s2">"precondition failed"</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">state</span><span class="p">[</span><span class="s2">"force_n"</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="mf">8.0</span> <span class="ow">and</span> <span class="n">state</span><span class="p">[</span><span class="s2">"lift_cm"</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="mf">3.0</span><span class="p">:</span>
+<span class="k">return</span> <span class="n">SkillResult</span><span class="p">(</span><span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"success"</span><span class="p">,</span> <span class="s2">"object verified in gripper"</span><span class="p">)</span>
+<span class="k">return</span> <span class="n">SkillResult</span><span class="p">(</span><span class="s2">"grasp"</span><span class="p">,</span> <span class="s2">"retry"</span><span class="p">,</span> <span class="s2">"insufficient lift evidence"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">run_grasp_skill</span><span class="p">({</span><span class="s2">"object_visible"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">"base_distance_m"</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s2">"force_n"</span><span class="p">:</span> <span class="mf">9.2</span><span class="p">,</span> <span class="s2">"lift_cm"</span><span class="p">:</span> <span class="mf">4.0</span><span class="p">}))</span></code></pre>
+<div class="code-output">
+SkillResult(name='grasp', status='success', reason='object verified in gripper')
+</div>
+<p>This expected output means the skill returned a planner-facing verdict, not torque-level behavior. The key field is <code>status='success'</code>, which tells the hierarchy that the grasp can hand control back upward because the postcondition was verified in sensor space.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 1:</strong> A <code>run_grasp_skill</code> dataclass function that checks the initiation predicate (<code>grasp_ready</code>), then returns <code>blocked</code>, <code>success</code>, or <code>retry</code> based on measured force and lift height, so the planner sees only a verdict and never a raw torque stream.</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithm: Verified Skill Execution</div>
+<ol>
+<li>Check whether the current state satisfies the skill initiation predicate.</li>
+<li>Execute the skill policy while monitoring progress, time, force, and perception confidence.</li>
+<li>Terminate when the skill succeeds, violates a safety guard, or reaches a timeout.</li>
+<li>Run a verifier that checks the postcondition in sensor space and task space.</li>
+<li>Return success, retry, fallback, or escalate to the high-level planner.</li>
+</ol>
+</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Verified Skill Execution</h4>
+<p>Trace the algorithm for a single <code>grasp</code> skill with concrete sensor readings. The skill's initiation predicate is <code>object_visible AND base_distance_m &lt; 0.8</code>; its termination function fires when <code>force_n &gt;= 8.0</code> (contact achieved) or <code>time &gt;= 6.0 s</code> (timeout); its verifier requires <code>lift_cm &gt;= 3.0</code>.</p>
+<ol>
+<li><strong>Step 1, initiation.</strong> State at handoff: <code>object_visible=True</code>, <code>base_distance_m=0.5</code>. Predicate evaluates <code>True AND (0.5 &lt; 0.8) = True</code>. The skill is allowed to start.</li>
+<li><strong>Step 2, execution (t=0.0 to 2.4 s).</strong> <span data-agent="21">The impedance controller, a low-level control law that regulates contact force by treating the gripper as a spring-damper system rather than commanding a fixed position, closes the gripper.</span> Force rises: <code>force_n = 1.1</code> at t=0.8 s, then <code>3.7</code> at t=1.6 s, then <code>8.3</code> at t=2.4 s. Termination checks each tick: <code>8.3 &gt;= 8.0</code> is now <code>True</code>.</li>
+<li><strong>Step 3, terminate.</strong> The termination function fires at t=2.4 s on the contact guard (not the 6.0 s timeout). The planner is still suspended; no new command issued.</li>
+<li><strong>Step 4, verify.</strong> The arm lifts 4.0 cm while object pose tracks the gripper. Verifier evaluates <code>lift_cm = 4.0 &gt;= 3.0 = True</code>. Postcondition confirmed in sensor space.</li>
+<li><strong>Step 5, return.</strong> The skill returns <code>SkillResult(name='grasp', status='success', reason='object verified in gripper')</code>. Control hands back upward, and the planner selects the next skill.</li>
+</ol>
+<p>Now flip one number: if the gripper had reached <code>force_n = 8.3</code> but <code>lift_cm = 0.4</code> (object slipped), Step 4 fails the verifier and Step 5 returns <code>status='retry'</code> with <code>reason='insufficient lift evidence'</code>. The contact guard alone is not proof of a successful grasp; the verifier is what separates a real skill from a hopeful command sequence.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li>Name each skill with a verb and object: <code>navigate_to_station</code>, <code>grasp_handle</code>, <code>dock_drone</code>, or <code>change_lane</code>.</li>
+<li>Write preconditions, postconditions, safety guards, timeout, and recovery behavior before training a policy.</li>
+<li>Represent sequencing as a finite-state graph, behavior tree, or task-and-motion plan so failures have explicit routes.</li>
+<li>Use <a href="ch_0200_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">language as a planner</a> only after commands are grounded into a typed skill library with affordance checks.</li>
+<li>Evaluate composition, not only individual success. Many failures occur when two correct skills meet at a bad boundary.</li>
 </ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>For What a skill is; low- vs. high-level actions, use BehaviorTree.CPP, ROS 2 lifecycle nodes, Drake systems, or task-and-motion planning to handle scheduling and fallback while preserving explicit skill contracts.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robot learning engineer applying the options framework starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare options with a baseline without changing the task definition midstream.</p>
+<p>For What a skill is; low- vs. high-level actions, decompose the household command into navigation, inspection, reachability, grasp, carry, and handoff only if each subskill exposes a verifier and recovery route.</p>
 </div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for the options framework? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>The options framework becomes useful when it is tied to a closed-loop contract. In this Part V section on The options framework, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>Gymnasium</td><td>The options framework</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>The options framework</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>The options framework</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>The options framework</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>The options framework</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
-</tbody>
-</table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
-<ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
-</ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for The options framework.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"26.2"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 26.2.2 records the method-specific evidence schema for testing The options framework with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When The options framework fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
-<section class="agent-checklist-expansion">
-<h2>Agent Checklist Integration</h2>
-<p><strong>The options framework</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A skill is useful when it gives the planner a reliable temporal abstraction with clear initiation, termination, recovery, and monitoring contracts.</p>
-<p>The practical workflow is: define the observation and action spaces, specify the demonstrator or dataset source, train the smallest behavior model that exposes the assumption, and then compare the library route on the same configuration. The valid comparison is co-computed in one pass on one split, one seed policy, one task panel, and one metric artifact.</p>
-<div class="callout key-insight">
-<div class="callout-title">Mental Model: Demonstrations As Contracts</div>
-<p>Think of each demonstration as a signed contract between the operator, robot body, sensors, action representation, and evaluator. If one party changes later, such as a camera frame rate, gripper calibration, or task reset distribution, the contract must be renegotiated through validation rather than assumed valid.</p>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Warehouse Manipulation</h4>
+<p>Amazon's Sparrow robotic picking system treats each item retrieval as a discrete skill rather than a torque-level trajectory: a vision system selects a grasp pose, an internal controller runs suction or pinch grasping, and a termination check confirms the item left the bin before the planner moves on. The skill boundary is what lets one arm handle millions of distinct SKUs, since the planner never reasons about motor commands, only about whether the "pick" skill succeeded or must retry.</p>
 </div>
 <div class="comparison-table">
-<div class="comparison-table-title">Decision Checklist for The options framework</div>
+<div class="comparison-table-title">Skill Interface Checklist</div>
 <table>
-<thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
+<thead><tr><th>Field</th><th>Question</th><th>Example For A Mobile Manipulator</th></tr></thead>
 <tbody>
-<tr><td>Curriculum and depth</td><td>What concept is new here, and why does Part V need it?</td><td>A definition, a worked example, and a failure case tied to the perception-action loop.</td></tr>
-<tr><td>Code and tools</td><td>Which maintained tool removes boilerplate after the from-scratch baseline?</td><td>options, skill discovery, hierarchical policies, task graphs, language-conditioned skills evaluated against the same task contract.</td></tr>
-<tr><td>Data and evaluation</td><td>What distribution produced the behavior, and where can it break?</td><td>Train, validation, and stress splits with explicit robot, camera, timing, and license metadata.</td></tr>
-<tr><td>Publication quality</td><td>Can the reader reproduce the claim without hidden context?</td><td>Captions, bibliography cards, cross-links, and a same-artifact audit trail.</td></tr>
+<tr><td>Initiation</td><td>When may it start?</td><td>Object detected, arm clear, base within reach.</td></tr>
+<tr><td>Policy</td><td>What controller runs?</td><td><a href="ch_0068_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">Visual servoing plus impedance control</a>.</td></tr>
+<tr><td>Termination</td><td>When does it stop?</td><td>Grasp force stable for 0.5 seconds.</td></tr>
+<tr><td>Verification</td><td>How is success proved?</td><td>Object pose follows gripper during lift.</td></tr>
+<tr><td>Recovery</td><td>What happens after failure?</td><td>Open gripper, re-localize, retry from a safer pose.</td></tr>
 </tbody>
 </table>
 </div>
 <div class="callout warning">
-<div class="callout-title">Pitfall: Generic Success Claims</div>
-<p>Do not claim that the options framework improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
+<p>A common assumption is that a skill is simply a named macro: a fixed sequence of low-level commands that gets called as a unit. In embodied AI this is wrong in a critical way. A skill is defined by its initiation predicate, its internal policy, and its termination function, not by the particular motor commands it issues. Two robots executing the same "grasp" skill may use entirely different torque sequences depending on object pose, gripper geometry, and contact feedback, yet both are executing the same skill because they share the same behavioral contract. The correct mental model is that a skill is an interface specification, and the low-level controller is one possible implementation of that interface. Treating skills as fixed command sequences breaks the moment the environment, hardware, or contact conditions change, because there is no termination function to detect when the sequence has gone wrong.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall: Boundary Mismatch Between Skills</div>
+<p>The most common hierarchy failure is not a skill failing on its own but two individually correct skills producing a bad joint state at their boundary. Consider a navigate skill that terminates when the robot is within 0.6 m of a target pose and a grasp skill whose initiation predicate requires base_distance_m &lt; 0.8 m. Both pass their own checks, yet if the navigate skill's termination criterion uses a different coordinate frame than the grasp skill's initiation predicate (for example, one in map frame and one in odom frame after a localization jump), the grasp will block or act on a stale estimate. The fix is to require that every skill's postcondition be expressed in the same sensor-space quantities that the next skill reads as its precondition, checked in a single perception pass before handoff.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Named Systems: Skills in Practice</div>
+<p>Three deployed systems illustrate the spectrum. RT-2 (Brohan et al., 2023) uses a <a href="ch_0262_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">vision-language-action model</a> but still invokes discrete skill primitives (pick, place, open) as its action vocabulary, not raw joint commands. <a href="ch_0253_part-7-language-vision-and-action-module-33-llms-as-planners-and-control.xhtml">SayCan</a> (Ahn et al., 2022) grounds language instructions by scoring each candidate skill against an affordance function before selecting it, making the initiation predicate explicit at scale. BehaviorTree.CPP, used in production manipulation stacks at Boston Dynamics and in ROS 2 Nav2, encodes the exact option tuple fields (precondition, tick policy, success/failure port) as typed tree nodes. All three separate the planner's choice of skill from the controller that executes it.</p>
 </div>
 <div class="callout research-frontier">
-<div class="callout-title">Current Research Thread</div>
-<p>Skill hierarchies are converging with language-conditioned policies, robot foundation models, and deployment monitors. The open problem is not naming more skills; it is learning reusable skills that transfer across embodiments while preserving safety envelopes and measurable termination conditions.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Application Example</div>
-<p><strong>Who:</strong> A robot learning engineer preparing a tabletop manipulation benchmark for a three-arm lab study.</p>
-<p><strong>Situation:</strong> The engineer needs to decide whether the options framework is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
-<p><strong>Decision:</strong> They keep a minimal baseline, then run the right-tool implementation with options or skill discovery using the same manifest, seed, split, and evaluation script.</p>
-<p><strong>Result:</strong> The team gets one artifact with per-task success, intervention labels, timing violations, and failure categories, so every reported win is backed by matching evidence.</p>
-<p><strong>Lesson:</strong> <strong>The method earns trust only when the data contract and the evaluation contract are as explicit as the model architecture.</strong></p>
+<div class="callout-title">Research Frontier</div>
+<p><strong>If the skill contract is so useful, why can't we reuse the same skill library across every robot?</strong> The answer reveals the hardest open problems in the field.</p>
+<p><strong>Universal skill interfaces across embodiments (2024-2026).</strong> The core challenge is defining a skill vocabulary that transfers across robot morphologies without retraining low-level controllers per platform. pi0 (Black et al., Physical Intelligence, 2024) introduced a flow-matching vision-language-action model (VLA) <span data-agent="21">(flow matching is a training method that learns to transform random noise into a valid action sequence, the same family of technique that powers image-diffusion models)</span> that conditions a diffusion policy on skill-level tokens, showing that a shared high-level interface can drive a fleet of diverse hardware with a single backbone, but termination and verification logic still requires per-embodiment calibration of force thresholds and workspace limits.</p>
+<p><strong>Skill discovery from internet-scale video without robot data (2024-2026).</strong> Rather than pooling teleoperation datasets, recent work mines human video directly for reusable skill primitives. UniSim (Yang et al., Stanford, 2024) learns a neural world model from web video and uses it to synthesize skill-level rewards, letting agents discover pick, place, and pour as emergent behavioral units without a single robot demonstration. The open challenge is grounding the discovered skill boundaries in the robot's own sensor space, since video-derived termination signals are visual and do not carry force or proprioceptive evidence.</p>
+<p><strong>Hierarchical skill planning with large language model task graphs (2024-2026).</strong> Scaffold-LLM planners such as RoboDual (Zhi et al., 2025) and Mobility VLA (Huang et al., Google DeepMind, 2024) separate a slow LLM task graph from a fast reactive controller by treating each skill node as a typed API call with precondition and postcondition annotations. Grounding those annotations in live sensor state without a full task-and-motion planning (TAMP) re-solve at every step remains unsolved at the latency needed for real-time manipulation.</p>
+<p><strong>Open problem for PhD research.</strong> Skill termination functions trained in simulation exhibit systematic bias when deployed on real hardware: the learned beta function fires on visual features that correlate with success in simulation but are absent or misleading on physical objects (specular highlights, deformation, occlusion). A tractable thesis question is: can a lightweight domain-adaptation module, trained on a handful of real rollouts, recalibrate a simulation-derived termination function to physical sensor distributions without re-training the skill policy itself? The answer would unblock large-scale sim-to-real transfer of entire skill libraries. A skill that knows how to act but not when to stop is not a skill; it is a runaway controller.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Before leaving this section, write one sentence that links the options framework to each of these connected chapters: <a href="ch_0027_part-1-foundations-of-embodied-ai-module-03-embodied-system-architecture.xhtml">Chapter 3: Embodied System Architectures</a>, <a href="ch_0248_part-7-language-vision-and-action-module-33-llms-as-planners-and-control.xhtml">Chapter 33: LLMs as Planners and Controllers</a>, <a href="ch_0314_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">Chapter 42: Robotic Manipulation</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
+<p>For What a skill is; low- vs. high-level actions, the test is whether initiation set, internal policy, termination rule, verifier, and recovery route can be written for the target robot skill.</p>
 </div>
-</section>
-<section class="lab" id="lab-26-2">
-<h2>Hands-On Lab: Specify a Skill Hierarchy Contract</h2>
-<div class="lab-meta"><span class="lab-duration">Duration: ~45 minutes</span><span class="lab-difficulty">Intermediate</span></div>
-<div class="lab-objective"><h3>Objective</h3><p>Build a small audit artifact that connects the options framework to observations, actions, dataset provenance, evaluation splits, and failure labels.</p></div>
-<div class="lab-skills"><h3>What You'll Practice</h3><ul><li>Writing a robot data contract before model training.</li><li>Separating behavior cloning, dataset quality, and closed-loop evaluation claims.</li><li>Using a right-tool library only after the baseline evidence schema is clear.</li></ul></div>
-<div class="lab-prereqs"><h3>Setup</h3><pre><code class="language-bash">pip<span class="w"> </span>install<span class="w"> </span>pandas<span class="w"> </span>pydantic</code></pre><div class="code-caption">Code Fragment 26.2.L1 installs the lightweight packages used to validate the lab manifest. Pandas stores the audit table, and Pydantic checks that each episode records the fields needed for a same-config comparison.</div></div>
-<div class="lab-steps"><h3>Steps</h3>
-<div class="lab-step"><h4>Step 1: Define the episode contract</h4><p>Create a schema with robot, sensor, action, demonstrator, split, and license fields. The goal is to make hidden data assumptions visible before training.</p><pre><code class="language-python"><span class="c1"># Define the fields every demonstration episode must expose.</span>
-<span class="c1"># Reader task: Add one field for timing and one field for failure labels.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">pydantic</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseModel</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EpisodeCard</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<span class="n">robot</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">demonstrator</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">split</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">license</span><span class="p">:</span> <span class="nb">str</span></code></pre><div class="code-caption">Code Fragment 26.2.L2 defines the EpisodeCard schema that the lab uses as a data contract. Add timing and failure-label fields so the model comparison can detect latency and task-specific errors.</div></div>
-<div class="lab-step"><h4>Step 2: Add two contrasting episodes</h4><p>Write one clean demonstration and one stress episode. Keep the same schema so the difference is visible in values, not in ad hoc notes.</p><pre><code class="language-python"><span class="c1"># Create one normal episode and one stress episode for comparison.</span>
-<span class="c1"># Reader task: Fill in the stress episode with a different reset or perturbation.</span>
-<span class="n">episodes</span> <span class="o">=</span> <span class="p">[</span>
-<span class="n">EpisodeCard</span><span class="p">(</span>
-<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
-<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
-<span class="n">split</span><span class="o">=</span><span class="s2">"train"</span><span class="p">,</span>
-<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
-<span class="p">),</span>
-<span class="p">]</span></code></pre><div class="code-caption">Code Fragment 26.2.L3 starts a pair of comparable episode cards. The reader task makes the stress case explicit, which prevents evaluation drift from hiding inside prose.</div></div>
-<div class="lab-step"><h4>Step 3: Export one evidence table</h4><p>Convert the cards to a table and save one CSV artifact. This mirrors the book's rule that compared numbers must come from one configuration and one saved artifact.</p><pre><code class="language-python"><span class="c1"># Save one audit table for the baseline and library route.</span>
-<span class="c1"># Reader task: Add metric columns after the rollout script runs.</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
-<span class="n">rows</span> <span class="o">=</span> <span class="p">[</span><span class="n">episode</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span> <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="n">episodes</span><span class="p">]</span>
-<span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="s2">"part_v_episode_audit.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"saved"</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rows</span><span class="p">),</span> <span class="s2">"episodes"</span><span class="p">)</span></code></pre><div class="code-caption">Code Fragment 26.2.L4 exports the episode cards to a single CSV artifact. Add metric columns only after the same rollout script evaluates every method under the same task contract.</div></div>
-<div class="lab-step"><h4>Step 4: Add the right-tool shortcut</h4><p>Replace custom loading code with the maintained tool named in this section, but keep the same manifest fields. The shortcut is allowed to reduce boilerplate, not to change the evaluation question.</p><pre><code class="language-python"><span class="c1"># Sketch the library shortcut without changing the audit schema.</span>
-<span class="c1"># Reader task: Replace this loader stub with a LeRobotDataset or robomimic loader when data is</span>
-<span class="c1"># available.</span>
-<span class="n">library_route</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"tool"</span><span class="p">:</span> <span class="s2">"options"</span><span class="p">,</span> <span class="s2">"artifact"</span><span class="p">:</span> <span class="s2">"part_v_episode_audit.csv"</span><span class="p">}</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">library_route</span><span class="p">)</span></code></pre><div class="code-caption">Code Fragment 26.2.L5 records the library shortcut route while preserving the same artifact name. The reader can swap in LeRobotDataset, robomimic, or the chapter-specific tool without losing comparability.</div></div>
-</div>
-<div class="lab-expected"><h3>Expected Output</h3><p>The lab should produce <code>part_v_episode_audit.csv</code> with one row per episode and enough metadata to compare a baseline with a library implementation under the same configuration.</p></div>
-<div class="lab-stretch"><h3>Stretch Goals</h3><ul><li>Add a column for intervention count and analyze whether interventions cluster by object, operator, or reset distribution.</li><li>Add a held-out split and write a one-paragraph note explaining why it tests generalization rather than memorization.</li></ul></div>
-<div class="kindle-disclosure lab-solution"><p class="kindle-disclosure-title">Complete Solution</p><pre><code class="language-python"><span class="c1"># Complete solution for the Part V audit lab.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">pydantic</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseModel</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EpisodeCard</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<span class="n">robot</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">demonstrator</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">split</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">license</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">timing_hz</span><span class="p">:</span> <span class="nb">int</span>
-<span class="n">failure_label</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">episodes</span> <span class="o">=</span> <span class="p">[</span>
-<span class="n">EpisodeCard</span><span class="p">(</span>
-<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
-<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
-<span class="n">split</span><span class="o">=</span><span class="s2">"train"</span><span class="p">,</span>
-<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
-<span class="n">timing_hz</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"none"</span><span class="p">,</span>
-<span class="p">),</span>
-<span class="n">EpisodeCard</span><span class="p">(</span>
-<span class="n">robot</span><span class="o">=</span><span class="s2">"dual-arm"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"front and wrist cameras"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"joint deltas"</span><span class="p">,</span>
-<span class="n">demonstrator</span><span class="o">=</span><span class="s2">"teleop"</span><span class="p">,</span>
-<span class="n">split</span><span class="o">=</span><span class="s2">"stress"</span><span class="p">,</span>
-<span class="n">license</span><span class="o">=</span><span class="s2">"CC-BY-4.0"</span><span class="p">,</span>
-<span class="n">timing_hz</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
-<span class="n">failure_label</span><span class="o">=</span><span class="s2">"object-slip"</span><span class="p">,</span>
-<span class="p">),</span>
-<span class="p">]</span>
-<span class="n">rows</span> <span class="o">=</span> <span class="p">[</span><span class="n">episode</span><span class="o">.</span><span class="n">model_dump</span><span class="p">()</span> <span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="n">episodes</span><span class="p">]</span>
-<span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="s2">"part_v_episode_audit.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"saved"</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rows</span><span class="p">),</span> <span class="s2">"episodes to part_v_episode_audit.csv"</span><span class="p">)</span></code></pre><div class="code-caption">Code Fragment 26.2.L6 provides the complete lab solution with timing and failure-label fields filled in. Compare it with the starter schema to see which assumptions must be recorded before model evaluation.</div></div>
-</section>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>The options framework is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>What a skill is; low- vs. high-level actions is useful when it makes the <a href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 26.2.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 26.1.1</div><p>Design a method-matched experiment for What a skill is; low- vs. high-level actions. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a two-level skill hierarchy in Gymnasium that wraps a continuous-control environment (such as <code>FetchReach-v3</code>) so a high-level agent selects from three named skills (reach, hold, release) and each skill runs its own termination predicate. The key challenge is writing a termination function that fires on a sensor-space postcondition rather than after a fixed number of steps, so the high-level agent never has to reason about joint angles directly.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a verified skill sequencer in MuJoCo (via the official <code>mujoco</code> Python bindings or the <code>dm_control</code> suite; note that <code>mujoco-py</code> was deprecated in 2022) for a pick-and-place task, where each skill exposes an initiation predicate and a postcondition verifier, and the sequencer detects boundary mismatches (for example, a misaligned coordinate frame between a navigate skill and a grasp skill) before handoff rather than at runtime. The key challenge is expressing both skills' pre- and postconditions in the same sensor-space frame so the sequencer can assert consistency at the skill boundary without access to ground-truth simulator state.</p><p><strong>Intermediate (1-2 weeks):</strong> Use LeRobot and a ROS2 lifecycle node wrapper to turn three behavior-cloned manipulation primitives (approach, grasp, retract) into typed skill nodes whose input and output ports are validated at tree-load time with BehaviorTree.CPP; measure how often boundary-mismatch failures are caught at load time versus at runtime compared to a flat policy baseline. The key challenge is translating the learned policy's observation schema into typed port definitions that the behavior tree can verify statically without running inference.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Measuring the Branching-Factor Collapse</h4>
+<p><strong>Goal:</strong> See empirically how wrapping low-level actions inside skills shrinks the high-level decision problem, and why a termination function (not a fixed step count) is what makes the skill reusable.</p>
+<p><strong>Tools needed:</strong> Python 3, <code>gymnasium</code> with the MuJoCo extras (<code>pip install "gymnasium[mujoco]"</code>), and NumPy. Use the <code>FetchReach-v3</code> environment, which has a continuous 4-D action space.</p>
+<p><strong>Procedure (about 20-30 minutes):</strong> (1) Run a flat random agent that samples raw 4-D actions and log how many environment steps it takes to bring the gripper within 5 cm of the goal across 100 episodes. (2) Now wrap the same environment with three named skills: <code>reach_toward(goal)</code> (a proportional controller on end-effector error), <code>hold()</code> (zero velocity), and <code>release()</code>. Give each skill a termination predicate that fires on a sensor-space postcondition (for example, <code>reach_toward</code> stops when end-effector error &lt; 5 cm or after a 50-step safety timeout). Let a high-level agent choose only among these three skills.</p>
+<p><strong>What to vary:</strong> the termination threshold (try 2 cm, 5 cm, 10 cm) and whether termination uses the sensor-space predicate versus a fixed 50-step budget.</p>
+<p><strong>What to observe:</strong> the number of high-level decisions per episode (it should drop from hundreds of raw-action choices to a handful of skill selections), and how the fixed-step variant fails to generalize when the goal distance changes, while the predicate-driven variant adapts automatically. This is the branching-factor collapse from the Formal Contract section, measured rather than asserted.</p>
+</div>
 <div class="whats-next">
 <h2>What's Next</h2>
-<p>This section grounded the options framework in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0198_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Section 26.3</a>, where the same contract is carried into the next technique or chapter.</p>
+<p>This section established the skill as a formal behavioral unit: an initiation predicate, an internal controller, a termination rule, and a verifier that reports success or recovery status back to the planner. The next reading step is <a href="ch_0198_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Section 26.2: The options framework</a>, which formalizes this contract mathematically by specifying initiation sets, option policies, and termination functions, and introduces the option-critic learning rule that allows both the skill controller and its termination condition to be trained end to end.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://www-anw.cs.umass.edu/~barto/courses/cs687/Sutton-Precup-Singh-AIJ99.pdf" rel="noopener" target="_blank">Sutton, R. S., Precup, D., and Singh, S. (1999). Between MDPs and Semi-MDPs: A Framework for Temporal Abstraction in Reinforcement Learning.</a></p>
-<p class="bib-annotation">This paper formalizes options as temporally extended actions with initiation, policy, and termination conditions. It is the canonical reference for the chapter's skill hierarchy vocabulary.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/1802.06070" rel="noopener" target="_blank">Eysenbach, B. et al. (2018). Diversity is All You Need: Learning Skills Without a Reward Function.</a></p>
+<p class="bib-annotation">DIAYN studies unsupervised skill discovery by maximizing distinguishable behaviors. It is useful for understanding when skills can be learned before a downstream task is specified.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
@@ -275,30 +260,30 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/1802.06070" rel="noopener" target="_blank">Eysenbach, B. et al. (2018). Diversity is All You Need: Learning Skills Without a Reward Function.</a></p>
-<p class="bib-annotation">DIAYN studies unsupervised skill discovery by maximizing distinguishable behaviors. It is useful for understanding when skills can be learned before a downstream task is specified.</p>
+<p class="bib-ref"><a href="https://www-anw.cs.umass.edu/~barto/courses/cs687/Sutton-Precup-Singh-AIJ99.pdf" rel="noopener" target="_blank">Sutton, R. S., Precup, D., and Singh, S. (1999). Between MDPs and Semi-MDPs: A Framework for Temporal Abstraction in Reinforcement Learning.</a></p>
+<p class="bib-annotation">This paper formalizes options as temporally extended actions with initiation, policy, and termination conditions. It is the canonical reference for the chapter's skill hierarchy vocabulary.</p>
 <span class="bib-meta">Paper</span>
 </div>
-<div class="bib-category">Technical Reports and Project Pages</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://robotics-transformer-x.github.io/" rel="noopener" target="_blank">Open X-Embodiment and RT-X Project Website.</a></p>
 <p class="bib-annotation">Cross-embodiment datasets make skill reuse a practical question rather than only a theory topic. The project helps readers connect hierarchy to robot foundation models and shared behavior repertoires.</p>
 <span class="bib-meta">Tutorial</span>
 </div>
-<div class="bib-category">Tools and Libraries</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://www.behaviortree.dev/" rel="noopener" target="_blank">BehaviorTree.CPP Documentation.</a></p>
 <p class="bib-annotation">Behavior trees are a production-friendly way to compose skills with fallback and monitoring logic. They complement learned policies by making high-level task decomposition explicit and inspectable.</p>
 <span class="bib-meta">Tool</span>
 </div>
+olicies by making high-level task decomposition explicit and inspectable.
+<span class="bib-meta">Tool</span>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0196_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Section 26.1: What a skill is; low- vs. high-level a...</a>
-<a class="up" href="ch_0195_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26: Skills, Hierarchy, and Task Decomposition</a>
-<a class="next" href="ch_0198_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Section 26.3: Skill discovery and hierarchical RL</a>
+<a class="prev" href="ch_0196_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26: Skills, Hierarchy, and Task Decomposition</a>
+<a class="up" href="ch_0196_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Chapter 26: Skills, Hierarchy, and Task Decomposition</a>
+<a class="next" href="ch_0198_part-5-learning-from-demonstration-and-robot-data-module-26-skills-hiera.xhtml">Section 26.2: The options framework</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

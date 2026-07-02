@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 24.4: Empirical data scaling laws in imitation learning</title>
+    <title>Section 24.3: Cross-embodiment pooling</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,207 +14,201 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0161_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a></div>
-<div class="chapter-label"><a href="ch_0183_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Chapter 24: Robot Datasets and Data Scaling Laws</a></div>
-<h1>Section 24.4: Empirical data scaling laws in imitation learning</h1>
+<div class="page-breadcrumb"><a href="ch_0162_part-5-learning-from-demonstration-and-robot-data-index.xhtml">Part V: Learning from Demonstration and Robot Data</a><span class="bc-sep">›</span><a href="ch_0184_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Chapter 24: Robot Datasets and Data Scaling Laws</a></div>
+<h1>Section 24.3: Cross-embodiment pooling</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
+<blockquote class="epigraph"><p>"The robot arms agreed to share data. Their grippers asked to see the contract."</p><cite>A Diplomat For Robot Bodies</cite></blockquote>
 <figure class="illustration">
-<img alt="Cartoon educational scene for Section 24.4: Empirical data scaling laws in imitation learning, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/884e58819f_chapter-24-illustration-04.jpg"/>
-<figcaption><strong>Figure 24.4A</strong>: Section 24.4: Empirical data scaling laws in imitation learning is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<img alt="Warm educational cartoon scene connecting cross-embodiment pooling to robot demonstrations, operator decisions, recorded trajectories, and later policy evaluation." loading="lazy" src="../img/47cd6c6af1_chapter-24-illustration-03.jpg"/>
+<figcaption><strong>Figure 24.3A</strong>: Cross-embodiment pooling works when observations, actions, and morphology are normalized without erasing the body that produced them.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
-<div class="callout big-picture">
-<div class="callout-title">Big Picture</div>
-<p><strong>Empirical data scaling laws in imitation learning</strong> is one lens on robot datasets and data scaling laws. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<div class="callout pathway">
+<p>This section builds on the embodiment metadata concepts introduced in section 24.2. The pooling mechanisms described here reappear in section 35.2, where morphology-conditioned policies and embodiment-aware tokenization are treated in depth. The shared visual backbone approach connects to section 32.2, and the RT-X case study extends the vision-language-action framing developed in section 34.2.</p>
 </div>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for empirical data scaling laws in imitation learning into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
-<div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In empirical data scaling laws in imitation learning, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout big-picture"><div class="callout-title">Big Picture</div><p>A warehouse arm in Tokyo and a kitchen robot in Pittsburgh have never met, yet both know how to pick up a mug. That shared skill is worth something, but only if their recorded demonstrations can be pooled without one robot's motion commands corrupting the other's training. Robotics is at the point where data volume is typically the binding constraint, and no single lab can collect enough episodes alone. <strong>cross-embodiment pooling</strong> is the mechanism that lets dozens of incompatible hardware platforms contribute to one policy, but it demands careful normalization: joints, grippers, workspaces, and action limits all differ. The sections below identify exactly where pooling succeeds, where it silently fails, and how to design a dataloader that keeps each body's identity intact.</p></div>
+<p data-agent="01">Before building that dataloader, it helps to have a decision rule for when pooling is worth attempting at all. As a practical default: pool when the target robot has fewer than a few thousand of its own demonstrations and at least one donor dataset shares task semantics or observation structure with it; train a single-embodiment policy instead when the target robot already has an ample in-house dataset, since the RT-X evidence below shows pooling can still hurt a well-served robot through source imbalance or representation mismatch. The rest of this section works out the normalization and conditioning machinery that makes the "pool" branch of that decision safe.</p>
+<p>A robot that shares its data but hides its body is not a collaborator; it is a source of silent corruption in every policy that trains on its trajectories. As Figure 24.3A illustrates, pooling succeeds only when observations, actions, and morphology are normalized without erasing the body that produced each trajectory.</p>
+<figure class="diagram-container" data-agent="09">
+<svg viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<!-- Title -->
+<text font-family="monospace" font-size="16" font-weight="bold" text-anchor="middle" x="300" y="20">Cross-Embodiment Pooling Process</text>
+<!-- Left side: Multiple embodiments with their raw action spaces -->
+<g id="embodiment-1">
+<rect fill="none" height="60" rx="4" stroke="#0066cc" stroke-width="2" width="90" x="20" y="50"/>
+<text font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="65" y="70">UR5 (6-DOF)</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="87">Actions: joints</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="100">[j1, j2, ..., j6]</text>
+</g>
+<g id="embodiment-2">
+<rect fill="none" height="60" rx="4" stroke="#00aa44" stroke-width="2" width="90" x="20" y="130"/>
+<text font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="65" y="150">Franka (7-DOF)</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="167">Actions: joints</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="180">[j1, ..., j7]</text>
+</g>
+<g id="embodiment-3">
+<rect fill="none" height="60" rx="4" stroke="#dd5500" stroke-width="2" width="90" x="20" y="210"/>
+<text font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="65" y="230">Mobile Dual Arm</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="247">Actions: mixed</text>
+<text font-family="monospace" font-size="10" text-anchor="middle" x="65" y="260">[j1, ..., j14]</text>
+</g>
+<!-- Middle: Normalization and embodiment tokens -->
+<g id="normalization">
+<rect fill="#f0f0f0" height="200" rx="4" stroke="#666" stroke-width="1" width="100" x="140" y="70"/>
+<text font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="190" y="90">Normalization</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="190" y="110">Per-embodiment:</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="190" y="125">(a_t - mu_e) / sigma_e</text>
+<line stroke="#999" stroke-width="1" x1="140" x2="240" y1="145" y2="145"/>
+<text font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle" x="190" y="170">+ Embodiment Token:</text>
+<text font-family="monospace" font-size="8" text-anchor="middle" x="190" y="188">dof_count, gripper,</text>
+<text font-family="monospace" font-size="8" text-anchor="middle" x="190" y="200">workspace, ctrl_freq</text>
+<text font-family="monospace" font-size="8" text-anchor="middle" x="190" y="216">= identity intact</text>
+</g>
+<!-- Arrows from embodiments to normalization -->
+<path d="M 110 80 L 140 110" fill="none" marker-end="url(#arrowhead)" stroke="#0066cc" stroke-width="2"/>
+<path d="M 110 160 L 140 160" fill="none" marker-end="url(#arrowhead)" stroke="#00aa44" stroke-width="2"/>
+<path d="M 110 240 L 140 210" fill="none" marker-end="url(#arrowhead)" stroke="#dd5500" stroke-width="2"/>
+<!-- Right side: Shared representation and pooled policy -->
+<g id="shared-pool">
+<rect fill="none" height="80" rx="4" stroke="#9933ff" stroke-width="2" width="90" x="270" y="70"/>
+<text font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="315" y="90">Shared Pool</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="315" y="108">Normalized</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="315" y="121">+ Embodiment</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="315" y="134">Metadata</text>
+</g>
+<!-- Policy with conditioned decoder -->
+<g id="policy">
+<rect fill="none" height="120" rx="4" stroke="#ff3333" stroke-width="2" width="100" x="400" y="50"/>
+<text font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle" x="450" y="70">Policy</text>
+<line stroke="#999" stroke-width="1" x1="400" x2="500" y1="85" y2="85"/>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="450" y="105">Shared visual</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="450" y="118">backbone</text>
+<line stroke="#999" stroke-width="1" x1="400" x2="500" y1="130" y2="130"/>
+<text font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle" x="450" y="150">Conditioned</text>
+<text font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle" x="450" y="163">action decoder</text>
+</g>
+<!-- Validation outputs -->
+<g id="validation">
+<rect fill="none" height="90" rx="4" stroke="#1a7f1a" stroke-width="2" width="100" x="400" y="190"/>
+<text font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="450" y="210">Per-Embodiment</text>
+<text font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="450" y="225">Validation</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="450" y="245">Success rate</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="450" y="258">per robot,</text>
+<text font-family="monospace" font-size="9" text-anchor="middle" x="450" y="271">not aggregate</text>
+</g>
+<!-- Arrows -->
+<path d="M 360 110 L 400 110" fill="none" marker-end="url(#arrowhead)" stroke="#9933ff" stroke-width="2"/>
+<path d="M 450 170 L 450 190" fill="none" marker-end="url(#arrowhead)" stroke="#ff3333" stroke-width="2"/>
+<!-- Arrow marker definition -->
+<defs>
+<marker id="arrowhead" markerheight="10" markerwidth="10" orient="auto" refx="9" refy="3">
+<polygon fill="#333" points="0 0, 10 3, 0 6"/>
+</marker>
+</defs>
+</svg>
+<figcaption data-agent="39">Cross-embodiment pooling: incompatible action spaces are normalized per-embodiment while preserving identity metadata (DOF count, gripper, workspace, control frequency). A shared visual backbone encodes observations, and a conditioned action decoder produces valid hardware commands for each robot type. Validation always separates results by embodiment to detect negative transfer.</figcaption>
+</figure>
+<h2>Normalization Targets</h2>
+<p data-agent="15">The diagram above traces the full pipeline: raw, incompatible action spaces on the left are normalized per-embodiment, merged into a shared pool with identity metadata attached, decoded by a conditioned policy, and finally validated separately for each robot. The discussion below follows that flow, starting with where normalization can happen.</p>
+<p>Pooling can happen in observation space, action space, latent space, or task space. A common strategy is to express actions as <a href="ch_0068_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">end-effector deltas</a>, normalize continuous values, and provide embodiment tokens or metadata so the model knows which body produced the trajectory.</p>
+<p data-agent="29">End-effector deltas matter for pooling because joint angles are not portable. A 7-DOF (Degrees of Freedom) Franka and a 6-DOF UR5 do not share a joint-angle representation at all, so any model trained on joint actions from one robot produces meaningless output for the other. Expressing movement as a small Cartesian displacement of the gripper tip relative to its current pose lets both robots describe "move forward 2 cm" in the same units. This directly reduces the data wasted on incompatible hardware: demonstrations that would otherwise be unusable across platforms become compatible training signal. The scale difference can be stark. <span data-agent="28">In the RT-X study, switching from joint-angle actions to end-effector deltas before pooling reportedly cut the number of single-arm episodes needed to match a bimanual baseline from roughly 50,000 to around 300, though the exact multiplier depends on the task and the held-out robot chosen for comparison.</span> The shared representation let the policy treat arm morphology as a conditioning variable rather than a training-distribution boundary.</p>
+<p>The conversion works by running <a data-agent="13" href="ch_0051_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">forward kinematics</a> at each timestep to compute the end-effector pose, then taking the finite difference between consecutive poses to get the delta. The resulting six-dimensional vector (three translation, three rotation) is hardware-agnostic up to workspace and speed limits, which are handled separately by the per-embodiment normalization step.</p>
+<p>For an action $a_t$ with dataset mean $\mu_e$ and scale $\sigma_e$ for embodiment $e$, a normalized action can be written as:</p>
+<p><span class="katex katex-rendered" data-mathdisplay="1" data-tex="ilde{a}_t = (a_t - \mu_e) / \sigma_e."><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>i</mi><mi>l</mi><mi>d</mi><mi>e</mi><msub><mi>a</mi><mi>t</mi></msub><mo>=</mo><mo stretchy="false">(</mo><msub><mi>a</mi><mi>t</mi></msub><mo>−</mo><msub><mi>μ</mi><mi>e</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">/</mi><msub><mi>σ</mi><mi>e</mi></msub><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">ilde{a}_t = (a_t - \mu_e) / \sigma_e.</annotation></semantics></math></span></p>
+<p>The subscript matters. Using a global mean across incompatible robots can hide systematic body differences and produce commands that are invalid for smaller or slower platforms.</p>
+<div class="callout key-insight"><div class="callout-title">Normalize With The Body Still Visible</div><p>Good pooling removes arbitrary units and scales. Bad pooling erases the embodiment information needed to interpret the action.</p></div>
+<div class="callout practical-example" data-agent="26"><h4>Step-Through: Per-Embodiment Normalization</h4><p>Trace the formula $\tilde{a}_t = (a_t - \mu_e) / \sigma_e$ with two robots pushing a forward delta. Suppose a compact arm's x-translation deltas over its dataset have $\mu_{\text{small}} = 0.02$ m and $\sigma_{\text{small}} = 0.01$ m, while a mobile manipulator has $\mu_{\text{mobile}} = 0.09$ m and $\sigma_{\text{mobile}} = 0.04$ m. A raw command of $a_t = 0.03$ m on the small arm normalizes to $(0.03 - 0.02) / 0.01 = +1.0$. The same raw $a_t = 0.03$ m on the mobile arm normalizes to $(0.03 - 0.09) / 0.04 = -1.5$. Identical raw numbers, opposite normalized signs: on the small arm 0.03 m is a large forward push (one standard deviation above its mean), but on the mobile arm it is a below-average, almost stationary motion. Now invert. To recover a hardware command from a shared normalized value $\tilde{a}_t = +1.0$, you must apply each body's own transform: small arm gets $0.02 + 1.0 \times 0.01 = 0.03$ m, mobile arm gets $0.09 + 1.0 \times 0.04 = 0.13$ m. The single normalized token decodes to 0.03 m on one robot and 0.13 m on the other. This is exactly why the embodiment id must travel with the batch: drop it, and you cannot pick which $\mu_e, \sigma_e$ to invert through.</p></div>
+<div class="callout library-shortcut"><div class="callout-title">Library Shortcut</div><p>Use Open X-Embodiment tooling, RLDS (Robot Learning Dataset Specification) episode schemas, or LeRobot conversion utilities to keep embodiment metadata attached during pooling. The shortcut reduces file-format labor, but the researcher still chooses the action normalization and held-out robot protocol.</p></div>
+<p>Code Fragment 1 demonstrates embodiment-aware normalization for two robots with different action ranges.</p>
+<pre><code class="language-python"><span class="c1"># Normalize actions per embodiment so robot-specific scales are preserved.</span>
+<span class="c1"># The model can then receive both the normalized action and the embodiment id.</span>
+<span class="n">actions</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"small_arm"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.01</span><span class="p">,</span> <span class="mf">0.02</span><span class="p">,</span> <span class="mf">0.03</span><span class="p">],</span>
+<span class="s2">"mobile_dual_arm"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.08</span><span class="p">,</span> <span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.12</span><span class="p">],</span>
+<span class="p">}</span>
+<span class="k">for</span> <span class="n">robot</span><span class="p">,</span> <span class="n">values</span> <span class="ow">in</span> <span class="n">actions</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<span class="n">mean</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">values</span><span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+<span class="n">scale</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">values</span><span class="p">)</span> <span class="o">-</span> <span class="nb">min</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+<span class="n">normalized</span> <span class="o">=</span> <span class="p">[</span><span class="nb">round</span><span class="p">((</span><span class="n">v</span> <span class="o">-</span> <span class="n">mean</span><span class="p">)</span> <span class="o">/</span> <span class="n">scale</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">values</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">robot</span><span class="p">,</span> <span class="n">normalized</span><span class="p">)</span></code></pre>
+<div class="code-output">small_arm [-0.5, 0.0, 0.5]
+mobile_dual_arm [-0.5, 0.0, 0.5]</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 1:</strong> Per-embodiment normalization makes different action ranges comparable without claiming the raw actions are physically identical. The robot key remains necessary because the same normalized value still maps to different hardware motion.</div>
+<p>The expected output shows identical normalized values for two robots, but the interpretation is not "the robots did the same thing." It means each robot's local action range has been centered and scaled. A training batch should therefore keep the normalized action together with an embodiment identifier, action-unit metadata, and the inverse transform needed to recover a valid hardware command.</p>
+<h2>Mechanisms For Cross-Embodiment Transfer</h2>
+<p data-agent="14">Keeping the embodiment identifier attached to every normalized action is necessary but not sufficient; the policy still needs a transfer mechanism that turns those tagged trajectories into shared skill, and the cost of getting that mechanism wrong is large.</p>
+<p><span data-agent="28">In the RT-X study, roughly 35 of the 50+ source datasets failed to improve performance on at least one held-out robot when pooled naively, meaning more than half the contributed data was typically neutral or harmful before proper conditioning was applied.</span> That number should make you pause before treating "add more robots" as a free lunch.</p>
+<p>Cross-embodiment transfer usually relies on one of three mechanisms. The first is <strong>shared task semantics</strong>: <a href="ch_0239_part-7-language-vision-and-action-module-31-language-guided-embodied-age.xhtml">language or goal images</a> say "pick up the mug" even when two robots use different joints. The second is <strong>shared observation structure</strong>: cameras, object states, and scene geometry can be encoded by a <a href="ch_0246_part-7-language-vision-and-action-module-32-vision-language-models-for-e.xhtml">common visual backbone</a>. The third is <strong>conditioned action decoding</strong>: the policy predicts actions in a representation that is decoded differently for each robot body.</p>
+<p>Each mechanism carries a distinct physical failure mode. Shared task semantics breaks when label vocabularies diverge. Bridge V2 uses free-form natural language ("put the spoon in the bowl"), while older datasets use fixed verb-noun templates ("pick spoon"). A tokenizer trained on one style treats the other as out-of-distribution, so the policy's task embedding drifts toward the dominant source. Shared observation structure breaks when camera intrinsics or mounting geometry differ radically. A wrist-mounted 640x480 RGB camera on a Franka captures close-up finger contact. A 1080p overhead camera on a UR5e captures a bird's-eye view of the workspace. A ResNet-50 backbone pretrained on ImageNet encodes these views as nearly orthogonal representations, even for identical scenes. Conditioned action decoding breaks when morphology metadata is incomplete or inconsistent. If the embodiment token omits control frequency (3 Hz for RT-2 policy rollouts versus 10 Hz for many teleoperated Bridge V2 episodes), the policy decodes a smooth velocity profile intended for one frequency into repeated large steps at the other. The Franka's collision monitor then triggers an emergency stop before the gripper reaches the object.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: pooling relies on three mechanisms (shared task semantics, shared observation structure, conditioned action decoding), and each one has its own distinct way of silently breaking, whether that is vocabulary mismatch, camera geometry mismatch, or missing control-frequency metadata.</p></div>
+<h4 data-agent="30">Why The Scale Is Worth The Trouble</h4>
+<p data-agent="29">The scale difference alone makes the case for pooling. A single lab running one arm around the clock might collect 2,000 episodes per year, while the Open X-Embodiment collaboration aggregated over 1,000,000 episodes from 22 robot embodiments. That is a 500x data multiplier that no single hardware program can replicate. Consider a specific case. <a href="ch_0262_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">RT-X</a> pools data from a 6-DOF single-arm UR5 and a 7-DOF bimanual Franka setup. The shared visual backbone encodes a scene with a cup on a table. Without conditioned decoding, the policy would emit a single action vector that is ambiguous: is dimension 7 a wrist rotation for the UR5 or the second arm's shoulder for the Franka? With conditioned decoding, the model receives an embodiment token ("single-arm, 6-DOF, parallel gripper, max reach 0.85 m") before the action head runs. The head then produces only 6 action dimensions and clamps them to the UR5's joint limits. When the same scene is presented with a bimanual token, the head switches to 14 dimensions split across two arm controllers. Prefer conditioned decoding over shared observation structure alone whenever two robots share the same visual scene but differ in DOF count, gripper type, or control frequency; shared observations then cannot stop the policy from outputting physically invalid commands.</p>
+<div class="callout fun-note">
+<p>Conditioned action decoding is, in spirit, the model asking "wait, how many fingers does this one have?" before deciding what to do with a mug. It is the politest thing a neural network has ever done for hardware it has never met.</p>
 </div>
-<h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
-<div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Failure Analysis For Pooling</div><p>When pooled training fails, separate four causes: representation mismatch, source imbalance, action infeasibility, and evaluation leakage. Representation mismatch means the shared tokens do not describe the same physical variables. Source imbalance means one dataset dominates gradients. Action infeasibility means normalized outputs decode to unsafe or unreachable commands. Evaluation leakage means train and validation share near-duplicate tasks, scenes, or collection bursts.</p></div>
+<div class="callout key-insight"><p>Think of gradient contributions from multiple datasets like runners merging onto a single track from separate side streets. If 25 runners pour in from one street and only 1 from another, the lane quickly fills with the majority crowd, and the lone runner gets squeezed to the shoulder on almost every lap. The model's weights shift to serve the crowd, and the minority runner's experience barely registers. Reweighting the datasets is like assigning each side street its own guaranteed lane allocation, so every source gets heard regardless of how many episodes it brings to the merge.</p></div>
+<div class="callout tip">
+<p>When building a pooled dataloader with LeRobot, pass per-source weights via the <code>repo_id</code> list and a matching <code>dataset_weights</code> list to <code>make_dataset</code> so that a large dataset (such as Bridge V2 with 50k episodes) does not drown out a small one (such as a 2k-episode in-house arm). Without explicit weights, PyTorch's default sampler draws proportionally to dataset length, which means a 25:1 size ratio produces roughly 25:1 gradient contributions and the small robot effectively disappears from training. A starting heuristic is to set weights inversely proportional to episode count, then check per-embodiment validation loss after the first epoch before committing to a full run.</p>
 </div>
-<h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-<span class="n">dataset_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"robot_demos"</span><span class="p">)</span>
-<span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">dataset_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">"episode_*"</span><span class="p">)):</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"inspect"</span><span class="p">,</span> <span class="n">episode</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"next step: convert demonstrations to the LeRobotDataset format"</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 24.4.1 gives a minimal executable baseline for Empirical data scaling laws in imitation learning. It names the data or environment interface before any larger library hides the assumptions.</div>
-<p><strong>Expected output:</strong> the printed trace for Empirical data scaling laws in imitation learning should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
-<div class="callout library-shortcut">
-<div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use LeRobot, robomimic, ACT, Diffusion Policy, VQ-BeT, ALOHA, GELLO, and UMI to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
-</div>
-<h2>Practical Recipe</h2>
-<ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
-</ol>
-<div class="callout warning">
-<div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Practical Example</div>
-<p>A robot learning engineer applying empirical data scaling laws in imitation learning starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare Open X-Embodiment with a baseline without changing the task definition midstream.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for empirical data scaling laws in imitation learning? If not, the system boundary is still too vague.</p>
-</div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>Empirical data scaling laws in imitation learning becomes useful when it is tied to a closed-loop contract. In this Part V section on Empirical data scaling laws in imitation learning, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
-<div class="comparison-table">
-<div class="comparison-table-title">Practical Tool Choices For This Section</div>
-<table>
-<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
-<tbody>
-<tr><td>Gymnasium</td><td>Empirical data scaling laws in imitation learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Empirical data scaling laws in imitation learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Empirical data scaling laws in imitation learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Empirical data scaling laws in imitation learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Empirical data scaling laws in imitation learning</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
-</tbody>
-</table>
-</div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
-<ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
-</ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Empirical data scaling laws in imitation learning.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"24.4"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 24.4.2 records the method-specific evidence schema for testing Empirical data scaling laws in imitation learning with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When Empirical data scaling laws in imitation learning fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
-<section class="agent-checklist-expansion">
-<h2>Agent Checklist Integration</h2>
-<p><strong>Empirical data scaling laws in imitation learning</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. Robot data becomes scalable only when the dataset records the embodiment, sensor rig, action units, timing, license, and failure labels with the same care as the images.</p>
-<p>The practical workflow is: define the observation and action spaces, specify the demonstrator or dataset source, train the smallest behavior model that exposes the assumption, and then compare the library route on the same configuration. The valid comparison is co-computed in one pass on one split, one seed policy, one task panel, and one metric artifact.</p>
-<div class="callout key-insight">
-<div class="callout-title">Mental Model: Demonstrations As Contracts</div>
-<p>Think of each demonstration as a signed contract between the operator, robot body, sensors, action representation, and evaluator. If one party changes later, such as a camera frame rate, gripper calibration, or task reset distribution, the contract must be renegotiated through validation rather than assumed valid.</p>
-</div>
-<div class="comparison-table">
-<div class="comparison-table-title">Decision Checklist for Empirical data scaling laws in imitation learning</div>
-<table>
-<thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
-<tbody>
-<tr><td>Curriculum and depth</td><td>What concept is new here, and why does Part V need it?</td><td>A definition, a worked example, and a failure case tied to the perception-action loop.</td></tr>
-<tr><td>Code and tools</td><td>Which maintained tool removes boilerplate after the from-scratch baseline?</td><td>Open X-Embodiment, DROID, BridgeData V2, LeRobotDataset, RT-X evaluated against the same task contract.</td></tr>
-<tr><td>Data and evaluation</td><td>What distribution produced the behavior, and where can it break?</td><td>Train, validation, and stress splits with explicit robot, camera, timing, and license metadata.</td></tr>
-<tr><td>Publication quality</td><td>Can the reader reproduce the claim without hidden context?</td><td>Captions, bibliography cards, cross-links, and a same-artifact audit trail.</td></tr>
-</tbody>
-</table>
-</div>
-<div class="callout warning">
-<div class="callout-title">Pitfall: Generic Success Claims</div>
-<p>Do not claim that empirical data scaling laws in imitation learning improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
-</div>
-<div class="callout research-frontier">
-<div class="callout-title">Current Research Thread</div>
-<p>Large robot datasets now emphasize cross-embodiment transfer, metadata standards, and reproducible data cards. The high-value result is not a large row count by itself; it is a dataset whose splits, licenses, robot morphology, and task semantics let another lab reproduce a policy comparison in one pass.</p>
-</div>
-<div class="callout practical-example">
-<div class="callout-title">Application Example</div>
-<p><strong>Who:</strong> A robot learning engineer preparing a tabletop manipulation benchmark for a three-arm lab study.</p>
-<p><strong>Situation:</strong> The engineer needs to decide whether empirical data scaling laws in imitation learning is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
-<p><strong>Decision:</strong> They keep a minimal baseline, then run the right-tool implementation with Open X-Embodiment or DROID using the same manifest, seed, split, and evaluation script.</p>
-<p><strong>Result:</strong> The team gets one artifact with per-task success, intervention labels, timing violations, and failure categories, so every reported win is backed by matching evidence.</p>
-<p><strong>Lesson:</strong> <strong>The method earns trust only when the data contract and the evaluation contract are as explicit as the model architecture.</strong></p>
-</div>
-<div class="callout self-check">
-<div class="callout-title">Self Check</div>
-<p>Before leaving this section, write one sentence that links empirical data scaling laws in imitation learning to each of these connected chapters: <a href="ch_0102_part-3-simulation-tooling-and-the-modern-stack-module-12-benchmarks-and-.xhtml">Chapter 12: Benchmarks and Task Suites</a>, <a href="ch_0189_part-5-learning-from-demonstration-and-robot-data-module-25-offline-rl-a.xhtml">Chapter 25: Offline RL and Dataset-Based Robot Learning</a>, <a href="ch_0266_part-7-language-vision-and-action-module-35-robot-foundation-models-and-.xhtml">Chapter 35: Robot Foundation Models and Cross-Embodiment Learning</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
-</div>
-</section>
-<div class="callout key-takeaway">
-<div class="callout-title">Key Takeaway</div>
-<p>Empirical data scaling laws in imitation learning is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
-</div>
-<div class="callout exercise"><div class="callout-title">Exercise 24.4.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
-<div class="whats-next">
-<h2>What's Next</h2>
-<p>This section grounded empirical data scaling laws in imitation learning in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0188_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Section 24.5</a>, where the same contract is carried into the next technique or chapter.</p>
-</div>
+<h2>Toolchain Pattern</h2>
+<p data-agent="14">Source weighting and per-embodiment normalization are individual fixes; in practice they only hold together if the surrounding pipeline is built to carry embodiment identity from raw files all the way to the action decoder.</p>
+<p data-agent="17">A practical stack uses source-specific loaders, converts each source into a common episode schema, then adds an embodiment adapter. That adapter ranges from a robot-id embedding plus per-robot normalizer to a morphology graph encoding links, joints, limits, and gripper type. One rule holds throughout: record the adapter's inputs in the dataset card, never bury them in model code.</p>
+<div class="callout algorithm"><div class="callout-title">Algorithm: Pooling Readiness Test</div><ol><li>Load one batch per source and print observation keys, action keys, and units.</li><li>Compute per-source action statistics before and after normalization.</li><li>Train a small source classifier on the shared representation.</li><li>If the classifier easily identifies source from irrelevant artifacts, audit visual or metadata leakage.</li><li>Evaluate per source and per embodiment before reporting any aggregate result.</li></ol></div>
+<div class="comparison-table"><div class="comparison-table-title">Pooling Choices</div><table><thead><tr><th>Choice</th><th>Benefit</th><th>Risk</th></tr></thead><tbody><tr><td>End-effector actions</td><td>More comparable across arms.</td><td>Loses joint-limit and redundancy information.</td></tr><tr><td>Joint actions</td><td>Faithful to hardware.</td><td>Hard to share across different <a data-agent="13" href="ch_0050_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">kinematic chains</a>.</td></tr><tr><td>Language labels</td><td>Bridge tasks across datasets.</td><td>Instruction styles can be inconsistent.</td></tr><tr><td>Embodiment tokens</td><td>Let the model condition on body identity.</td><td>May memorize robot-specific shortcuts.</td></tr></tbody></table></div>
+<div class="callout warning"><p>A common assumption is that converting all robot actions to end-effector deltas makes the data fully interchangeable, so that embodiment identity no longer needs to be tracked. This is wrong in the embodied AI context because identical normalized values map to physically different motions on different hardware: the same delta vector can saturate a compact tabletop arm while barely moving a full-reach mobile manipulator, and a policy trained without embodiment conditioning has no way to resolve this ambiguity. The correct mental model is that normalization removes arbitrary units and scales, but it does not remove the body; the embodiment identifier, control frequency, workspace limits, and gripper type must travel with every trajectory through the entire pipeline and reach the action decoder.</p></div>
+<div class="callout warning"><div class="callout-title">Pitfall: False Transfer</div><p>A pooled model can improve average performance while hurting a minority robot or task family. Always report per-embodiment and per-task results, not only aggregate success.</p></div>
+<div class="callout practical-example"><div class="callout-title">Practical Example</div><p>If a single-arm tabletop dataset is mixed with bimanual mobile data, the split should include held-out robots and held-out tasks. Otherwise the model may look cross-embodied while succeeding only on the dominant source distribution.</p></div>
+<div class="callout research-frontier"><div class="callout-title">Research Frontier</div><p>Three active directions are reshaping how the field approaches cross-embodiment pooling in 2024-2026.</p>
+<p><strong>Scalable heterogeneous action tokenization.</strong> Rather than mapping every robot to a shared continuous action space, recent work encodes actions as discrete tokens whose vocabulary is conditioned on embodiment metadata. The pi0 foundation model (Physical Intelligence, 2024) demonstrated that a flow-matching policy (a model trained to gradually denoise a random action sample into a valid one, rather than predicting the action directly) over a shared token space can transfer across seven different robot morphologies without per-body action heads, and it achieves this at inference time with no fine-tuning by injecting a compact morphology descriptor at the start of each episode.</p>
+<p><strong>Internet-scale video as zero-cost cross-embodiment pre-training.</strong> Human hand and tool-use video vastly outnumbers robot demonstrations, and 2024-2025 work from the UniSim and GR-1 lines (Tsinghua / UC Berkeley) shows that a policy pre-trained on ego-centric human video develops object-centric representations that transfer to robot manipulation with far fewer robot episodes than training from scratch. The key mechanism is aligning robot wrist-camera observations to the first-person video domain so the shared backbone sees morphologically compatible frames.</p>
+<p><strong>Negative transfer auditing and dataset mixture search.</strong> RT-X showed that not all embodiment combinations help each other. The 2024 work on DataMix (Stanford) and related mixture-of-datasets search methods frames dataset weighting as a bilevel optimization (two nested optimization problems, where the outer problem's objective depends on the solution of the inner one): inner loop trains the policy, outer loop maximizes a held-out per-embodiment success signal. This moves beyond inverse-proportion heuristics and finds mixtures where minority embodiments are actually up-weighted because their demonstrations contain high-value object interactions.</p>
+<p><strong>Open problem for PhD students.</strong> All current mixture-search methods evaluate on held-out tasks drawn from the same distribution as training. There is no principled framework for predicting, before training, whether a new embodiment will be a net donor or a net recipient in a pooled policy, given only its morphology graph, workspace envelope, and a small held-out validation set. A student who could formalize this as a tractable prediction problem, and show that the predictor is informative enough to prune bad embodiment additions before a full training run, would significantly reduce the compute cost of scaling to larger cross-embodiment corpora.</p></div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f"><h4>Real-World Application: Generalist Manipulation (Octo)</h4><p>The Octo policy from UC Berkeley is trained directly on the pooled Open X-Embodiment corpus, using per-embodiment action normalization plus learned readout tokens so one transformer drives single-arm tabletop robots and bimanual mobile platforms from the same weights. New labs adapt Octo to an unseen arm by fine-tuning on a few hundred episodes rather than collecting tens of thousands, exactly the data multiplier that cross-embodiment pooling promises. The released checkpoints keep observation, action, and embodiment metadata bundled so downstream users can decode commands valid for their own hardware.</p></div>
+<div class="callout lab" data-agent="41"><h4>Lab: Watch A Small Robot Disappear Under Source Imbalance</h4><p><strong>Goal:</strong> Observe how dataset size ratio drives gradient dominance, and confirm that inverse-proportion weighting restores the minority embodiment, the core failure mode this section warns about.</p><p><strong>Tools needed:</strong> Python with <code>lerobot</code> and <code>torch</code> installed, plus two Open X-Embodiment style datasets pulled through LeRobot (for example a large Bridge V2 subset and a small in-house or tabletop arm subset). A single CPU or any GPU is enough; runs stay under 30 minutes if you cap each at one or two epochs on a few thousand episodes.</p><p><strong>What to vary:</strong> the size ratio between the two sources (try roughly 1:1, 5:1, and 25:1 by subsampling the large set) and the <code>dataset_weights</code> passed to <code>make_dataset</code> (uniform versus inverse-proportion to episode count).</p><p><strong>What to observe:</strong> after one epoch, log per-embodiment validation loss separately, never the aggregate. Under uniform sampling at 25:1 you should see the small robot's loss stagnate or rise while the large robot's falls; switching to inverse-proportion weights should pull the small robot's loss back down. Bonus: train a tiny source classifier on the shared representation and confirm it cannot recover the source from leaked artifacts once normalization is applied.</p></div>
+<div class="callout self-check"><div class="callout-title">Self Check</div><p>When you pool two datasets, can you say which representation is shared and which metadata preserves robot identity? If not, the pooling recipe is under-specified.</p></div>
+<div class="callout key-takeaway"><div class="callout-title">Key Takeaway</div><p>Cross-embodiment learning is not just adding datasets together. It is a representational choice about what should be shared and what must remain body-specific.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 24.3.1</div><p>Design a pooling experiment with one held-out robot and one held-out task. Specify which metrics you will report separately for each embodiment.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a per-embodiment action normalizer in Python that loads two LeRobot datasets (for example, a tabletop single-arm set and a bimanual set), computes per-source mean and scale, and prints a source-classifier accuracy before and after normalization. The key challenge is attaching embodiment metadata to every normalized batch so the robot identity is never silently dropped. <strong>Intermediate (1-2 weeks):</strong> Implement a conditioned action decoder in PyTorch that accepts a shared visual embedding from a frozen ResNet backbone plus an embodiment token, then decodes separate action heads for a 6-DOF UR5 and a 7-DOF Franka arm simulated in MuJoCo or Isaac Lab. The key challenge is designing the embodiment token so the decoder produces valid joint-limit-clamped commands for each platform without the model memorizing robot-specific visual artifacts. <strong>Advanced (3-4 weeks):</strong> Extend a LeRobot training loop to pool three ROS2-sourced datasets of different sizes, apply inverse-proportion dataset weighting, and evaluate per-embodiment success rate in a PyBullet pick-and-place environment, reporting both aggregate and per-source results to expose any negative transfer.</p></div>
+<div class="whats-next"><h2>What's Next</h2><p>Section 24.4 asks how performance changes as data, model capacity, and task diversity scale.</p></div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
-<div class="bib-category">Datasets and Benchmarks</div>
+<div class="bib-category">Robot Datasets</div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/2310.08864" rel="noopener" target="_blank">Open X-Embodiment Collaboration. (2023). Open X-Embodiment: Robotic Learning Datasets and RT-X Models.</a></p>
-<p class="bib-annotation">Open X-Embodiment pools robot data across many embodiments and tasks to study cross-robot transfer. It anchors this chapter's discussion of dataset scale, standard formats, and embodiment metadata.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/2403.12945" rel="noopener" target="_blank">Khazatsky, A. et al. (2024). DROID: A Large-Scale In-The-Wild Robot Manipulation Dataset.</a></p>
+<p class="bib-annotation">Provides an in-the-wild manipulation dataset with diverse scenes, collectors, tasks, and detailed hardware reproduction guidance.</p>
 <span class="bib-meta">Dataset</span>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/2403.12945" rel="noopener" target="_blank">Khazatsky, A. et al. (2024). DROID: A Large-Scale In-The-Wild Robot Manipulation Dataset.</a></p>
-<p class="bib-annotation">DROID emphasizes diverse real-world scenes, data collectors, and manipulation tasks. It is useful for understanding why data diversity and collection protocol matter as much as trajectory count.</p>
+<p class="bib-ref"><a href="https://arxiv.org/abs/2310.08864" rel="noopener" target="_blank">Open X-Embodiment Collaboration. (2023). Open X-Embodiment: Robotic Learning Datasets and RT-X Models.</a></p>
+<p class="bib-annotation">The central reference for cross-embodiment robot data, standardized dataset release, and RT-X style transfer across robot bodies.</p>
 <span class="bib-meta">Dataset</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2308.12952" rel="noopener" target="_blank">Walke, H. R. et al. (2023). BridgeData V2: A Dataset for Robot Learning at Scale.</a></p>
-<p class="bib-annotation">BridgeData V2 provides a large manipulation dataset designed for scalable robot learning. Readers can compare its data schema and task coverage with Open X-Embodiment and DROID.</p>
+<p class="bib-annotation">A large manipulation dataset designed around open-vocabulary multi-task learning, goal images, language, and data-scale experiments.</p>
 <span class="bib-meta">Dataset</span>
 </div>
-<div class="bib-category">Tools and Libraries</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://github.com/google-deepmind/open_x_embodiment" rel="noopener" target="_blank">Google DeepMind Open X-Embodiment Repository.</a></p>
+<p class="bib-annotation">Shows the released dataset structure and RLDS episode organization used by the Open X-Embodiment ecosystem.</p>
+<span class="bib-meta">Repository</span>
+</div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://huggingface.co/docs/lerobot/en/lerobot-dataset-v3" rel="noopener" target="_blank">LeRobotDataset v3.0 Documentation.</a></p>
-<p class="bib-annotation">The LeRobotDataset documentation describes a standardized multimodal time-series format with metadata for robot learning. It is the right practical reference for dataset card design and conversion checks.</p>
+<p class="bib-annotation">The practical reference for standardized multimodal robot time-series data, metadata, indexing, and Hub visualization.</p>
 <span class="bib-meta">Tool</span>
 </div>
-<div class="bib-category">Technical Reports and Project Pages</div>
-<div class="bib-entry-card">
-<p class="bib-ref"><a href="https://robotics-transformer-x.github.io/" rel="noopener" target="_blank">Open X-Embodiment Project Website.</a></p>
-<p class="bib-annotation">The project page summarizes the dataset, RT-X models, and cross-embodiment goals in a builder-friendly form. Use it to connect the paper's claims to released artifacts and model checkpoints.</p>
-<span class="bib-meta">Tutorial</span>
-</div>
+n class="bib-meta"&gt;Tool
+
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0186_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Section 24.3: Cross-embodiment pooling</a>
-<a class="up" href="ch_0183_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Chapter 24: Robot Datasets and Data Scaling Laws</a>
-<a class="next" href="ch_0188_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Section 24.5: Curating and mixing data</a>
+<a class="prev" href="ch_0186_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Section 24.2: Dataset structure, embodiment metadata...</a>
+<a class="up" href="ch_0184_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Chapter 24: Robot Datasets and Data Scaling Laws</a>
+<a class="next" href="ch_0188_part-5-learning-from-demonstration-and-robot-data-module-24-robot-datase.xhtml">Section 24.4: Empirical data scaling laws in imitati...</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

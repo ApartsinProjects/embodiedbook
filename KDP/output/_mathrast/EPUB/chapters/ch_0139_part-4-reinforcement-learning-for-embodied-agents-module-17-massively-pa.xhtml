@@ -2,7 +2,7 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
   <head>
-    <title>Section 17.3: Isaac Lab with SKRL / rl_games / RSL-RL</title>
+    <title>Section 17.2: Learning to walk in minutes: the parallel-RL recipe</title>
     <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
     <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
@@ -14,176 +14,296 @@ Building Embodied AI: From Perception to Autonomous Action
 <span class="toc-icon">☰</span> Contents
 </nav>
 
-<div class="part-label"><a href="ch_0116_part-4-reinforcement-learning-for-embodied-agents-index.xhtml">Part IV: Reinforcement Learning for Embodied Agents</a></div>
-<div class="chapter-label"><a href="ch_0136_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a></div>
-<h1>Section 17.3: Isaac Lab with SKRL / rl_games / RSL-RL</h1>
+<div class="page-breadcrumb"><a href="ch_0117_part-4-reinforcement-learning-for-embodied-agents-index.xhtml">Part IV: Reinforcement Learning for Embodied Agents</a><span class="bc-sep">›</span><a href="ch_0137_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a></div>
+<h1>Section 17.2: Learning to walk in minutes: the parallel-RL recipe</h1>
 </header>
 <main class="content" id="main-content">
-<blockquote class="epigraph"><p>"The world is an exam where the answer key changes after every action."</p>
-<figure class="illustration">
-<img alt="Cartoon educational scene for Section 17.3: Isaac Lab with SKRL / rl_games / RSL-RL, showing an embodied AI system using perception, planning, action, and feedback to make the section concept concrete." loading="lazy" src="../img/66fbc7912a_chapter-17-illustration-03.jpg"/>
-<figcaption><strong>Figure 17.3A</strong>: Section 17.3: Isaac Lab with SKRL / rl_games / RSL-RL is easier to reason about when the figure shows the concept, evidence path, and action consequence in one physical situation.</figcaption>
+<blockquote class="epigraph"><p>"The robot did not learn to walk faster. The simulator learned to fall faster, so the policy could recover faster, so the update arrived faster."</p><cite>A Locomotion Researcher, Watching the Clock</cite></blockquote>
+<figure class="illustration" data-agent="39">
+<img alt="Technical illustration with many simulated quadrupeds practicing on varied terrain while a separate hardware checklist waits nearby, illustrating fast locomotion training with validation outside the training batch." loading="lazy" src="../img/4942f1e337_chapter-17-illustration-02.jpg"/>
+<figcaption><strong>Figure 17.2A</strong>: Fast walking policies come from disciplined parallel practice: many robots, varied resets, short horizons, and a separate test panel that refuses to be impressed by reward alone.</figcaption>
 </figure>
-<cite>A Careful Control Loop</cite></blockquote>
+<div class="callout pathway">
+<p>This section assumes familiarity with Proximal Policy Optimization (PPO) rollout mechanics and advantage estimation from sections 15.4 and 15.5. The parallel recipe developed here is extended in section 17.5, which adds teacher-student distillation on top of the same training loop, and in section 17.6, which addresses throughput and cost engineering at scale. The ideas about reward shaping hazards introduced here recur in Part 4 alongside domain randomization and sim-to-real transfer in sections 20.2 and 20.3.</p>
+</div>
 <div class="callout big-picture">
 <div class="callout-title">Big Picture</div>
-<p><strong>Isaac Lab with SKRL / rl_games / RSL-RL</strong> is one lens on massively parallel and GPU RL. We study it because an embodied agent needs decisions that survive contact with noisy sensors, delayed effects, and changing environments.</p>
+<p>A quadruped robot that took two weeks to train in 2019 can now (as of 2024) acquire a walking policy in under twenty minutes on a single GPU. That shift did not come from faster hardware alone; it came from running 4096 simulated robots simultaneously, each tripping, recovering, and updating the shared policy in the same wall-clock second. Parallel RL became the default entry point for legged locomotion, drone control, and dexterous manipulation as the iteration cycle dropped from days to coffee breaks. This section builds the parallel training loop piece by piece, explains why short rollout horizons outperform long ones, and develops the evaluation discipline that separates policies that look fast in training from policies that actually transfer.</p>
 </div>
-<p>It extends simulator choices from <a class="cross-ref" href="ch_0093_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators</a>, operationalizes PPO from <a class="cross-ref" href="ch_0123_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Chapter 15: Policy Gradient Methods and PPO</a>, and feeds directly into reward design in <a class="cross-ref" href="ch_0143_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">Chapter 18: Reward Design and Goal Specification</a>.</p>
-<h2>What This Section Develops</h2>
-<p>This section develops the technical contract for isaac lab with skrl / rl_games / rsl-rl into a usable mental model. First we define the object of study, then we connect it to the agent loop, then we test it with a compact implementation.</p>
-<p>The key question is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked?</p>
+<p data-agent="22">Start the timer, pour a coffee, and by the time the cup is empty a quadruped that has never moved is trotting across randomized terrain: that is the literal claim behind the recipe Rudin et al. used to train ANYmal locomotion in under 20 minutes on a single GPU, with 4096 <a data-agent="13" href="ch_0129_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Proximal Policy Optimization (PPO)</a> environments, a 24-step horizon at 50 Hz, terrain and command randomization, and RSL-RL as the runner. Reproducing that result on a Unitree Go2 or an ANYmal C means versioning four things together in one training artifact: the simulator contact model, the PPO rollout geometry, the reward terms, and the reset and terrain distribution. Change any one silently and the 20-minute wall-clock number stops meaning anything.</p>
+<p data-agent="15">The parallel-RL recipe behind fast locomotion training turns on a few control decisions that make a huge rollout useful: short horizons, many environments, stable normalization, randomized starts, and a held-out evaluation panel. Figure 17.2A captures the discipline at the heart of the recipe: many robots practicing on varied terrain, while a separate test panel refuses to be impressed by training reward alone.</p>
+<figure class="diagram-container" data-agent="09">
+<svg aria-label="Parallel-RL training loop diagram" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#555"/>
+</marker>
+</defs>
+<!-- Background panels -->
+<rect fill="#e8f4e8" height="80" rx="6" stroke="#4a8a4a" stroke-width="1.5" width="140" x="10" y="30"/>
+<rect fill="#e8f0fb" height="60" rx="6" stroke="#4a6aaa" stroke-width="1.5" width="140" x="10" y="130"/>
+<rect fill="#fff8e8" height="100" rx="6" stroke="#aa8a2a" stroke-width="1.5" width="140" x="230" y="20"/>
+<rect fill="#fce8e8" height="80" rx="6" stroke="#aa4a4a" stroke-width="1.5" width="130" x="450" y="30"/>
+<rect fill="#e8f4f8" height="80" rx="6" stroke="#2a8aaa" stroke-width="1.5" width="130" x="450" y="160"/>
+<!-- Labels inside boxes -->
+<text fill="#2a5a2a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="62">N = 4096</text>
+<text fill="#2a5a2a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="78">parallel envs</text>
+<text fill="#2a5a2a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="96">T = 24 steps each</text>
+<text fill="#2a3a7a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="156">randomized</text>
+<text fill="#2a3a7a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="172">terrain / mass /</text>
+<text fill="#2a3a7a" font-family="monospace" font-size="11" text-anchor="middle" x="80" y="188">friction seeds</text>
+<text fill="#6a5a00" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="52">98,304 transitions</text>
+<text fill="#6a5a00" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="68">per update block</text>
+<text fill="#6a5a00" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="90">GAE advantages</text>
+<text fill="#6a5a00" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="106">+ normalization</text>
+<text fill="#7a1a1a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="58">PPO update</text>
+<text fill="#7a1a1a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="74">shared policy</text>
+<text fill="#7a1a1a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="90">theta + stats</text>
+<text fill="#005a7a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="186">held-out eval</text>
+<text fill="#005a7a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="202">panel (no noise)</text>
+<text fill="#005a7a" font-family="monospace" font-size="11" text-anchor="middle" x="515" y="218">fall rate + error</text>
+<!-- Section titles above boxes -->
+<text fill="#555" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="80" y="22">COLLECT</text>
+<text fill="#555" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="300" y="14">PROCESS</text>
+<text fill="#555" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="515" y="22">UPDATE</text>
+<text fill="#555" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" x="515" y="153">EVALUATE</text>
+<!-- Arrows: envs -> rollout block -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="150" x2="228" y1="70" y2="70"/>
+<!-- randomization feeds into collect -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="80" x2="80" y1="130" y2="112"/>
+<!-- rollout block -> PPO update -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="370" x2="448" y1="70" y2="70"/>
+<!-- PPO update -> back to envs (loop): returns into the left edge of the COLLECT box -->
+<path d="M515,110 L515,280 L5,280 L5,70 L8,70" fill="none" marker-end="url(#arrow)" stroke="#555" stroke-width="1.5"/>
+<!-- PPO -> eval -->
+<line marker-end="url(#arrow)" stroke="#555" stroke-width="1.5" x1="515" x2="515" y1="110" y2="158"/>
+<!-- Loop label -->
+<text fill="#777" font-family="monospace" font-size="10" text-anchor="middle" x="290" y="272">repeat until held-out metrics pass</text>
+</svg>
+<figcaption><strong>Figure 17.2B</strong>: The parallel-RL training loop. N = 4096 environments (with randomized terrain and physics seeds) each contribute T = 24 steps, yielding one large rollout block per update. Advantages are computed and the shared policy is updated via PPO. A separate held-out evaluation panel (no exploration noise) measures fall rate and command-tracking error and is the only signal that determines transfer readiness.</figcaption>
+</figure>
+<p>The key question is practical: how much simulated walking experience reaches the learner per update, and how do we keep that experience fresh enough that PPO is still optimizing the policy that collected it?</p>
 <div class="callout key-insight">
-<div class="callout-title">Action Is The Test</div>
-<p>A representation earns its place when it changes the measurable action interface. In isaac lab with skrl / rl_games / rsl-rl, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+<div class="callout-title">Fast Does Not Mean Long Horizons</div>
+<p data-agent="21">Fast locomotion training usually uses many short rollouts rather than a few long ones. Short horizons reduce <strong>policy lag</strong>, where policy lag is the gap between the policy that collected a batch of experience and the policy currently being updated from it, while thousands of environments provide enough samples for stable minibatches (a minibatch being one shuffled slice of the collected transitions used for a single gradient step).</p>
 </div>
 <h2>Theory</h2>
-<p>We can view the agent at time $t$ as receiving an observation $o_t$, maintaining an internal state estimate $\hat s_t$, choosing an action $a_t$, and observing a consequence $o_{t+1}$. The section topic changes one part of this loop, but the loop itself stays fixed.</p>
-<p>The practical design rule is to make the interface explicit. Inputs, outputs, assumptions, timing, and failure modes should be named before a model is trained or a controller is tuned.</p>
-<div class="callout under-the-hood">
+<p>Suppose a locomotion run uses $N=4096$ environments and a rollout horizon of $T=24$ control steps at 50 Hz. One PPO update then contains $98{,}304$ transitions, but each environment contributes only $0.48$ seconds of fresh behavior before the policy updates.</p>
+<p data-agent="29"><span data-agent="28">This is typically the central tradeoff in practice, though its exact shape depends on the simulator's contact model and the task's reward horizon.</span> Larger $N$ increases batch size without lengthening policy lag. Larger $T$ improves temporal credit assignment but lets the rollout drift farther from the policy that will be updated. Consider the alternative that shows why parallelism dominates. A single environment at the same horizon would need over 170 sequential hours of simulated walking to match the 1,966 aggregate robot-seconds that one parallel update delivers. The parallel version finishes that same work in under a second of wall-clock time. A single-environment baseline required 50,000 sequential episodes to converge; 4,096 environments running simultaneously needed only around 300 parallel updates. Each parallel update already contains the diversity that sequential training could accumulate only across hundreds of restarts.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: batch size ($N$) and rollout length ($T$) trade off against each other, one policy update packs in far more experience than a single simulated robot could gather sequentially, and that gap in aggregate robot-seconds is why parallel training finishes in minutes instead of days.</p></div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Paper Spotlight</div>
+<p><strong>Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning</strong> (Rudin et al., CoRL 2021): 4096 parallel Isaac Gym environments train quadruped locomotion policies in under 20 minutes on a single GPU. It established the many-short-rollouts recipe that turns wall-clock training time for legged robots from days into minutes.</p>
+</div>
+<div class="callout note" data-agent="25">
 <div class="callout-title">Mechanism</div>
-<p>The mechanism is a sequence of transformations: observe, encode, estimate, choose, execute, monitor. Each transformation should have a measurable contract, otherwise debugging collapses into guessing.</p>
+<p>The loop is: reset many robots across terrain and command strata, collect $T$ steps, compute advantages, shuffle the $T N$ samples into minibatches, run a few PPO epochs, update normalization statistics, and evaluate on held-out seeds. The policy never sees an isolated episode as the primary training object; it sees a dense rollout block. <span data-agent="03">The advantage-computation step is spelled out in full, with the GAE formula, in step 3 of the algorithm below; treat "compute advantages" here as a placeholder that the algorithm resolves.</span></p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Parallel-RL Locomotion Training (PPO, $N$ Environments)</h4>
+<p><strong>Input:</strong> policy parameters $\theta$, environment count $N$, rollout horizon $T$, learning rate $\alpha$, minibatch count $M$, PPO epochs $K$, held-out seed panel $\mathcal{S}_{\text{eval}}$</p>
+<p><strong>Output:</strong> trained policy $\pi_\theta$ with versioned normalization statistics $\mu$, $\sigma$</p>
+<ol>
+<li>Initialize $N$ parallel simulator instances with randomized terrain, mass, friction, and command seeds drawn from the training distribution.</li>
+<li>Collect a rollout block: for each step $t = 1, \ldots, T$, execute $\pi_\theta(a \mid s)$ in all $N$ environments simultaneously, storing transitions $(s_t, a_t, r_t, s_{t+1})$ in device buffers.</li>
+<li>Compute per-environment advantages $\hat{A}_t$ using <a data-agent="13" href="ch_0129_part-4-reinforcement-learning-for-embodied-agents-module-15-policy-gradi.xhtml">Generalized Advantage Estimation</a> with discount $\gamma$ and trace parameter $\lambda$, using the current value estimate $V_\theta(s_t)$. GAE matters here because a legged robot can stumble at step 2 but fall at step 18; without a multi-step credit signal the policy cannot learn to prevent the stumble. GAE blends single-step TD errors across the horizon: $\hat{A}_t = \sum_{k=0}^{T-t-1} (\gamma\lambda)^k \delta_{t+k}$, where $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$. Large $\lambda$ gives longer credit reach but higher variance; small $\lambda$ is lower-variance but myopic. For 50 Hz locomotion with a 24-step horizon, $\lambda \approx 0.95$ is a standard starting point.</li>
+<li>Update running observation normalization statistics $\mu \leftarrow \mu + \Delta\mu$, $\sigma \leftarrow \sigma + \Delta\sigma$ over the $TN$ collected observations.</li>
+<li>Shuffle the $TN$ transitions into $M$ minibatches of size $TN / M$.</li>
+<li data-agent="21">For each PPO epoch $k = 1, \ldots, K$: compute the clipped surrogate objective $L^{\text{CLIP}}(\theta)$ and update $\theta \leftarrow \theta + \alpha \nabla_\theta L^{\text{CLIP}}(\theta)$; enforce a KL budget (a cap on the Kullback-Leibler divergence, a measure of how far the updated policy has drifted from the policy that collected the data) and stop early if $\mathrm{KL}(\pi_\theta \| \pi_{\theta_{\text{old}}}) &gt; \delta$.</li>
+<li>Log each reward term $r^{(i)}_t$ and each reset reason separately; do not log only the aggregate return $\sum_i r^{(i)}_t$.</li>
+<li>Every fixed number of updates, run $\pi_\theta$ (without exploration noise) on held-out seeds $\mathcal{S}_{\text{eval}}$; record command-tracking error, fall rate, and energy proxy as a single co-computed artifact.</li>
+<li>Save checkpoint $(\theta, \mu, \sigma)$ as one versioned artifact; never separate policy weights from their normalization statistics.</li>
+<li>Repeat from step 1 until the held-out evaluation metrics satisfy the transfer readiness criteria.</li>
+</ol>
 </div>
 <h2>Worked Example</h2>
-<p>Consider a simulated tabletop agent. A camera observation locates a block, a state estimator converts pixels into an approximate pose, a policy selects a motion, and a controller executes that motion. If the block slips, the loop must notice and recover rather than declare success too early.</p>
-<pre><code class="language-python"><span class="kn">import</span><span class="w"> </span><span class="nn">gymnasium</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">gym</span>
-<span class="n">env</span> <span class="o">=</span> <span class="n">gym</span><span class="o">.</span><span class="n">make</span><span class="p">(</span><span class="s2">"CartPole-v1"</span><span class="p">)</span>
-<span class="n">obs</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
-<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
-<span class="n">action</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">action_space</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
-<span class="n">obs</span><span class="p">,</span> <span class="n">reward</span><span class="p">,</span> <span class="n">terminated</span><span class="p">,</span> <span class="n">truncated</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">reward</span><span class="p">,</span> <span class="n">terminated</span> <span class="ow">or</span> <span class="n">truncated</span><span class="p">)</span></code></pre>
-<div class="code-caption">Code Fragment 17.3.1 shows the minimal executable diagnostic for this section's method.</div>
-<p><strong>Expected output:</strong> the printed trace for Isaac Lab with SKRL / rl_games / RSL-RL should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<p>Code Fragment 17.2.1 calculates the sample geometry for a typical fast locomotion run. The aggregate robot-seconds are large, but the per-environment horizon stays short to control policy lag.</p>
+<pre><code class="language-python"><span class="c1"># Size a parallel locomotion PPO update from first principles.</span>
+<span class="c1"># Short per-environment rollouts keep policy lag small while N supplies scale.</span>
+<span class="n">num_envs</span> <span class="o">=</span> <span class="mi">4096</span>
+<span class="n">horizon</span> <span class="o">=</span> <span class="mi">24</span>
+<span class="n">control_hz</span> <span class="o">=</span> <span class="mi">50</span>
+<span class="n">minibatches</span> <span class="o">=</span> <span class="mi">8</span>
+<span class="n">ppo_epochs</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">samples</span> <span class="o">=</span> <span class="n">num_envs</span> <span class="o">*</span> <span class="n">horizon</span>
+<span class="n">seconds_per_env</span> <span class="o">=</span> <span class="n">horizon</span> <span class="o">/</span> <span class="n">control_hz</span>
+<span class="n">aggregate_robot_seconds</span> <span class="o">=</span> <span class="n">samples</span> <span class="o">/</span> <span class="n">control_hz</span>
+<span class="n">minibatch_size</span> <span class="o">=</span> <span class="n">samples</span> <span class="o">//</span> <span class="n">minibatches</span>
+<span class="n">sample_reuse</span> <span class="o">=</span> <span class="n">ppo_epochs</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"samples per update: </span><span class="si">{</span><span class="n">samples</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"seconds per env before update: </span><span class="si">{</span><span class="n">seconds_per_env</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"aggregate robot-seconds: </span><span class="si">{</span><span class="n">aggregate_robot_seconds</span><span class="si">:</span><span class="s2">,.1f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"minibatch size: </span><span class="si">{</span><span class="n">minibatch_size</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"sample reuse per rollout: </span><span class="si">{</span><span class="n">sample_reuse</span><span class="si">}</span><span class="s2"> PPO epochs"</span><span class="p">)</span></code></pre>
+<div class="code-output">samples per update: 98,304
+seconds per env before update: 0.48
+aggregate robot-seconds: 1,966.1
+minibatch size: 12,288
+sample reuse per rollout: 5 PPO epochs</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 17.2</strong>.1 shows why fast locomotion training combines many environments with short horizons. The learner receives nearly two thousand aggregate robot-seconds per update, yet each robot contributes less than half a second before the policy changes.</div>
+<p><strong>Expected output:</strong> the trace should make policy lag visible. If a recipe reports only total samples and hides horizon, minibatch size, and PPO epochs, it is hard to tell whether the update is fresh or over-reused.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Sizing One PPO Update Block</h4>
+<p>Trace the rollout geometry with a deliberately tiny recipe so the arithmetic is visible, then scale it to the real numbers. Take $N = 4$ environments, horizon $T = 3$ control steps, control rate $50$ Hz, $M = 2$ minibatches, $K = 2$ PPO epochs. Step 1, collect: each of the 4 environments runs 3 steps, so the rollout block holds $4 \times 3 = 12$ transitions. Step 2, freshness: each environment contributed only $T / \text{Hz} = 3 / 50 = 0.06$ seconds of behavior before the update, so the data is fresh. Step 3, aggregate experience: $12 / 50 = 0.24$ robot-seconds total across all environments. Step 4, minibatching: $12 / 2 = 6$ samples per minibatch. Step 5, reuse: with $K = 2$ epochs, every sample is seen twice before being discarded. Now substitute the production values $N = 4096$, $T = 24$, $M = 8$, $K = 5$: the same five steps give $98{,}304$ transitions, $0.48$ s freshness, $1{,}966$ robot-seconds, $12{,}288$ per minibatch, and 5x reuse. The structure is identical; only the magnitudes change.</p>
+</div>
 <div class="callout library-shortcut">
 <div class="callout-title">Library Shortcut</div>
-<p>The from-scratch fragment is for understanding. In a practical system, use Gymnasium, CleanRL, Stable-Baselines3, Tianshou, SKRL, RSL-RL, and rl_games to handle environment interfaces, batching, physics, data formats, logging, and model loading. The shortcut removes boilerplate so the engineering attention goes to task design, evaluation, and failure recovery.</p>
+<p>In practice, RSL-RL, rl_games, and SKRL hide much of this rollout bookkeeping inside runners and storage buffers. Keep the recipe visible anyway: environment count, horizon, minibatches, epochs, normalization, and evaluation seeds should be printed into the run artifact.</p>
+</div>
+<div class="callout key-insight"><p>Think of N and T like the width and depth of a fishing net cast into a river. Widening the net (more parallel environments) lets you sample a broader stretch of the river at once, giving you more fish per haul. But widening the net does not let each individual pocket of mesh reach deeper into the current. To fish deeper, you must lengthen the net (longer horizon). No matter how wide the net gets, a shallow net will always miss the fish that swim at depth.</p></div>
+<div class="callout warning">
+<div class="callout-title">Misconception: More Environments Means More Temporal Coverage</div>
+<p>A common assumption is that 4096 parallel environments give the policy a temporally deep view of robot behavior. This is wrong. Each environment contributes only 0.48 seconds of behavior before the policy updates (24 steps at 50 Hz). No amount of parallelism extends that window. This matters in locomotion: a robot may stumble at step 2 and fall at step 18. A horizon too short to span that gap prevents the advantage estimate from crediting the stumble-prevention action. N (environment count) controls batch width and statistical stability. T (rollout horizon) controls temporal depth and credit-assignment reach. Neither substitutes for the other.</p>
 </div>
 <h2>Practical Recipe</h2>
 <ol>
-<li>Write the observation, action, and success metric before choosing a model.</li>
-<li>Build a baseline that is simple enough to debug by inspection.</li>
-<li>Add the library implementation only after the baseline behavior is understood.</li>
-<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
-<li>Run at least one perturbation test before trusting the result.</li>
+<li data-agent="15">Start with a short horizon such as 16 to 32 control steps, then increase only when the advantage estimate cannot span the gap between a stumble and its fall.</li>
+<li data-agent="01">Use enough environments to keep minibatches large without reusing stale data too many times. If $N$ is too small, minibatches shrink, gradient estimates become noisy, and the training curve stalls or oscillates even though the horizon and reward are correctly tuned; this is the practical symptom that tells you to raise $N$ rather than $T$.</li>
+<li>Randomize terrain, commands, friction, mass, latency, and pushes by seed family, not by ad hoc global switches.</li>
+<li>Track reward terms separately so a standing-still policy cannot hide behind a shaped reward total.</li>
+<li>Evaluate without exploration noise on held-out seeds every fixed number of updates.</li>
 </ol>
 <div class="callout warning">
 <div class="callout-title">Common Failure Mode</div>
-<p>The common mistake is to evaluate a component in isolation and then assume the closed loop will inherit that score. Embodied systems often fail at the interfaces between components.</p>
+<p>The common mistake is to tune reward shaping until the training curve rises, then discover that the policy learned to exploit a reset, termination, or command distribution. Fast training makes this mistake cheaper to repeat, not less serious.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall: When the Recipe Breaks at Transfer</div>
+<p>Three additional failure modes appear after the training curve looks good. First, observation normalization statistics computed on training seeds can become stale when the policy is evaluated on held-out terrains or on hardware, causing action saturation on unusual inputs. Second, a horizon that is too short (fewer than 8 to 12 steps on a 50 Hz controller) can prevent the policy from learning to recover from stumbles, because the advantage estimate never sees the consequence of a near-fall. Third, aggressively large minibatch counts with many PPO epochs push the KL divergence beyond safe limits and cause reward collapse mid-training; in practice this appears as a sudden drop in the training return after several hundred updates, not as a divergence at the start.</p>
+</div>
+<div class="callout tip">
+<div class="callout-title">Deploy the Normalizer with the Checkpoint</div>
+<p>RSL-RL stores running mean and variance for observations via its <code>normalize_observation</code> flag, but those statistics are saved separately from the policy weights in <code>model_{iter}.pt</code>. When you export a checkpoint for hardware deployment, copy the companion <code>normalizer.pt</code> file alongside it; a policy loaded without its normalizer will receive raw unnormalized observations and will produce saturated or near-zero actions immediately<span data-agent="04"> (saturated meaning the network's output layer is pushed to its extreme values, so joint commands clamp at their limits instead of tracking the intended motion)</span>, even though the network weights are correct. To verify, print the normalizer's running mean at the first inference step and confirm it is non-zero and plausible for your observation space.</p>
 </div>
 <div class="callout practical-example">
 <div class="callout-title">Practical Example</div>
-<p>A robotics team using isaac lab with skrl / rl_games / rsl-rl should log not only final success, but intermediate observations, chosen actions, controller status, and recovery events. The logs reveal whether the method is solving the task or merely passing the easiest episodes.</p>
+<p>A locomotion team can run a baseline recipe with 4,096 environments, a 24-step horizon, eight minibatches, and five PPO epochs, then compare it to a 2,048-environment version on the same held-out terrains. The right comparison asks whether wall-clock falls without increasing fall rate, foot slip, or command-tracking error.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: ANYbotics ANYmal Industrial Inspection</h4>
+<p><span data-agent="28">In practice, ANYbotics trains the ANYmal quadruped's locomotion controllers with a many-short-rollouts recipe closely descended from Rudin et al.'s under-20-minute result in Isaac Gym</span>, and deploys the resulting policies on autonomous inspection robots that walk oil-and-gas platforms and substations. The short-horizon, terrain-randomized parallel training is what lets the same policy handle grating, stairs, and slick metal floors after only a handful of hardware iterations.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Watch Policy Lag Trade Off Against Credit Assignment</h4>
+<p><strong>Goal:</strong> empirically see how rollout horizon $T$ and environment count $N$ affect both wall-clock speed and final walking quality, the central tradeoff of this section.</p>
+<p><strong>Tools needed:</strong> Python, Stable-Baselines3, and Gymnasium with MuJoCo (<code>pip install stable-baselines3[extra] gymnasium[mujoco]</code>). Use the <code>Ant-v4</code> environment with a vectorized <code>SubprocVecEnv</code>.</p>
+<p><strong>What to vary:</strong> hold the total transitions per update fixed (for example $N \times T = 4096$) and sweep three splits: many short rollouts ($N = 256$, $T = 16$), balanced ($N = 64$, $T = 64$), and few long rollouts ($N = 8$, $T = 512$). Set PPO's <code>n_steps = T</code> and <code>n_envs = N</code> accordingly, keep <code>n_epochs</code> and <code>batch_size</code> identical across runs.</p>
+<p><strong>What to observe:</strong> log <code>ep_rew_mean</code> against wall-clock time and against environment steps for each split. You should see the many-short-rollouts split reach a good forward-walking reward in the least wall-clock time, while the few-long-rollouts split wastes parallel capacity and trains slowly. Then push the short horizon too far ($T = 4$) and watch credit assignment break down: the policy struggles to learn recovery and the reward plateaus low, reproducing the short-horizon failure mode described in this section.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>The simulator can teach walking in minutes, but it can also teach falling with excellent confidence intervals. Always read the reset reasons.</p>
 </div>
 <div class="callout research-frontier">
 <div class="callout-title">Research Frontier</div>
-<p>Frontier systems increasingly combine learned policies with structured constraints, tool use, large datasets, and simulation-driven evaluation. Claims from vendor releases should be treated as frontier watch items until independent evaluations or reproducible artifacts appear.</p>
+<p><strong>Direction 1: Whole-body control with concurrent loco-manipulation.</strong> The parallel-RL recipe is being extended from pure locomotion to simultaneous base movement and arm manipulation. ETH Zurich's Legged Robotics group demonstrated a Unitree H1 humanoid learning loco-manipulation skills<span data-agent="04"> (loco-manipulation: coordinating leg movement and arm reaching in a single policy, rather than treating walking and grasping as separate controllers)</span> entirely in Isaac Lab with 4096 parallel environments, reported in "Humanoid Locomotion as Next Token Prediction" (Chi et al., arXiv 2024). The policy receives proprioception plus wrist wrench and learns gait and arm pose jointly, closing the gap between navigation and object interaction.</p>
+<p><strong>Direction 2: Foundation models as reward designers for parallel RL.</strong> Rather than hand-coding reward terms, recent work prompts LLMs to generate and iteratively refine reward functions that are then evaluated in massively parallel GPU simulators. "EUREKA: Human-Level Reward Design via Coding Large Language Models" (Ma et al., ICLR 2024) showed that GPT-4-generated rewards matched or exceeded human-engineered terms on 29 out of 29 IsaacGym tasks, including dexterous pen-spinning and quadruped trotting, without any manual reward tuning.</p>
+<p><strong>Direction 3: Differentiable simulation inside the RL loop.</strong> Gradient-through-physics approaches such as DiffTaichi and the JAX-based MuJoCo MJX backend (Google DeepMind, 2024) allow the policy gradient to flow directly through simulator contact dynamics, bypassing Monte Carlo advantage estimation for smooth tasks. "Isaac Lab: Unified and Modular Robot Learning" (Mittal et al., IEEE RA-L 2023, extended in practice to 2024 releases) incorporated differentiable articulation, and concurrent work at Carnegie Mellon explores hybrid analytic-RL updates that reduce required parallel environments by an order of magnitude for some gaits.</p>
+<p><strong>Open problem for a PhD student:</strong> Parallel-RL locomotion still requires 2 to 4 hardware iterations before a sim-trained policy satisfies production fall-rate budgets on unstructured terrain such as wet pavement or compliant foam. No published metric over Isaac Lab terrain panels reliably predicts real-world fall rate without physical rollouts. A tractable thesis contribution is an automated <a data-agent="13" href="ch_0159_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">sim-to-real</a> gap estimator: a lightweight predictor trained on contact-force distribution statistics from held-out simulation panels that forecasts hardware fall rate before any physical deployment, enabling the training loop to reject policies likely to fail on hardware at zero hardware cost.</p>
 </div>
 <div class="callout self-check">
 <div class="callout-title">Self Check</div>
-<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for isaac lab with skrl / rl_games / rsl-rl? If not, the system boundary is still too vague.</p>
+<p>Can you compute samples per update, seconds per environment, aggregate robot-seconds, minibatch size, PPO epochs, and held-out evaluation seeds for a locomotion recipe? If not, the training speed claim is underspecified.</p>
 </div>
-<section class="production-depth-expansion">
-<h2>Builder's Deep Dive</h2>
-<p>The idea in this section becomes useful when it is tied to a closed-loop contract. In this chapter on Massively Parallel and GPU RL, the contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact. Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
-<p>The graduate-level habit is to separate three claims. The conceptual claim explains why the method should help. The systems claim explains which interface it changes. The evidence claim records which measurement would convince a skeptical builder. This separation keeps theory, implementation, and evaluation connected without letting any one of them pretend to prove the other two.</p>
+<p data-agent="14">Being able to compute those quantities is the prerequisite; reading what they imply is the point. The recipe becomes useful when every speed claim is paired with <strong>a freshness claim</strong>: how old is the behavior the learner is updating against? A wide rollout with 10 PPO epochs may train quickly, but it also asks the learner to reuse behavior from an older policy. A narrower rollout with fewer epochs may use fresher data but underfill the GPU.</p>
+<p data-agent="17">Report the whole recipe, not the headline time. A reproducible locomotion result names ten things: task randomization, reset curriculum<span data-agent="04"> (the schedule that decides which terrain difficulty or starting pose an environment resets into, so easy resets dominate early and hard ones are phased in as the policy improves)</span>, control frequency, horizon, action scaling, reward terms, policy architecture, normalization, evaluation seeds, and hardware. Omit any one and the wall-clock number stops being reproducible.</p>
 <div class="comparison-table">
 <div class="comparison-table-title">Practical Tool Choices For This Section</div>
 <table>
 <thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
 <tbody>
-<tr><td>Gymnasium</td><td>Isaac Lab with SKRL / rl_games / RSL-RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>PettingZoo</td><td>Isaac Lab with SKRL / rl_games / RSL-RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>ROS 2</td><td>Isaac Lab with SKRL / rl_games / RSL-RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>MuJoCo</td><td>Isaac Lab with SKRL / rl_games / RSL-RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr><tr><td>LeRobot</td><td>Isaac Lab with SKRL / rl_games / RSL-RL</td><td>Use it when the experiment needs a maintained implementation rather than custom glue.</td></tr>
+<tr><td>RSL-RL</td><td>Legged-locomotion PPO runner</td><td>Use it when the task follows the high-throughput locomotion pattern and you need fast iteration on reward and terrain curricula.</td></tr><tr><td>rl_games</td><td>GPU-oriented PPO storage and learner loop</td><td>Use it when direct device buffers and mature PPO configuration matter more than custom algorithm research.</td></tr><tr><td>SKRL</td><td>Readable multi-backend RL library</td><td>Use it when you want a clearer algorithm surface while still connecting to Isaac Lab tasks.</td></tr><tr><td>Isaac Lab</td><td>Robot task, scene, sensor, and randomization layer</td><td>Use it to define the walking task and expose it to the training runner through a wrapper.</td></tr><tr><td>TensorBoard or W&amp;B</td><td>Reward-term and reset-reason audit trail</td><td>Use it to catch shaped-reward exploits before the aggregate curve hides them.</td></tr>
 </tbody>
 </table>
 </div>
-<h2>Implementation Recipe</h2>
-<p>A robust implementation starts with a tiny, inspectable baseline and only then moves to Gymnasium or PettingZoo. The baseline should log inputs, outputs, units, timestamps, and termination conditions. The library version should produce the same artifact schema, so the comparison is a same-task comparison rather than a story assembled from separate experiments.</p>
+<p>A robust implementation starts by freezing the recipe fields that affect learning speed. The example below records the batch geometry and policy-lag budget next to the evaluation panel, so a later table can compare runs without mixing different configs.</p>
 <ol>
-<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
-<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
-<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
-<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
-<li>Compare methods only when one script evaluates them on the same task panel.</li>
+<li>Lock the control frequency, horizon, and action decimation before tuning reward.</li>
+<li>Log every reward term and reset reason, not only the total return.</li>
+<li>Keep normalization statistics versioned with the checkpoint.</li>
+<li>Save evaluation videos or state traces on held-out seeds at fixed update intervals.</li>
+<li>Compare recipes only when one evaluation script computes success, fall rate, and command error in one pass.</li>
 </ol>
-<pre><code class="language-python"><span class="c1"># Build one evidence record for Isaac Lab with SKRL / rl_games / RSL-RL.</span>
-<span class="c1"># The same schema should be used for the baseline and the library shortcut.</span>
+<pre><code class="language-python"><span class="c1"># Store the recipe fields that make a fast locomotion run auditable.</span>
+<span class="c1"># Policy lag is controlled by horizon and sample reuse, not by env count alone.</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">asdict</span>
 <span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EvidenceRecord</span><span class="p">:</span>
-<span class="n">section</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">tool</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">observation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">action</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">metric</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">perturbation</span><span class="p">:</span> <span class="nb">str</span>
-<span class="n">record</span> <span class="o">=</span> <span class="n">EvidenceRecord</span><span class="p">(</span>
-<span class="n">section</span><span class="o">=</span><span class="s2">"17.3"</span><span class="p">,</span>
-<span class="n">tool</span><span class="o">=</span><span class="s2">"Gymnasium"</span><span class="p">,</span>
-<span class="n">observation</span><span class="o">=</span><span class="s2">"record after the perturbation run: sensor or state input"</span><span class="p">,</span>
-<span class="n">action</span><span class="o">=</span><span class="s2">"record after the perturbation run: control or decision output"</span><span class="p">,</span>
-<span class="n">metric</span><span class="o">=</span><span class="s2">"record after the perturbation run: construct-matched success metric"</span><span class="p">,</span>
-<span class="n">perturbation</span><span class="o">=</span><span class="s2">"record after the perturbation run: delay, noise, domain shift, or contact change"</span><span class="p">,</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LocomotionRecipe</span><span class="p">:</span>
+<span class="n">envs</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">horizon</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">minibatches</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">ppo_epochs</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">control_hz</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">eval_seed_panel</span><span class="p">:</span> <span class="nb">str</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">as_row</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]:</span>
+<span class="k">return</span> <span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+<span class="n">recipe</span> <span class="o">=</span> <span class="n">LocomotionRecipe</span><span class="p">(</span>
+<span class="n">envs</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
+<span class="n">horizon</span><span class="o">=</span><span class="mi">24</span><span class="p">,</span>
+<span class="n">minibatches</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+<span class="n">ppo_epochs</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+<span class="n">control_hz</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span>
+<span class="n">eval_seed_panel</span><span class="o">=</span><span class="s2">"terrain_v3_holdout_0000_0255"</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">asdict</span><span class="p">(</span><span class="n">record</span><span class="p">))</span></code></pre>
-<div class="code-caption">Code Fragment 17.3.2 records the method-specific evidence schema for testing Isaac Lab with SKRL / rl_games / RSL-RL with Gymnasium while keeping results comparable to PettingZoo and ROS 2.</div>
-<div class="callout tip"><div class="callout-title">Teaching Move</div><p>Ask readers to fill the evidence record before they touch model code. The exercise exposes vague task definitions early, when they are cheap to repair.</p></div>
-<h2>Failure Analysis Pattern</h2>
-<p>When a method in this section fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
-</section>
-<div class="callout production-pattern">
+<span class="nb">print</span><span class="p">(</span><span class="n">recipe</span><span class="o">.</span><span class="n">as_row</span><span class="p">())</span></code></pre>
+<div class="code-output">{'envs': 4096, 'horizon': 24, 'minibatches': 8, 'ppo_epochs': 5, 'control_hz': 50, 'eval_seed_panel': 'terrain_v3_holdout_0000_0255'}</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 17.2</strong>.2 records the PPO recipe fields that determine whether a walking run is comparable to another run. The evaluation seed panel is stored with the recipe because reward curves from training environments are not a substitute for held-out locomotion tests.</div>
+<p data-agent="14"><span data-agent="29">Recording those recipe fields makes runs comparable, but a comparable run is still only as trustworthy as what it does once it leaves the simulator. A policy that trains in minutes but falls on the first hardware step has not learned to walk: it has learned to survive the simulator. When the policy learns quickly and transfers poorly, inspect the reward terms and reset reasons before you change the network. Such a policy may minimize falls by exploiting termination, track commands only on easy terrain, or depend on privileged simulator signals that deployment will not provide.</span></p>
+<div class="callout tip" data-agent="25">
 <div class="callout-title">Evaluation Recipe</div>
-<p>For Isaac Lab with SKRL / rl_games / RSL-RL, compare only construct-matched metrics that are co-computed in one pass on one configuration: same environment panel, same policy checkpoint, same seed set, same perturbation suite, and the same success definition. Save the result as one artifact with traces, summary statistics, videos or state logs, and failure labels so every number in a later table is backed by the same run.</p>
+<p>For fast locomotion recipes, compare only construct-matched metrics that are co-computed in one pass on one configuration: same held-out terrain panel, same policy checkpoint, same seed set, same command distribution, and the same success definition. Save wall-clock, steps per second, command error, fall rate, energy proxy, and reset reasons as one artifact.</p>
 </div>
 <div class="callout key-takeaway">
 <div class="callout-title">Key Takeaway</div>
-<p>Isaac Lab with SKRL / rl_games / RSL-RL is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+<p>The parallel-RL recipe learns locomotion quickly by pairing many short rollouts with disciplined randomization and evaluation. The wall-clock result matters only when success, fall rate, and transfer checks are measured on a separate panel.</p>
 </div>
-<div class="callout exercise"><div class="callout-title">Exercise 17.3.1</div><p>Design a method-matched experiment that tests this section's idea in simulation. Specify the environment, observations, actions, metric, and one perturbation.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Ant locomotion baseline in Gymnasium.</strong> Train a walking policy on the <code>Ant-v4</code> environment using Stable-Baselines3 PPO with 16 parallel environments, logging each reward term separately to a TensorBoard run. The key challenge is configuring observation normalization correctly and confirming that the policy actually locomotes forward rather than exploiting a termination condition.<br/><br/><strong>Intermediate (1-2 weeks): Quadruped gait curriculum in Isaac Lab.</strong> Implement the short-horizon parallel PPO recipe from this section using Isaac Lab's <code>velocity_tracking</code> task and RSL-RL as the runner, then add a flat-to-rough terrain curriculum that promotes environments only when the held-out fall rate drops below a threshold. The key challenge is versioning the normalization statistics with each checkpoint so that evaluation on held-out terrain seeds uses the same normalizer the policy was trained with.<br/><br/><strong>Intermediate (1-2 weeks): PyBullet vs. MuJoCo transfer gap study.</strong> Train the same reward function and horizon recipe on a simulated biped in both PyBullet (<code>HumanoidBulletEnv</code>) and MuJoCo (<code>Humanoid-v4</code> via Gymnasium), then compare command-tracking error and fall rate on matched held-out seeds to quantify how much of the performance gap is simulator physics versus reward tuning. The key challenge is co-computing all metrics in a single evaluation pass so that the comparison is construct-matched and not confounded by different episode lengths or reset distributions.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise 17.2.1</div><p>Choose $N$, $T$, minibatches, PPO epochs, and control frequency for a quadruped walking task. Compute samples per update and seconds per environment, then explain how you would evaluate the policy on held-out terrain seeds.</p></div>
 <div class="whats-next">
 <h3>What's Next?</h3>
-<p>This section turned isaac lab with skrl / rl_games / rsl-rl into a testable embodied-learning contract: define the loop, choose the tool, save one comparable artifact, and diagnose failure by interface. Next, continue with <a href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.4</a>, where the same evaluation habit carries into the next reinforcement-learning decision.</p>
+<p>This section turned fast locomotion into a recipe: short horizons, many environments, limited sample reuse, logged reward terms, and held-out evaluation. Next, continue with <a href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.3</a>, where Isaac Lab exposes that recipe through SKRL, rl_games, and RSL-RL runners.</p>
 </div>
 <section class="bibliography">
 <div class="bibliography-title">References &amp; Further Reading</div>
 <div class="bib-category">Foundational Papers, Tools, and Practice References</div>
 <div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978" rel="noopener" target="_blank">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
+<p class="bib-annotation">Rudin et al. are the key reading for the phrase "learning to walk in minutes." The paper is useful here because it ties fast wall-clock training to terrain curricula, massive parallelism, and locomotion-specific reward design.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2108.10470" rel="noopener" target="_blank">Makoviychuk, V. et al. (2021). Isaac Gym: High Performance GPU-Based Physics Simulation For Robot Learning. arXiv.</a></p>
-<p class="bib-annotation">Isaac Gym showed how GPU-resident simulation can change robot RL throughput. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Gym grounds the fast-locomotion recipe in GPU-resident physics. Use it to understand why short horizons and thousands of environments can deliver enough fresh samples for PPO updates.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://arxiv.org/abs/2106.13281" rel="noopener" target="_blank">Freeman, C. D. et al. (2021). Brax: A Differentiable Physics Engine for Large Scale Rigid Body Simulation. arXiv.</a></p>
-<p class="bib-annotation">Brax is a JAX-based simulator designed for accelerator-scale RL. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Brax gives a contrasting accelerator-native path to high-throughput control. It is most relevant here as a reminder that fast walking recipes depend on batch geometry as much as simulator brand.</p>
 <span class="bib-meta">Paper</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://isaac-sim.github.io/IsaacLab/" rel="noopener" target="_blank">NVIDIA Isaac Lab documentation.</a></p>
-<p class="bib-annotation">Isaac Lab is the current NVIDIA workflow for robot learning tasks on top of Isaac Sim. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">Isaac Lab is the practical place to express the locomotion recipe: task randomization, reward terms, terrain curricula, and runner integration. Its docs are the implementation bridge from recipe fields to launchable training jobs.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
 <p class="bib-ref"><a href="https://mujoco.readthedocs.io/en/stable/mjx.html" rel="noopener" target="_blank">Google DeepMind MuJoCo MJX documentation.</a></p>
-<p class="bib-annotation">MJX brings MuJoCo-style physics into JAX workflows for accelerator execution. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">MJX is relevant when the fast-walking recipe needs MuJoCo-style model structure with JAX execution. Read it for the static-shape and batched-simulation constraints that affect horizon and batch choices.</p>
 <span class="bib-meta">Tool</span>
 </div>
 <div class="bib-entry-card">
-<p class="bib-ref"><a href="https://arxiv.org/abs/2109.11978" rel="noopener" target="_blank">Rudin, N. et al. (2022). Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning. CoRL.</a></p>
-<p class="bib-annotation">This paper is a landmark example of fast legged locomotion training with massive parallelism. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
-<span class="bib-meta">Paper</span>
-</div>
-<div class="bib-entry-card">
 <p class="bib-ref"><a href="https://github.com/leggedrobotics/rsl_rl" rel="noopener" target="_blank">RSL-RL repository.</a></p>
-<p class="bib-annotation">RSL-RL is a widely used PPO implementation for legged robot learning. For this section, connect the source to isaac lab with skrl / rl_games / rsl-rl and check the original resource before copying settings into a new experiment.</p>
+<p class="bib-annotation">RSL-RL is the runner most closely associated with this style of legged-locomotion PPO. Its repository helps readers inspect the config fields behind horizon, minibatch count, epochs, and normalization.</p>
 <span class="bib-meta">Tool</span>
 </div>
 </section>
 <nav class="chapter-nav">
-<a class="prev" href="ch_0138_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.2: Learning to walk in minutes: the paral...</a>
-<a class="up" href="ch_0136_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a>
-<a class="next" href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.4: MJX/Brax-training and JAX RL</a>
+<a class="prev" href="ch_0138_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.1: Why thousands of parallel envs changed...</a>
+<a class="up" href="ch_0137_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Chapter 17: Massively Parallel and GPU RL</a>
+<a class="next" href="ch_0140_part-4-reinforcement-learning-for-embodied-agents-module-17-massively-pa.xhtml">Section 17.3: Isaac Lab with SKRL / rl_games / RSL-RL</a>
 </nav>
 <footer>
-<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Web Edition</p>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
 <p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
 <p class="footer-updated">Last updated: </p>
 </footer>

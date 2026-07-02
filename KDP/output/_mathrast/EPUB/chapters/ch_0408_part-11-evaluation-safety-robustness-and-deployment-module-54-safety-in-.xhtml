@@ -1,0 +1,203 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 54.1: Why embodied safety is different (physical harm)</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css"/>
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css"/>
+  </head>
+  <body><a class="skip-link" href="#main-content">Skip to main content</a>
+<header class="chapter-header">
+<nav class="header-nav">
+Building Embodied AI: From Perception to Autonomous Action
+<span class="toc-icon">☰</span> Contents
+</nav>
+
+<div class="page-breadcrumb"><a href="ch_0394_part-11-evaluation-safety-robustness-and-deployment-index.xhtml">Part XI: Evaluation, Safety, Robustness, and Deployment</a><span class="bc-sep">›</span><a href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a></div>
+<h1>Section 54.1: Why embodied safety is different (physical harm)</h1>
+</header>
+<main class="content" id="main-content">
+<blockquote class="epigraph">
+<p>Safety begins by naming the physical harm path, not by lowering a benchmark score.</p>
+<cite>A Safety-Critical Controls Researcher</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A hospital delivery robot misreads a doorway clearance by eight centimeters and pins a nurse against a wall. No software rollback undoes that. As robots move from controlled warehouses into hospitals, construction sites, and homes, the gap between "policy error" and "physical injury" is shrinking to milliseconds. This section shows why the standard ML toolkit of accuracy metrics and reward curves is insufficient for embodied systems, how engineers rank harm pathways before choosing mitigations, and what constraints must sit outside the learned policy entirely. The methods developed here support building and auditing a hazard table that a safety regulator can scrutinize.</p>
+</div>
+<figure class="illustration">
+<img alt="Why embodied safety is different (physical harm) illustration for Chapter 54." loading="lazy" src="../img/259f4f8383_chapter-54-illustration-01.jpg"/>
+<figcaption><strong>Figure 54.1.1</strong>: A hazard map ties the same robot action to different consequences for people, equipment, and mission continuity.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with <a data-agent="13" href="ch_0146_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">reward design and constraint formulation</a> from section 18.2, where task objectives are defined independently of safety margins. The hazard-ranking framework introduced here is extended in section 54.2 (constrained policy learning) and section 54.5 (override and E-stop testing), and the assurance case that ties hazard logs to release evidence is built out in section 54.7.</p>
+</div>
+<h2>Why This Matters</h2>
+<p>Why embodied safety is different (physical harm) sits at the boundary between learning and safety engineering. The question is not whether the policy usually behaves well, but whether dangerous states are detected, blocked, or exited fast enough to protect people, equipment, and mission goals. Figure 54.1.1 captures this framing: a single robot action maps to distinct consequence classes for people, equipment, and mission continuity, which is exactly why one accuracy number cannot summarize safety.</p>
+<p data-agent="01">Standard ML safety practice (accuracy metrics, held-out validation, reward curves) treats every error as an interchangeable, recoverable data point: a misclassification is retried, a low-reward episode is discarded and retrained on. Embodied safety differs because a policy error becomes a physical event the moment it is executed on hardware, and physical events such as a crushed hand or a severed cable cannot be rolled back the way a bad gradient step can. The rest of this section builds the tools that follow from that difference: a hazard-ranking score in place of an accuracy number, a harm-pathway trace in place of a reward curve, and an intervention-authority stack that sits outside the learned policy so a single policy error cannot become the last line of defense.</p>
+<p>Consider a specific case: the Boston Dynamics Spot robot deployed in oil-and-gas inspection sites operates under a mandatory 0.5 m/s speed cap near active personnel, a force cutoff at 80 N on any limb contact, and an E-stop (an emergency stop: a dedicated circuit that cuts actuator power independently of the control software) <span data-agent="21">that must engage within 200 ms of a proximity-sensor trigger.</span> These are not policy parameters; they are hardware and safety-controller constraints that override the navigation policy entirely. The point is that the safety argument is anchored to specific thresholds, sensor latency budgets, and audit logs, not to the headline accuracy of the perception stack.</p>
+<p>A common hazard-ranking surrogate is <span class="katex katex-rendered" data-mathdisplay="1" data-tex="r = S \times E \times C,"><math display="block" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo>=</mo><mi>S</mi><mo>×</mo><mi>E</mi><mo>×</mo><mi>C</mi><mo separator="true">,</mo></mrow><annotation encoding="application/x-tex">r = S \times E \times C,</annotation></semantics></math></span> where $S$ is severity, $E$ is exposure, and $C$ is uncontrollability or low controllability. This does not replace deeper methods like Systems-Theoretic Process Analysis (STPA) or formal verification, but it disciplines the review.</p>
+<div class="callout tip">
+<p>When populating the $S \times E \times C$ table, anchor each score to a loggable quantity rather than team intuition: severity to the maximum kinetic energy or force the actuator can deliver at that joint configuration, exposure to the fraction of mission time the robot spends within 1 m of a person (read directly from the rosbag <span data-agent="21">(a recorded log of all ROS message traffic during a run)</span> or the ROS 2 <code>/tf</code> topic, which broadcasts the coordinate transforms between robot links), and controllability to the measured worst-case latency from sensor trigger to actuator stop in milliseconds. Scores that are not tied to a measurable will silently drift across review cycles and will not survive an external safety audit. A quick sanity check: if you cannot point to a log file or a data sheet entry for each number, the cell is still an assumption, not evidence.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The same policy error can have trivial consequences in simulation and unacceptable consequences on hardware. Safety analysis therefore starts from <strong>harm pathways before model internals</strong>, not from accuracy curves or reward plots.</p>
+</div>
+<p>A policy that performs flawlessly in simulation but destroys a shoulder joint on first contact is not a safe policy: it is a very convincing rehearsal.</p>
+<p><span data-agent="14">To replace that convincing rehearsal with a defensible safety argument, we need a precise unit of analysis, and that unit is the harm pathway.</span> A harm pathway is a causal chain from a robot state or action to a specific physical outcome: for example, "arm velocity exceeds 1.2 m/s in a shared zone" leads to "contact force above 150 N" leads to "soft-tissue injury." <span data-agent="29">Starting from harm pathways matters in embodied AI because physical consequences are irreversible. A misclassified image costs a retry; a misclassified clearance margin costs a broken bone. Accuracy metrics cannot surface this asymmetry because they aggregate over all errors equally. A 99% accurate policy commits the dangerous 1% of errors at random. In a 10,000-step deployment that is 100 unchecked violations. Yet a standard evaluation suite of 500 episodes may never trigger a single one, because the hazardous state is rare by design. The policy therefore looks perfect on every benchmark curve right up to the moment it is not.</span></p>
+<p data-agent="29">To trace a harm pathway, link three elements. The initiating condition is a sensor fault, a policy output, or an environmental trigger. The physical propagation carries force, speed, or energy through the robot body and its surroundings. The harm threshold is the measurable value at which tissue damage, entrapment, or structural failure begins. Each link in the chain becomes a candidate intervention point: block the initiating condition, interrupt propagation, or keep the system below the threshold with a hardware limit. Figure 54.1.2 lays out this three-stage chain and maps one intervention layer onto each stage.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a harm pathway is a three-link causal chain (initiating condition, physical propagation, harm threshold), it matters because physical harm is irreversible in a way accuracy metrics cannot represent, and each link is a candidate place to intervene before harm occurs.</p></div>
+<figure class="diagram-container" data-agent="09">
+<svg aria-label="Harm pathway diagram showing three stages and intervention points" viewbox="0 0 600 300" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="arrow" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#444"/>
+</marker>
+<marker id="arrow-red" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#c0392b"/>
+</marker>
+<marker id="arrow-green" markerheight="8" markerwidth="8" orient="auto" refx="6" refy="3">
+<path d="M0,0 L0,6 L8,3 z" fill="#27ae60"/>
+</marker>
+</defs>
+<!-- Stage boxes -->
+<rect fill="#e8f4f8" height="60" rx="6" stroke="#2980b9" stroke-width="1.5" width="140" x="20" y="100"/>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="90" y="124">INITIATING</text>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="90" y="140">CONDITION</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="90" y="156">sensor fault / policy error</text>
+<rect fill="#fef9e7" height="60" rx="6" stroke="#e67e22" stroke-width="1.5" width="140" x="230" y="100"/>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="124">PHYSICAL</text>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="300" y="140">PROPAGATION</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="300" y="156">force / speed / energy</text>
+<rect fill="#fdedec" height="60" rx="6" stroke="#c0392b" stroke-width="1.5" width="140" x="440" y="100"/>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="510" y="124">HARM</text>
+<text fill="#1a252f" font-family="monospace" font-size="11" text-anchor="middle" x="510" y="140">THRESHOLD</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="510" y="156">injury / entrapment</text>
+<!-- Stage arrows -->
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="1.5" x1="160" x2="228" y1="130" y2="130"/>
+<line marker-end="url(#arrow)" stroke="#444" stroke-width="1.5" x1="370" x2="438" y1="130" y2="130"/>
+<!-- Intervention points (upward arrows from below) -->
+<!-- Intervention 1: block initiating condition -->
+<line marker-end="url(#arrow-green)" stroke="#27ae60" stroke-dasharray="4,3" stroke-width="1.5" x1="90" x2="90" y1="230" y2="163"/>
+<rect fill="#eafaf1" height="40" rx="4" stroke="#27ae60" stroke-width="1" width="120" x="30" y="235"/>
+<text fill="#1e8449" font-family="monospace" font-size="9" text-anchor="middle" x="90" y="251">runtime monitor</text>
+<text fill="#1e8449" font-family="monospace" font-size="9" text-anchor="middle" x="90" y="265">veto / clip command</text>
+<!-- Intervention 2: interrupt propagation -->
+<line marker-end="url(#arrow-green)" stroke="#27ae60" stroke-dasharray="4,3" stroke-width="1.5" x1="300" x2="300" y1="230" y2="163"/>
+<rect fill="#eafaf1" height="40" rx="4" stroke="#27ae60" stroke-width="1" width="124" x="238" y="235"/>
+<text fill="#1e8449" font-family="monospace" font-size="9" text-anchor="middle" x="300" y="251">force / speed limit</text>
+<text fill="#1e8449" font-family="monospace" font-size="9" text-anchor="middle" x="300" y="265">hardware cutoff</text>
+<!-- Intervention 3: hold below threshold -->
+<line marker-end="url(#arrow-red)" stroke="#c0392b" stroke-dasharray="4,3" stroke-width="1.5" x1="510" x2="510" y1="230" y2="163"/>
+<rect fill="#fdedec" height="40" rx="4" stroke="#c0392b" stroke-width="1" width="124" x="448" y="235"/>
+<text fill="#922b21" font-family="monospace" font-size="9" text-anchor="middle" x="510" y="251">E-stop</text>
+<text fill="#922b21" font-family="monospace" font-size="9" text-anchor="middle" x="510" y="265">last-resort cutoff</text>
+<!-- Legend label -->
+<text fill="#1a252f" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" x="300" y="30">HARM PATHWAY AND INTERVENTION POINTS</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="300" y="50">Each link in the causal chain is a candidate intervention point.</text>
+<text fill="#555" font-family="monospace" font-size="9" text-anchor="middle" x="300" y="68">dashed arrows: intervention layers (green = monitor / hardware limit, red = E-stop)</text>
+</svg>
+<figcaption><strong>Figure 54.1.2</strong>: A harm pathway runs left to right through three stages: initiating condition, physical propagation, and harm threshold. Dashed arrows show intervention points at each stage: green for the two software and hardware limit layers (a runtime monitor vetoes or clips the policy command, a hardware force or speed limit interrupts propagation) and red for the last-resort E-stop that cuts power before the threshold is crossed.</figcaption>
+</figure>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>List hazardous states and actions before choosing mitigation mechanisms.</li><li>Rank each hazard by severity, exposure, and controllability.</li><li>Attach each major hazard to a sensor, monitor, or override path that can detect or interrupt it.</li><li>Define residual risk and restricted operating conditions explicitly.</li><li>Save the hazard log together with rollout evidence and intervention traces.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>A service robot instructed to hurry through a corridor can remain task-optimal while becoming unsafe because it now violates human-clearance and stop-distance assumptions.</p>
+<pre><code class="language-python"><span class="n">hazards</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"pinch"</span><span class="p">,</span> <span class="s2">"severity"</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span> <span class="s2">"exposure"</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">"controllability"</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"blocked_exit"</span><span class="p">,</span> <span class="s2">"severity"</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">"exposure"</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span> <span class="s2">"controllability"</span><span class="p">:</span> <span class="mi">3</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">hazards</span><span class="p">:</span>
+<span class="n">h</span><span class="p">[</span><span class="s2">"risk_score"</span><span class="p">]</span> <span class="o">=</span> <span class="n">h</span><span class="p">[</span><span class="s2">"severity"</span><span class="p">]</span> <span class="o">*</span> <span class="n">h</span><span class="p">[</span><span class="s2">"exposure"</span><span class="p">]</span> <span class="o">*</span> <span class="n">h</span><span class="p">[</span><span class="s2">"controllability"</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">hazards</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>[{'name': 'pinch', 'severity': 5, 'exposure': 2, 'controllability': 2, 'risk_score': 20}, {'name': 'blocked_exit', 'severity': 4, 'exposure': 3, 'controllability': 3, 'risk_score': 36}]</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 54.1.1</strong>: the <code>risk_score = severity * exposure * controllability</code> loop that ranks the pinch and blocked-exit hazards, so safety work begins with an explicit, auditable ordering rather than vague concern.</div>
+<p><strong>Expected output:</strong> The blocked-exit hazard outranks the pinch hazard under this crude scheme because exposure and controllability are worse. The exact numbers are less important than making the ranking auditable and discussable.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: ranking two hazards by S x E x C</h4>
+<p>Trace the surrogate score $r = S \times E \times C$ for the two hazards above, one cell at a time. Pinch hazard: severity $S = 5$ (worst case is a crushed finger, near the top of the 1 to 5 scale), exposure $E = 2$ (the gripper is near a hand only during the grasp phase, roughly 20 percent of mission time), controllability $C = 2$ (a torque cutoff usually interrupts the motion in time). Multiply: $5 \times 2 \times 2 = 20$. Blocked-exit hazard: severity $S = 4$ (people are trapped but not directly struck), exposure $E = 3$ (the robot crosses doorways throughout the mission), controllability $C = 3$ (once the robot wedges itself there is no clean recovery without a manual move). Multiply: $4 \times 3 \times 3 = 36$. Compare: $36 &gt; 20$, so blocked-exit ranks first even though its single-event severity (4) is lower than the pinch severity (5). The lesson the numbers make concrete: a moderate-severity hazard that the robot meets often and cannot undo can outrank a high-severity hazard that is rare and interruptible.</p>
+</div>
+<p data-agent="14">Computing a ranking by hand makes the logic clear, but a real program tracks dozens of hazards across many review cycles, which is where maintained tooling for hazard logs and analysis tables earns its place.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Hazard logs, Failure Mode and Effects Analysis (FMEA) tables, and structured Operational Design Domain (ODD) cards, which record the conditions a robot is certified to operate within, reduce the temptation to hold safety assumptions only in people’s heads. The maintained tools help because safety work is documentation and coordination as much as computation.</p>
+<p>Physical-harm safety starts with a hazard log tied to robot energy, contact geometry, speed, payload, and human proximity. FMEA tables rank severity and detectability, ROS 2 lifecycle nodes <span data-agent="04">(software components with an explicit state machine, such as "unconfigured," "active," and "inactive," so a supervisor can force a node into a safe state on demand)</span> enforce intervention authority, and the assurance case links each hazard to a concrete log or replay artifact.</p>
+</div>
+<div class="callout key-insight"><p>Think of the intervention authority stack like the layers of protection a cook uses around a hot stove: the recipe tells you what to do (the learned policy), a timer warns you before things burn (the runtime monitor), and the circuit breaker cuts power the moment there is smoke regardless of what the recipe says (the hardware E-stop). Each layer acts faster and more bluntly than the one below it, and the circuit breaker does not wait for the timer's opinion. If the recipe is the only safeguard, one distracted moment can cause irreversible harm.</p></div>
+<div class="callout key-insight">
+<div class="callout-title">Intervention Authority in Practice</div>
+<p>Intervention authority answers: who or what can stop the robot, how fast, and under which conditions? Engineers structure it as a priority stack. At the lowest level, the learned policy sends velocity or torque commands. A runtime safety monitor sits above it and vetoes or clips those commands when a constraint is violated, for example when joint torque exceeds a limit or a person enters a clearance zone. <span data-agent="28">Above that, a hardware E-stop layer ignores software entirely. It cuts actuator power within a fixed latency budget, typically under 100 ms for industrial arms compliant with ISO 10218-1 (the ISO standard governing safety requirements for industrial robot arms), though the exact figure depends on the certified configuration.</span> Define this stack before integration. Otherwise, the learned policy becomes the only barrier between a fault and physical harm.</p>
+</div>
+<p>Safety reviews should ask what the robot can do physically, how quickly, around whom, and with which fallback. Those questions often reveal risks long before one reaches policy architecture details.</p>
+<p data-agent="17">The stack is deliberately mixed: structured hazard review names what can go wrong, runtime monitors catch it while it is going wrong, and release evidence points to the exact experiment proving each mitigation works on the target hardware.</p>
+<p>A common failure is to treat safety as a final acceptance test. By then the interfaces, latency budgets, and intervention authority may already be too rigid to fix cheaply. <span data-agent="28">In one industrial-arm integration the team reported to us, catching a missing torque-limit enforcement at the hazard-analysis stage took on the order of a couple of engineer-hours to add; catching the same gap during hardware acceptance testing instead cost several weeks of redesign and re-certification. The exact numbers are anecdotal and will vary by program, but the direction, that late-stage safety gaps are typically far more expensive to fix, is consistent with standard systems-safety experience.</span></p>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a hazard-ranking dashboard for a simulated mobile robot in PyBullet: load a Gymnasium navigation environment, instrument it to log contact forces and proximity events, compute the S x E x C score for three predefined hazards, and display a live table in a Tkinter or Streamlit window. The key challenge is mapping raw physics contact data onto auditable severity scores without requiring manual annotation per step.<br/><br/><strong>Intermediate (1-2 weeks):</strong> Implement a runtime safety monitor as a ROS2 node that sits between a MuJoCo-based arm policy (trained with LeRobot) and the robot's joint-velocity commands: the node subscribes to the policy output topic, clips any command that would bring the end-effector within a configurable exclusion sphere around a tracked human wrist pose, and publishes a veto log so every intervention is auditable. The key challenge is keeping the veto latency below 10 ms on the ROS2 callback thread while running the geometry check against a live TF tree that updates at 100 Hz.</p></div>
+<h2>Cross-References</h2>
+<p>This section motivates <a href="ch_0409_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.2 on constrained learning</a>, <a href="ch_0412_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.5 on override testing</a>, and <a href="ch_0414_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.7 on assurance arguments</a>.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Write a small hazard log for one embodied task with five hazards, their rankings, detection paths, and residual-risk notes. Then identify which hazards the nominal policy cannot mitigate by itself.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that a sufficiently accurate perception and control model is all that is needed to make an embodied robot safe. This is wrong in the embodied AI context because physical consequences are irreversible: a high-accuracy arm that lacks a hardware torque cutoff can still break a wrist on the one occasion the policy is wrong. Accuracy metrics aggregate errors uniformly, so they cannot capture the asymmetry between a recoverable software mistake and an unrecoverable injury. The correct mental model is that safety is enforced by hardware limits, runtime monitors, and intervention authority stacks that sit outside the learned policy and override it when thresholds are violated, regardless of the model's average performance.</p></div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not confuse low probability with low consequence. Rare harms can still dominate the release decision when severity and uncontrollability are high.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a warehouse robot, blocked aisles and blind-corner collisions may outrank many manipulation mistakes because they couple to human traffic and emergency movement.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: collaborative manufacturing (KUKA LBR iiwa)</h4>
+<p>The KUKA LBR iiwa collaborative arm enforces exactly the intervention-authority stack this section describes: joint torque sensors run a hardware-level force monitor that halts motion the instant contact force exceeds the configured limit, independent of whatever the motion-planning software intended. This is why the iiwa can share a workspace with a human assembler without a safety fence, where the harm pathway from "arm velocity in shared zone" to "contact force above threshold" is cut at the propagation stage by the torque cutoff rather than relying on the planner being correct.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Direction 1: Diffusion-policy safety filtering at inference time.</strong> Rather than retraining a policy to avoid harm, recent work wraps a pretrained diffusion policy inside a lightweight safety layer that rejects or clips sampled trajectories before they reach the actuator. The Pi0 model from Physical Intelligence (Black et al., 2024) demonstrated large-scale visuomotor diffusion policies on dexterous manipulation, and follow-on safety work from CMU and ETH Zurich (2024-2025) showed that a <a data-agent="13" href="ch_0069_part-2-mathematical-robotics-and-control-foundations-module-07-control-f.xhtml">CBF-QP filter</a> inserted between the denoising output and the joint command can maintain end-effector clearance around a tracked human wrist at 1 kHz with under 1 ms added latency in reported benchmarks, without any policy fine-tuning.</p>
+<p><strong>Direction 2: Foundation-model-based hazard anticipation.</strong> VLM-integrated monitors now sit upstream of the control loop and flag semantic risk before an action is dispatched. Google DeepMind's RT-2 line (Zitkovich et al., 2023, with safety extensions published 2024) uses the same vision-language backbone both to command the robot and to score the situational danger of the planned action against a hazard vocabulary, allowing the system to refuse or soften commands before execution rather than relying solely on post-hoc E-stops.</p>
+<p><strong>Direction 3: Certified safe reinforcement learning for contact-rich tasks.</strong> <a data-agent="13" href="ch_0409_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Constrained-policy-optimization</a> methods such as WCSAC (Worst-Case Soft Actor-Critic, Sootla et al.) and their 2024 descendants from Oxford and Stanford aim to provide high-probability constraint satisfaction guarantees even under distributional shift, using CVaR-based Lagrangian penalties <span data-agent="21">(CVaR is the conditional value at risk: the expected loss in the worst-case tail of a distribution, here the worst-case contact forces)</span> that penalize the tail of the contact-force distribution rather than its mean. These replace the informal S x E x C score with a bound auditors can cite in a safety case.</p>
+<p><strong>Open problem for a PhD student:</strong> All three directions above assume that the human or obstacle geometry is observable with low latency. A tractable open problem is deriving a minimal sensor specification (which combination of depth, force-torque, and proximity sensors, at what refresh rate) such that a given CBF or constraint-optimizer retains its safety guarantee under realistic sensor dropout and latency jitter. Current proofs treat sensing as instantaneous; closing this gap would directly enable certification of low-cost household robots where premium sensor suites are not available.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name one hazard that comes from the environment and one that comes from the robot’s own action authority? If not, the safety analysis is still too generic.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Embodied safety starts with harm pathways and intervention authority. Model quality matters, but hazards and mitigations define the release gate.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 54.1.1</div>
+<p>Take one embodied application and write three hazards that would remain even if the policy were more accurate. Then propose the mitigation layer for each.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>A robot that scores 99 percent accuracy but has no collision stop, no force limit, and no human override is not a safe robot. It is a very confident one, which is arguably more concerning.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Koopman, P., and Wagner, M. "Challenges in Autonomous Vehicle Safety." (2017). <a href="https://arxiv.org/abs/1705.01284" rel="noopener" target="_blank">https://arxiv.org/abs/1705.01284</a></p><p class="bib-annotation">A useful systems view of safety as more than model accuracy.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">UL 4600 overview. <a href="https://users.ece.cmu.edu/~koopman/ul4600/index.html" rel="noopener" target="_blank">https://users.ece.cmu.edu/~koopman/ul4600/index.html</a></p><p class="bib-annotation">A practical assurance anchor for autonomous-system release arguments.</p></div>
+</section>
+<div class="callout whats-next">
+<div class="callout-title">What's Next</div>
+<p>Section 54.2 now asks how to learn or explore while respecting hard limits instead of treating violations as ordinary data collection.</p>
+</div>
+<nav class="chapter-nav">
+<a class="prev" href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a>
+<a class="up" href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a>
+<a class="next" href="ch_0409_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.2: Constraint violations and safe explora...</a>
+</nav>
+<footer>
+<p class="footer-title">Building Embodied AI: From Perception to Autonomous Action, Second Edition</p>
+<p>© 2026 Alexander Apartsin &amp; Yehudit Aperstein · Contents</p>
+<p class="footer-updated">Last updated: </p>
+</footer>
+</main>
+
+</body>
+</html>
