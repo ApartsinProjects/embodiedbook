@@ -176,12 +176,12 @@ hover return= 95 hack= True lifted=False placed=False stuck_steps=180</div>
 <p><strong>Expected output:</strong> the high-return hacked case should be obvious from the same line that reports the return. If the evidence fields live in a separate notebook, the hack is easier to miss.</p>
 <div class="callout practical-example" data-agent="26">
 <h4>Step-Through: Postmortem Checklist on a Hover Exploit</h4>
-<p>Trace the postmortem checklist with two real rollouts from Code Fragment 1, the <code>place</code> run and the <code>hover</code> run, using episode horizon $T = 200$ steps.</p>
-<p><strong>Step 1, rank by return.</strong> Returns are 82 (place) and 95 (hover). With the 90th-percentile flag threshold at $\tau = 90$, only the <code>hover</code> run exceeds it, so <code>hover</code> is flagged for inspection.</p>
+<p>Trace the postmortem checklist with two real rollouts from Code Fragment 1, the <code>place</code> run and the <code>hover</code> run, using episode horizon \(T = 200\) steps.</p>
+<p><strong>Step 1, rank by return.</strong> Returns are 82 (place) and 95 (hover). With the 90th-percentile flag threshold at \(\tau = 90\), only the <code>hover</code> run exceeds it, so <code>hover</code> is flagged for inspection.</p>
 <p><strong>Step 2, check independent metrics.</strong> For <code>hover</code>: return 95 but <code>placed = False</code> and <code>lifted = False</code>. High return with zero task success confirms a candidate hack. For <code>place</code>: return 82 with <code>placed = True</code>, no disagreement.</p>
 <p><strong>Step 3, assign a channel.</strong> The proxy reads gripper-object proximity, a sensor-derived quantity, and the policy parks within range without acting. This is a measurement channel exploit.</p>
-<p data-agent="04"><strong>Step 4, stagnation indicator.</strong> <em>(The stagnation indicator, defined formally later in the algorithm box below, measures how little the robot's state changes over a short window; a value near zero for many consecutive steps means the robot is stuck rather than acting.)</em> The window is $k = \lfloor 0.1 \cdot 200 \rfloor = 20$. The <code>hover</code> run logs <code>stuck_steps = 180</code>, which is $180 > 0.25 \cdot 200 = 50$ consecutive low-motion steps, so it fires the stuck-state flag. The <code>place</code> run has <code>stuck_steps = 0</code> and does not fire.</p>
-<p><strong>Step 5, reproduce.</strong> Rerun seed 17 with the saved checkpoint; the flagged rollout returns 95 again, inside the $\pm 5\%$ tolerance (90.25 to 99.75), so the exploit is confirmed.</p>
+<p data-agent="04"><strong>Step 4, stagnation indicator.</strong> <em>(The stagnation indicator, defined formally later in the algorithm box below, measures how little the robot's state changes over a short window; a value near zero for many consecutive steps means the robot is stuck rather than acting.)</em> The window is \(k = \lfloor 0.1 \cdot 200 \rfloor = 20\). The <code>hover</code> run logs <code>stuck_steps = 180</code>, which is \(180 &gt; 0.25 \cdot 200 = 50\) consecutive low-motion steps, so it fires the stuck-state flag. The <code>place</code> run has <code>stuck_steps = 0</code> and does not fire.</p>
+<p><strong>Step 5, reproduce.</strong> Rerun seed 17 with the saved checkpoint; the flagged rollout returns 95 again, inside the \(\pm 5\%\) tolerance (90.25 to 99.75), so the exploit is confirmed.</p>
 <p><strong>Step 6, case card.</strong> proxy = proximity reward, channel = measurement, missing metric = stable placement success, seed = 17, detector field = <code>stuck_steps</code>. The card is now a regression test for any future reward patch.</p>
 </div>
 <div class="callout tip">
@@ -193,18 +193,18 @@ hover return= 95 hack= True lifted=False placed=False stuck_steps=180</div>
 </div>
 <div class="callout algorithm">
 <h4>Algorithm: Reward-Hacking Postmortem Checklist</h4>
-<p><strong>Input:</strong> trained policy $\pi_\theta$, proxy reward $r_\phi$, episode log with per-step fields, reproduction seed $s$</p>
-<p><strong>Output:</strong> case card $(r_\phi, \text{channel}, m_{\text{missing}}, s)$ and patched reward $r_{\phi'}$ with regression result</p>
+<p><strong>Input:</strong> trained policy \(\pi_\theta\), proxy reward \(r_\phi\), episode log with per-step fields, reproduction seed \(s\)</p>
+<p><strong>Output:</strong> case card \((r_\phi, \text{channel}, m_{\text{missing}}, s)\) and patched reward \(r_{\phi'}\) with regression result</p>
 <ol>
-<li>Rank rollouts by cumulative return $R = \sum_t r_\phi(s_t, a_t)$; flag every rollout where $R$ exceeds the 90th-percentile threshold $\tau$ for manual inspection.</li>
-<li>For each flagged rollout, record independent task metrics (task success, safety cost $c_t$, final-state check) that were NOT used to compute $r_\phi$, and check for disagreement: high $R$ with low task success confirms a candidate hack.</li>
-<li>Assign the exploit to one of four causal channels: measurement ($r_\phi$ reads a sensor artifact), dynamics (simulator physics shortcut), termination (reset or timeout manipulation), or metric gap (unreported deployment requirement).</li>
-<li>Log the stagnation indicator $\delta_t = \|s_t - s_{t-k}\| / k$ over a window $k = \lfloor 0.1 \cdot T \rfloor$ and flag rollouts where $\delta_t < \epsilon$ for more than $0.25 \cdot T$ consecutive steps as stuck-state exploits.</li>
-<li>Confirm reproducibility: rerun with seed $s$ and policy checkpoint $\theta^*$; the exploit is confirmed when the flagged rollout reproduces within a return tolerance $\pm 5\%$ of $R^*$.</li>
-<li>Write the case card: proxy $r_\phi$, exploit channel, missing metric $m_{\text{missing}}$, seed $s$, and one online detector field $d_t$ that would have identified the hack during training.</li>
-<li data-agent="04">Patch the reward to $r_{\phi'} = r_\phi + \lambda \cdot g(d_t)$ or replace the proxy with a harder-to-hack signal; verify the patch does not introduce a new gradient conflict (a negative dot product means the two gradients pull the policy in opposing directions, so improving one term actively worsens the other) $\nabla_\theta r_\phi \cdot \nabla_\theta g < 0$.</li>
-<li>Retrain or fine-tune $\pi_{\theta'}$ with $r_{\phi'}$ using the same seed $s$ and hyperparameters $\alpha, \gamma$.</li>
-<li>Evaluate $\pi_{\theta'}$ on the reproduction rollout: confirm $R$ drops toward the intended-task regime, task success rises, and the detector field $d_t$ no longer fires.</li>
+<li>Rank rollouts by cumulative return \(R = \sum_t r_\phi(s_t, a_t)\); flag every rollout where \(R\) exceeds the 90th-percentile threshold \(\tau\) for manual inspection.</li>
+<li>For each flagged rollout, record independent task metrics (task success, safety cost \(c_t\), final-state check) that were NOT used to compute \(r_\phi\), and check for disagreement: high \(R\) with low task success confirms a candidate hack.</li>
+<li>Assign the exploit to one of four causal channels: measurement (\(r_\phi\) reads a sensor artifact), dynamics (simulator physics shortcut), termination (reset or timeout manipulation), or metric gap (unreported deployment requirement).</li>
+<li>Log the stagnation indicator \(\delta_t = \|s_t - s_{t-k}\| / k\) over a window \(k = \lfloor 0.1 \cdot T \rfloor\) and flag rollouts where \(\delta_t &lt; \epsilon\) for more than \(0.25 \cdot T\) consecutive steps as stuck-state exploits.</li>
+<li>Confirm reproducibility: rerun with seed \(s\) and policy checkpoint \(\theta^*\); the exploit is confirmed when the flagged rollout reproduces within a return tolerance \(\pm 5\%\) of \(R^*\).</li>
+<li>Write the case card: proxy \(r_\phi\), exploit channel, missing metric \(m_{\text{missing}}\), seed \(s\), and one online detector field \(d_t\) that would have identified the hack during training.</li>
+<li data-agent="04">Patch the reward to \(r_{\phi'} = r_\phi + \lambda \cdot g(d_t)\) or replace the proxy with a harder-to-hack signal; verify the patch does not introduce a new gradient conflict (a negative dot product means the two gradients pull the policy in opposing directions, so improving one term actively worsens the other) \(\nabla_\theta r_\phi \cdot \nabla_\theta g &lt; 0\).</li>
+<li>Retrain or fine-tune \(\pi_{\theta'}\) with \(r_{\phi'}\) using the same seed \(s\) and hyperparameters \(\alpha, \gamma\).</li>
+<li>Evaluate \(\pi_{\theta'}\) on the reproduction rollout: confirm \(R\) drops toward the intended-task regime, task success rises, and the detector field \(d_t\) no longer fires.</li>
 <li>Archive the before-and-after traces, videos, and metric panels as a regression test; any future reward edit must pass this seed without reactivating the exploit.</li>
 </ol>
 </div>

@@ -1,0 +1,253 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 10.7: PettingZoo for multi-agent</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 10.7: PettingZoo for multi-agent</h1>
+
+<blockquote class="epigraph"><p>"The moment a second agent enters the loop, the environment is no longer a function of your actions alone."</p><cite>A Multi-Agent Environment Designer</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 10.7: PettingZoo for multi-agent" loading="lazy" src="../img/e2387d7113_illustration-10-7.jpg" />
+<figcaption><strong>Figure 10.7A</strong>: The shift this section makes concrete: a single learner no longer owns the step loop. Multiple agents share one environment, each with its own observation, reward, and termination signal, which is exactly the contract PettingZoo enforces.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the single-agent environment contract introduced in section 2.1 and the Gymnasium step loop covered in sections 10.1 through 10.3. The AEC and Parallel API distinctions made here are extended in section 49.1, which applies multi-agent environment design to full embodied tasks, and in section 49.2, which adds communication and teammate modeling on top of the per-agent observation structure built here.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>Two warehouse robots converge on the same shelf. One must wait; the other must move. Who acts first, and how does the environment know? Single-agent Gymnasium cannot answer that question because it assumes one learner owns every step. Real embodied deployments rarely have that luxury: fleets share space, assistive robots hand off tasks, and swarms coordinate without a central clock.</p>
+<p>PettingZoo solves this by giving every agent its own observation, reward, and termination signal while keeping the loop reproducible and auditable. Right now, as multi-robot labs scale from one arm to ten and <a data-agent="13" href="ch_0157_part-4-reinforcement-learning-for-embodied-agents-module-20-sim-to-real-.xhtml">sim-to-real transfer</a> demands rigorous environment contracts, knowing which API to reach for matters. You will wire up both the turn-based AEC and the simultaneous Parallel API, run a two-agent rollout, and log per-agent evidence that a second reader can replay from scratch. Figure 10.7A frames the shift this section makes: from a single learner owning the loop to multiple agents sharing one environment.</p>
+</div>
+<h2>What This Section Builds</h2>
+<p>PettingZoo becomes operational when a multi-agent task names its agents, timing, and per-agent returns. Gymnasium assumes one learning agent acts at each step, following the same <a href="ch_0020_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">agent-environment interface</a> formalized for single-agent settings. PettingZoo adds agent identities, per-agent observations, per-agent rewards, and per-agent episode endings.</p>
+<p>The goal is to choose the right multi-agent API before writing the task. Use AEC when turn order matters. Use the Parallel API when agents act simultaneously and the environment resolves their joint action at the end of a cycle.</p>
+<p data-agent="01">By the end of this section you will be able to do three concrete things: implement a minimal PettingZoo Parallel environment with per-agent dictionaries (Code Fragment 10.7.1), drive a turn-based environment through the official AEC loop with <code>agent_iter()</code> and <code>last()</code> (Code Fragment 10.7.2), and decide which API a new multi-agent task needs before writing any code, using the timing test in the Practical Recipe below.</p>
+<div class="callout key-insight">
+<div class="callout-title">The Interface Is The Test</div>
+<p>This environment is ready when another reader can reset it with the same seed, inspect agent ordering, AEC versus parallel API choice, shared-state logging, and simultaneous-action semantics, reproduce the same rollout, and recover the same logged evidence.</p>
+</div>
+<h2>Theory</h2>
+<p>PettingZoo's AEC API models an Agent Environment Cycle: the environment selects one active agent, the agent observes, acts, and the environment advances to the next agent. That is <strong>one Gymnasium contract per agent, sequenced by a scheduler</strong><span data-agent="04"> (a piece of environment logic that decides which agent's turn is next)</span>, and it fits turn-based or order-sensitive settings, such as a robot handing off an object after another robot clears space.</p>
+<p>The Parallel API steps all live agents together through dictionaries keyed by agent id. It fits <a href="ch_0376_part-10-multi-agent-and-human-centered-embodiment-module-49-multi-agent-.xhtml">simultaneous control</a>, such as two mobile robots moving in the same timestep. Both APIs keep terminations, truncations, rewards, observations, and infos per agent, because different agents may leave the task for different reasons. Figure 10.7B compares the two timing models side by side.</p>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_58fe9ee29fa3efa2.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 10.7B</strong>: AEC API sequences one agent per tick through environment selection; the Parallel API broadcasts observations to all live agents simultaneously and resolves their joint action dictionary. Both APIs return per-agent observations, rewards, terminations, and infos.</figcaption>
+</figure>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mental model is one Gymnasium contract per agent, plus a scheduler. AEC makes the scheduler explicit through <code>agent_iter()</code> and <code>last()</code>, walked through step by step in Code Fragment 10.7.2 below. Parallel environments hide the scheduler and ask for an action dictionary for every live agent.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="14">With the scheduler distinction from the theory in hand, the fastest way to make the per-agent dictionary contract concrete is to build the smallest environment that exercises it.</p>
+<p>Code Fragment 10.7.1 builds a tiny Parallel API environment with two agents on a one-dimensional line. It is intentionally small so the return dictionaries are easy to inspect.</p>
+<pre><code class="language-python"><span class="c1"># Implement the minimal shape of a PettingZoo ParallelEnv.</span>
+<span class="c1"># Observations, rewards, terminations, truncations, and infos are keyed by agent.</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">gymnasium</span><span class="w"> </span><span class="kn">import</span> <span class="n">spaces</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pettingzoo.utils.env</span><span class="w"> </span><span class="kn">import</span> <span class="n">ParallelEnv</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TwoRobotLine</span><span class="p">(</span><span class="n">ParallelEnv</span><span class="p">):</span>
+<span class="n">metadata</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"name"</span><span class="p">:</span> <span class="s2">"two_robot_line_v0"</span><span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">possible_agents</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"picker"</span><span class="p">,</span> <span class="s2">"carrier"</span><span class="p">]</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">observation_spaces</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="n">spaces</span><span class="o">.</span><span class="n">Box</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="n">shape</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">possible_agents</span><span class="p">}</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">action_spaces</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="n">spaces</span><span class="o">.</span><span class="n">Discrete</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">possible_agents</span><span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">options</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">agents</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">possible_agents</span><span class="p">[:]</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">positions</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"picker"</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">"carrier"</span><span class="p">:</span> <span class="mi">4</span><span class="p">}</span>
+<span class="n">observations</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="p">[</span><span class="n">pos</span><span class="p">]</span> <span class="k">for</span> <span class="n">agent</span><span class="p">,</span> <span class="n">pos</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+<span class="n">infos</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="p">{}</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">agents</span><span class="p">}</span>
+<span class="k">return</span> <span class="n">observations</span><span class="p">,</span> <span class="n">infos</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">actions</span><span class="p">):</span>
+<span class="n">moves</span> <span class="o">=</span> <span class="p">{</span><span class="mi">0</span><span class="p">:</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">:</span> <span class="mi">1</span><span class="p">}</span>
+<span class="k">for</span> <span class="n">agent</span><span class="p">,</span> <span class="n">action</span> <span class="ow">in</span> <span class="n">actions</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="p">[</span><span class="n">agent</span><span class="p">]</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="p">[</span><span class="n">agent</span><span class="p">]</span> <span class="o">+</span> <span class="n">moves</span><span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">action</span><span class="p">)]))</span>
+<span class="n">observations</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="p">[</span><span class="n">pos</span><span class="p">]</span> <span class="k">for</span> <span class="n">agent</span><span class="p">,</span> <span class="n">pos</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+<span class="n">rewards</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="p">[</span><span class="s2">"picker"</span><span class="p">]</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="p">[</span><span class="s2">"carrier"</span><span class="p">])</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">agents</span><span class="p">}</span>
+<span class="n">terminations</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="n">rewards</span><span class="p">[</span><span class="n">agent</span><span class="p">]</span> <span class="o">==</span> <span class="mf">1.0</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">agents</span><span class="p">}</span>
+<span class="n">truncations</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="kc">False</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">agents</span><span class="p">}</span>
+<span class="n">infos</span> <span class="o">=</span> <span class="p">{</span><span class="n">agent</span><span class="p">:</span> <span class="p">{</span><span class="s2">"position"</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">positions</span><span class="p">[</span><span class="n">agent</span><span class="p">]}</span> <span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">agents</span><span class="p">}</span>
+<span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">terminations</span><span class="o">.</span><span class="n">values</span><span class="p">()):</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">agents</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">return</span> <span class="n">observations</span><span class="p">,</span> <span class="n">rewards</span><span class="p">,</span> <span class="n">terminations</span><span class="p">,</span> <span class="n">truncations</span><span class="p">,</span> <span class="n">infos</span>
+<span class="n">env</span> <span class="o">=</span> <span class="n">TwoRobotLine</span><span class="p">()</span>
+<span class="n">observations</span><span class="p">,</span> <span class="n">infos</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">observations</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">env</span><span class="o">.</span><span class="n">step</span><span class="p">({</span><span class="s2">"picker"</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s2">"carrier"</span><span class="p">:</span> <span class="mi">0</span><span class="p">})[</span><span class="mi">1</span><span class="p">:</span><span class="mi">4</span><span class="p">])</span></code></pre>
+<div class="code-output">{'picker': [0], 'carrier': [4]}
+({'picker': 0.0, 'carrier': 0.0}, {'picker': False, 'carrier': False}, {'picker': False, 'carrier': False})</div>
+<p>The expected output exposes two independent agent views at reset, then three dictionaries keyed by agent id for rewards, terminations, and truncations after one joint step. Readers should interpret the all-false ending dictionaries as evidence that neither robot has yet reached the meeting condition.</p>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 10.7</strong>.1 shows the core PettingZoo Parallel API shape without relying on a bundled game. The important detail is the dictionary contract: rewards, terminations, and truncations are keyed by <code>picker</code> and <code>carrier</code>, not returned as one scalar.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: TwoRobotLine Parallel rollout to termination</h4>
+<p>Trace the environment from Code Fragment 10.7.1 with concrete actions. After <code>reset(seed=42)</code> the positions are <code>picker=0</code>, <code>carrier=4</code>, observations <code>{picker:[0], carrier:[4]}</code>, and rewards are not yet computed.</p>
+<p><strong>Tick 1.</strong> Apply <code>{picker:2, carrier:0}</code> (move map <code>{0:-1, 1:0, 2:+1}</code>). picker = clamp(0+1) = 1; carrier = clamp(4-1) = 3. Since 1 != 3, both rewards = 0.0, both terminations = False. Live roster stays <code>["picker", "carrier"]</code>.</p>
+<p><strong>Tick 2.</strong> Apply <code>{picker:2, carrier:0}</code> again. picker = clamp(1+1) = 2; carrier = clamp(3-1) = 2. Now picker == carrier == 2, so both rewards = 1.0 and both terminations = True. Because <code>any(terminations.values())</code> is True, the code sets <code>self.agents = []</code>, emptying the live roster.</p>
+<p><strong>Tick 3.</strong> A trainer iterating over <code>env.agents</code> now sees an empty list and stops querying actions: the episode is over after exactly two cycles. The meeting condition (equal positions) is what drove both the shared reward and the joint termination.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>PettingZoo supplies the standard multi-agent API so trainers and test utilities can reason about agent ids, action spaces, observations, rewards, and ending flags. The shortcut is to conform to the API rather than inventing a custom dictionary format that every downstream tool must relearn.</p>
+</div>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Choose AEC when turn order affects state, legality, or reward assignment.</li>
+<li>Choose Parallel API when all live agents submit actions for the same environment tick.</li>
+<li>Define <code>possible_agents</code>, per-agent spaces, and live <code>agents</code> explicitly.</li>
+<li>Return observations, rewards, terminations, truncations, and infos keyed by agent id.</li>
+<li>Log agent-specific failure labels, because one agent can truncate or terminate before another.</li>
+</ol>
+<p class="engagement-hook">Before reading this algorithm, ask yourself: if agent B's reward depends on what agent A did in the same tick, which API do you reach for, and what breaks silently if you pick the wrong one?</p>
+<div class="callout algorithm">
+<h4>Algorithm: PettingZoo Multi-Agent Environment Design</h4>
+<p><strong>Input:</strong> task description with $N$ agents, interaction schedule (turn-based or simultaneous), per-agent state space $\mathcal{S}_i$, action space $\mathcal{A}_i$, and <a data-agent="13" href="ch_0145_part-4-reinforcement-learning-for-embodied-agents-module-18-reward-desig.xhtml">reward function</a> $r_i(s, a_1, \ldots, a_N)$</p>
+<p><strong>Output:</strong> a conforming PettingZoo environment with agent roster, per-agent spaces, and reproducible rollout contract</p>
+<ol>
+<li>List all agents and assign identifiers: define <code>possible_agents = [id_1, ..., id_N]</code>.</li>
+<li>Determine interaction timing: if agent $i$ acts before agent $j$ observes the result, choose AEC; if all $N$ agents submit $a_i \in \mathcal{A}_i$ simultaneously, choose Parallel API.</li>
+<li>Declare per-agent observation spaces $\mathcal{O}_i$ and action spaces $\mathcal{A}_i$ as dictionaries keyed by agent id.</li>
+</ol>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: every agent gets an id, a timing rule (AEC or Parallel) fixes when it acts, and its own observation and action spaces are declared as dictionary entries; the remaining steps just implement <code>reset</code> and <code>step</code> against that declared shape.</p></div>
+<ol start="4">
+<li>Implement <code>reset(seed)</code>: initialize live roster $\text{agents} \subseteq \text{possible\_agents}$, sample initial states $s_i^{(0)}$, and return per-agent observations $o_i^{(0)}$ and info dictionaries.</li>
+<li>Implement <code>step(actions)</code>: apply joint action $\mathbf{a} = (a_1, \ldots, a_{|\text{agents}|})$, compute next state $s^{(t+1)}$, and compute per-agent rewards $r_i^{(t)}$.</li>
+<li>Compute per-agent termination flags $d_i = \mathbf{1}[s_i \in \mathcal{S}_i^{\text{terminal}}]$ and truncation flags $\tau_i = \mathbf{1}[t \geq T_{\max}]$; return both as dictionaries.</li>
+<li>Remove terminated and truncated agents from the live roster: $\text{agents} \leftarrow \{i : d_i = 0 \wedge \tau_i = 0\}$.</li>
+<li>For AEC: implement <code>agent_iter()</code> and <code>last()</code> so each iteration yields exactly one active agent $i^*$ with its own $(o_{i^*}, r_{i^*}, d_{i^*}, \tau_{i^*}, \text{info}_{i^*})$.</li>
+<li>Log per-agent episode returns $G_i = \sum_t \gamma^t r_i^{(t)}$ and per-agent termination reasons separately; never average across agents during debugging.</li>
+<li>Run the PettingZoo API validation suite (<code>pettingzoo.test.api_test</code>) and confirm all assertions pass before connecting any policy $\pi_\theta$ or trainer.</li>
+</ol>
+</div>
+<div class="callout tip"><div class="callout-title">Gymnasium And PettingZoo Practice</div><p>A usable environment wrapper for this section records agent ordering, AEC versus parallel API choice, shared-state logging, and simultaneous-action semantics, plus observation and action spaces, reset seed, info dictionary fields, and reproducible evidence artifacts.</p></div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake is averaging rewards across agents before debugging. A high team score can hide that one agent learned to wait while another agent does all the work, or that a collision penalty is assigned to the wrong participant.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>In a warehouse task with a picker robot and a carrier robot, the Parallel API fits if both robots move once per tick. An AEC design fits if the picker must finish a grasp decision before the carrier is allowed to move. The choice changes the policy interface and the failure analysis.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: warehouse fleet coordination at Amazon Robotics</h4>
+<p>Amazon Robotics runs fleets of hundreds of mobile drive units that ferry shelving pods to human pick stations, and the simulators used to develop their traffic and handoff policies treat each drive unit as a separate agent with its own observation, reward, and stop condition, exactly the per-agent dictionary contract PettingZoo formalizes. The <code>possible_agents</code> versus live <code>agents</code> split mirrors the real fleet, where a unit can drop out mid-shift for charging or a fault while the remaining units must keep routing without crashing the controller. Choosing simultaneous (Parallel) versus turn-based (AEC) resolution is the same modeling decision that determines whether two units negotiate a shared aisle in one tick or hand off sequentially.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>A good embodied system makes pettingzoo for multi-agent visible twice: once in the design sketch and once in the replay artifact. The second view keeps the first one honest.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall</div>
+<p>Choosing the Parallel API when actions are actually sequential introduces silent bugs: the environment resolves a joint action dictionary even though one robot's move depends on the outcome of the other's. The reward assignment appears correct because both keys are present in the dictionary, but the state transition is wrong because the dependency was never modeled. Switch to AEC the moment legality or reward for agent B depends on what agent A did in the same tick.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Misconception: PettingZoo Is Not a Vectorized Gymnasium</div>
+<p data-agent="21">A common assumption is that the PettingZoo Parallel API is equivalent to a Gymnasium vectorized environment (<code>VecEnv</code>, where independent copies of the same single-agent environment run side by side purely to speed up data collection). They then try to apply PPO or DQN (Proximal Policy Optimization and Deep Q-Network, two standard single-agent reinforcement learning algorithms) directly by treating the observation dictionary as a batch. That assumption is wrong. Each dictionary key belongs to a distinct agent with its own policy, reward signal, and termination condition. The agents are not independent copies of one environment running in parallel. In embodied AI, agents share physical state. One agent's action changes the observations every other agent receives on the next step. The correct mental model is N separate decision-makers interacting through a shared world. Each agent needs its own policy update, its own credit assignment (attributing a shared outcome back to the specific agent whose action caused it), and its own episode bookkeeping. The per-agent dictionary contract enforces exactly that.</p>
+</div>
+<div class="callout key-insight"><p>Think of a multi-agent environment like a kitchen where two cooks share the same stove. If you train one cook in an empty kitchen, she learns exactly how the burners respond to her knobs. The moment a second cook starts adjusting the same burners, her learned intuition breaks: the heat she expects from turning the left knob depends on what her partner is simultaneously doing with the right one. Neither cook controls a fixed environment anymore. Each cook's best move is a response to the other's current behavior, and as that behavior changes during training, the apparent "rules" of the stove keep shifting under both of them.</p></div>
+<div class="callout key-insight">
+<div class="callout-title">Why API Choice Changes the Policy Interface</div>
+<p>In the AEC loop, each agent's policy receives an observation computed after every other agent has already acted this cycle. In the Parallel loop, every agent's policy receives an observation from the end of the previous cycle, so no agent can condition on a teammate's current-tick action. This difference is not cosmetic: a cooperative handoff task trained under AEC will fail silently if the same policy is evaluated under Parallel semantics, because the temporal dependency it learned no longer exists in the observation stream.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Foundation-model-conditioned multi-agent policies.</strong> A growing line of work uses large language models or vision-language models to generate per-agent sub-goals and role assignments at runtime, so a heterogeneous fleet (manipulator plus mobile base) can be orchestrated without hand-coded task graphs. RoCo (Mandi et al., NeurIPS 2024) reported that GPT-4-driven role negotiation between two robot arms reduced coordination failures on contact-rich assembly compared to independently trained RL policies<span data-agent="28">, though the reported margin is specific to their benchmark tasks and has not been broadly replicated</span>. The open question is how to keep the LLM-generated sub-goals consistent when one agent fails mid-episode and the remaining agents must replan under a PettingZoo AEC or Parallel contract without re-querying the foundation model.</p>
+<p data-agent="21"><strong>Sim-to-multi-real transfer with heterogeneous agent populations.</strong> Transferring a policy trained in Isaac Lab or MuJoCo MJX to a physical fleet is complicated when the real fleet mixes robot models that differ in dynamics, sensor latency, and actuator bandwidth. Work from the Berkeley Embodied Intelligence lab (2024-2025) on fleet generalization reports that training with randomized per-agent dynamics in a PettingZoo-compatible parallel environment <span data-agent="28">typically narrows</span> the sim-to-real gap for three-robot cooperative manipulation, but the gap reappears when real-world agent dropout (battery death, e-stop, where an e-stop is a hardware emergency-stop switch that immediately halts a robot) is not modeled as a live-roster change during training. Using PettingZoo's <code>agents</code> versus <code>possible_agents</code> split to simulate mid-episode dropout is an emerging best practice that has not yet been standardized across training frameworks.</p>
+<p data-agent="21"><strong>Emergent communication under bandwidth constraints.</strong> Multi-agent systems that share a ROS 2 or DDS network (ROS 2 is the standard middleware for robot software components; DDS, Data Distribution Service, is the publish-subscribe messaging protocol ROS 2 runs on) must treat communication as a constrained resource. Recent work on learned communication protocols (e.g., ETH Zurich's CommFormer, 2024) trains agents to compress and schedule messages within a byte budget per timestep, learning to prioritize safety-critical state updates over routine position reports. The PettingZoo info dictionary is increasingly used as the communication channel abstraction in these experiments, but there is no agreed convention for how bandwidth limits should be exposed to policies through the per-agent info field.</p>
+<p data-agent="21"><strong>Open problem for PhD research.</strong> None of the three directions above has a satisfying answer to asymmetric termination: when one of N agents terminates early (hardware fault, task completion, safety stop), the surviving agents face a non-stationary environment whose dimensionality just shrank. Current PettingZoo environments handle this by pruning the live roster, but most multi-agent reinforcement learning (MARL, the study of multiple agents that each learn a policy while interacting in a shared environment) algorithms assume a fixed number of agents and silently fail or require full retraining when the roster changes. A tractable PhD-scale problem is to design a PettingZoo wrapper and accompanying policy architecture that conditions each surviving agent's policy on the current live roster size and composition, enabling graceful degradation without retraining, and to benchmark it on a physical multi-robot task where agent dropout occurs at a known rate.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you state which agents act together, which act in sequence, and which reward belongs to each agent? If not, the multi-agent API choice is still under-specified.</p>
+</div>
+<p data-agent="14">That under-specification check points at the deeper reason the per-agent contract exists in the first place.</p>
+<h4 data-agent="30">Why One Action Vector Is Not Enough</h4>
+<p>PettingZoo matters because multi-agent environments are not only bigger Gymnasium environments. <span data-agent="29">A single-agent Gymnasium wrapper applied to a two-robot task collapses both agents into one action vector. Credit for a successful handoff cannot be attributed to either robot individually, and a policy that works for robot A silently breaks robot B. This attribution gap has a concrete cost: <span data-agent="28">without per-agent signal, isolating which robot is at fault reduces to a variance-based search over the single combined reward, which in practice can take orders of magnitude more rollouts than reading the fault directly off a per-agent reward trace, though the exact ratio depends on the task and noise level</span>.</span> With PettingZoo's per-agent dictionaries, the same rollout yields two reward traces, two termination signals, and two independent diagnostics. The unit of action can be one active agent or a dictionary of simultaneous agent actions. The unit of reward can be individual, shared, or both. The unit of termination can differ by agent.</p>
+<p>The graduate-level habit is to state the game form<span data-agent="04"> (the full specification of who acts when, who observes what, and who is rewarded for what, before any code is written)</span> before coding: agents, observation timing, action timing, reward ownership, termination ownership, and whether roles are symmetric. Once those are explicit, the PettingZoo API choice becomes a modeling decision rather than a software afterthought. A multi-agent policy trained without per-agent credit assignment is not a coordination strategy; it is a hope dressed up as a dictionary.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For This Section</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>AEC API</td><td>Sequential agent turns</td><td>Use when order matters or the active agent changes after each environment update.</td></tr><tr><td>Parallel API</td><td>Simultaneous actions</td><td>Use when all live agents choose actions for the same tick.</td></tr><tr><td><code>possible_agents</code></td><td>Full roster</td><td>Use for every agent that can appear in the environment.</td></tr><tr><td><code>agents</code></td><td>Live roster</td><td>Update as agents enter, finish, or leave the task.</td></tr></tbody></table></div><p data-agent="17">The <code>possible_agents</code> versus <code>agents</code> split matters in physical deployments because a real robot can fail mid-episode: a battery dies, a gripper jams, <span data-agent="21">an e-stop (an emergency-stop switch that immediately halts a robot) fires</span>. The environment must keep producing valid returns for the survivors without crashing the training loop, and a single fixed roster would corrupt every downstream dictionary lookup on the first early exit. So <code>possible_agents</code> is set once at construction and fixes the action and observation space definitions, while <code>agents</code> is a mutable copy that shrinks whenever a termination or truncation flag is set. Trainers iterate over this live list, skip a dead agent cleanly, and never query a key that no longer exists.</p><div class="comparison-table"><div class="comparison-table-title">Practical Tool Choices For This Section</div><table><thead><tr><th>Tool or Library</th><th>Role in the Topic</th><th>Builder Advice</th></tr></thead><tbody><tr><td>Per-agent dictionaries</td><td>Multi-agent return contract</td><td>Keep rewards, terminations, truncations, and infos attributable.</td></tr>
+</tbody>
+</table>
+</div>
+<p>A robust implementation starts with the interaction schedule. After that, write the per-agent spaces and the step return structure. Only then should you connect policies or trainers.</p>
+<ol>
+<li>List agents and roles before writing reward code.</li>
+<li>Choose AEC or Parallel API from the action timing, not from trainer convenience.</li>
+<li>Declare per-agent observation and action spaces.</li>
+<li>Return per-agent dictionaries for observations, rewards, terminations, truncations, and infos.</li>
+<li>Run PettingZoo API tests before trusting a custom environment.</li>
+</ol>
+<pre><code class="language-python"><span class="c1"># Sketch the official AEC loop shape for turn-based environments.</span>
+<span class="c1"># The active agent receives last(), then submits one action with step().</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">run_aec_policy</span><span class="p">(</span><span class="n">env</span><span class="p">,</span> <span class="n">policy</span><span class="p">):</span>
+<span class="n">env</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">agent</span> <span class="ow">in</span> <span class="n">env</span><span class="o">.</span><span class="n">agent_iter</span><span class="p">():</span>
+<span class="n">observation</span><span class="p">,</span> <span class="n">reward</span><span class="p">,</span> <span class="n">termination</span><span class="p">,</span> <span class="n">truncation</span><span class="p">,</span> <span class="n">info</span> <span class="o">=</span> <span class="n">env</span><span class="o">.</span><span class="n">last</span><span class="p">()</span>
+<span class="k">if</span> <span class="n">termination</span> <span class="ow">or</span> <span class="n">truncation</span><span class="p">:</span>
+<span class="n">action</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="k">else</span><span class="p">:</span>
+<span class="n">action</span> <span class="o">=</span> <span class="n">policy</span><span class="p">(</span><span class="n">agent</span><span class="p">,</span> <span class="n">observation</span><span class="p">,</span> <span class="n">info</span><span class="p">)</span>
+<span class="n">env</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">action</span><span class="p">)</span>
+<span class="n">env</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"AEC loop handles one active agent at a time."</span><span class="p">)</span></code></pre>
+<div class="code-output">AEC loop handles one active agent at a time.</div>
+<p>The expected output is intentionally verbal rather than numeric. It marks the core AEC interpretation: each iteration belongs to exactly one currently active agent, so per-agent observation, reward, and ending logic must be read turn by turn rather than as one simultaneous batch.</p>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 10.7</strong>.2 shows the PettingZoo AEC control pattern. The <code>last()</code> call belongs to the current <code>agent</code>, and <code>None</code> is passed when that agent has already terminated or truncated.</div>
+<p data-agent="14">Once both loop shapes are in hand, the payoff of the per-agent contract shows up most clearly during debugging, when a rollout goes wrong.</p>
+<p><span data-agent="29">When a two-robot rollout fails, clear the environment contract before you blame the policy. Assign the failure to one of the multi-agent-specific layers first. Check for an agent-id mismatch between the action dictionary and the live <code>agents</code> roster. Check for an AEC-versus-Parallel timing error where the carrier conditioned on a picker action that had not yet resolved. Check for a per-agent reward leak where a collision penalty meant for the picker arm landed on the carrier. Check for a stale <a href="ch_0026_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">state estimate</a> shared across agents, or a roster-pruning bug that crashed the loop when one robot hit an e-stop. Then rerun one controlled perturbation to isolate the suspected layer, for example forcing a single agent to no-op for an entire episode.</span> PettingZoo's per-agent dictionaries make this triage possible because each agent's reward and termination trace is recoverable separately rather than averaged into a team scalar.</p>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>PettingZoo turns multi-agent interaction into an explicit contract: agent ids, per-agent spaces, per-agent rewards, and per-agent endings. Choose AEC or Parallel API from the interaction timing.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: AEC versus Parallel on the same task</h4>
+<p><strong>Goal:</strong> see empirically how interaction timing changes per-agent returns and termination, using a maintained PettingZoo environment.</p>
+<p><strong>Tools needed:</strong> Python 3.10+, <code>pip install "pettingzoo[classic,butterfly]" numpy</code>. No GPU required; the whole lab runs on CPU in well under 30 minutes.</p>
+<p><strong>Steps.</strong> (1) Load a Parallel environment, for example <code>from pettingzoo.butterfly import pistonball_v6; env = pistonball_v6.parallel_env()</code>, call <code>env.reset(seed=0)</code>, and run 200 steps with random actions sampled per agent, logging each agent's cumulative reward and the step at which it leaves the live roster. (2) Wrap the same base environment with the AEC API (<code>pistonball_v6.env()</code>) and run the official <code>agent_iter()</code> / <code>last()</code> loop with the same seed and the same random policy. (3) Run <code>from pettingzoo.test import api_test, parallel_api_test</code> on both forms and confirm zero assertion failures.</p>
+<p><strong>What to vary:</strong> the reset seed (try 0, 1, 2), the number of pistons (agents) if the environment exposes it, and whether you force one agent to no-op for the whole episode. <strong>What to observe:</strong> how the per-agent cumulative rewards and the per-agent termination steps differ between AEC and Parallel under the same seed, and confirm that no agent ever conditions on a teammate's same-tick action under the Parallel API. Plot the two reward traces side by side; the divergence is the whole point of the API choice.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 10.7.1</div><p>Design a two-agent embodied task and decide whether it should use AEC or Parallel API. Specify the agents, each observation space, each action space, reward ownership, and one per-agent termination condition.</p></div>
+<section class="bibliography">
+<div class="bibliography-title">Bibliography and Further Reading</div>
+<div class="bib-category">Tools And Libraries</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/2009.14471">Terry, J. K. et al. (2021). "PettingZoo: Gym for Multi-Agent Reinforcement Learning." NeurIPS Datasets and Benchmarks.</a></p>
+<p class="bib-annotation">This paper explains why multi-agent environments need explicit agent ordering and interface discipline. It gives researchers the context behind the AEC and parallel API choices described in this chapter. Readers should connect this source to pettingzoo for multi-agent when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1606.01540">Brockman, G. et al. (2016). "OpenAI Gym." arXiv.</a></p>
+<p class="bib-annotation">The original Gym paper explains the environment abstraction that Gymnasium modernizes. It is useful for readers comparing legacy examples with the maintained Farama stack. Readers should connect this source to pettingzoo for multi-agent when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://gymnasium.farama.org/index.html">Farama Foundation. "Gymnasium Documentation."</a></p>
+<p class="bib-annotation">The official Gymnasium docs define the reset, step, render, terminated, truncated, and info conventions used by maintained environments. Readers implementing custom environments should use this as the API reference. Readers should connect this source to pettingzoo for multi-agent when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://pettingzoo.farama.org/index.html">Farama Foundation. "PettingZoo Documentation."</a></p>
+<p class="bib-annotation">PettingZoo defines maintained APIs for multi-agent reinforcement learning. It is directly relevant when a section moves from one embodied agent to turn-based, simultaneous, or mixed multi-agent interaction. Readers should connect this source to pettingzoo for multi-agent when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://stable-baselines3.readthedocs.io/">Stable-Baselines3 Contributors. "Stable-Baselines3 Documentation."</a></p>
+<p class="bib-annotation">Stable-Baselines3 gives a practical reference for how environment spaces, vectorized environments, wrappers, and evaluation callbacks are consumed by training code. Engineers should read it when turning a custom environment into a reproducible RL experiment. Readers should connect this source to pettingzoo for multi-agent when deciding what is reusable, what is benchmark-specific, and what must be remeasured.</p>
+<span class="bib-meta">Tool</span>
+</div>
+ what is benchmark-specific, and what must be remeasured.
+<span class="bib-meta">Tool</span>
+</section>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a two-agent cooperative navigation environment using the PettingZoo Parallel API and PyBullet as the physics backend. Two simulated robots must reach opposite goals without colliding; the key challenge is writing the per-agent reward function so that collision penalties are attributed to the correct agent rather than averaged across both.<br /><br /><strong>Intermediate (1-2 weeks):</strong> Implement a handoff task in MuJoCo where a picker arm places an object and a carrier arm retrieves it, using the AEC API to enforce the sequential dependency between the two agents. The key challenge is verifying that the AEC ordering actually mirrors the physical constraint, and that a policy trained under AEC does not silently break when evaluated with a different agent ordering or under Parallel semantics.</p></div>
+<div class="callout whats-next"><div class="callout-title">What's Next?</div><p><a href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11</a> moves from environment APIs to the physics simulators that make embodied tasks run.</p></div>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue to <a href="ch_0094_part-3-simulation-tooling-and-the-modern-stack-module-11-physics-simulat.xhtml">Chapter 11: Physics Simulators: MuJoCo, MJX, Isaac L...</a>, where this contract becomes the input to the next embodied capability.</p></div>
+
+
+
+
+</body>
+</html>

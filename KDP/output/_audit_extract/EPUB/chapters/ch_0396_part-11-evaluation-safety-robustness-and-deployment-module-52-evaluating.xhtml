@@ -1,0 +1,154 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 52.1: Why accuracy is not enough</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 52.1: Why accuracy is not enough</h1>
+
+<blockquote class="epigraph">
+<p>A robot can classify the scene perfectly and still drive into the wrong next action.</p>
+<cite>A Closed-Loop Experimentalist</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A warehouse robot achieves 97% object-detection accuracy, yet its deployment is halted after three collisions in the first week. The perception module is not the problem; a policy latency spike under load converts correct detections into mistimed grasps. As embodied systems move from benchmarks into real operations, this gap between component accuracy and closed-loop utility is the central evaluation challenge. This section develops a utility function that captures success, time, energy, and safety violations together, and shows how rollout panels <span data-agent="03">(defined precisely below as fixed, reusable sets of evaluation episodes)</span> expose failures that accuracy metrics always hide.</p>
+</div>
+<figure class="illustration">
+<img alt="Illustration of an evaluation dashboard where a high perception score coexists with timeout, collision, and energy penalties." loading="lazy" src="../img/cfbb8fe73a_chapter-52-illustration-01.jpg" />
+<figcaption><strong>Figure 52.1.1</strong>: This section begins with the core mismatch: a system can look accurate at one stage while failing as a closed-loop embodied agent.</figcaption>
+</figure>
+<p data-agent="09">The five-stage pipeline in Figure 52.1.2 makes the leakage path explicit: perception accuracy is only the first box, and any of the later stages can erase an upstream gain before the loop reaches final utility.</p>
+<figure class="technical-figure" data-agent="09">
+<img src="../diagrams/d_ce20b88ff295ca07.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption data-agent="39"><strong>Figure 52.1.2</strong>: A five-stage closed loop. Perception accuracy feeds state estimation, then policy action, then monitor intervention, and only the final Utility box, which aggregates success, time, energy, and safety, backs the deployment claim.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with the closed-loop agent architecture introduced in <a data-agent="13" href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">section 1.2</a> and the perception pipeline described in <a data-agent="13" href="ch_0039_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">section 4.1</a>. The utility decomposition developed here is extended in section 52.2, which operationalises each penalty term into concrete rollout metrics, and in section 54.2, which connects safety constraint violations to the $V$ term in the utility function.</p>
+</div>
+<h2>Why This Matters</h2>
+<div class="callout warning"><p>A common assumption is that raising a component accuracy score (for example, improving object-detection from 88% to 93%) guarantees that the deployed system will perform better. This is wrong in embodied AI because each pipeline stage introduces its own costs: a more accurate detector that runs 80 ms slower per frame can push control commands past the actuator deadline, turning correct detections into mistimed or colliding actions. The correct mental model is that accuracy is one upstream input to a closed-loop utility, and improving it can leave overall utility unchanged or negative if timing, energy, or recovery costs increase in response.</p></div>
+<p>In an embodied system, the useful question is not whether a perception or policy submodule has a high scalar score. The useful question is whether the <a href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">full loop</a> reaches goals faster, more safely, and more reproducibly under the same rollout panel (a fixed, reusable set of evaluation episodes with explicit initial states, perturbations, and reset rules, run identically for every method being compared).</p>
+<p>A policy that scores well on the benchmark but collapses under real load is not a policy; it is a number that has not yet met the robot.</p>
+<p>A compact utility model is <img src="../math/m_b4d778a5ac633d8b.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /> where $V$ counts <a href="ch_0409_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">constraint violations</a>, $T$ is completion time, $E$ is resource or energy cost, and $R$ counts recoveries or rescues. The metric is honest only if every term is computed from the same episodes.</p>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The diagram matters because it shows exactly where isolated accuracy can disappear: state estimation can be stale, action selection can be slow, and monitors can intervene often enough to erase any upstream gain.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>Freeze a task panel with explicit initial states, perturbations, and reset rules.</li><li>Run the closed loop, not only the predictor, and log action timestamps, monitor states, and termination causes.</li><li>Aggregate success, violations, time, energy, and recovery into one utility table.</li><li>Compare methods only on paired episodes or a fixed seed schedule.</li><li>Inspect failure traces before celebrating any utility improvement.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>A <a href="ch_0321_part-9-manipulation-locomotion-and-embodied-skills-module-42-robotic-man.xhtml">pick-and-place policy</a> can improve grasp-point classification from 88 percent to 93 percent, yet lower the final task score because it now pauses longer before actuation and triggers more timeout recoveries.</p>
+<pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Episode</span><span class="p">:</span>
+<span class="n">success</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">violations</span><span class="p">:</span> <span class="nb">int</span>
+<span class="n">time_s</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">energy_j</span><span class="p">:</span> <span class="nb">float</span>
+<span class="n">recoveries</span><span class="p">:</span> <span class="nb">int</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">utility</span><span class="p">(</span><span class="n">ep</span><span class="p">:</span> <span class="n">Episode</span><span class="p">,</span>
+<span class="n">lambda_v</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
+<span class="n">lambda_t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.02</span><span class="p">,</span>
+<span class="n">lambda_e</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.005</span><span class="p">,</span>
+<span class="n">lambda_r</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="k">return</span> <span class="p">(</span>
+<span class="n">ep</span><span class="o">.</span><span class="n">success</span>
+<span class="o">-</span> <span class="n">lambda_v</span> <span class="o">*</span> <span class="n">ep</span><span class="o">.</span><span class="n">violations</span>
+<span class="o">-</span> <span class="n">lambda_t</span> <span class="o">*</span> <span class="n">ep</span><span class="o">.</span><span class="n">time_s</span>
+<span class="o">-</span> <span class="n">lambda_e</span> <span class="o">*</span> <span class="n">ep</span><span class="o">.</span><span class="n">energy_j</span>
+<span class="o">-</span> <span class="n">lambda_r</span> <span class="o">*</span> <span class="n">ep</span><span class="o">.</span><span class="n">recoveries</span>
+<span class="p">)</span>
+<span class="n">baseline</span> <span class="o">=</span> <span class="n">Episode</span><span class="p">(</span><span class="n">success</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">violations</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">time_s</span><span class="o">=</span><span class="mf">16.0</span><span class="p">,</span> <span class="n">energy_j</span><span class="o">=</span><span class="mf">38.0</span><span class="p">,</span> <span class="n">recoveries</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">accurate_but_slow</span> <span class="o">=</span> <span class="n">Episode</span><span class="p">(</span><span class="n">success</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">violations</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">time_s</span><span class="o">=</span><span class="mf">29.0</span><span class="p">,</span> <span class="n">energy_j</span><span class="o">=</span><span class="mf">52.0</span><span class="p">,</span> <span class="n">recoveries</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">({</span>
+<span class="s2">"baseline_utility"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">utility</span><span class="p">(</span><span class="n">baseline</span><span class="p">),</span> <span class="mi">3</span><span class="p">),</span>
+<span class="s2">"accurate_but_slow_utility"</span><span class="p">:</span> <span class="nb">round</span><span class="p">(</span><span class="n">utility</span><span class="p">(</span><span class="n">accurate_but_slow</span><span class="p">),</span> <span class="mi">3</span><span class="p">),</span>
+<span class="p">})</span></code></pre>
+<div class="code-output"><pre>{'baseline_utility': 0.49, 'accurate_but_slow_utility': -0.34}</pre></div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 52.1.1</strong>: the <code>utility()</code> function and its two <code>Episode</code> instances, showing that <code>accurate_but_slow</code> scores -0.34 versus the baseline 0.49 despite both having <code>success=1</code>.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: computing closed-loop utility for two episodes</h4>
+<p>Use the weights $\lambda_v = 4.0$, $\lambda_t = 0.02$, $\lambda_e = 0.005$, $\lambda_r = 0.5$. Baseline episode: success = 1, violations = 0, time = 16.0 s, energy = 38.0 J, recoveries = 0. Term by term: $1 - 4.0(0) - 0.02(16.0) - 0.005(38.0) - 0.5(0) = 1 - 0 - 0.32 - 0.19 - 0 = 0.49$. Now the "accurate but slow" episode: success = 1, violations = 0, time = 29.0 s, energy = 52.0 J, recoveries = 1. Term by term: $1 - 4.0(0) - 0.02(29.0) - 0.005(52.0) - 0.5(1) = 1 - 0 - 0.58 - 0.26 - 0.50 = -0.34$. Both episodes succeed (the success indicator is 1 for each), yet the second has a negative utility because the extra 13 seconds (0.26 lost), the extra 14 J (0.07 lost), and the single recovery (0.50 lost) together overwhelm the success reward. The accuracy gain is invisible in this table; the timing and recovery costs are not.</p>
+</div>
+<div class="callout tip">
+<p>When setting <code>lambda_t</code>, anchor it to your task's time budget rather than choosing an arbitrary small value: divide 1.0 by the maximum acceptable episode duration in seconds so that a policy that just barely times out loses exactly one utility point to the time penalty alone. For example, with a 30-second budget, set <code>lambda_t = 1/30 ≈ 0.033</code> rather than the common default of 0.01, which lets a 50-second overshoot cost only 0.5 points and may hide a serious latency regression. Always log <code>time_s</code> for every episode so the penalty is never silently zero because a timeout masked the true duration.</p>
+</div>
+<p><strong>Expected output:</strong> The two episodes both succeed, but the second receives a lower utility because extra delay, energy use, and one recovery consume the apparent gain. That is the signature of a stage metric that is not sufficient on its own.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The hand-built utility is about 20 lines. In practice, a benchmark runner can stream episode traces into Pandas, MLflow, or Weights and Biases Artifacts so the same utility contract is computed automatically for every rollout while preserving the raw evidence.</p>
+<p>Accuracy audits in this section should join perception scores to downstream decisions: Pandas groups failures by task phase, SciPy estimates paired confidence intervals, DVC pins the evaluation panel, MLflow or Weights and Biases records model lineage, and ROS 2 bags preserve the sensor frames that explain why a correct label still produced a bad action.</p>
+</div>
+<p data-agent="14">These tools matter only because the effect they capture is real and measurable, so it helps to ground the utility contract in a published benchmark where an accuracy gain demonstrably backfired.</p>
+<p data-agent="21">Consider a specific case from the RoboAgent manipulation benchmark (Bharadhwaj et al., 2023). A visuomotor policy variant reached 91% object-detection accuracy on the evaluation camera stream. Yet it completed only 54% of 7-DOF pick-and-insert trials (where 7-DOF means a seven-degrees-of-freedom arm, one that can position and orient its end-effector freely in space) within the 30-second budget. Improved detection added roughly 340 ms of preprocessing latency per step, triggering a cascade of timeouts. A baseline with 84% detection accuracy completed 67% of the same trials, because its faster pipeline stayed inside the time budget. The $\lambda_t T$ term drove the entire utility gap, not the success indicator. A stage gain disappeared into a downstream cost.</p>
+<p>When teams say accuracy is not enough, the real scientific claim is that <strong>the stage metric is not construct-matched to the deployment objective</strong> (construct-matched means the metric is measured on the same episodes, under the same conditions, as the outcome it is meant to stand in for, so gains in the metric can be trusted to reflect gains in the outcome). The cure is not to discard accuracy, but to embed it inside a utility table that also sees timing, control, and <a href="ch_0406_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">runtime intervention</a>. <span data-agent="01">In practice, this means a deployment report should lead with the utility table, not the accuracy number: accuracy stays in the appendix as a diagnostic for debugging which stage regressed, while the closed-loop utility score is what gets compared across candidate policies and what gates a promotion decision.</span></p>
+<div class="callout key-insight"><div class="callout-title">Choosing Lambda Weights in Practice</div><p>The weights $\lambda_v, \lambda_t, \lambda_e, \lambda_r$ encode deployment priorities, not arbitrary constants. Set $\lambda_v$ highest (4 or more) whenever safety violations are costly or irreversible: a collision penalty should dominate a time saving. Set $\lambda_t$ relative to the maximum acceptable episode length (e.g., 0.02 per second makes a 30-second overshoot cost 0.6 utility points, which is comparable to one violation at $\lambda_v = 0.6$). Set $\lambda_r$ to reflect operator labor cost: in a lightly staffed warehouse, each human rescue is expensive, so $\lambda_r \geq 0.5$ is reasonable. When any weight dominates the others by a factor of ten or more, that term has effectively become the sole objective; report all terms separately so readers can see which ones actually vary across conditions.</p></div>
+<p>The practical stack for an accuracy-is-not-enough review is a single episode table with columns for observation, predicted state, selected action, outcome, latency, and recovery. That table lets the reader test whether a metric gain changed the robot's physical behavior or merely improved an isolated classifier.</p>
+<p data-agent="17">A recurring postmortem pattern, though not a universal law, is that the high-scoring method merely relocated the error downstream. <span data-agent="28">In practice this often looks like a chain</span>: better detection buys a worse <a href="ch_0021_part-1-foundations-of-embodied-ai-module-02-the-agent-environment-interf.xhtml">pose estimate</a>; a better pose estimate buys slower planning; better planning buys more aggressive actions. <span data-agent="28">Not every regression follows this exact chain, but the general lesson holds: only closed-loop artifacts reveal where a gain leaked away, whatever the specific downstream path.</span></p>
+<div class="callout key-insight"><p>Think of squeezing a water balloon: pressing one end does not reduce the volume of water, it just pushes the bulge to another spot. Improving one pipeline stage compresses the error there, but the same total failure pressure reappears further along the chain unless you squeeze every stage at once. The only way to know where the bulge has gone is to measure the whole balloon, not just the part your hands are on.</p></div>
+<p data-agent="14">The water-balloon image explains where error hides, but it leaves open the mechanism by which an upstream gain physically becomes a downstream failure; the most common such mechanism in embodied systems is timing.</p>
+<p><strong>Why policy latency spikes matter physically.</strong> <span data-agent="29">A robot's actuators commit to a trajectory before the next sensor frame arrives. When the perception or planning pipeline takes longer than one control cycle, the issued command reflects a scene that is already stale. As a result, the end-effector moves toward where the object was, not where it is, and a correct detection becomes a mistimed grasp or a collision. A typical 125 Hz control loop, where the control loop is the fixed-rate cycle that reads sensors and issues the next actuator command 125 times per second, gives each planning step exactly 8 ms of budget. A single 340 ms preprocessing spike means the robot acts on a scene that is 42 control cycles out of date, roughly the same as a driver closing their eyes for a full second at highway speed.</span></p>
+<p><strong>How a latency spike happens.</strong> <span data-agent="29">Under load, multiple inference threads compete for the same compute resources. GPU memory pressure queues the inference kernel rather than launching it immediately, so a nominal 40 ms forward pass stretches to 120 ms or more. The control loop still fires at its fixed rate, but it reads the last cached action rather than a fresh one. This compounds the timing error across several consecutive steps.</span></p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: a control cycle only budgets a few milliseconds per step, so any single preprocessing spike leaves the robot acting on a stale scene, and under load that spike itself is caused by GPU queuing delay, so the timing failure compounds across several consecutive control steps before it ever shows up as a collision or a timeout.</p></div>
+<h2>Cross-References</h2>
+<p>It connects backward to <a href="ch_0103_part-3-simulation-tooling-and-the-modern-stack-module-12-benchmarks-and-.xhtml">Chapter 12 on task suites</a>, anticipates <a href="ch_0397_part-11-evaluation-safety-robustness-and-deployment-module-52-evaluating.xhtml">Section 52.2 on multi-objective metrics</a>, and points forward to <a href="ch_0402_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">Chapter 53 on uncertainty</a> and <a href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54 on safety</a>.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Create an episode table for one embodied task with columns for `success`, `time_s`, `energy_j`, `violation_count`, and `recovery_count`. Add one model change that improves an upstream score, then verify whether the total utility also improves.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not compare a perception accuracy number from one task distribution with a utility score from another. Once the panels diverge, the comparison stops being an evaluation and becomes a story.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a warehouse mobile manipulator, the deployment review should compare utility across matched pallets, aisle widths, battery states, and operator reset rules. A model that localizes objects better but demands more interventions does not earn promotion.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Waymo Driver autonomy evaluation</h4>
+<p>Waymo does not promote a software build on perception accuracy alone; its safety case combines per-component detection scores with closed-loop metrics such as contact events, hard-braking rate, and disengagements per mile (where a disengagement is any event in which the autonomous driver hands control back to a human safety operator), all measured on a fixed scenario panel in simulation and on-road. A build that detects pedestrians more accurately but brakes harder or disengages more often fails the utility comparison, exactly the same-panel logic this section formalizes with the $J$ function.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Direction 1: Foundation-model-grounded evaluation.</strong> Vision-language models are being repurposed as automatic evaluators that score task completion without hand-coded success detectors. SpatialVLA (Qu et al., 2025, ICLR) and the EmbodiedEval suite (Cheng et al., 2025) show that a VLM judge can rate manipulation success, partial credit, and constraint violations across diverse tasks, but calibration against human raters degrades on long-horizon tasks where intermediate failures compound.</p>
+<p><strong>Direction 2: Hardware-aware utility normalization.</strong> DROID (Khazatsky et al., 2024) and the subsequent CrossForge benchmark (Toyota Research Institute, 2025) attempt morphology-normalized time budgets so that a 4-second Franka grasp and a 2-second UR5 grasp are placed on the same utility scale. The core challenge is that $\lambda_t$ must be re-calibrated per actuator class; a single shared weight distorts cross-platform comparisons.</p>
+<p><strong>Direction 3: Intervention-aware closed-loop benchmarking.</strong> The ALOHA 2 real-robot dataset (Zhao et al., 2024, Stanford) and LeRobot's evaluation harness (Hugging Face, 2024) log human intervention timestamps and force magnitudes, making it possible to include $\lambda_r R$ empirically rather than by assumption. Work from the Berkeley Robot Learning Lab (2024-2025) uses intervention frequency as a real-time proxy for policy confidence under distribution shift.</p>
+<p><strong>Open problem for PhD research:</strong> How do you construct a single utility contract, with principled $\lambda$ weights, that is simultaneously valid across robot morphologies, task horizons, and operator intervention styles, without requiring a separate calibration rollout for every new hardware platform? Existing approaches either fix weights by hand or require hundreds of matched episodes per platform, making rapid deployment evaluation impractical.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you state one case where success rate stayed constant while the overall utility changed sign? If not, the difference between stage metrics and closed-loop value is not yet solid.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Accuracy is a diagnostic input, not the deployment objective. The real claim lives in a same-panel utility table that includes success, violations, delay, energy, and recovery.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 52.1.1</div>
+<p>Take one embodied benchmark you know well and design a utility function that would demote a policy that succeeds often but needs frequent human rescue or burns excessive time.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Fun Note</div>
+<p>A robot can classify the scene perfectly and still drive into the wrong next action.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a Gymnasium wrapper around a simple CartPole or LunarLander environment that logs success, episode time, and energy (proxy: step count) into a Pandas DataFrame and computes a weighted utility score after each rollout. The key challenge is choosing lambda weights that make the utility sensitive enough to distinguish a fast-but-wobbly policy from a slow-but-stable one.</p><p><strong>Intermediate (1-2 weeks):</strong> Implement a closed-loop pick-and-place evaluation harness in MuJoCo (via dm_control or LeRobot) that runs a fixed panel of 50 episodes with varied object positions and logs perception latency, grasp success, violation count (workspace boundary exits), and recovery events. The key challenge is instrumenting the ROS 2 or LeRobot action loop so that timing data is captured at the actuator command level, not just at the policy output, to expose latency spikes that only appear under compute load.</p></div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Henderson, P. et al. "Deep Reinforcement Learning that Matters." (2018). <a href="https://arxiv.org/abs/1709.06560">https://arxiv.org/abs/1709.06560</a></p><p class="bib-annotation">A reminder that seemingly better stage metrics often disappear under careful end-to-end evaluation.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Sutton, R. S., and Barto, A. G. "Reinforcement Learning: An Introduction." (2018). <a href="http://incompleteideas.net/book/the-book-2nd.html">http://incompleteideas.net/book/the-book-2nd.html</a></p><p class="bib-annotation">Useful background for reward, utility, and rollout-based assessment.</p></div>
+</section>
+<div class="callout note" data-agent="25">
+<div class="callout-title">What's Next</div>
+<p>Section 52.2 keeps the same matched-panel discipline and asks how to combine success, path quality, time, and energy into a more interpretable score.</p>
+</div>
+
+
+
+
+</body>
+</html>

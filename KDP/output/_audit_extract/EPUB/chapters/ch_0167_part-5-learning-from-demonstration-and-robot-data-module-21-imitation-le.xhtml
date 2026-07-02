@@ -1,0 +1,270 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 21.4: Inverse reinforcement learning</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 21.4: Inverse reinforcement learning</h1>
+
+<blockquote class="epigraph"><p>"The expert left no reward function, only trajectories. Inverse RL asks what you would have to care about to move like that, then optimizes the answer."</p><cite>A Curious Reward Engineer</cite></blockquote>
+<figure class="illustration">
+<img alt="Technical illustration for Section 21.4: Inverse reinforcement learning." loading="lazy" src="../img/6388591a0e_chapter-21-illustration-04.jpg" />
+<figcaption data-agent="39">Figure 21.4A: Inverse reinforcement learning: given observed expert trajectories, IRL recovers a reward function that rationalizes the behavior, then an RL agent is optimized against that inferred reward.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with <a data-agent="13" href="ch_0119_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Markov decision processes and reward functions</a> from section 14.1, and with the <a data-agent="13" href="ch_0164_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">behavior cloning baseline</a> from section 21.1. The reward-inference ideas developed here are extended in section 23.3, where preferences collected during teleoperation are used to refine the inferred reward, and in section 34.2, where language-conditioned reward signals replace hand-designed feature sets in vision-language-action models.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A surgeon's assistant robot trained by behavior cloning on 500 suture passes fails the moment the needle gauge changes. It copied wrist angles, not intent. Inverse reinforcement learning asks the deeper question: what reward function would a rational agent have to be maximizing to produce exactly these trajectories? Recover that reward and you can re-optimize it for new tools, new patients, new geometries. As robots enter open-ended real-world settings where demonstrations can never cover every situation, this shift from copying behavior to inferring goals is the central unsolved problem. This section develops a maximum-entropy IRL pipeline, traces exactly where reward ambiguity arises, and establishes the practical conditions under which IRL outperforms behavior cloning versus when its inner-loop cost makes it impractical. Figure 21.4A shows the overall shape: observed expert trajectories go in, a reward function that rationalizes them is recovered, and an RL agent is then optimized against that inferred reward.</p>
+</div>
+<p data-agent="22"><span data-agent="29">Watch an expert pour water without spilling and you can copy the wrist motion exactly, yet still have no idea what the expert was trying to achieve. Inverse reinforcement learning reads intent off behavior. It recovers the reward an expert must have been maximizing rather than the motions they happened to produce.</span> We first define that object of study, then connect it to the agent loop, then test it with a compact implementation.</p>
+<p>The key question in Inverse reinforcement learning is practical: what must the agent know, what can it observe, what action is available, and what evidence shows that the action worked under the stated conditions?</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A representation earns its place when it changes the measurable action interface. In inverse reinforcement learning, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+</div>
+<h2>Theory</h2>
+<p>For Inverse reinforcement learning, the practical design rule is to make the interface inspectable before optimization begins: inputs, outputs, units, latency, bounds, and failure labels should all be visible in the saved artifact.</p>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>The mechanism in Inverse reinforcement learning is the contract between representation and action. Name what enters the module, what leaves it, which assumptions make that transformation valid, and which log would reveal a bad handoff.</p>
+</div>
+<h2>Worked Example</h2>
+<p data-agent="14">That contract between representation and action stays abstract until it is grounded in a single trace, so the worked example below makes the reward-inference loop concrete one step at a time.</p>
+<p>For Inverse reinforcement learning, keep one concrete rollout in view. A sensor reading becomes an estimate, the estimate constrains an action, the action changes the world, and the next observation confirms or contradicts the assumption. The section's idea is useful only if it improves that loop.</p>
+<pre><code class="language-python"><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="n">dataset_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"robot_demos"</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">dataset_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">"episode_*"</span><span class="p">)):</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"inspect"</span><span class="p">,</span> <span class="n">episode</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"next step: convert demonstrations to the LeRobotDataset format"</span><span class="p">)</span></code></pre>
+<div class="code-output">next step: convert demonstrations to the LeRobotDataset format</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 21.4</strong>.1 walks the local <code>robot_demos</code> directory, lists each episode folder in sorted order, and prints the target format (LeRobotDataset) that the raw episodes still need to be converted into before training.</div>
+<p><strong>Expected output:</strong> the printed trace for Inverse reinforcement learning should expose the method configuration, the measured evidence field, and the failure label. If one of those fields is missing or unchanged under the perturbation, the example is not yet an evaluation artifact.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use imitation, preference-learning, or custom IRL tooling for optimization, but log feature definitions, reward weights, planner settings, and counterexample tasks so the learned reward is not mistaken for ground truth.</p>
+</div>
+<section class="course-depth-block">
+<h2>Inverse Reinforcement Learning And Reward Ambiguity</h2>
+<p><span data-agent="29">Consider a concrete motivation. A behavior cloning policy trained on 200 demonstrations of a robot pouring water mimics the operator's wrist angle and grip force. When asked to pour into a smaller cup, it fails because it memorized motor patterns rather than goals. IRL targets exactly this transfer scenario. Instead of copying actions, it asks what cost the expert was minimizing, then re-optimizes that cost under the new geometry.</span> The difference is measurable. Behavior cloning retrained from scratch for the smaller cup required 180 additional demonstrations to reach 80% success. An IRL policy re-optimized against the recovered reward reached 80% success in 12 fine-tuning rollouts, a 15x reduction in data cost (illustrative figures consistent with IRL transfer results as of 2024; exact ratios vary with task and feature set). The tradeoff is real: IRL requires solving a forward RL problem in the inner loop, which costs compute. The inferred reward may also be ambiguous when demonstrations are few or the feature set is incomplete.</p>
+<p>Inverse reinforcement learning asks a different question from behavior cloning. Instead of directly fitting expert actions, it searches for a reward function $r_\phi(s,a)$ under which the expert behavior looks optimal or near-optimal. Figure 21.4B traces this as a loop: expert demonstrations yield a feature expectation, the current reward drives a forward RL inner loop, and the gap between expert and policy feature expectations updates the reward until the two match. In maximum entropy IRL, a trajectory receives probability proportional to exponentiated return:</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: IRL replaces the behavior-cloning goal of matching expert actions with the goal of finding a reward function $r_\phi(s,a)$ that makes the expert trajectories look optimal; that reward is found by an inner loop that solves forward RL, rolls out the resulting policy, and pushes the policy's feature expectation toward the expert's feature expectation until they match.</p></div>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_3babc29d08f191eb.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption data-agent="39">Figure 21.4B: The maximum entropy IRL loop. Expert demonstrations yield an empirical feature expectation (mu_E). The current reward parameters drive a forward RL inner loop, producing a policy whose rollout feature expectation (mu_theta) is compared with mu_E. The gradient (mu_E minus mu_theta) updates the reward parameters until the two expectations match, at which point the recovered reward rationalizes the expert behavior.</figcaption>
+</figure>
+<p><img src="../math/m_2dc44f310aaea4b8.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /></p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: One MaxEnt IRL gradient step</h4>
+<p>Trace one iteration with a 2-feature reward $\theta = [0.0, 0.0]$, learning rate $\alpha = 0.5$. Features are (task progress, smoothness).</p>
+<p><strong>Step 1, expert feature expectation.</strong> Two expert trajectories give per-trajectory feature sums $\phi^{(1)} = [0.9, 0.8]$ and $\phi^{(2)} = [0.7, 1.0]$. Average: $\hat{\mu}_E = [(0.9+0.7)/2,\ (0.8+1.0)/2] = [0.80, 0.90]$.</p>
+<p><strong>Step 2, forward RL with $\theta = [0,0]$.</strong> Reward is identically zero, so every trajectory is equally likely. The policy is uniform, and rolling it out yields a policy feature expectation $\hat{\mu}_\theta = [0.50, 0.50]$ (the average over the whole reachable set, lower on both features than the expert).</p>
+<p><strong>Step 3, gradient.</strong> $\nabla_\theta \mathcal{L} = \hat{\mu}_E - \hat{\mu}_\theta = [0.80 - 0.50,\ 0.90 - 0.50] = [0.30, 0.40]$.</p>
+<p><strong>Step 4, update.</strong> $\theta \leftarrow [0,0] + 0.5 \cdot [0.30, 0.40] = [0.15, 0.20]$. The reward now prefers both progress and smoothness, with a slightly stronger pull toward smoothness because the expert's smoothness gap was larger. Re-running the forward solve with $\theta = [0.15, 0.20]$ pushes $\hat{\mu}_\theta$ up toward $[0.80, 0.90]$, shrinking the next gradient. Convergence is reached when the two feature expectations match and the gradient hits zero.</p>
+</div>
+<div class="callout algorithm">
+<h4>Algorithm: Maximum Entropy Inverse Reinforcement Learning</h4>
+<p><strong>Input:</strong> Expert demonstration trajectories $\mathcal{D} = \{\tau^{(1)}, \ldots, \tau^{(N)}\}$; feature map $\phi(s,a) \in \mathbb{R}^k$; learning rate $\alpha$; reward parameter vector $\theta \in \mathbb{R}^k$</p>
+<p><strong>Output:</strong> Reward parameters $\theta^*$ such that $r_\theta(s,a) = \theta^\top \phi(s,a)$ rationalizes the expert demonstrations</p>
+<ol>
+<li>Compute the empirical feature expectation from expert data: $\hat{\mu}_E = \frac{1}{N}\sum_i \sum_t \phi(s_t^{(i)}, a_t^{(i)})$.</li>
+<li>Initialize reward parameters $\theta \leftarrow \mathbf{0}$ (or small random values).</li>
+<li>Repeat until convergence:
+  <ol type="a">
+<li>Define the current reward $r_\theta(s,a) = \theta^\top \phi(s,a)$.</li>
+<li>Solve the forward RL problem to obtain the optimal policy $\pi_\theta = \arg\max_\pi \mathbb{E}_\pi[\sum_t r_\theta(s_t, a_t)]$.</li>
+<li>Roll out $\pi_\theta$ to estimate the policy feature expectation $\hat{\mu}_\theta = \mathbb{E}_{\pi_\theta}[\sum_t \phi(s_t, a_t)]$.</li>
+<li>Compute the maximum entropy log-likelihood gradient: $\nabla_\theta \mathcal{L} = \hat{\mu}_E - \hat{\mu}_\theta$.</li>
+<li>Update reward parameters: $\theta \leftarrow \theta + \alpha \nabla_\theta \mathcal{L}$.</li>
+</ol>
+</li>
+<li>Evaluate the recovered reward by scoring at least one counterfactual (suboptimal) trajectory and confirming its return is lower than the expert's return.</li>
+<li>Return $\theta^* = \theta$; record feature weights and counterexample trajectories as diagnostic artifacts alongside $\pi_\theta$.</li>
+</ol>
+</div>
+<p>The intuition is useful but dangerous: many rewards can explain the same demonstrations. This is called <strong>the reward ambiguity problem</strong>, and it is what separates IRL from a mere curve-fitting exercise. A robot that carries a cup smoothly might be optimizing short path length, liquid stability, human comfort, or a hidden demonstrator habit. IRL becomes scientifically meaningful only when the learned reward is tested on new tasks, interventions, or counterfactual trajectories. A reward function that fits the demonstrations but fails the counterfactuals is not a recovered objective: it is a memorized alibi.</p>
+<div class="callout key-insight"><p>Imagine watching a seasoned chef add a pinch of salt to a dish and trying to deduce their goal from that single action. They might be seasoning for taste, controlling texture, slowing browning, or following habit. Every explanation fits what you observed. Only by presenting them with a new ingredient they have never cooked before, or by handing them a deliberately under-salted plate and watching their reaction, can you separate the true objective from plausible impostors. IRL faces exactly this problem: a finite set of demonstrations is consistent with many reward functions, and only counterfactual tests, situations the expert never encountered during training, can distinguish the intended goal from coincidental explanations.</p></div>
+<div class="callout warning"><p>A common assumption is that IRL recovers a single correct reward function that definitively explains what the expert was optimizing. This is wrong: the IRL problem is fundamentally ill-posed, because infinitely many reward functions are consistent with any finite set of demonstrations. In an embodied AI context this matters acutely, because the spurious rewards absorbed from operator style, hardware quirks, or dataset correlations will drive a real robot to physically unsafe behavior the moment those correlations shift in deployment. The correct mental model is that IRL narrows the space of plausible reward functions rather than identifying one; counterfactual ranking and held-out preference tests are required to shrink that space to something trustworthy enough for hardware.</p></div>
+<p>For an embodied robot, reward ambiguity is not just a statistical inconvenience: it can cause physical harm. A reward that silently encodes "move fast" alongside "avoid collisions" will behave safely in the training environment but become aggressive when contact forces rise on a new surface. Unlike a simulated agent that can be reset, a real robot acting on a wrong reward may damage objects, injure bystanders, or saturate its actuators before any corrective signal arrives.</p>
+<p data-agent="17">The standard fix is counterfactual ranking. After fitting reward weights, the engineer builds trajectories a correct reward would reject, such as shortcuts that skip safety margins, and checks that the inferred reward scores them below the expert demonstrations. When the ranking holds across a diverse counterexample set, the ambiguity shrinks to the rewards that agree on every tested contrast. Code Fragment 3 below is therefore not optional: it is the minimum diagnostic before trusting a recovered reward on hardware.</p>
+<p data-agent="01">Concretely, counterfactual ranking answers the question this section opened with: what reward would a rational agent need in order to produce these trajectories and no others. A candidate reward is accepted only if it scores every deliberately-bad counterexample (the shortcut path, the corner-cutting maneuver, the unsafe grasp) below every expert trajectory. If even one counterexample scores higher than the expert, the candidate reward is rejected and the feature set or demonstration set must be revised. This is the concrete "how to use it" step that turns the abstract idea of reward inference into a pass or fail test an engineer can run before deployment.</p>
+<div class="callout key-insight"><div class="callout-title">Three Algorithms Worth Knowing By Name</div><p>Maximum Entropy IRL (Ziebart et al., 2008) assigns trajectory probabilities proportional to exponentiated return and fits reward weights by maximum likelihood; it works well when features are hand-designed and the environment is small enough for exact planning. Generative Adversarial Imitation Learning (GAIL; Ho and Ermon, 2016) replaces the inner RL loop with an adversarial discriminator that distinguishes expert from policy rollouts, scaling to high-dimensional continuous control without explicit reward features. Adversarial Inverse Reinforcement Learning (AIRL; Fu et al., 2018) adds <span data-agent="04">a disentanglement structure (a network design that separates the reward, which should depend only on state and action, from a shaping term that depends on the dynamics, so changing the dynamics does not force the reward to be relearned)</span> so the recovered reward is transferable across dynamics changes, making it the right choice when the robot body or physics will differ between training and deployment. The choice among these three depends on whether you need interpretable reward features (MaxEnt IRL), scalability without feature engineering (GAIL), or reward portability (AIRL).</p></div>
+<div class="callout tip">
+<p>When using AIRL (the <code>airl</code> algorithm in the <a href="https://github.com/HumanCompatibleAI/imitation">imitation</a> library), set <code>reward_net_kwargs={"use_state": True, "use_action": False}</code> if your transfer task changes the action space but keeps the same state observations; the default action-conditioned reward head will otherwise absorb spurious action correlations from the source embodiment and fail silently on the target robot. After training, always query <code>reward_net.predict_processed</code> on at least one deliberately suboptimal counterexample trajectory (for example, the "shortcut" path from Code Fragment 3) and confirm its score is lower than the expert's score before treating the recovered reward as transferable.</p>
+</div>
+<div class="callout research-frontier"><div class="callout-title">Reward Learning Frontier</div><p>Modern robot reward learning often blends demonstrations, preferences, language feedback, and safety constraints. The open problem is identifiability: deciding which part of a demonstrated behavior reflects the task objective and which part reflects embodiment, operator style, or dataset bias.</p></div>
+<p>Code Fragment 3 illustrates reward ambiguity with two reward weights that rank the same expert trajectory differently once a counterexample is introduced.</p>
+<pre><code class="language-python"><span class="c1"># Compare two plausible reward explanations for the same demonstration.</span>
+<span class="c1"># Counterfactual trajectories expose ambiguity that imitation alone can hide.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">features</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"expert"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.9</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">]),</span> <span class="c1"># task progress, smoothness</span>
+<span class="s2">"shortcut"</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">]),</span>
+<span class="p">}</span>
+<span class="n">smooth_reward</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.4</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">])</span>
+<span class="n">progress_reward</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.9</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">])</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">phi</span> <span class="ow">in</span> <span class="n">features</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="s2">"smooth-score"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">phi</span> <span class="o">@</span> <span class="n">smooth_reward</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="s2">"progress-score"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">phi</span> <span class="o">@</span> <span class="n">progress_reward</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span></code></pre>
+<div class="code-output">expert smooth-score 0.84 progress-score 0.89<br />shortcut smooth-score 0.52 progress-score 0.92</div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 3:</strong> This script scores the same two feature vectors, expert and shortcut, under two candidate reward weight vectors and prints both dot-product scores side by side. The expert wins under the smoothness-heavy reward, but the shortcut wins under the progress-heavy reward, demonstrating that a single demonstration cannot identify the intended reward without a counterfactual comparison.</div>
+</section>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Autonomous driving route preferences</h4>
+<p data-agent="28">Waymo and Uber ATG (now Aurora) have both published work describing maximum-entropy IRL used to learn driving cost functions from human traces: rather than hand-tuning weights for lane-keeping, smoothness, and headway, the planner recovers them from logged expert drives. Uber's CoverNet (a trajectory-set prediction model that scores a fixed library of candidate paths rather than regressing raw coordinates) and IRL-based motion planners infer the reward that ranks a candidate trajectory set, so the car is trained to prefer human-like paths it never saw during training. In principle the same counterfactual check from this section applies: a recovered cost should only be trusted in deployment after it scores deliberately reckless candidate trajectories below the demonstrated ones, though the published papers do not disclose the full extent of that validation.</p>
+</div>
+<h2>Practical Recipe</h2>
+<p data-agent="14">The driving case shows IRL working at production scale, but reaching that point depends on a disciplined build order, so the following recipe distills the steps that keep an IRL pipeline debuggable from the first baseline onward.</p>
+<ol>
+<li>Write the observation, action, and success metric before choosing a model.</li>
+<li>Build a baseline that is simple enough to debug by inspection.</li>
+<li>Add the library implementation only after the baseline behavior is understood.</li>
+<li>Record failures as structured cases: perception error, state error, planning error, control error, or evaluation error.</li>
+<li>Run at least one perturbation test before trusting the result.</li>
+</ol>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>The common mistake in Inverse reinforcement learning is to celebrate the component score before checking the closed-loop handoff. The failure usually appears at the boundary: stale state, wrong frame, delayed action, saturated actuator, or metric that ignores the real task cost.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A robot learning engineer applying inverse reinforcement learning starts by recording the robot body, camera setup, action units, operator source, and split policy for every episode. That record makes it possible to compare LeRobot with a baseline without changing the task definition midstream.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>When inverse reinforcement learning feels abstract, ask what would be different in the next frame of video, the next robot state, or the next safety margin.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Language-conditioned reward learning (2024-2026).</strong> Rather than hand-crafting feature maps, recent work grounds reward functions directly in natural language. EUREKA (Ma et al., ICLR 2024; extended in follow-ons at CMU and NVIDIA) uses an LLM to propose and iteratively revise reward code from task descriptions, outperforming human-written rewards on dexterous manipulation benchmarks. The 2025 direction extends this to vision-language reward models that score robot states from image-text pairs without any simulator access.</p>
+<p><strong>Preference-based IRL at scale (2024-2026).</strong> Combining RLHF-style pairwise preferences with IRL closes the annotation bottleneck: instead of full trajectories, a human labels which of two clips is better. PEBBLE (an algorithm that pretrains a policy with unsupervised exploration, then fine-tunes a reward model from human pairwise preference labels) and its 2024 successors (including work from the Berkeley Robot Learning Lab) show preference-based reward learning reaches expert IRL sample efficiency with 10x fewer human labels. Active query selection, choosing the most informative clip pair, is now a mainstream research thread.</p>
+<p><strong>Transferable reward representations via foundation models (2025-2026).</strong> Groups at Stanford and Google DeepMind (including the RT-Reward line of work) are building reward models pretrained on internet-scale video and fine-tuned on a small set of robot demonstrations. These frozen reward encoders transfer across embodiments without re-running the inner RL loop, attacking the core computational cost of classical IRL.</p>
+<p><strong>Open problem for a PhD student.</strong> Reward identifiability under distribution shift: given demonstrations from multiple operators with different styles on the same task, how do you separate the shared task objective from individual operator habits, and how do you certify that the recovered objective is stable when the robot body or environment changes? Current theory gives no tight sample-complexity bound for this multi-source setting, and empirical methods lack agreed-upon benchmarks.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for inverse reinforcement learning? If not, the system boundary is still too vague.</p>
+</div>
+<p>Inverse reinforcement learning becomes useful when it is tied to a closed-loop contract. <span data-agent="15">That contract names the observation stream, the state estimate, the action representation, the timing budget, and the evaluation artifact.</span> Without that contract, a model can look capable in a notebook while failing the first time a sensor drops a frame or a controller saturates.</p>
+<div class="callout key-insight" data-agent="30"><p>Recap: a recovered reward is trustworthy only when it is bound to a closed-loop contract and survives counterfactual tests, not when it merely reproduces the demonstrations.</p></div>
+<p>For Inverse reinforcement learning, separate the conceptual claim, the systems claim, and the evidence claim. A plausible mechanism, a clean interface, and a closed-loop result are different claims; the section should keep their evidence separate.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Practical Tool Choices For Inverse Reinforcement Learning</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>Role in IRL</th><th>Builder Advice</th></tr></thead>
+<tbody>
+<tr><td>Gymnasium (MuJoCo <code>FetchPush-v2</code>)</td><td>Forward RL inner loop for MaxEnt IRL and GAIL on manipulation tasks</td><td>Pin <code>mujoco==3.1.6</code> and fix the physics timestep to 0.002 s; a mismatch between the demo timestep and the rollout timestep causes the inferred reward to absorb control-frequency artifacts rather than task intent.</td></tr>
+<tr><td>imitation (AIRL / GAIL)</td><td>Adversarial reward learning without hand-crafted feature maps</td><td>For Franka Panda sim-to-real transfer, use AIRL with <code>use_state=True, use_action=False</code>; the action head otherwise absorbs joint-torque correlations specific to the simulated PD controller and will not transfer to the real robot's impedance controller.</td></tr>
+<tr><td>ROS 2 (rosbag2)</td><td>Recording and replaying real-robot demonstration trajectories at hardware frequency</td><td>Record at the controller frequency (1 kHz for a Franka, 500 Hz for a UR10e) and downsample to your learning frequency (10-50 Hz) offline; downsampling online in the bag reader introduces variable-length gaps that corrupt feature expectations.</td></tr>
+<tr><td>MuJoCo</td><td>Fast physics for the inner-loop RL solver during IRL training</td><td>Use <code>mj_step</code> in batch mode with a fixed seed; stochastic resets during inner-loop policy rollouts add variance to the feature expectation estimate and require 3-5x more samples to converge reward weights.</td></tr>
+<tr><td>LeRobot (HuggingFace Hub datasets)</td><td>Sourcing cross-embodiment demonstration data for feature expectation computation</td><td>Filter Hub datasets by <code>robot_type</code> before computing feature expectations; mixing Franka and xArm demonstrations in a single MaxEnt IRL pass conflates joint-range limits and infers spurious smoothness penalties tied to one arm's workspace boundary.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For Inverse reinforcement learning, start with a small baseline that logs inputs, outputs, units, timestamps, and termination conditions before moving to Gymnasium or PettingZoo. The library run should keep the same artifact schema, so the comparison remains a same-task evaluation.</p>
+<ol>
+<li>Write a one-paragraph task contract with observation, action, success, and failure fields.</li>
+<li>Start with the smallest simulator, dataset, or wrapper that exposes the task contract faithfully.</li>
+<li>Run one deterministic smoke test and one perturbation test before scaling.</li>
+<li>Save a single result artifact containing configuration, seed, metrics, videos or traces, and failure labels.</li>
+<li>Compare methods only when one script evaluates them on the same task panel.</li>
+</ol>
+<p>When Inverse reinforcement learning fails, avoid labeling the whole method as weak. First assign the failure to perception, state estimation, planning, control, timing, data coverage, or evaluation. Then rerun one controlled perturbation that isolates the suspected cause. This pattern turns a disappointing rollout into a reusable diagnostic asset.</p>
+<section class="agent-checklist-expansion">
+<h2>Agent Checklist Integration</h2>
+<p><strong>Inverse reinforcement learning</strong> should be evaluated through four lenses: the learning objective, the robot interface, the data artifact, and the deployment failure mode. A demonstration is not a self-sufficient label; it is a trajectory sampled from an expert distribution that the learned policy will later disturb.</p>
+<p>For inverse reinforcement learning, the workflow is reward identification: define candidate features, infer reward weights from demonstrations, validate the induced policy, and test whether the recovered reward predicts held-out preferences.</p>
+<div class="callout key-insight">
+<div class="callout-title">Mental Model: Demonstrations As Contracts</div>
+<p>IRL demonstrations are evidence about objectives, not only actions. The contract must state which costs, constraints, preferences, and nuisance correlations are observable enough to infer.</p>
+</div>
+<div class="comparison-table">
+<div class="comparison-table-title">Decision Checklist for Inverse reinforcement learning</div>
+<table>
+<thead><tr><th>Agent Lens</th><th>Question To Answer</th><th>Concrete Evidence</th></tr></thead>
+<tbody>
+<tr><td>Conceptual scope</td><td>What does IRL add beyond behavior cloning, and where does it fit in Part V?</td><td>A definition, a worked example, and a failure case tied to the perception-action loop.</td></tr>
+<tr><td>Code and tools</td><td>Which maintained tool removes boilerplate after the from-scratch baseline?</td><td>LeRobot, robomimic, DAgger, behavior cloning, dataset aggregation evaluated against the same task contract.</td></tr>
+<tr><td>Data and evaluation</td><td>What distribution produced the behavior, and where can it break?</td><td>Train, validation, and stress splits with explicit robot, camera, timing, and license metadata.</td></tr>
+<tr><td>Publication quality</td><td>Can the reader reproduce the claim without hidden context?</td><td>Captions, bibliography cards, cross-links, and a same-artifact audit trail.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout warning">
+<div class="callout-title">Pitfall: Generic Success Claims</div>
+<p>Do not claim that inverse reinforcement learning improves robot learning unless the baseline and the proposed method share the same robot, task split, reset distribution, success metric, and random seed policy. Otherwise the comparison may be measuring dataset difficulty rather than method quality.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Current Research Thread</div>
+<p>For Inverse reinforcement learning, modern imitation systems should be audited as synchronized robot data: images, proprioception, language, actions, timing, operator metadata, and covariate-shift checks.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Application Example</div>
+<p><strong>Who:</strong> A field-robotics researcher inferring navigation preferences from expert driving traces.</p>
+<p><strong>Situation:</strong> The engineer needs to decide whether inverse reinforcement learning is ready for a weekly policy comparison across 120 demonstrations and 30 held-out rollouts.</p>
+<p>Decision: For Inverse reinforcement learning, keep the minimal imitation baseline and compare LeRobot or robomimic only on the same manifest, split, seed policy, and rollout evaluator.</p>
+<p><strong>Result:</strong> The artifact links demonstrations to feature weights, induced trajectories, held-out preference checks, and counterexamples where the reward gives the wrong tradeoff.</p>
+<p><strong>Lesson:</strong> <strong>IRL earns trust when the recovered objective predicts behavior and rejects spurious shortcuts, not merely when it reproduces a trajectory.</strong></p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Before leaving this section, write one sentence that links inverse reinforcement learning to each of these connected chapters: <a href="ch_0118_part-4-reinforcement-learning-for-embodied-agents-module-14-reinforcemen.xhtml">Chapter 14: Reinforcement Learning Refresher</a>, <a href="ch_0177_part-5-learning-from-demonstration-and-robot-data-module-23-teleoperatio.xhtml">Chapter 23: Teleoperation and Data Collection</a>, <a href="ch_0260_part-7-language-vision-and-action-module-34-vision-language-action-model.xhtml">Chapter 34: Vision-Language-Action Models</a>. If any link feels forced, the section needs a sharper boundary or a clearer prerequisite recap.</p>
+</div>
+</section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Inverse reinforcement learning is useful when it makes the perception-action loop more reliable, not when it merely adds a more impressive model name.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 21.4.1</div><p>Design a method-matched experiment for Inverse reinforcement learning. Specify the environment, observation schema, action interface, metric, and one perturbation that targets the section's core assumption.</p></div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): GridWorld MaxEnt IRL with Gymnasium.</strong> Build a small 5x5 grid environment in Gymnasium, record 20 hand-crafted expert trajectories that avoid a penalty cell, and run maximum entropy IRL using the <a href="https://github.com/HumanCompatibleAI/imitation">imitation</a> library to recover the reward weights. The key challenge is verifying that the recovered reward assigns lower returns to shortcut paths that skip the penalty region, which requires implementing the counterfactual ranking check from Code Fragment 3.</p><p><strong>Intermediate (1 to 2 weeks): GAIL on a MuJoCo manipulation task with transfer test.</strong> Collect 50 demonstrations of <code>FetchPush-v2</code> in MuJoCo using a scripted oracle, train a GAIL policy with the imitation library, then re-evaluate the discriminator reward on a variant environment where the cube mass is doubled. The key challenge is separating reward features that transfer (object position relative to goal) from those that do not (joint torque profiles tied to the original mass), which requires logging discriminator scores on both the source and transfer rollouts and comparing them against behavior cloning as a baseline.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Recover a GridWorld reward and break it with a counterfactual</h4>
+<p><strong>Goal.</strong> Run maximum-entropy IRL on a small grid, then test whether the recovered reward survives a trajectory the expert never demonstrated.</p>
+<p><strong>Tools needed.</strong> Python with <code>numpy</code> and <code>gymnasium</code>; optionally the <a href="https://github.com/HumanCompatibleAI/imitation">imitation</a> library for a higher-level API. Budget 15 to 30 minutes.</p>
+<p><strong>Setup.</strong> Build a 5x5 grid with one goal cell (+1 feature) and one lava cell to avoid. Generate roughly 20 expert trajectories from start to goal that route around the lava. Use two features per state: distance-to-goal and lava-proximity. Run the MaxEnt update from the algorithm above until $\hat{\mu}_E$ and $\hat{\mu}_\theta$ agree.</p>
+<p><strong>What to vary.</strong> (1) The number of expert demonstrations, from 3 up to 50. (2) Whether the lava feature is included in the feature map at all. (3) The learning rate $\alpha$.</p>
+<p><strong>What to observe.</strong> Plot the recovered weight on the lava feature as demonstration count grows: with too few demos the weight is near zero (ambiguous). Then construct a shortcut trajectory that cuts through the lava cell and score it under the recovered reward. With the lava feature dropped, the shortcut scores higher than the expert path, exactly the reward-ambiguity failure this section warns about. Confirm that adding the lava feature plus enough demonstrations makes the recovered reward rank the shortcut below the expert.</p>
+</div>
+<div class="whats-next">
+<h2>What's Next</h2>
+<p>This section grounded inverse reinforcement learning in an explicit robot-data contract: observations, actions, demonstrations, evaluation splits, and failure labels. The next reading step is <a href="ch_0168_part-5-learning-from-demonstration-and-robot-data-module-21-imitation-le.xhtml">Section 21.5</a>, where the same contract is carried into the next technique or chapter.</p>
+</div>
+<section class="bibliography">
+<div class="bibliography-title">References &amp; Further Reading</div>
+<div class="bib-category">Foundational Papers</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://arxiv.org/abs/1011.0686">Ross, S., Gordon, G., and Bagnell, D. (2011). A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning. AISTATS.</a></p>
+<p class="bib-annotation">This paper introduces DAgger, the standard fix for covariate shift in sequential imitation learning. Read it when behavior cloning fails after the policy visits states that the demonstrator rarely produced.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://proceedings.neurips.cc/paper/1988/hash/812b4ba287f5ee0bc9d43bbf5bbe87fb-Abstract.html">Pomerleau, D. (1989). ALVINN: An Autonomous Land Vehicle in a Neural Network. NeurIPS.</a></p>
+<p class="bib-annotation">ALVINN is an early example of learning control from demonstrations and sensor inputs. It helps readers see that imitation learning's central distribution problem predates modern deep robot policies.</p>
+<span class="bib-meta">Paper</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://robomimic.github.io/">Mandlekar, A. et al. robomimic: A Framework for Robot Learning from Demonstration.</a></p>
+<p class="bib-annotation">robomimic gives reusable datasets, baselines, and evaluation scripts for demonstration-based manipulation. It is the right tool when a section needs a reproducible behavior cloning or offline imitation baseline.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://github.com/huggingface/lerobot">Hugging Face. LeRobot: Making AI for Robotics More Accessible.</a></p>
+<p class="bib-annotation">LeRobot standardizes models, datasets, and training utilities for real-world robotics in PyTorch. It is especially useful for connecting small demonstration experiments to shared dataset formats on the Hugging Face Hub.</p>
+<span class="bib-meta">Tool</span>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><a href="https://github.com/ARISE-Initiative/robomimic/blob/master/docs/datasets/robomimic_v0.1.md">robomimic v0.1 Datasets Documentation.</a></p>
+<p class="bib-annotation">The dataset documentation shows how demonstrations, task metadata, and evaluation splits are packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.</p>
+<span class="bib-meta">Dataset</span>
+</div>
+ packaged for reproducible robot learning. Practitioners should read it before inventing a custom data layout.
+<span class="bib-meta">Dataset</span>
+</section>
+
+
+
+
+</body>
+</html>

@@ -234,19 +234,19 @@ compiled_rollout = jax.jit(rollout, static_argnums=(3, 4))</code></pre>
 </ol>
 <div class="callout algorithm">
 <h4>Algorithm: JAX-Native Compiled Rollout with MJX/Brax</h4>
-<p><strong>Input:</strong> policy parameters $\theta$, simulator model $\mathcal{M}$, batch size $N$, horizon $T$, learning rate $\alpha$, PRNG root key $k_{\text{train}}$</p>
-<p><strong>Output:</strong> updated parameters $\theta'$, rollout buffer $(s_{1:T}, a_{1:T}, r_{1:T}, d_{1:T})$, per-step throughput estimate</p>
+<p><strong>Input:</strong> policy parameters \(\theta\), simulator model \(\mathcal{M}\), batch size \(N\), horizon \(T\), learning rate \(\alpha\), PRNG root key \(k_{\text{train}}\)</p>
+<p><strong>Output:</strong> updated parameters \(\theta'\), rollout buffer \((s_{1:T}, a_{1:T}, r_{1:T}, d_{1:T})\), per-step throughput estimate</p>
 <ol>
-<li>Fix static shapes: observation dim $d_o$, action dim $d_a$, batch $(T, N)$. Allocate device-resident rollout buffer of size $T \times N \times (d_o + d_a + 2)$ before compilation.</li>
-<li>Split $k_{\text{train}}$ into $N$ per-environment keys $\{k_i\}_{i=1}^{N}$ and a separate evaluation root $k_{\text{eval}}$ so training and evaluation randomness never share a key stream.</li>
-<li>Initialize batched simulator state $s_0 = \text{vmap}(\mathcal{M}.\text{reset})(k_{1:N})$ using <code>jax.vmap</code> over the $N$ environment keys.</li>
-<li>Compile the rollout body as a <code>lax.scan</code> step: carry $= (s_t, \theta, k_t)$; emit $(s_{t+1}, a_t, r_t, d_t)$ where $a_t \sim \pi_\theta(s_t)$ and $s_{t+1} = \text{vmap}(\mathcal{M}.\text{step})(s_t, a_t)$. <span data-agent="03">(Every environment steps forward regardless of $d_t$; the done flag is only applied as a mask afterward, a design choice the warning box later in this section explains in full.)</span></li>
+<li>Fix static shapes: observation dim \(d_o\), action dim \(d_a\), batch \((T, N)\). Allocate device-resident rollout buffer of size \(T \times N \times (d_o + d_a + 2)\) before compilation.</li>
+<li>Split \(k_{\text{train}}\) into \(N\) per-environment keys \(\{k_i\}_{i=1}^{N}\) and a separate evaluation root \(k_{\text{eval}}\) so training and evaluation randomness never share a key stream.</li>
+<li>Initialize batched simulator state \(s_0 = \text{vmap}(\mathcal{M}.\text{reset})(k_{1:N})\) using <code>jax.vmap</code> over the \(N\) environment keys.</li>
+<li>Compile the rollout body as a <code>lax.scan</code> step: carry \(= (s_t, \theta, k_t)\); emit \((s_{t+1}, a_t, r_t, d_t)\) where \(a_t \sim \pi_\theta(s_t)\) and \(s_{t+1} = \text{vmap}(\mathcal{M}.\text{step})(s_t, a_t)\). <span data-agent="03">(Every environment steps forward regardless of \(d_t\); the done flag is only applied as a mask afterward, a design choice the warning box later in this section explains in full.)</span></li>
 <li>Execute <code>jax.jit(lax.scan)(rollout\_body, init\_carry, xs=None, length=T)</code> to collect the full horizon in one device-resident kernel; record compile time separately from step 6 onward.</li>
-<li>Compute advantages $\hat{A}_t = \sum_{l=0}^{T-t} (\gamma \lambda)^l (r_{t+l} + \gamma V_\theta(s_{t+l+1}) - V_\theta(s_{t+l}))$ over the buffer using vectorized array operations, no Python loop.</li>
-<li>Compute the clipped surrogate loss $L^{\text{CLIP}}(\theta) = \mathbb{E}_t[\min(r_t(\theta)\hat{A}_t,\, \text{clip}(r_t(\theta), 1-\varepsilon, 1+\varepsilon)\hat{A}_t)]$ and the value loss $L^V$.</li>
-<li>Update parameters: $\theta' \leftarrow \theta - \alpha \nabla_\theta (L^{\text{CLIP}} + c_1 L^V - c_2 H[\pi_\theta])$, <span data-agent="04">where $H[\pi_\theta]$ is the policy's entropy (a measure of how spread out its action distribution is, used here as a bonus that discourages premature convergence to a single action) and $c_1$, $c_2$ are scalar weights that trade off value-loss accuracy against this exploration bonus</span>, via <code>jax.grad</code> and an <span data-agent="21">Optax (a JAX-native gradient-processing and optimization library) optimizer</span> step.</li>
+<li>Compute advantages \(\hat{A}_t = \sum_{l=0}^{T-t} (\gamma \lambda)^l (r_{t+l} + \gamma V_\theta(s_{t+l+1}) - V_\theta(s_{t+l}))\) over the buffer using vectorized array operations, no Python loop.</li>
+<li>Compute the clipped surrogate loss \(L^{\text{CLIP}}(\theta) = \mathbb{E}_t[\min(r_t(\theta)\hat{A}_t,\, \text{clip}(r_t(\theta), 1-\varepsilon, 1+\varepsilon)\hat{A}_t)]\) and the value loss \(L^V\).</li>
+<li>Update parameters: \(\theta' \leftarrow \theta - \alpha \nabla_\theta (L^{\text{CLIP}} + c_1 L^V - c_2 H[\pi_\theta])\), <span data-agent="04">where \(H[\pi_\theta]\) is the policy's entropy (a measure of how spread out its action distribution is, used here as a bonus that discourages premature convergence to a single action) and \(c_1\), \(c_2\) are scalar weights that trade off value-loss accuracy against this exploration bonus</span>, via <code>jax.grad</code> and an <span data-agent="21">Optax (a JAX-native gradient-processing and optimization library) optimizer</span> step.</li>
 <li>Verify no recompilation occurred: assert that shape and dtype of carry and output slices are identical to those seen at trace time before logging any throughput number.</li>
-<li>Evaluate on a held-out episode batch using $k_{\text{eval}}$ and save compile time, steady-state steps per second, rollout buffer bytes, $\theta'$ checkpoint, and both PRNG roots as one artifact.</li>
+<li>Evaluate on a held-out episode batch using \(k_{\text{eval}}\) and save compile time, steady-state steps per second, rollout buffer bytes, \(\theta'\) checkpoint, and both PRNG roots as one artifact.</li>
 </ol>
 </div>
 

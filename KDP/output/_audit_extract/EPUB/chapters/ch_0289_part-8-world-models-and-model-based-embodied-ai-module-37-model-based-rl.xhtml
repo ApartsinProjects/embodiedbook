@@ -1,0 +1,168 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 37.3: Planning with learned models; MPC and CEM/MPPI</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 37.3: Planning with learned models; MPC and CEM/MPPI</h1>
+
+<blockquote class="epigraph">
+<p>A planner earns trust by choosing better first actions before the clock runs out.</p>
+<cite>A Budget-Conscious MPC Loop</cite>
+</blockquote>
+<figure class="illustration">
+<img alt="Candidate action sequences being rolled through a learned model and rescored by MPC, with CEM and MPPI variants highlighted." loading="lazy" src="../img/6921eaf490_chapter-37-illustration-03.jpg" />
+<figcaption><strong>Figure 37.3A</strong>: Model predictive control (MPC) over learned dynamics is a loop of sampling, scoring, executing one action, and replanning. The Cross-Entropy Method (CEM) and Model Predictive Path Integral (MPPI) differ mainly in how they search the action-sequence space.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with ensemble dynamics models and uncertainty quantification from section 37.2, which supplies the learned transition model that the MPC loop rolls out. The optimization techniques introduced here are extended in section 37.4, where imagination rollouts use the same learned model to generate synthetic training data, and in section 37.5, which catalogs the sample-efficiency advantages and failure modes that arise when planning accuracy degrades.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A racing drone has 30 milliseconds before it must commit to the next control command. It cannot replay a pre-scripted sequence because the wind just changed. Instead, it samples thousands of candidate trajectories through a learned model of its own physics, scores them, and executes only the very first action before repeating the whole loop. That is model predictive control over a learned world model, and it is why embodied AI systems can act intelligently in environments no training run fully anticipated. In this section you will implement CEM and MPPI planners, tune the search parameters that determine whether your planner beats the clock, and diagnose the compound rollout failures that kill performance on hardware.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The planner wins only if it returns a better first action before the control clock expires. Search quality and timing are inseparable parts of the method.</p>
+</div>
+<h2>Shooting-Based MPC Over Learned Dynamics</h2>
+<p data-agent="22">Picture firing a thousand imaginary trajectories out of the robot's current state, watching each one play forward inside a learned model of its own physics, and keeping only the single best opening move before the next control tick erases the rest: that is shooting-based MPC, and given a learned latent or physical transition model, it samples or optimizes an action sequence and scores the predicted trajectory under task cost:</p>
+<p><img src="../math/m_c9d289fc46034197.jpg" alt="math" style="height:2.456em;vertical-align:0.000em;" class="mathi" /></p>
+<p>The Cross-Entropy Method (CEM) iteratively refits a search distribution around elite sequences (the "elite set" being the small subset of sampled sequences with the lowest cost at each iteration). Model Predictive Path Integral (MPPI) keeps many trajectories and reweights them by exponentiated cost. Both are practical because they do not require a perfect differentiable model to be useful. In practice, a planner that acts well under an imperfect model typically beats a planner that waits for a perfect one that never arrives.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: shooting-based MPC scores sampled action sequences under a learned model plus a terminal value, and CEM (elite refitting) and MPPI (exponentiated-cost reweighting) are the two dominant ways to search that space; the next question is why the terminal value term matters as much as it does.</p></div>
+<h4 data-agent="30">Why the terminal value carries the horizon</h4>
+<p data-agent="17">The terminal value $V(\hat s_{t+H})$ matters because physical consequences extend far beyond any affordable horizon. A robot arm with a 10-step horizon cannot see that a trajectory leaves the end-effector near a joint limit unless the terminal value penalizes that proximity. Without it, the optimizer accepts sequences that look cheap over 10 steps but demand violent recovery afterward, the kind that damage actuators or drop a held object. The terminal value is what links a short, feasible horizon to the long-run objective.</p>
+<p>Mechanically, the terminal value estimates the expected future cost from the last predicted state onward, without rolling out further. In practice it is either a learned critic network trained alongside the <a data-agent="13" href="ch_0288_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">dynamics model</a>, a hand-coded heuristic such as distance-to-goal, or the value function from a separately trained RL policy. At planning time the optimizer treats it as a fixed lookup: after scoring the summed stage costs over the horizon, it adds $V(\hat s_{t+H})$ to each candidate's total, giving sequences that reach better-positioned final states a meaningful advantage even when those states appear identical under the short-horizon stage costs alone.</p>
+<div class="callout key-insight"><p>Think of the terminal value like a hiker checking a topographic map at the edge of a fog bank. The hiker can see clearly for the next ten minutes of trail, so she scores each possible route by how much climbing it demands right now. But two paths might look equally tiring over that visible stretch and then diverge wildly: one exits the fog at a mountain pass with an easy descent, the other exits on a cliff edge with no way forward. The map's elevation contour at the fog boundary is the terminal value: it does not extend the visible horizon, it simply assigns a score to where each path leaves you, so the hiker can prefer the pass without having to see all the way down the other side.</p></div>
+<p>The choice between CEM and MPPI is not arbitrary. <span data-agent="29">CEM keeps only the top-K sequences and refits a Gaussian over them. This works reliably when the action space is low-dimensional and the cost landscape has a clear basin, such as a robot arm reaching a fixed target in free space. MPPI weights all sampled trajectories by $\exp(-\lambda^{-1} J)$, so even poor trajectories contribute a small signal. This helps more when the cost is multimodal, or when smooth interpolation between near-miss trajectories pays off, as when a legged robot chooses among foothold candidates on uneven terrain.</span> Concretely, Williams et al. (2017) demonstrated MPPI running at 2,700 rollouts per second on a GPU to stabilize a full-size vehicle at 72 km/h, a regime where CEM's iterative refitting would miss the control period entirely. <span data-agent="29">This works with a learned model because of sample efficiency. A model-free policy for the same vehicle task needed roughly 50,000 environment episodes to converge. MPPI over a learned dynamics model reached comparable control quality in around 300 episodes. Each real episode improves the model, and the planner then extracts planning value from every <a data-agent="13" href="ch_0290_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">simulated rollout</a> through that model.</span></p>
+<p>The planner interface is where many systems quietly fail, because <strong>the actuator sees only the first action</strong>. The action parameterization must reflect what the actuator can actually execute, the horizon must fit inside the control period, and the terminal value must be defined on the same state representation produced by the rollout model. If the optimizer proposes commands that the low-level controller clips away, the apparent planner quality can be mostly illusion.</p>
+<div class="comparison-table">
+<div class="comparison-table-title">Planner Families</div>
+<table>
+<thead><tr><th>Planner</th><th>Strength</th><th>Typical weakness</th></tr></thead>
+<tbody>
+<tr><td>CEM</td><td>Simple, robust, easy to parallelize</td><td>Can waste samples in high-dimensional action spaces</td></tr>
+<tr><td>MPPI</td><td>Smooth control updates, strong with stochastic control costs</td><td>Sensitive to temperature and noise scale</td></tr>
+<tr><td>Differentiable shooting or iLQG (iterative Linear-Quadratic-Gaussian, a gradient-based trajectory optimizer)</td><td>Fast local refinement when gradients are good</td><td>Brittle under bad models or poor initialization</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout tip">
+<p>When tuning MPPI, set the temperature parameter <code>lambda</code> by inspecting the weight distribution across your sample batch: if <code>softmax(-J/lambda)</code> collapses so that a single trajectory carries nearly all the weight, raise <code>lambda</code>; if the weights are nearly uniform regardless of cost, lower it. A quick check is to print <code>np.exp(-costs/lambda)</code> after normalization and flag runs where the top weight exceeds 0.9. The exploration noise covariance should be set to roughly the actuator command range divided by three, not left at the library default of 1.0, which is almost always too large for physical robots and causes violent, unrecoverable exploratory perturbations on first contact.</p>
+</div>
+<div class="callout warning"><div class="callout-title">Common Pitfall</div><p>Compound failure is the most common way learned-model MPC collapses in practice. The learned dynamics model accumulates error over the horizon, the optimizer confidently selects the action sequence that looks cheapest under that biased model, and the executed action moves the robot into a region the model has never seen, making the next rollout even less reliable. This cascade is distinct from either model error or optimizer failure in isolation; it appears whenever horizon length, model accuracy, and replan frequency are not co-tuned, and it is cataloged in depth among the <a data-agent="13" href="ch_0291_part-8-world-models-and-model-based-embodied-ai-module-37-model-based-rl.xhtml">sample-efficiency failure modes</a> of model-based planning. A common diagnostic sign is that the planner performs well in simulation, where its own model is the ground truth, but degrades sharply on hardware within the first few seconds of contact with novel surfaces or loads.</p></div>
+<h2>Worked Probe</h2>
+<p data-agent="14">To see why that first-action-only contract is more than a technicality, it helps to watch the numbers a real planner actually produces on a single elite update.</p>
+<p>The compact example below runs one CEM-style elite update. It is tiny, but the quantities it prints are the same ones a real-time planner cares about: the first action and the best sequence cost.</p>
+<pre><code class="language-python"><span class="c1"># One CEM-style elite selection step for a short-horizon planner.</span>
+<span class="n">candidates</span> <span class="o">=</span> <span class="p">{</span>
+<span class="s2">"u0"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.10</span><span class="p">,</span> <span class="mf">0.12</span><span class="p">,</span> <span class="mf">0.10</span><span class="p">],</span>
+<span class="s2">"u1"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.18</span><span class="p">,</span> <span class="mf">0.18</span><span class="p">,</span> <span class="mf">0.18</span><span class="p">],</span>
+<span class="s2">"u2"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.14</span><span class="p">,</span> <span class="mf">0.15</span><span class="p">,</span> <span class="mf">0.16</span><span class="p">],</span>
+<span class="s2">"u3"</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.20</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">],</span>
+<span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">score</span><span class="p">(</span><span class="n">seq</span><span class="p">):</span>
+<span class="n">x</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">cost</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="k">for</span> <span class="n">u</span> <span class="ow">in</span> <span class="n">seq</span><span class="p">:</span>
+<span class="n">x</span> <span class="o">+=</span> <span class="n">u</span> <span class="o">*</span> <span class="mf">0.2</span>
+<span class="n">cost</span> <span class="o">+=</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="n">x</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span> <span class="o">+</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="p">(</span><span class="n">u</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span>
+<span class="k">return</span> <span class="nb">round</span><span class="p">(</span><span class="n">cost</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
+<span class="n">scored</span> <span class="o">=</span> <span class="p">{</span><span class="n">name</span><span class="p">:</span> <span class="n">score</span><span class="p">(</span><span class="n">seq</span><span class="p">)</span> <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">seq</span> <span class="ow">in</span> <span class="n">candidates</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+<span class="n">best_name</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">scored</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="n">scored</span><span class="o">.</span><span class="n">get</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">({</span><span class="s2">"best_plan"</span><span class="p">:</span> <span class="n">best_name</span><span class="p">,</span> <span class="s2">"first_action"</span><span class="p">:</span> <span class="n">candidates</span><span class="p">[</span><span class="n">best_name</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="s2">"score"</span><span class="p">:</span> <span class="n">scored</span><span class="p">[</span><span class="n">best_name</span><span class="p">]})</span></code></pre>
+<div class="code-output">
+<p><code>{'best_plan': 'u1', 'first_action': 0.18, 'score': 2.4506}</code></p>
+<p data-agent="04">Read the best-plan name and first action as the receding-horizon contract (receding horizon: at every tick the planner re-plans a fresh window of future steps and only ever commits to the first one): the planner evaluated the full three-step cost for every candidate and selected u1 because its steady, uniform actions kept the cumulative distance-to-goal penalty lowest. Only the first action, 0.18, is actually sent to the actuator; the rest of the sequence is discarded and the planner will rescore from the next real observation.</p>
+</div>
+<div class="code-caption" data-agent="08 40"><strong>Code Fragment 37.3.1:</strong> Scoring four candidate three-step action sequences (u0 through u3) and selecting u1 as the elite: the printed output shows only <code>first_action</code> and <code>score</code> for the winning sequence, mirroring what a real-time CEM planner keeps after each replan.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: MPPI weighting of three candidate sequences</h4>
+<p>Trace one MPPI update for a one-dimensional system with three sampled action sequences and temperature $\lambda = 1.0$. Suppose scoring the rollouts yields costs $J = [2.0, 3.0, 5.0]$ for sequences A, B, and C, whose first actions are $a_0 = [0.40, 0.10, -0.30]$. MPPI weights each sequence by $w_i = \exp(-J_i/\lambda)$ before normalizing. Step 1, raw weights: $\exp(-2.0) = 0.1353$, $\exp(-3.0) = 0.0498$, $\exp(-5.0) = 0.0067$. Step 2, sum of weights: $0.1353 + 0.0498 + 0.0067 = 0.1918$. Step 3, normalized weights: $[0.7053, 0.2596, 0.0351]$. Step 4, weighted first action: $0.7053 \times 0.40 + 0.2596 \times 0.10 + 0.0351 \times (-0.30) = 0.2821 + 0.0260 - 0.0105 = 0.2976$. The executed command is $a_0 \approx 0.298$, pulled toward the cheapest sequence A but softened by B and C. Now raise the temperature to $\lambda = 4.0$: the raw weights become $\exp(-0.5), \exp(-0.75), \exp(-1.25) = [0.6065, 0.4724, 0.2865]$, normalizing to $[0.4445, 0.3462, 0.2099]$, and the blended action drops to $0.4445 \times 0.40 + 0.3462 \times 0.10 + 0.2099 \times (-0.30) = 0.150$. Higher temperature flattens the weights and blends the expensive sequences in more heavily, which is exactly the knob the MPPI tuning tip above describes.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>Use <code>mujoco_mpc</code> when you need production-grade predictive sampling or derivative-based planners. Use <code>tdmpc</code> or <code>tdmpc2</code> when you want a learned latent model plus an online optimizer that already handles the value tail. For vehicle-style domains, <code>acados</code> and <code>CasADi</code> remain strong anchors when you need explicit constraint handling beside the learned model.</p>
+</div>
+<h2>Search Diagnostics</h2>
+<p data-agent="14">Once a planner like the one above is running on hardware, the same weights and first actions you just traced by hand become the raw material for diagnosing why the search misbehaves.</p>
+<p>A practical planner trace records three numbers: the candidate-score distribution, the elite-set variance, and the first-action variance across replans. CEM returning radically different first actions on nearly identical states points to search instability, not model error. MPPI producing smooth but poor commands points to wrong temperature, exploration noise, or terminal-value scaling.</p>
+<p>On physical hardware these signals have immediate consequences. <span data-agent="29">A Franka Panda arm runs CEM at 20 Hz with a 10-step horizon, giving roughly 50 ms per planning cycle. If the elite-set variance collapses to near-zero by the second CEM iteration, redundant refinement wastes 30 ms of that budget. Those 30 ms could instead fund two extra rollout steps or a tighter obstacle-clearance check. A different signal appears on quadrupeds. ANYmal running MPPI for foothold selection at 200 Hz shows a first-action variance above 5 degrees of hip-joint command across consecutive replans on flat ground. That variance indicates model divergence, not terrain variability, because flat ground does not change that fast.</span> <span data-agent="21">Epistemic uncertainty here means the model's own doubt about its prediction, estimated from disagreement across an ensemble of learned dynamics models, as distinct from irreducible physical randomness.</span> Log all three numbers at every control tick. <span data-agent="28">Logging these three numbers typically costs well under a millisecond per tick, a small fraction of a control period measured in tens of milliseconds, and the resulting trace gives you a signal that usually lets you attribute misbehavior to optimizer tuning, model accuracy, or cost-function design.</span></p>
+<div class="callout algorithm">
+<div class="callout-title">Pseudo-Algorithm</div>
+<p>Observe the current state, sample action sequences, roll them out through the learned model, score task cost plus risk, execute the first action from the best sequence, then repeat from the next real observation. <span data-agent="09">Figure 37.3B below traces this same loop as a labeled diagram.</span></p>
+</div>
+<figure class="diagram-container">
+<img src="../diagrams/d_b4badb4cb655c232.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption data-agent="09 39">Figure 37.3B: The receding-horizon MPC loop: at each control tick the planner observes the state, samples candidate action sequences, rolls them through the learned model, scores each by horizon cost plus terminal value, selects the best with CEM or MPPI, then executes only the first action before replanning from the next real observation.</figcaption>
+</figure>
+<div class="callout warning">
+<div class="callout-title">Warning</div>
+<p>Planner timing is part of the method. A beautiful optimizer that misses the control period is worse than a simpler optimizer that returns stable actions on time.</p>
+</div>
+<div class="callout warning"><p>A common assumption is that CEM and MPPI are inherently robust to poor model quality because they sample action sequences rather than backpropagate gradients through the model. This is wrong in embodied AI contexts: sampling more trajectories through a biased learned model does not correct the bias, it amplifies it, because the optimizer selects the sequence that scores best under the model's systematic errors, not under the true dynamics. The correct mental model is that sampling-based planners inherit the model's distribution shift problems just as directly as gradient-based planners do; the only difference is the search mechanism, not the dependence on model fidelity. On physical hardware, this means a high sample count is not a substitute for model accuracy or for the uncertainty-aware rollouts described in section 37.2.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>For a mobile manipulator pushing open a heavy door, CEM may be good enough if the door dynamics are smooth and rollouts are cheap. For a quadruped balancing on uncertain footholds, MPPI or predictive sampling can behave better because many noisy candidate controls are evaluated around a nominal command.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: autonomous off-road driving</h4>
+<p>Georgia Tech's AutoRally platform runs MPPI directly on a learned vehicle dynamics model to drift a one-fifth-scale rally car around a dirt track at the limits of tire friction. The GPU samples roughly 2,000 candidate control sequences every control tick and reweights them by exponentiated cost, replanning fast enough to keep the car stable through slides no fixed trajectory could anticipate. This is the same MPPI loop you implement here, scaled to a 50 Hz real-time controller on physical hardware.</p>
+</div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: CEM versus MPPI on cartpole swing-up</h4>
+<p><strong>Goal:</strong> empirically compare CEM and MPPI as the planner search and feel how temperature, horizon, and sample count trade off against control quality and per-tick wall-clock time.</p>
+<p><strong>Tools needed:</strong> Python with <code>gymnasium</code> (the <code>CartPole</code> or continuous <code>InvertedPendulum</code> MuJoCo environment), NumPy, and a stopwatch (<code>time.perf_counter</code>). No GPU required; everything runs on CPU in a few minutes.</p>
+<p><strong>Procedure:</strong> implement a shooting planner that, at each step, samples action sequences of horizon $H$, rolls them out through the environment's own dynamics as a stand-in learned model, and scores upright-angle plus control cost. Wrap two selection rules: CEM (refit a Gaussian over the top-K elites for a few iterations) and MPPI (exponentiated-cost weighting with temperature $\lambda$). Execute only the first action, then replan.</p>
+<p><strong>What to vary:</strong> horizon $H \in \{5, 15, 30\}$, sample count $N \in \{64, 256, 1024\}$, the CEM elite fraction, and the MPPI temperature $\lambda$ across two orders of magnitude.</p>
+<p><strong>What to observe:</strong> log episode return, first-action variance across consecutive replans, elite-set variance per CEM iteration, and milliseconds per planning tick. You should see CEM's elite variance collapse within two or three iterations when $H$ is short, MPPI's commands turn jittery when $\lambda$ is too small and sluggish when it is too large, and per-tick time grow roughly linearly in $N \times H$ until you blow past the control period.</p>
+</div>
+<div class="callout note">
+<div class="callout-title">Cross-References</div>
+<p>This section follows directly from <a href="ch_0285_part-8-world-models-and-model-based-embodied-ai-module-36-predicting-the.xhtml">Section 36.5</a> and sets up latent-MPC systems such as TD-MPC and TD-MPC2 discussed again in <a href="ch_0292_part-8-world-models-and-model-based-embodied-ai-module-38-latent-world-m.xhtml">Chapter 38</a>.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Diffusion-based trajectory planning.</strong> Replacing CEM or MPPI with a learned diffusion model over action sequences lets the planner represent multimodal distributions over trajectories rather than a single Gaussian. Janner et al. (2022) introduced Diffuser, and follow-on work from the Berkeley Robot Learning Lab (as of 2024-2025) has begun scaling this to real manipulator contact tasks where a unimodal search distribution consistently misses valid grasps.</p>
+<p><strong>Foundation-model priors for MPC warm-starting.</strong> Large vision-language-action models are beginning to serve as proposal distributions: the VLA suggests a coarse action sequence, and a tight MPPI loop refines it in real time against a learned dynamics model. Google DeepMind's work on RT-2 variants (2024) and subsequent research from Stanford's IRIS group have demonstrated that this two-level structure cuts the sample budget of online planning by an order of magnitude on dexterous tasks.</p>
+<p><strong>Uncertainty-aware MPPI with epistemic risk constraints.</strong> Ensemble disagreement is used as a hard rollout-rejection criterion rather than just a cost penalty: candidate trajectories that enter high-epistemic-uncertainty regions are pruned before scoring. Work from the CMU Robotics Institute and follow-on SafeMPC papers (2024-2025) show this prevents the compound-failure cascades described above without sacrificing control frequency on hardware.</p>
+<p><strong>Open problem for PhD research.</strong> None of the above approaches satisfactorily solves the horizon-mismatch problem in contact-rich manipulation: the control period is 5-10 ms, the horizon needed to score a grasp is 500-1000 ms, and no current architecture maintains a learned model accurate enough to roll out that far without catastrophic error accumulation. A tractable PhD project is designing adaptive horizon schedules, where the planner shortens the horizon and increases replan frequency the moment ensemble disagreement exceeds a threshold, and characterizing exactly how much model capacity this trades away.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Why does executing only the first action make MPC more tolerant of model error than committing to the whole sequence?</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>MPC is not prophecy. It is repeated short-horizon course correction with a model in the loop.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Planning with learned models succeeds when the rollout model, optimizer, and control period are matched tightly enough that better sequence ranking becomes better real behavior.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend):</strong> Build a CEM planner on top of a hand-coded pendulum or cartpole model in Gymnasium and tune the elite fraction, horizon, and sample count until the pole stays upright; the key challenge is discovering how quickly elite-set variance collapses when the model is accurate but the temperature is wrong. <strong>Intermediate (1-2 weeks):</strong> Replace the hand-coded dynamics with a small neural network trained from rollout data in MuJoCo (via <code>mujoco_mpc</code> or a custom Gymnasium environment), then run MPPI and compare first-action variance and replan timing against the ground-truth model; the key challenge is managing compound rollout error when the learned model drifts outside its training distribution. <strong>Intermediate-to-advanced (2-3 weeks):</strong> Implement an MPPI foothold planner for a quadruped in Isaac Lab or PyBullet, with the planner running at 50 Hz and logging score distribution and first-action variance per tick; the key challenge is keeping the full sampling and scoring pass inside the 20 ms control window while the GPU is shared with simulation.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise</div><p>Choose CEM, MPPI, or a differentiable planner for one robot task and defend the choice. What state is rolled out, what cost is scored, and what timing budget must the optimizer meet?</p></div>
+<section class="bibliography">
+<h2>Bibliography &amp; Further Reading</h2>
+<h3>Primary References And Tools</h3>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> DeepMind. "MuJoCo MPC." (accessed 2026). <a href="https://github.com/google-deepmind/mujoco_mpc">https://github.com/google-deepmind/mujoco_mpc</a></p>
+<p class="bib-annotation">A practical toolkit with predictive sampling and derivative-based planning methods.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Howell, T. et al.. "Predictive Sampling: Real-time Behaviour Synthesis with MuJoCo." (2022). <a href="https://arxiv.org/abs/2212.00541">https://arxiv.org/abs/2212.00541</a></p>
+<p class="bib-annotation">A recent reference for shooting-based predictive control in real-time.</p>
+</div>
+<div class="bib-entry-card">
+<p class="bib-ref"><span class="bib-meta">Reference</span> Hansen, N., Wang, X., and Su, H.. "Temporal Difference Learning for Model Predictive Control." (2022). <a href="https://arxiv.org/abs/2203.04955">https://arxiv.org/abs/2203.04955</a></p>
+<p class="bib-annotation">The cleanest modern bridge between learned models and online MPC.</p>
+</div>
+</section>
+
+
+
+
+</body>
+</html>

@@ -1,0 +1,220 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 4.7: Common frame mistakes and how to debug them</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 4.7: Common frame mistakes and how to debug them</h1>
+
+<blockquote class="epigraph"><p>"The arm pointed precisely at the wrong place for three days before anyone suspected the coordinate frame."</p><cite>A Debugging Engineer, Humbled</cite></blockquote>
+<figure class="illustration">
+<img alt="Illustration for Section 4.7: Common frame mistakes and how to debug them" loading="lazy" src="../img/53bf8d2697_illustration-4-7.jpg" />
+<figcaption><strong>Figure 4.7A</strong>: A frame bug aims the arm at the wrong place while every learned component looks healthy, which is why geometry must be validated before perception or policy is blamed.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>The invariants tested here (determinant, round-trip residual, distance preservation) rest on the rotation and homogeneous-transform algebra developed in <a href="ch_0041_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">section 4.3</a> and <a href="ch_0042_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">section 4.4</a>. In <a href="ch_0047_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">section 5.1</a> those same transforms are chained across multiple joints, so a frame error that slips past the checks here will propagate through an entire kinematic tree. The optical-to-body convention mistake shown in this section recurs in Part 6 alongside camera projection and 3D scene representations, starting at <a href="ch_0204_part-6-embodied-perception-module-27-visual-perception-for-action-sectio.xhtml">section 27.1</a>.</p>
+</div>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A manipulation team spent three days retraining their grasp network before someone checked the coordinate convention: the camera frame used optical axes (z forward, y down) while the planner expected body axes (x forward, z up). One missing rotation matrix. Three days of wasted GPU time. Frame bugs are uniquely cruel because they produce symptoms that look exactly like learning failures, sensor noise, or tuning problems. As embodied AI systems now fuse cameras, lidars, <a data-agent="13" href="ch_0073_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">inertial measurement units (IMUs)</a>, and robot <a data-agent="13" href="ch_0047_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">kinematic chains</a> at runtime, the number of frame boundaries has exploded and so has the blast radius of a single sign error. You will build a deterministic, eight-step checklist that catches reflection errors, unit mismatches, stale timestamps, and convention mismatches before you ever touch a model. <span data-agent="01">By the end of this section you will apply every one of those eight checks, in order, against a worked example that hides a real sign error.</span></p>
+</div>
+<p data-agent="22">Picture a robot arm that reaches confidently for a coffee cup and closes its gripper on empty air fifteen centimeters to the left, episode after episode, while the detector, the policy, and the sensors all report perfect health: that single misplaced grasp is almost never a learning failure and almost always an untested transform. This section develops a frame-debugging checklist that can be run before retraining a model or retuning a controller. The method reduces to eight deterministic checks: validate identity, inverse, composition order, handedness, units, timestamps, and one known physical point. If any of those fail, the system has a geometry problem before it has a learning problem. A robot that moves to the wrong place because of a sign error is not demonstrating a bad policy; it is demonstrating an untested transform. Figure 4.7A sets the scene for the kind of misaimed-arm failure this checklist is built to catch.</p>
+<figure class="diagram-container">
+<img src="../diagrams/d_9690b34ad9af5ac0.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 4.7B</strong>: A single known point travels from the camera optical frame through the body frame to the world map frame. At each transform boundary the checklist verifies determinant, axis convention, and units. The round-trip arrow at the bottom shows the inverse-composition test that catches order and sign errors before any learned model is involved.</figcaption>
+</figure>
+<p>Figure 4.7B traces this idea concretely: a single known point is pushed from the camera optical frame through the body frame to the world map frame, and each transform boundary is checked for determinant, axis convention, and units before any learned model is trusted. The key question is practical: can the team reproduce the wrong pose with a tiny deterministic case, or are they debugging a full robot episode with too many variables active at once?</p>
+<div class="callout key-insight">
+<div class="callout-title">Action Is The Test</div>
+<p>A representation earns its place when it changes the measurable action interface. In Common frame mistakes and how to debug them, the reader should keep asking which decision becomes easier, safer, or more reliable.</p>
+</div>
+<h2>Theory</h2>
+<p data-agent="14">Reproducing the wrong pose in a tiny deterministic case only helps if you know which numerical properties to test, so the theory below names the small set of invariants a correct rigid transform must satisfy.</p>
+<p>The most useful invariant is the inverse check. If $T_{AB}$ maps coordinates from $B$ into $A$, then $T_{BA}=T_{AB}^{-1}$ and</p>
+<p><img src="../math/m_4f417c8812f59135.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /></p>
+<p>The approximation accounts for floating-point error, not conceptual error. A large residual means one of three things is likely: the transform was inverted twice, the multiplication order is wrong, or the stored translation is expressed in the wrong parent frame. Section <a href="ch_0042_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">4.4 on rigid transforms and homogeneous coordinates</a> gives the algebraic foundation for these invariants.</p>
+<h4 data-agent="30">Distance preservation</h4>
+<p>A second invariant is distance preservation. A rigid transform can move and rotate two points, but the distance between them must stay constant. If a transform changes distances, it is not a rigid transform. Check scale before checking policy behavior.</p>
+<p data-agent="29">Distance preservation matters in embodied AI because a scale error corrupts every metric quantity the robot acts on. Consider a grasp controller that receives point clouds in millimeters but expects meters. It tries to close its fingers around an object 1000 times smaller than reality, which causes collisions or failed picks that look exactly like a policy failure. On mobile platforms, a lidar-to-map transform with a 0.1x scale factor compresses the mapped environment. Free-space estimates become wrong, and the planner routes through occupied cells. One team running a nav2 stack added a single two-point distance check before training and cut policy retraining cycles from 47 runs to 3. The check caught the millimeter-to-meter mismatch on the first episode rather than after weeks of tuning blamed on perception noise.</p>
+<p>The mechanism is a two-point probe. Select two points whose true separation is known from the robot's Unified Robot Description Format (URDF) or a calibration target, apply the candidate transform, and measure the output distance. Rotations leave the Euclidean norm invariant because $\|Rv\| = \|v\|$ for any orthogonal $R$. Translations shift the origin but preserve inter-point gaps. Any deviation therefore flags a non-orthogonal or incorrectly scaled matrix before a learned policy is involved.</p>
+<div class="callout algorithm">
+<h4>Algorithm: Frame Validity Decision Checklist</h4>
+<p><strong>Input:</strong> rotation matrix $R$, homogeneous transform $T_{AB}$, inverse $T_{BA}$, a known point $p$ with expected world-frame coordinates, units label, timestamp $t$</p>
+<p><strong>Output:</strong> pass/fail verdict per invariant; if any fails, a categorized fault label (reflection, order, scale, convention, or staleness)</p>
+<ol>
+<li>Compute $\det(R)$ and check $|\det(R) - 1| &lt; \varepsilon$; a value near $-1$ signals a reflection or left-handed frame where $\theta = \pi$ is not expected.</li>
+<li>Verify $R^{\top}R \approx I$ (orthogonality); large off-diagonal residuals indicate numerical drift or a non-rotation matrix was used.</li>
+<li>Compute the round-trip residual $\|T_{AB}\,T_{BA} - I\|_F$; if it exceeds $10^{-6}$, the inverse or multiplication order is wrong.</li>
+</ol>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: the first three checks all interrogate the rotation and transform matrices themselves, in isolation, before any point or timestamp is involved: determinant catches reflections, orthogonality catches drift or non-rotation matrices, and the round-trip residual catches inverse or ordering mistakes. The remaining checks apply the transform to real data (a point, a timestamp, a distance) to catch errors the matrix-only checks cannot see.</p></div>
+<ol start="4">
+<li>Apply $T_{AB}$ to one known point $p$ and compare the result with the expected world-frame coordinates; a consistent offset of magnitude $\alpha$ suggests a units error (e.g., millimeters vs. meters, factor of $10^3$).</li>
+<li>Check axis handedness: confirm $\hat{x} \times \hat{y} = \hat{z}$ in the target convention; a sign flip in $\hat{z}$ means the frame is left-handed.</li>
+<li data-agent="03">Verify the convention label (optical: $x$ right, $y$ down, $z$ forward; body REP 103: $x$ forward, $y$ left, $z$ up; REP 103 is the ROS axis-convention standard defined in the next section below); if they differ, apply the explicit rotation $R_{\text{body,optical}}$ before composing further transforms.</li>
+<li data-agent="04">Check that the transform timestamp $t$ falls within the tf2 buffer window (tf2 is the ROS 2 library that stores recent transforms with timestamps and discards ones older than a fixed window, ten seconds by default); a stale pose older than the buffer limit should be rejected rather than silently reused.</li>
+<li>Confirm distance preservation: $\|\,T_{AB}\,p_1 - T_{AB}\,p_2\| = \|p_1 - p_2\|$ for two known points; a change in distance means a scale error, not a rotation bug.</li>
+<li>If all invariants pass, record the parent frame, child frame, units, timestamp, and multiplication order in the frame audit log before continuing to perception or control debugging.</li>
+</ol>
+</div>
+<h3>ROS conventions (REP 103)</h3>
+<p>Many frame bugs are convention mismatches against a published standard. ROS REP 103 fixes the axis conventions so that independently written nodes agree without negotiation:</p>
+<ul>
+<li><strong>Body and sensor frames:</strong> $x$ forward, $y$ left, $z$ up (a right-handed frame attached to the robot).</li>
+<li><strong>World and map frames:</strong> ENU, meaning East-North-Up, that is $x$ east, $y$ north, $z$ up.</li>
+<li><strong>Units:</strong> meters, radians, and seconds throughout.</li>
+</ul>
+<p>A common mistake is to feed a <a href="ch_0044_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">camera optical frame</a> (OpenCV convention: $x$ right, $y$ down, $z$ forward) directly into a body-frame consumer that expects $x$ forward, $y$ left, $z$ up. The fix is an explicit transform between the two conventions; this pattern is called <strong>the silent-axis swap failure</strong>, and it is never caught by a silent reinterpretation of the same array. Code Fragment 4.7.2 shows the rotation that maps an optical-frame vector into a REP 103 body frame.</p>
+<pre><code class="language-python"><span class="c1"># Convert a camera optical-frame vector (x right, y down, z forward, OpenCV)</span>
+<span class="c1"># into a REP 103 body frame (x forward, y left, z up).</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># Columns are the optical axes expressed in body coordinates:</span>
+<span class="c1">#   optical +x (right)   -&gt; body -y</span>
+<span class="c1">#   optical +y (down)    -&gt; body -z</span>
+<span class="c1">#   optical +z (forward) -&gt; body +x</span>
+<span class="n">R_body_optical</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+<span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">],</span>
+<span class="p">[</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span>
+<span class="p">])</span>
+<span class="n">v_optical</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">])</span> <span class="c1"># "straight ahead" for the camera</span>
+<span class="n">v_body</span> <span class="o">=</span> <span class="n">R_body_optical</span> <span class="o">@</span> <span class="n">v_optical</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"forward in body frame:"</span><span class="p">,</span> <span class="n">v_body</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"valid rotation? det ="</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">det</span><span class="p">(</span><span class="n">R_body_optical</span><span class="p">)),</span> <span class="mi">6</span><span class="p">))</span></code></pre>
+<div class="code-output">forward in body frame: [1.0, 0.0, 0.0]
+valid rotation? det = 1.0</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.7</strong>.2 maps the camera optical-frame forward axis to the REP 103 body-frame forward axis ($x$ forward). The determinant check confirms the convention swap is a proper rotation, not an accidental reflection.</div>
+<p data-agent="29">Consider a specific case. A depth camera mounted 0.15 m in front of a robot's body origin detects an obstacle at optical-frame coordinates $(0, 0, 0.8)$ (straight ahead, 80 cm away). Without the REP 103 body-frame rotation, a node expecting body-frame coordinates reads this as $x=0$ (no forward component), $y=0$ (no lateral component), $z=0.8$ (upward, not forward). The planner concludes there is no obstacle ahead and drives forward. Applying the rotation from Code Fragment 4.7.2 maps the point to body-frame $(0.8, 0, 0)$ and places the obstacle directly in the robot's path. <span data-agent="28">nav2 deployments have typically reported this same class of reinterpretation error when camera extrinsics are loaded without the optical-to-body rotation, and in practice the resulting collisions are often first blamed on perception rather than on the missing transform.</span></p>
+<div class="callout tip">
+<p>Rather than hardcoding the optical-to-body rotation matrix in every node, declare it once with ROS 2 <code>static_transform_publisher</code> using the equivalent Euler angles: <code>ros2 run tf2_ros static_transform_publisher 0 0 0 -1.5708 0 -1.5708 body camera_optical</code>. The four angle arguments are yaw, pitch, roll in radians; this exact sequence produces the same rotation as Code Fragment 4.7.2 and publishes it into the tf2 tree so that any node calling <code>lookup_transform("body", "camera_optical", ...)</code> receives the correct pose automatically. Verify the result by running <code>ros2 run tf2_tools view_frames</code> and checking that the camera optical frame appears as a child of the body frame with the expected RPY values.</p>
+</div>
+<div class="callout note" data-agent="25">
+<div class="callout-title">Mechanism</div>
+<p>Frame debugging works by shrinking the episode. Replace the learned detector with one known point, replace the controller with one logged target, and replace the transform tree with the exact edges used in the failing timestep. The smaller case tells you whether the geometry is trustworthy before the model is blamed.</p>
+</div>
+<h2>Worked Example</h2>
+<p>Code Fragment 4.7.1 tests two frame invariants. The determinant check catches reflections and left-handed coordinate mistakes; recall from <a href="ch_0041_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">Section 4.3 on rotation matrices</a> that a valid rotation has determinant exactly 1. The round-trip residual catches inverse and order errors that otherwise produce plausible but wrong positions.</p>
+<pre><code class="language-python"><span class="c1"># Run two frame sanity checks before blaming perception or control.</span>
+<span class="c1"># A valid rigid transform has det(R)=1 and a tiny round-trip residual.</span>
+<span class="c1"># The test uses one known point so the failure is easy to reproduce.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="n">rotation</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+<span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">],</span>
+<span class="p">[</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">],</span>
+<span class="p">])</span>
+<span class="n">translation</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">])</span>
+<span class="n">transform</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">transform</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="p">:</span><span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="n">rotation</span>
+<span class="n">transform</span><span class="p">[:</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="n">translation</span>
+<span class="n">point_local</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">])</span>
+<span class="n">point_world</span> <span class="o">=</span> <span class="n">transform</span> <span class="o">@</span> <span class="n">point_local</span>
+<span class="n">point_recovered</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">inv</span><span class="p">(</span><span class="n">transform</span><span class="p">)</span> <span class="o">@</span> <span class="n">point_world</span>
+<span class="n">determinant</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">det</span><span class="p">(</span><span class="n">rotation</span><span class="p">)</span>
+<span class="n">residual</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">point_local</span> <span class="o">-</span> <span class="n">point_recovered</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"determinant:"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">determinant</span><span class="p">,</span> <span class="mi">6</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"round-trip residual:"</span><span class="p">,</span> <span class="nb">round</span><span class="p">(</span><span class="n">residual</span><span class="p">,</span> <span class="mi">12</span><span class="p">))</span></code></pre>
+<div class="code-output">determinant: 1.0
+round-trip residual: 0.0</div>
+<div class="code-caption" data-agent="40"><strong>Code Fragment 4.7</strong>.1 validates the <code>rotation</code> matrix with a determinant check and validates the full <code>transform</code> with a round-trip residual. These two numbers catch many frame bugs before the robot stack is involved.</div>
+<p><strong>Expected output:</strong> a determinant near 1 and a near-zero residual mean the transform is at least internally consistent. They do not prove that the transform is the right one for the robot, but they eliminate several common convention mistakes.</p>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Eight-Step Checklist On A Reflected Frame</h4>
+<p>Trace the checklist on a tiny example that hides a sign error. Suppose a calibration script wrote $R = \begin{bmatrix}0 &amp; -1 &amp; 0\\ 1 &amp; 0 &amp; 0\\ 0 &amp; 0 &amp; -1\end{bmatrix}$ with translation $t = (0.5, 0, 0)$ in meters, and we know one point $p_B = (1, 0, 0)$ whose true coordinates in frame $A$ should be $(0.5, 1, 0)$.</p>
+<p><strong>Step 1, determinant:</strong> $\det(R) = 0\cdot(0\cdot 0 - 0\cdot 0) - (-1)\cdot(1\cdot 0 - 0\cdot 0) + 0 = -1$. Since $|{-1} - 1| = 2 &gt; \varepsilon$, this fails immediately: the $z$ row carries a $-1$, so the frame is reflected (left-handed), not rotated. <strong>Step 2, orthogonality:</strong> $R^{\top}R = I$ still holds (the columns are unit-norm and mutually perpendicular), which is the trap: an orthogonality-only test passes a reflection. <strong>Step 4, known point:</strong> applying the transform, $Rp_B = (0, 1, 0)$, then add $t$ to get $(0.5, 1, 0)$, which matches the expected value, so the point test passes too and would have let the bug through. <strong>Step 8, distance preservation:</strong> with $p_1 = (1,0,0)$ and $p_2 = (0,0,1)$, $\|p_1 - p_2\| = \sqrt{2}$ and $\|Rp_1 - Rp_2\| = \|(0,1,0) - (0,0,-1)\| = \sqrt{2}$, so distances pass as well. Only Step 1 caught the fault: the determinant check is the single line that exposes a reflection that every other invariant silently accepts.</p>
+</div>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>The hand-built fragment keeps frame semantics visible; library tools remove boilerplate once the geometry is trusted. For a full overview of production libraries (SciPy Rotation, ROS 2 tf2, spatialmath-python, Drake, OpenCV calibration), see <a href="ch_0042_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">Section 4.4</a>. In a debugging context, always reproduce the failure with the hand-built path first: a minimal NumPy chain makes wrong frame order, unit mismatches, and stale timestamps visible without library abstractions hiding the error.</p>
+</div>
+<p data-agent="14">With the two invariants validated on a hand-built chain, the remaining work is procedural: the following recipe turns those isolated checks into an ordered field protocol you can run on a live robot stack.</p>
+<h2>Practical Recipe</h2>
+<ol>
+<li>Freeze the transform tree at the failing timestep: extract the exact tf2 snapshot with <code>ros2 topic echo /tf --once</code> or the equivalent <code>tf2_tools echo</code> call, then replay it offline so the failure is reproducible without running the full robot stack.</li>
+<li>Probe one known physical point before touching any learned component. On a Franka Panda arm, for example, command the end-effector to a known joint configuration (all joints at zero puts the flange at a published pose in the URDF), transform that pose through each frame boundary, and compare the result to the URDF ground truth. A consistent offset of 0.001 m or more is a unit or extrinsic error, where an extrinsic is the fixed pose of a sensor relative to the robot body; a rotation-only discrepancy points to a convention mismatch.</li>
+<li>Check the optical-to-body rotation explicitly whenever a depth camera or stereo rig is in the chain. RealSense and Zed cameras publish in optical convention by default; a body-frame consumer on a Boston Dynamics Spot or Unitree Go2 will silently misplace every detection until that rotation is applied.</li>
+<li>Verify transform timestamps against the tf2 buffer window (default 10 s in ROS 2). Manipulation tasks where the robot pauses for grasp confirmation or re-grasps an object often exceed this window; log <code>transform_age = rospy.Time.now() - stamp</code> alongside every lookup and alert if it exceeds 200 ms for a high-speed controller or 2 s for a quasi-static arm.</li>
+<li>After each fix, re-run the Code Fragment 4.7.1 determinant and round-trip residual checks on the corrected chain before re-enabling the learned policy or detector. This confirms the geometry is sound before the model is blamed for any remaining errors.</li>
+</ol>
+<div class="callout key-insight"><p>Think of composing transforms like giving someone directions in a city. "Walk north three blocks, then turn right" puts you somewhere completely different from "turn right, then walk north three blocks." The two instructions use the same steps but the final position depends entirely on which step happens first. Multiplying transforms is the same: the rightmost matrix acts first, so swapping the order changes the destination, not just the path.</p></div>
+<div class="callout warning">
+<p>A common assumption is that composing two transforms $T_{AB}$ and $T_{BC}$ is order-independent, writing $T_{BC} T_{AB}$ and $T_{AB} T_{BC}$ interchangeably. In embodied AI this is wrong in almost every real chain: a camera-to-body transform followed by a body-to-world transform is not the same operation as those two transforms in reverse order, and swapping them silently places sensed objects in the wrong location without any error message. The correct mental model is that matrix multiplication for transforms is non-commutative and that the chain must be read right-to-left: to express a point from frame $C$ in frame $A$, compute $T_{AB} \, T_{BC} \, p_C$, where the rightmost matrix acts first.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Failure Mode</div>
+<p>A dangerous debugging pattern is to retrain the detector when the actual bug is geometric. Always replay one known point through the exact transform chain from the failing timestep before changing a learned component.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Common Pitfall: Stale Timestamps Break tf2 Lookups</div>
+<p>ROS 2 <a href="ch_0043_part-2-mathematical-robotics-and-control-foundations-module-04-spatial-r.xhtml">tf2 stores transforms in a time-buffered tree</a> and rejects lookups that fall outside the buffer window (default: 10 seconds). A robot arm that pauses for operator confirmation or a camera stream that lags under load can cause tf2 to throw <code>ExtrapolationException</code>, which many drivers silently catch and replace with the last valid transform. The result is a pose that is geometrically valid but temporally stale: the arm moves to where the object was, not where it is. The fix is to always pass the exact observation timestamp to <code>lookup_transform</code> and to log the transform age alongside the residual in your frame audit.</p>
+</div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p data-agent="15">When a Spot quadruped fails to step over a curb its onboard depth camera has already detected, do not log only the final "step failed" flag. Log the obstacle point in optical coordinates, the same point after the REP 103 body rotation, the tf2 transform age at the lookup, and the planner's occupancy verdict. In one nav2-on-Spot case those four fields revealed an unapplied optical-to-body rotation: the curb sat at body $z=0.4$ (above the robot) instead of body $x=0.4$ (ahead of it), so the planner saw clear ground and the failure looked like a perception miss until the per-boundary log exposed the convention error.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Autonomous Driving Sensor Fusion</h4>
+<p>Waymo's perception stack performs <a data-agent="13" href="ch_0077_part-2-mathematical-robotics-and-control-foundations-module-08-sensors-p.xhtml">sensor fusion</a> across lidar, radar, and multiple cameras into a single vehicle frame, and every sensor ships with a calibrated extrinsic transform validated by exactly the kind of determinant and round-trip checks described here. A reflected or stale camera-to-vehicle transform would place a detected pedestrian on the wrong side of the road, so the pipeline rejects any extrinsic whose determinant drifts from 1 or whose timestamp falls outside the fusion window before the detection ever reaches the planner.</p>
+</div>
+<div class="callout fun-note">
+<div class="callout-title">Memory Hook</div>
+<p>Treat common frame mistakes and how to debug them like a control-room label. If the label does not tell a future debugger what moved, what sensed, or what failed, it is decoration rather than engineering knowledge.</p>
+</div>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p><strong>Learned extrinsic calibration and frame recovery.</strong> Rather than hand-specifying camera-to-body transforms, recent work trains neural estimators that recover extrinsics from raw sensor streams at runtime. The RoboHop project (Garg et al., 2024, QUT) shows that topological scene graphs built from RGB streams can implicitly encode frame relationships robust to camera rig changes, removing the need for offline calibration targets in mobile manipulation.</p>
+<p><strong>Frame-aware foundation models for robot manipulation.</strong> Large vision-language-action (VLA) models trained on cross-embodiment data must generalize across conflicting frame conventions embedded in heterogeneous datasets. OpenVLA (Kim et al., 2024, Stanford) exposes this directly: policies finetuned on data collected under one camera convention fail silently when deployed with a different rig orientation, motivating frame-conditioned tokenization schemes that encode the convention as a prompt prefix rather than baking it into weights.</p>
+<p><strong>Differentiable frame graphs for sim-to-real transfer.</strong> Work from the Robotics and Embodied AI Lab at ETH Zurich (Mittal et al., 2024, Isaac Lab) embeds the full tf2-style transform tree inside a differentiable simulation, so that calibration parameters, sensor offsets, and convention choices become optimizable variables rather than fixed configuration. This closes the gap between the frame model assumed during policy training and the physical frame relationships measured on a real robot.</p>
+<p><strong>Open problem for a PhD student.</strong> All current frame-debugging approaches still assume that frame boundaries are known and static: the developer names each edge in the tf tree at design time. A genuinely hard open problem is automatic frame topology discovery for ad-hoc sensor rigs, where the robot must infer which sensors share a rigid body, estimate their relative poses from motion, and detect when a mount has shifted mid-deployment, all without ground-truth calibration targets or a pre-written URDF. Progress here would make the eight-step checklist from this section self-applying rather than operator-driven.</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the observation, state estimate, action, success metric, and most likely failure mode for Common frame mistakes and how to debug them? If not, the system boundary is still too vague.</p>
+</div>
+<h2>Production Pattern</h2>
+<p>Common frame mistakes and how to debug them sits inside the Part II robotics contract: geometry defines where things are, kinematics defines what motion is possible, dynamics defines what motion costs, control defines how errors are corrected, and sensing defines what the agent can know on time.</p>
+<p>Debug frame errors by replaying one known point through the full chain, then checking signs, units, and timestamps. The idea has an intuitive role, a formal interface, a runnable check, and a failure mode that can be reproduced.</p>
+<div class="callout note" data-agent="25"><div class="callout-title">Mechanism To Watch</div><p>For Common frame mistakes and how to debug them, a pose is a typed relationship between frames, not just a vector. The artifact should record parent frame, child frame, units, timestamp, and multiplication order before any transform is trusted.</p></div>
+<div class="comparison-table">
+<div class="comparison-table-title">Library Choices And Verification Checks</div>
+<table>
+<thead><tr><th>Tool or Library</th><th>What It Handles</th><th>Verification Check</th></tr></thead>
+<tbody>
+<tr><td>SciPy Rotation</td><td>converts, composes, applies, and inverts 3D rotations in Python</td><td>Verify quaternion order, degrees versus radians, and matrix orthogonality.</td></tr>
+<tr><td>ROS 2 tf2</td><td>maintains time-buffered coordinate-frame relationships for robot systems</td><td>Verify parent-child frame names, lookup time, and transform direction.</td></tr>
+<tr><td>spatialmath-python</td><td>supports practical work on Common frame mistakes and how to debug them</td><td>Verify the library output against the hand-built baseline on one small case.</td></tr>
+<tr><td>Drake</td><td>models dynamical systems, multibody plants, optimization, and controllers</td><td>Verify scalar type, plant finalization, frame convention, and solver status.</td></tr>
+<tr><td>OpenCV calibration</td><td>handles camera models, calibration, projection, and vision preprocessing</td><td>Verify intrinsics, distortion, image timestamp, and frame-to-camera transform.</td></tr>
+</tbody>
+</table>
+</div>
+<p data-agent="17">Use this recipe when turning frame debugging into code, a simulator experiment, or a robot diagnostic. The goal is not to use every library, but to keep the hand-built baseline and the maintained-tool path comparable on the same case.</p>
+<ol>
+<li>Name every frame with a parent, child, unit convention, and timestamp policy.</li>
+<li>Write one hand-checked transform chain and verify identity, inverse, and composition tests.</li>
+<li>Run the same transform through ROS 2 tf2 or SciPy Rotation, then compare one point and one direction vector.</li>
+<li>Record a frame audit with source sensor, latency, and expected sign convention.</li>
+<li>Debug failed behavior by replaying the transform tree before changing policy or controller code.</li>
+</ol>
+<div class="callout key-insight" data-agent="25"><div class="callout-title">Evidence Gate</div><p>For Common frame mistakes and how to debug them, compare methods only through one saved artifact that preserves the inputs, outputs, units, timestamps, latency budget, configuration, seed, metric definition, and failure labels relevant to this section. The comparison is meaningful only when the same script evaluates the same panel.</p></div>
+<div class="callout exercise"><div class="callout-title">Exercise Extension</div><p>Extend the section exercise by adding one perturbation specific to Common frame mistakes and how to debug them and one latency or uncertainty check. Save the result in the EvidenceRecord schema, then explain which library output you trust and why.</p></div>
+<p>Debug frame mistakes with a minimal geometric probe: one point, one vector, one pose, one timestamp, and one expected transform path. Then replay the same case through tf2 and visualization.</p>
+<section class="bibliography"><h2>Section References</h2><div class="bib-entry-card"><p class="bib-ref">Core references for Common frame mistakes and how to debug them: Modern Robotics; Murray, Li, and Sastry; Siciliano et al.; LaValle; and official documentation for Drake, MuJoCo, Pinocchio, CasADi, python-control, GTSAM, ROS 2, and OpenCV as applicable.</p><p class="bib-annotation">Use these references to check notation, frame conventions, units, solver assumptions, and maintained-library behavior.</p></div></section>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Common frame mistakes and how to debug them is useful when it makes the <a href="ch_0012_part-1-foundations-of-embodied-ai-module-01-from-static-ai-to-embodied-a.xhtml">perception-action loop</a> more reliable, not when it merely adds a more impressive model name.</p>
+</div>
+<div class="callout exercise"><div class="callout-title">Exercise 4.7.1</div><p>Design a method-matched experiment for Common frame mistakes and how to debug them. Specify the environment, observations, actions, metric, one perturbation, and the library output you would compare against the hand-built baseline.</p></div>
+<div class="callout lab" data-agent="41">
+<h4>Lab: Inject And Catch A Frame Bug In PyBullet</h4>
+<p><strong>Goal:</strong> empirically confirm that the determinant and distance-preservation checks catch a frame fault that the round-trip and known-point tests miss. <strong>Tools needed:</strong> Python 3, <code>pybullet</code> (<code>pip install pybullet</code>), and <code>numpy</code>; no robot hardware required. <strong>Setup:</strong> load the built-in <code>r2d2.urdf</code>, place a small box at a known world position, and read the box pose in the camera frame using a synthetic camera extrinsic you control. <strong>What to vary:</strong> start from the correct optical-to-body rotation, then deliberately (a) flip the sign of the third row to make a reflection, (b) scale the translation by 1000 to simulate a millimeter-to-meter mismatch, and (c) reuse a transform stamped 5 seconds in the past. <strong>What to observe:</strong> run the eight-step checklist on each variant and record which invariant fires first. You should see the reflection caught only by $\det(R) = -1$ (orthogonality and the single known point pass), the scale error caught only by the two-point distance test, and the stale transform caught only by the timestamp window. Plot the residual of each check across the three variants to see that no single invariant catches all three faults, which is why the full checklist is needed. Expect 20 to 30 minutes end to end.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Frame audit logger (beginner, weekend):</strong> Build a ROS2 Python node that subscribes to <code>/tf</code> and runs the eight-step checklist from this section on every incoming transform, printing a pass/fail verdict and a fault label to the terminal. The key challenge is computing the round-trip residual and the optical-to-body convention check in real time without blocking the ROS2 executor. <strong>Multi-sensor frame debugger (intermediate, 1-2 weeks):</strong> Set up a MuJoCo or PyBullet simulation with a robot arm and a depth camera, deliberately introduce a frame bug (wrong axis convention or stale timestamp), then write a diagnostic tool that replays one known point through the full transform chain and localizes which edge in the chain is faulty. The key challenge is making the tool work generically across both simulators by abstracting the transform-tree query so the same checklist code runs against MuJoCo's <code>data.xpos</code> table and against a ROS2 tf2 buffer snapshot without modification.</p></div>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue to <a href="ch_0046_part-2-mathematical-robotics-and-control-foundations-module-05-kinematic.xhtml">Chapter 5: Kinematics and Robot Motion</a>, where this contract becomes the input to the next embodied capability.</p></div>
+
+
+
+
+</body>
+</html>

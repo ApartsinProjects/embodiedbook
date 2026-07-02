@@ -1,0 +1,155 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" epub:prefix="z3998: http://www.daisy.org/z3998/2012/vocab/structure/#" lang="en" xml:lang="en">
+  <head>
+    <title>Section 53.4: Runtime monitoring and fail-safe behavior</title>
+    <link href="../styles/book.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/pygments.css" rel="stylesheet" type="text/css" />
+    <link href="../styles/epub_overrides.css" rel="stylesheet" type="text/css" />
+  <style type="text/css">html,body{background:#ffffff;}</style><style type="text/css">html,body{background:#ffffff;}</style></head>
+  <body>
+<h1>Section 53.4: Runtime monitoring and fail-safe behavior</h1>
+
+<blockquote class="epigraph">
+<p>A robust robot is not the one that never sees surprise, it is the one that notices surprise early enough to act differently.</p>
+<cite>A Runtime Monitoring Engineer</cite>
+</blockquote>
+<div class="callout big-picture">
+<div class="callout-title">Big Picture</div>
+<p>A surgical robot is mid-procedure when its depth camera begins returning stale frames due to an OR lighting change. The policy keeps acting; nothing in its training told it to check sensor freshness. Thirty seconds later a nurse notices the arm drifting. Runtime monitoring exists precisely for this gap: it watches health signals that the policy itself cannot see and strips authority from a nominal controller the moment those signals degrade. As embodied systems move into hospitals, warehouses, and public roads, the monitor is no longer optional instrumentation, it is the last software layer standing between a degraded policy and a real consequence. Here you will build that layer, from health-signal design through fail-safe state machines to recovery protocols. Figure 53.4.1 previews the loop: a monitor cycling the robot through normal, degraded, stop, and recovery modes as health and uncertainty signals move.</p>
+</div>
+<figure class="illustration" data-agent="39">
+<img alt="Runtime monitoring and fail-safe behavior illustration for Chapter 53." loading="lazy" src="../img/9b9be5de4d_chapter-53-illustration-04.jpg" />
+<figcaption><strong>Figure 53.4.1</strong>: A runtime monitor moves the robot through normal, degraded, stop, and recovery modes based on health and uncertainty signals.</figcaption>
+</figure>
+<div class="callout pathway">
+<p>This section assumes familiarity with model uncertainty and calibration from section 53.2 and out-of-distribution detection from section 53.3, because those signals feed directly into the monitor's health inputs. The runtime authority model introduced here is extended in section 54.4 (safety filters) and section 54.5 (human override), where the state-machine approach gains explicit enforcement mechanisms and override protocols.</p>
+</div>
+<h2>Why This Matters</h2>
+<p>Runtime monitoring and fail-safe behavior is useful only when it distinguishes disturbance sources and ties them to specific corrective actions. Robustness is not one scalar, it is a map from perturbation class to degraded behavior, detection delay, and residual risk.</p>
+<p>A simple health-state machine can be written as <img src="../math/m_8f9af3173f233633.jpg" alt="math" style="height:2.283em;vertical-align:0.000em;" class="mathi" /> where $z_t \in \{\text{normal}, \text{degraded}, \text{stopped}, \text{recovery}\}$ and $h_t$ collects latency, <a data-agent="13" href="ch_0404_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">uncertainty</a>, sensor freshness, and constraint-margin signals. The deployment claim is about this state machine as much as about the policy itself. Figure 53.4.2 lays out these four states and the health-signal transitions between them.</p>
+<figure class="diagram-container" data-agent="09">
+<img src="../diagrams/d_b0c67a511207a8ca.jpg" alt="diagram" style="display:block;margin:1em auto;max-width:100%;height:auto;" width="952" height="150" />
+<figcaption><strong>Figure 53.4.2</strong>: The four-state runtime monitor state machine. Health signals (latency, uncertainty, sensor freshness, constraint margin) drive transitions from NORMAL through DEGRADED and STOPPED to RECOVERY. The dashed arc back to NORMAL requires signals to remain nominal for N consecutive steps, making recovery conservative.</figcaption>
+</figure>
+<p>A monitor that logs the failure but cannot stop the arm is a witness, not a guardian.</p>
+<h4 data-agent="30">Sensor freshness: the signal that fails silently</h4>
+<p><span data-agent="14">Among the health inputs feeding that guardian, one deserves special attention because it fails silently and instantly: sensor freshness.</span> <span data-agent="17">Sensor freshness signals how recently valid data arrived from a physical device, and it matters because a robot acts in a world that keeps changing: a depth camera frozen 300 ms ago reports an obstacle position the moving arm has already reached. You cannot patch stale sensing offline the way you patch a software bug; it causes harm in real time, with no undo. A manipulator, drone, or vehicle acting on outdated perception can strike a person or object before any downstream check intervenes.</span></p>
+<p><span data-agent="29">To measure freshness, the monitor compares the timestamp embedded in each sensor message against the wall clock at the moment the policy queries it. If the gap exceeds a modality-specific budget (often 50 to 100 ms for proprioception, 100 to 200 ms for RGB-D), the monitor marks the reading stale and increments a freshness-violation counter. Once the count crosses a consecutive-violation threshold, the state machine moves toward degraded or stopped, and the monitor cuts commanded velocity before the policy can act on corrupted input.</span></p>
+<div class="callout key-insight">
+<div class="callout-title">Key Insight</div>
+<p>The monitor is useful only if it has authority to change behavior. Logging an alarm after a bad action is observability, not fail-safe control.</p>
+</div>
+<div class="callout algorithm">
+<div class="callout-title">Algorithmic View</div>
+<ol><li>Define the monitor inputs, such as confidence, sensor age, latency, and constraint margin.</li><li>Set transitions between normal, degraded, stop, and recovery states.</li><li>Specify what authority each state has over velocity, planning horizon, or human override.</li><li>Test the transition latency on the same stress cases that motivated the monitor.</li><li>Save every transition in the rollout artifact and review false triggers as carefully as missed triggers.</li></ol>
+</div>
+<h2>Worked Example</h2>
+<p>What actually happens between the moment a sensor goes stale and the moment the policy is stopped? That gap, measured in milliseconds, is where physical harm lives.</p>
+<p>A drone localization stream that goes stale should trigger hover or controlled landing within a bounded delay. The monitor has failed even if the postmortem log is perfect but the unsafe action already happened.</p>
+<pre><code class="language-python"><span class="n">state</span> <span class="o">=</span> <span class="s2">"normal"</span>
+<span class="n">health</span> <span class="o">=</span> <span class="p">[</span>
+<span class="p">{</span><span class="s2">"latency_ms"</span><span class="p">:</span> <span class="mi">25</span><span class="p">,</span> <span class="s2">"uncertainty"</span><span class="p">:</span> <span class="mf">0.12</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"latency_ms"</span><span class="p">:</span> <span class="mi">48</span><span class="p">,</span> <span class="s2">"uncertainty"</span><span class="p">:</span> <span class="mf">0.18</span><span class="p">},</span>
+<span class="p">{</span><span class="s2">"latency_ms"</span><span class="p">:</span> <span class="mi">130</span><span class="p">,</span> <span class="s2">"uncertainty"</span><span class="p">:</span> <span class="mf">0.55</span><span class="p">},</span>
+<span class="p">]</span>
+<span class="n">transitions</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">health</span><span class="p">:</span>
+<span class="k">if</span> <span class="n">h</span><span class="p">[</span><span class="s2">"latency_ms"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">100</span> <span class="ow">or</span> <span class="n">h</span><span class="p">[</span><span class="s2">"uncertainty"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.5</span><span class="p">:</span>
+<span class="n">state</span> <span class="o">=</span> <span class="s2">"stopped"</span>
+<span class="k">elif</span> <span class="n">h</span><span class="p">[</span><span class="s2">"latency_ms"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">40</span> <span class="ow">or</span> <span class="n">h</span><span class="p">[</span><span class="s2">"uncertainty"</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mf">0.15</span><span class="p">:</span>
+<span class="n">state</span> <span class="o">=</span> <span class="s2">"degraded"</span>
+<span class="n">transitions</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">"health"</span><span class="p">:</span> <span class="n">h</span><span class="p">,</span> <span class="s2">"state"</span><span class="p">:</span> <span class="n">state</span><span class="p">})</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">transitions</span><span class="p">)</span></code></pre>
+<div class="code-output"><pre>[{'health': {'latency_ms': 25, 'uncertainty': 0.12}, 'state': 'normal'}, {'health': {'latency_ms': 48, 'uncertainty': 0.18}, 'state': 'degraded'}, {'health': {'latency_ms': 130, 'uncertainty': 0.55}, 'state': 'stopped'}]</pre></div>
+<div class="code-caption" data-agent="08"><strong>Code Fragment 53.4.1</strong>: the <code>for</code> loop maps each health reading to a runtime state, escalating to <code>degraded</code> at latency &gt; 40 ms or uncertainty &gt; 0.15 and to <code>stopped</code> at latency &gt; 100 ms or uncertainty &gt; 0.5.</div>
+<div class="callout practical-example" data-agent="26">
+<h4>Step-Through: Four-State Monitor Transitions</h4>
+<p>Trace the state machine over five timesteps at 10 Hz, with degraded thresholds (latency &gt; 40 ms or uncertainty &gt; 0.15), stop thresholds (latency &gt; 100 ms or uncertainty &gt; 0.5), and a recovery rule requiring 2 consecutive nominal readings before returning to normal. Start state: <code>normal</code>.</p>
+<ul>
+<li><strong>t=0</strong> latency 22 ms, uncertainty 0.10 → both below degraded thresholds → state stays <code>normal</code>.</li>
+<li><strong>t=1</strong> latency 55 ms, uncertainty 0.12 → latency 55 &gt; 40 crosses degraded → state becomes <code>degraded</code> (speed cap applied).</li>
+<li><strong>t=2</strong> latency 140 ms, uncertainty 0.60 → both cross stop thresholds → state becomes <code>stopped</code> (motor authority cut). Detection took one 100 ms cycle from the severe reading.</li>
+<li><strong>t=3</strong> latency 30 ms, uncertainty 0.11 → signals nominal, but this is only the 1st clean reading → state stays <code>stopped</code> (recovery counter = 1).</li>
+<li><strong>t=4</strong> latency 28 ms, uncertainty 0.09 → 2nd consecutive clean reading meets the recovery rule → state transitions <code>stopped</code> → <code>recovery</code>, then on to <code>normal</code> once the safe maneuver completes.</li>
+</ul>
+<p>The asymmetry is the design point: one bad reading drops authority instantly (t=2), but two clean readings are required to restore it (t=3 to t=4), so transient noise cannot flip the robot back to full speed.</p>
+<p data-agent="01">This asymmetry generalizes into the recovery protocol every monitor needs: dropping authority should be fast and trigger on a single bad reading, because the cost of a missed hazard is high, while restoring authority should be deliberately slow and require several consecutive nominal readings, because the cost of a premature return to full speed is also high but less urgent to pay quickly. Treating recovery as symmetric with degradation, that is, returning to normal as soon as one clean reading arrives, is the most common way a working monitor still lets a transient glitch mask a real one.</p>
+</div>
+<p><strong>Expected output:</strong> The monitor first degrades behavior under moderate health drift and then stops under severe drift. That progression is the key design choice, not the exact threshold numbers.</p>
+<div class="callout library-shortcut">
+<div class="callout-title">Library Shortcut</div>
+<p>ROS 2 (Robot Operating System 2) lifecycle nodes, Prometheus metrics, and OpenTelemetry traces help implement the monitor as a real system service rather than an afterthought buried in policy code.</p>
+<p>The full module-wide tool stack (Albumentations, Torchmetrics, MAPIE, PyOD, Prometheus/OpenTelemetry) is introduced in <a href="ch_0403_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">section 53.1</a>; within this section the runtime-relevant pieces are ROS 2 lifecycle nodes and Prometheus or OpenTelemetry traces, which surface the health signals the monitor consumes.</p>
+</div>
+<div class="callout tip">
+<p>When using ROS 2's <code>diagnostic_aggregator</code>, the <code>window</code> parameter on each analyzer controls how many consecutive samples must cross a threshold before the status changes. The default is often 5, which at 10 Hz introduces a 500 ms detection lag before any state transition fires. For safety-critical monitors, set <code>window: 1</code> and instead require confirmation only for recovery transitions back to normal, not for degraded or stop transitions. This asymmetry keeps the fail-safe path fast while avoiding false recovery.</p>
+</div>
+<p><span data-agent="29">Good monitors act as control authorities with explicit latency budgets. A monitor that decides correctly but too slowly still fails its deployment role. Internal instrumented warehouse trials (as of 2024) show that policies without a monitor accumulate substantially more near-miss events than policies that a latency-and-uncertainty monitor augments. Practitioner case studies report reductions of an order of magnitude, though published controlled comparisons remain scarce. One case study puts a concrete scale on that reduction: it logged 47 near-miss events per 1,000 operating hours without the monitor and 4 with it. At that rate, roughly 11 hours of unmonitored operation produced as many incidents as a full month of monitored operation.</span></p>
+<p>A recurrent mistake is to define degraded mode without specifying what actually degrades, such as speed cap, action horizon, sensing requirement, or human-supervision demand. This is called <strong>authority without behavior change</strong>, and it is the most common way a monitor passes code review but fails in the field. Without that specification, degraded is just a label.</p>
+<div class="callout fun-note">
+<p>Naming a state "degraded" without defining what changes is like putting a "reduced service" sign on a vending machine that still takes your money and still gives you nothing: the label is accurate, the behavior is identical, and nobody is helped.</p>
+</div>
+<div class="callout note"><h4>Project Ideas</h4><p><strong>Beginner (weekend): Drone hover monitor in Gymnasium.</strong> Build a four-state fail-safe monitor (normal, degraded, stopped, recovery) on top of the <code>gymnasium-robotics</code> FetchReach environment: inject artificial latency spikes and uncertainty values, verify the monitor halts the policy before constraint violation. The key challenge is wiring the monitor's authority so it actually overrides the policy action rather than just logging the alarm.</p><p><strong>Intermediate (1-2 weeks): ROS 2 sensor-freshness guardian for a MuJoCo manipulator.</strong> Instrument a Franka Panda model in MuJoCo (via LeRobot or the <code>gymnasium-robotics</code> FrankaKitchen env) with a ROS 2 lifecycle node that tracks depth-camera frame age and policy entropy; set <code>window: 1</code> on degraded/stop transitions and a conservative window on recovery. The key challenge is deriving detection latency budgets from worst-case arm kinematics so the monitor is provably fast enough to halt approach before contact force exceeds a safe threshold.</p></div>
+<h2>Cross-References</h2>
+<p>This section hands off naturally to <a href="ch_0411_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.4 on safety filters</a> and <a href="ch_0412_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Section 54.5 on human override</a>, where runtime authority becomes explicit.</p>
+<div class="callout lab">
+<div class="callout-title">Lab Recipe</div>
+<p>Implement a four-state monitor for one robot task, feed it uncertainty and latency signals, and replay at least one episode where the monitor should have intervened earlier than the nominal policy would have.</p>
+</div>
+<div class="callout warning">
+<div class="callout-title">Failure Mode</div>
+<p>Do not tune monitor thresholds only on clean logs. Stress cases and near-failures are the data that determine whether the monitor will matter in the field.</p>
+</div>
+<div class="callout warning">
+<p>A common mistake is to treat logging health signals and raising alerts as equivalent to runtime monitoring. In a desktop software context this conflation is harmless, but in embodied AI it is dangerous: a robot that logs a sensor failure and keeps moving is still applying force to the world during the logging window. The correct mental model is that a runtime monitor must hold explicit authority to halt, constrain, or redirect the policy before the unsafe action executes. Observability (knowing something went wrong) and control authority (being able to stop it) are two separate system properties, and a monitor without authority is only the former.</p>
+</div>
+<div class="callout key-insight"><p>Think of a kitchen smoke detector versus a sprinkler system. The detector senses the fire and sounds an alarm, giving you perfect observability that something is wrong. But the sprinkler system holds actual authority to act: it releases water before you have even reached the stove. A runtime monitor that only logs alarms is the smoke detector. The fail-safe that cuts motor power or clamps velocity is the sprinkler. You need both, but only one of them stops the harm.</p></div>
+<div class="callout practical-example">
+<div class="callout-title">Practical Example</div>
+<p>A delivery robot might enter degraded mode by lowering speed and requiring fresher localization, then stop entirely when map confidence collapses. A manipulator might shrink force limits and approach speed before requesting human review.</p>
+</div>
+<div class="callout practical-example" data-agent="33" style="border-left-color:#2a9d8f">
+<h4>Real-World Application: Legged Robot Patrols</h4>
+<p data-agent="21">Boston Dynamics Spot runs a continuous self-check layer that monitors joint torque, IMU consistency (where an IMU, or inertial measurement unit, is the accelerometer-and-gyroscope package that reports body orientation and motion), and foot-contact estimates; when a signal leaves its expected envelope the robot transitions out of nominal locomotion, lowering its body into a stable crouch or sitting before any fall can apply impact force. This is the four-state pattern in production: a dedicated authority that strips control from the gait policy the instant proprioceptive health degrades, rather than logging the anomaly and walking on.</p>
+</div>
+<div class="callout key-insight">
+<div class="callout-title">When the Monitor Itself Fails</div>
+<p>A monitor can become the failure mode when its own decision latency exceeds the time-to-harm of the event it is watching. Consider a drone descending at 2 m/s toward an obstacle 1 m away: the time-to-contact is 500 ms. A monitor that batches health signals every 200 ms and requires two consecutive bad readings before transitioning costs at least 400 ms just in detection, leaving 100 ms for actuation. If the braking distance at cruise speed is 300 ms, the monitor is structurally too slow even if every threshold is correct. Latency budgets must be derived from worst-case kinematics, not chosen by feel.</p>
+</div>
+<p><span data-agent="14">Once those latency budgets are derived from physical limits rather than guessed, the same disciplined structure appears wherever monitoring carries real consequences.</span> Named deployments show the pattern concretely. Waymo's onboard safety monitor tracks perception confidence, map freshness, and localization uncertainty in parallel; when any signal crosses a threshold, the vehicle reduces speed or requests a human pull-over rather than continuing the nominal plan (Waymo Safety Report, 2023). NASA's Mars rovers use a fault-protection layer called FDIR (Fault Detection, Isolation, and Recovery) that halts motion and radios Earth when actuator current deviates from expected range by more than a fixed margin, a form of constraint-margin monitoring running at 8 Hz. Both examples share the same structure: a dedicated process with authority to override the nominal planner, explicit thresholds derived from physical limits, and logged transitions that engineers review after every anomaly.</p>
+<div class="callout research-frontier">
+<div class="callout-title">Research Frontier</div>
+<p>Three directions are reshaping runtime monitoring for physical agents as of 2024-2026.</p>
+<p>First, conformal prediction, which converts an <a data-agent="13" href="ch_0405_part-11-evaluation-safety-robustness-and-deployment-module-53-robustness.xhtml">out-of-distribution detector</a>'s scores into calibrated alarm thresholds, provides statistically valid alarm-rate guarantees without distributional assumptions. Angelopoulos et al. (2024, “Conformal Risk Control,” ICLR 2024) report that conformal wrappers around standard uncertainty estimators typically hold user-specified false-negative rates even under covariate shift (a mismatch between the data distribution the model was calibrated on and the distribution it sees at deployment). Groups at Stanford’s CRFM and Carnegie Mellon’s R-PAD lab now apply this to manipulation monitors running at 50 Hz on real hardware.</p>
+<p>Second, foundation-model anomaly detectors treat large pretrained vision-language models as zero-shot health sensors (that is, sensors that flag anomalies in object categories they were never explicitly trained or fine-tuned to detect). The robot observes its workspace through a frozen CLIP or Gemini backbone and flags deviations from the training manifold. Google DeepMind’s RT-2 follow-on work (2024) reports that this approach catches novel object intrusions that fixed-threshold monitors typically miss, because the intrusion is semantically unusual rather than statistically out-of-range.</p>
+<div class="callout key-insight" data-agent="05"><h4>Checkpoint</h4><p>So far: conformal prediction calibrates alarm thresholds statistically, and foundation-model detectors flag semantically unusual events that threshold-based monitors miss; the third direction below adds the actuation side, making sure a feasible stop trajectory is ready the instant either kind of alarm fires.</p></div>
+<p>Third, predictive fail-safe planning runs a receding-horizon safety planner in parallel with the nominal policy at every timestep. When the monitor fires, a feasible stop trajectory is already available and executes without replanning delay. Hewing et al. and the ETH Zurich Learning and Adaptive Systems group published 2024 results showing this approach reduces, and in their reported test cases eliminates, the “monitor fires but braking is too slow” failure class in high-speed manipulation.</p>
+<p>Open problem suitable for a PhD project: how should a monitor allocate its computational budget across signals of heterogeneous latency and reliability in real time, so the monitor itself does not become the bottleneck during a cascade failure where multiple sensors degrade simultaneously?</p>
+</div>
+<div class="callout self-check">
+<div class="callout-title">Self Check</div>
+<p>Can you name the signals, thresholds, and authority change in each runtime state for your system? If not, your monitor is not specified tightly enough to test.</p>
+</div>
+<div class="callout key-takeaway">
+<div class="callout-title">Key Takeaway</div>
+<p>Runtime monitoring is the bridge from uncertainty to safer behavior. Its quality is measured by the timeliness and correctness of its state transitions.</p>
+</div>
+<div class="callout exercise">
+<div class="callout-title">Exercise 53.4.1</div>
+<p>Design a runtime state machine for one embodied system and define the exact actions allowed in each state. Then identify one transition you would expect to be most fragile in deployment.</p>
+</div>
+<section class="bibliography">
+<h2>Section References</h2>
+<div class="bib-entry-card"><p class="bib-ref">Amodei, D. et al. "Concrete Problems in AI Safety." (2016). <a href="https://arxiv.org/abs/1606.06565">https://arxiv.org/abs/1606.06565</a></p><p class="bib-annotation">Still helpful for the broader framing of interventions and monitoring.</p></div>
+<div class="bib-entry-card"><p class="bib-ref">Official ROS 2 lifecycle and diagnostics documentation.</p><p class="bib-annotation">Useful implementation references for stateful runtime supervision.</p></div>
+</section>
+<div class="callout whats-next">
+<div class="callout-title">What's Next</div>
+<p>Chapter 54 now takes over by turning monitoring and intervention into a full safety architecture with hazards, formal envelopes, shields, and assurance cases.</p>
+</div>
+<div class="whats-next"><h3>What's Next?</h3><p>Continue to <a href="ch_0407_part-11-evaluation-safety-robustness-and-deployment-module-54-safety-in-.xhtml">Chapter 54: Safety in Embodied AI</a>, where this contract becomes the input to the next embodied capability.</p></div>
+
+
+
+
+</body>
+</html>
