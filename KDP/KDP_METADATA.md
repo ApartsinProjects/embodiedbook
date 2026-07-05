@@ -1,11 +1,16 @@
 # KDP Upload Metadata — Building Embodied AI (Second Edition)
 
-Copy-paste sheet for the KDP dashboard. File-embedded fields (title, authors,
-language, rights) already match the EPUB/KPF OPF; the fields below are the
-ones you enter or select at upload.
+> **Canonical submission guide: [`KDP/KDP_SUBMISSION.md`](KDP_SUBMISSION.md)** and
+> [`KDP/metadata/metadata.yaml`](metadata/metadata.yaml). This older sheet is kept
+> for its keyword/category rationale; where it disagrees, the canonical files win.
 
-Upload file: `KDP/output/kpf_final/KPF/building-embodied-ai-kindle-mz.kpf`
-(upload the .kpf, not the EPUB, so KDP skips its server-side conversion.)
+Copy-paste sheet for the KDP dashboard. File-embedded fields (title, authors,
+language, rights) already match the EPUB OPF; the fields below are the ones you
+enter or select at upload.
+
+Upload file: `KDP/output/building-embodied-ai-diagrams.epub`
+(42 MB reflowable EPUB 3, EPUBCheck 0/0/0/0, diagrams rasterized. Do NOT upload the
+older `.kpf` files in `KDP/output/` — they predate the current fixes.)
 
 ---
 
