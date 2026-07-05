@@ -22,8 +22,11 @@ current fixes, so do not upload it.
 ## Build commands
 
 ```bash
-# reflowable EPUB with EPUBCheck-clean KaTeX-HTML math
-HTML2EPUB_KATEX_OUTPUT=html python -m html2epub build .   # -> KDP/output/building-embodied-ai.epub
+# reflowable EPUB with math rendered as MathML (NOT KaTeX-HTML): KaTeX draws
+# \sqrt / stretchy delimiters as inline <svg width="400em">, which KDP's KFX
+# converter rejects ("SVG specified in the content is not renderable"). MathML
+# radicals are native (no SVG). html2epub auto-repairs KaTeX's over-arity MathML.
+HTML2EPUB_KATEX_OUTPUT=mathml python -m html2epub build .   # -> KDP/output/building-embodied-ai.epub
 
 # rasterize diagrams for the KFX-safe Kindle copy (epub2kpf skill)
 EPUB2KPF_DIAGRAM_SCALE=1.5 EPUB2KPF_DIAGRAM_JPEG_QUALITY=82 EPUB2KPF_DIAGRAM_DECLUTTER=1 \
