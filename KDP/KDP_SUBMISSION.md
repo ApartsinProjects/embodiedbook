@@ -8,7 +8,7 @@ mirror `KDP/metadata/metadata.yaml`, `KDP/metadata/description.html`, and
 
 | Item | Path | Spec |
 |---|---|---|
-| Manuscript (EPUB 3, reflowable) | `KDP/output/building-embodied-ai-diagrams.epub` | EPUBCheck 0/0/0/0; 42 MB; diagrams rasterized (KFX-safe); KDP accepts EPUB directly |
+| Manuscript (EPUB 3, reflowable) | `KDP/output/building-embodied-ai-diagrams-kindle.epub` | EPUBCheck 0/0/0/0; 42 MB; diagrams rasterized, math=MathML (no SVG), rem->em + mathsize stripped (KFX-clean, direct-JAR Stage-2 verified); KDP accepts EPUB directly |
 | Cover | `KDP/cover/book-cover-kdp.jpg` | 1600 x 2560, baseline (non-progressive) sRGB JPEG |
 
 Upload the **`-diagrams.epub`** (not `building-embodied-ai.epub`). Both pass
@@ -33,8 +33,15 @@ EPUB2KPF_DIAGRAM_SCALE=1.5 EPUB2KPF_DIAGRAM_JPEG_QUALITY=82 EPUB2KPF_DIAGRAM_DEC
   python epub2kpf/scripts/kindle_build/rasterize_diagrams.py KDP/output/building-embodied-ai.epub
 #   -> KDP/output/building-embodied-ai-diagrams.epub
 
+# make it KFX-clean: rem->em, mathsize strip, font-size units (KFX rejects rem
+# E05204 and the MathML mathsize attr E02208; EPUBCheck does NOT catch these)
+python epub2kpf/scripts/kindle_build/sanitize_epub_kindle.py KDP/output/building-embodied-ai-diagrams.epub
+#   -> KDP/output/building-embodied-ai-diagrams-kindle.epub   (THIS is the upload)
+
 # validate
-java -jar epubcheck.jar KDP/output/building-embodied-ai-diagrams.epub   # expect 0/0/0/0
+java -jar epubcheck.jar KDP/output/building-embodied-ai-diagrams-kindle.epub   # expect 0/0/0/0
+# optional deep check: KFX Stage-1+2 conversion (needs Kindle Previewer 3 installed)
+python epub2kpf/scripts/direct_jar/kpv_direct_jar.py KDP/output/building-embodied-ai-diagrams-kindle.epub --stages 1,2
 ```
 
 ## KDP form fields
