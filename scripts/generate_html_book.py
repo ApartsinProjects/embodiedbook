@@ -190,13 +190,8 @@ def page_head(title, rel, desc, code=True, math=True):
         katex = f"""
 <link href="{rel}vendor/katex/katex.min.css" rel="stylesheet"/>
 <script defer="" src="{rel}vendor/katex/katex.min.js"></script>
-<script defer="" onload="renderMathInElement(document.body, {{
-  delimiters: [
-  {{left: '$$', right: '$$', display: true}},
-  {{left: '$', right: '$', display: false}}
-  ],
-  throwOnError: false
-  }});" src="{rel}vendor/katex/contrib/auto-render.min.js"></script>"""
+<script defer="" src="{rel}vendor/katex/contrib/auto-render.min.js"></script>
+<script>function _renderMath(){{if(typeof renderMathInElement!=="undefined")renderMathInElement(document.body, {{delimiters: [{{left: '$$', right: '$$', display: true}}, {{left: '\\\\[', right: '\\\\]', display: true}}, {{left: '\\\\(', right: '\\\\)', display: false}}], throwOnError: false}});}}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",_renderMath);else _renderMath();</script>"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
