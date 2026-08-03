@@ -232,7 +232,6 @@ def footer(rel):
     return f"""<footer>
 <p class="footer-title">{FULL_TITLE}, Web Edition</p>
 <p>&#169; {YEAR} {AUTHORS} &#183; <a href="{rel}toc.html">Contents</a></p>
-<p class="footer-updated">Last updated: <script>document.write(new Date(document.lastModified).toLocaleDateString('en-US', {{year:'numeric', month:'long', day:'numeric'}}))</script></p>
 </footer>
 </main>
 </body>
