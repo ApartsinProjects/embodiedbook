@@ -506,10 +506,10 @@ body.cover-page footer.cover-footer a, body.cover-page .series-links a, body.cov
 <p class="cover-section-sub">Building Embodied AI is the fifth connected book in a deep, build-it-yourself AI series.</p>
 <p class="cover-promise" style="margin-top:0;">Hands-On AI Science is a series of in-depth guides to the major fields of artificial intelligence. Every book goes deep into the theory, models, and internals, covers the classical foundations and the most recent ideas, then shows how to build each one in Python with modern libraries and tools.</p>
 <div class="part-grid">
-<div class="part-card series-card part-1"><h3>Building Language AI</h3><p>From Tokens to Agents.</p><span class="series-links"><a href="https://llmbook.apartsin.com" rel="noopener" target="_blank">Read online</a></span></div>
-<div class="part-card series-card part-2"><h3>Building Vision AI</h3><p>From Pixels to Generative Models.</p><span class="series-links"><a href="https://visionbook.apartsin.com" rel="noopener" target="_blank">Read online</a></span></div>
-<div class="part-card series-card part-3"><h3>Building Temporal AI</h3><p>From Forecasting to Sequential Decision Making.</p><span class="series-links"><a href="https://temporalbook.apartsin.com" rel="noopener" target="_blank">Read online</a></span></div>
-<div class="part-card series-card part-4"><h3>Building Scalable AI</h3><p>From Big Data Algorithms to Distributed Intelligence.</p><span class="series-links"><a href="https://scalablebook.apartsin.com" rel="noopener" target="_blank">Read online</a></span></div>
+<div class="part-card series-card part-1"><h3>Building Language AI</h3><p>From Tokens to Agents.</p><span class="series-links"><a href="https://llmbook.icsgen-ai.org" rel="noopener" target="_blank">Read online</a></span></div>
+<div class="part-card series-card part-2"><h3>Building Vision AI</h3><p>From Pixels to Generative Models.</p><span class="series-links"><a href="https://visionbook.icsgen-ai.org" rel="noopener" target="_blank">Read online</a></span></div>
+<div class="part-card series-card part-3"><h3>Building Temporal AI</h3><p>From Forecasting to Sequential Decision Making.</p><span class="series-links"><a href="https://temporalbook.icsgen-ai.org" rel="noopener" target="_blank">Read online</a></span></div>
+<div class="part-card series-card part-4"><h3>Building Scalable AI</h3><p>From Big Data Algorithms to Distributed Intelligence.</p><span class="series-links"><a href="https://scalablebook.icsgen-ai.org" rel="noopener" target="_blank">Read online</a></span></div>
 <div class="part-card series-card part-1"><h3>Building Embodied AI</h3><p>From Perception to Autonomous Action.</p><span class="series-here">You are here</span></div>
 </div>
 <p class="series-cta">Read the full <a href="front-matter/about-the-series.html">About the Hands-On AI Science Series</a> note.</p>

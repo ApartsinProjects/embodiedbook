@@ -14,11 +14,11 @@ Primary local source:
 
 Public reference:
 
-`https://visionbook.apartsin.com/`
+`https://visionbook.icsgen-ai.org/`
 
 Live series reference checked:
 
-`https://visionbook.apartsin.com/front-matter/about-the-series.html`
+`https://visionbook.icsgen-ai.org/front-matter/about-the-series.html`
 
 Book plan source:
 
